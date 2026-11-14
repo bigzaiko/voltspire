@@ -792,7 +792,7 @@ function frame(dt: number) {
   if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__dbg = { get sim() { return sim; }, view, act, startGame };
   let last = performance.now();
   const loop = (now: number) => { const dt = Math.min(0.1, (now - last) / 1000); last = now; frame(dt); requestAnimationFrame(loop); };
-  // browsers stop animation frames in hidden tabs; keep a multiplayer match alive on a timer instead
-  setInterval(() => { if (!document.hidden || !net || mode === 'attract' || ended) return; const now = performance.now(), dt = Math.min(1.1, (now - last) / 1000); last = now; frame(dt); }, 250);
+  // browsers stop animation frames in hidden or background tabs; whenever frames stall, keep a multiplayer match alive on a timer
+  setInterval(() => { const now = performance.now(); if (now - last < 400 || !net || mode === 'attract' || ended) return; const dt = Math.min(1.1, (now - last) / 1000); last = now; frame(dt); }, 250);
   requestAnimationFrame(loop);
 })();
