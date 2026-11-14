@@ -125,7 +125,7 @@ await shot('logo', 6, {
 });
 
 const total = clock;
-console.log(`frames: ${frameNo}, ${total.toFixed(1)}s — rendering soundtrack`);
+console.log(`frames: ${frameNo}, ${total.toFixed(1)}s - rendering soundtrack`);
 const wav = await page.evaluate((s, h) => window.__volt.renderAudio(s, h), total, hot);
 const wavPath = join(FRAMES, 'audio.wav');
 writeFileSync(wavPath, Buffer.from(wav, 'base64'));

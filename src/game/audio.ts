@@ -1,4 +1,4 @@
-// Synthesised audio — no asset files. Cinematic direction: deep impacts, filtered pads,
+// Synthesised audio - no asset files. Cinematic direction: deep impacts, filtered pads,
 // horn-like swells and a dark hybrid score. Everything runs through a generated reverb.
 interface V { f: number; to?: number; dur: number; type?: OscillatorType; vol: number; when?: number; att?: number; lp?: number; lpTo?: number; det?: number; out?: AudioNode }
 interface N { dur: number; vol: number; freq: number; to?: number; q?: number; when?: number; type?: BiquadFilterType; att?: number; out?: AudioNode }
@@ -170,7 +170,7 @@ export class Sound {
       const s = this.step % 16, barN = Math.floor(this.step / 16), bar = barN % 4, w = this.nextT - c.currentTime;
       const root = roots[bar], bl = spb * 16;
       if (s === 0) {
-        // pad: root, fifth, third an octave up — slow filtered saws
+        // pad: root, fifth, third an octave up - slow filtered saws
         for (const [n, vol] of [[0, 0.1], [7, 0.07], [12 + third[bar], 0.05], [12, 0.05]] as const)
           for (const det of [-9, 8]) this.v({ f: hz(root + n), dur: bl * 1.08, type: 'sawtooth', vol, att: bl * 0.3, lp: hot ? 900 : 520, lpTo: hot ? 500 : 300, det, when: w, out: M });
         this.v({ f: hz(root - 12), dur: bl, vol: 0.2, att: 0.4, when: w, out: M });
