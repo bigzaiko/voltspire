@@ -213,7 +213,7 @@ function handleEvents(evs: Ev[]) {
       case 'heroOn':
         if (quiet) break;
         sound.play('heroOn');
-        if (e.p === me) { flash(); document.body.classList.add('hero'); show('herohud'); sound.intense = 1; buildType = null; selected = 0; view.setGhost(null); view.setSelected(null); view.setHover(0, 0, false); faceEnemies(); }
+        if (e.p === me) { flash(); document.body.classList.add('hero'); show('herohud'); sound.intense = 1; speed = 1; setText('btn-speed', '1×'); buildType = null; selected = 0; view.setGhost(null); view.setSelected(null); view.setHover(0, 0, false); faceEnemies(); }
         else toast('Your partner uplinked!');
         break;
       case 'heroOff':
@@ -508,6 +508,36 @@ bind('set-sens', 'sens', () => {});
 const qsel = $<HTMLSelectElement>('set-q');
 qsel.value = settings.q;
 qsel.addEventListener('change', () => { settings.q = qsel.value === 'low' ? 'low' : 'high'; view.setQuality(settings.q); });
+
+// ---------- fullscreen (handy on phones and tablets) ----------
+{
+  const b = el('button', 'chip', '⛶') as HTMLButtonElement;
+  b.id = 'btn-full';
+  b.title = 'Fullscreen';
+  b.setAttribute('aria-label', 'Toggle fullscreen');
+  Object.assign(b.style, { position: 'fixed', top: '10px', right: '14px', zIndex: '45', width: '44px', height: '44px', fontSize: '20px' });
+  $('top').style.paddingRight = '70px';
+  const root = document.documentElement as HTMLElement & { webkitRequestFullscreen?: () => void };
+  const doc = document as Document & { webkitFullscreenElement?: Element; webkitExitFullscreen?: () => void };
+  const isFull = () => !!(document.fullscreenElement || doc.webkitFullscreenElement);
+  b.addEventListener('click', async () => {
+    sound.init(); sound.play('click');
+    try {
+      if (isFull()) { if (document.exitFullscreen) await document.exitFullscreen(); else doc.webkitExitFullscreen?.(); }
+      else {
+        if (root.requestFullscreen) await root.requestFullscreen({ navigationUI: 'hide' }); else root.webkitRequestFullscreen?.();
+        // phones: landscape is the only comfortable way to play
+        const so = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
+        so?.lock?.('landscape').catch(() => {});
+      }
+    } catch { toast('Fullscreen is not available in this browser.'); }
+  });
+  const sync = () => { b.textContent = isFull() ? '✕' : '⛶'; b.title = isFull() ? 'Leave fullscreen' : 'Fullscreen'; view.resize(); };
+  document.addEventListener('fullscreenchange', sync);
+  document.addEventListener('webkitfullscreenchange', sync);
+  if (!root.requestFullscreen && !root.webkitRequestFullscreen) b.style.display = 'none';
+  document.body.appendChild(b);
+}
 
 // ---------- input ----------
 function lockPointer() { try { const r = canvas.requestPointerLock() as unknown; if (r && typeof (r as Promise<void>).catch === 'function') (r as Promise<void>).catch(() => {}); } catch { /* not allowed */ } }
