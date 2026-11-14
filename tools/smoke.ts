@@ -6,8 +6,8 @@ import type { MapDef } from '../src/game/map.ts';
 import { Bot } from '../src/game/bot.ts';
 import { MAPS } from '../src/game/maps.ts';
 import { sanitizeMap, validateMap, encodeMap, decodeMap } from '../src/game/map.ts';
-/** Switchback with its first stretch raised to level 2. */
-const hill: MapDef = { ...MAPS[0], id: 'hill', towers: [], lanes: [[[-2, 3], [5, 3, 2], [5, 13, 2], [11, 13], [11, 5], [17, 5], [17, 13], [21, 13], [21, 8], [22.4, 8]]] };
+/** Switchback with its first diagonal raised to level 2. */
+const hill: MapDef = { ...MAPS[0], id: 'hill', towers: [], lanes: [MAPS[0].lanes[0].map((p, i) => (i === 1 || i === 2 ? [p[0], p[1], 2] : p))] };
 let fail = 0;
 const ok = (c: unknown, m: string) => { if (!c) { fail++; console.log('FAIL', m); } };
 
@@ -113,7 +113,7 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
   const s = new Sim({ seed: 5, map: bare, pauseOnCards: false });
   s.gold = 5000;
   // a pulse turret next to the first stretch of road
-  const turret = s.build('pulse', 3, 4)!;
+  const turret = s.build('pulse', 3, 5)!;
   ok(!!turret, 'built a turret beside the road');
   const evs: Ev[] = [];
   const run = (n: number, each?: () => void) => { for (let i = 0; i < n; i++) { if (each) each(); s.step(1 / 60); evs.push(...s.events.splice(0)); s.players[0].pending.length = 0; } };
@@ -193,7 +193,7 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
   // every new tower works: flame, lance, missile, gravity fire, emit their events and stay finite
   const s = new Sim({ seed: 8, map: bare, pauseOnCards: false });
   s.gold = 1e5; for (const t of ['flame', 'lance', 'missile', 'gravity', 'arc', 'mortar', 'rail', 'beacon'] as const) s.unlocked.add(t);
-  const cells: [number, number][] = [[3, 4], [4, 4], [6, 5], [6, 7], [4, 9], [6, 11], [7, 12], [9, 14], [10, 11], [12, 9]];
+  const cells: [number, number][] = [[3, 5], [4, 5], [6, 5], [7, 7], [8, 9], [6, 11], [8, 12], [8, 14], [11, 14], [13, 9]]; // free tiles along Switchback's road
   (['flame', 'lance', 'missile', 'gravity', 'flame', 'lance', 'missile', 'gravity', 'beacon', 'mortar'] as const).forEach((t, i) => ok(!!s.build(t, cells[i][0], cells[i][1]), 'build ' + t));
   const seen = new Set<string>(); let missile = false, specials = 0;
   for (let i = 0; i < 60 * 150 && !s.over; i++) {
@@ -226,7 +226,7 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
   const shots = (s: Sim, id: number, sec: number) => { let n = 0; run(s, sec, (evs) => { for (const e of evs) if (e.k === 'shot' && e.id === id) n++; }); return n; };
   {
     // fire rate: the cooldown carries over, so fast turrets and Bullet Storm deliver their full rate
-    const s = mk(), t = s.build('pulse', 3, 4)!; put(s, 'grunt', 10);
+    const s = mk(), t = s.build('pulse', 3, 5)!; put(s, 'grunt', 10);
     t.lvl = 3; s.mods.tRate = 1.15 ** 6; s.mods.tw.pulse.rate = 1.2 ** 3;
     const rate = s.towerRate(t);
     run(s, 1);
@@ -235,15 +235,16 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
     t.charge = 1; ok(s.triggerSpecial(t.id, 0), 'storm fires');
     const m = shots(s, t.id, 4);
     ok(rate * 5 > 60 && Math.abs(m - rate * 5 * 4) <= rate * 5 * 4 * 0.02 + 1, `Bullet Storm is five times as fast (${m} shots in 4 s, expected ${(rate * 20).toFixed(0)})`);
-    const s2 = mk(), l = s2.build('lance', 3, 4)!; put(s2, 'grunt', 10);
+    const s2 = mk(), l = s2.build('lance', 3, 5)!; put(s2, 'grunt', 10);
     run(s2, 1); let beams = 0; run(s2, 10, (evs) => { for (const e of evs) if (e.k === 'lance' && e.id === l.id) beams++; });
     ok(Math.abs(beams - s2.towerRate(l) * 10) <= 1, `lance ticks at its rate (${beams} in 10 s)`);
   }
   {
     // specials need a target the tower could actually shoot
     for (const type of ['pulse', 'lance'] as const) {
-      const s = mk(), t = s.build(type, 3, 4)!;
-      const r = s.range(t), d = r + 1.2, e = put(s, 'boss', 10 - Math.sqrt(d * d - 4));
+      const s = mk(), t = s.build(type, 3, 5)!;
+      // the turret sits one row below the first stretch of road, level with distance 11 along it
+      const off = Math.abs(t.z - s.map.lanes[0].pts[0][1]), r = s.range(t), d = r + 1.2, e = put(s, 'boss', 11 - Math.sqrt(d * d - off * off));
       t.charge = 1;
       ok(Math.hypot(e.x - t.x, e.z - t.z) > r && !s.triggerSpecial(t.id, 0) && t.charge === 1 && t.down === 0, type + ' special is refused when nothing is in firing range (charge kept)');
       e.dist = 10; priv(s).place(e);
@@ -252,7 +253,7 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
   }
   {
     // Collapse (and any singularity) never hurries enemies along the road
-    const s = mk(), g = s.build('gravity', 3, 4)!; g.cd = 1e9; g.charge = 1;
+    const s = mk(), g = s.build('gravity', 3, 5)!; g.cd = 1e9; g.charge = 1;
     put(s, 'brute', 12);
     const pack = [8, 9, 10, 11].map((d) => put(s, 'grunt', d, 0, 2));
     ok(s.triggerSpecial(g.id, 0), 'Collapse fires');
@@ -263,7 +264,7 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
   }
   {
     // a strong burn is not kept alive by a weaker projector
-    const s = mk(), a = s.build('flame', 3, 4)!, b = s.build('flame', 4, 4)!; a.lvl = 3;
+    const s = mk(), a = s.build('flame', 3, 5)!, b = s.build('flame', 4, 5)!; a.lvl = 3;
     const e = put(s, 'grunt', 10);
     const weak = s.towerDmg(b) * 1.6;
     a.charge = 1; ok(s.triggerSpecial(a.id, 0), 'Inferno fires');
@@ -278,7 +279,7 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
     // blasts stay on their own deck: a bridge shields the road under it
     const hl = MAPS.find((m) => m.id === 'highline')!;
     const s = mk({ map: hl });
-    const up = put(s, 'grunt', 12, 1), low = put(s, 'grunt', 42, 0);
+    const up = put(s, 'grunt', 14, 1), low = put(s, 'grunt', 38, 0); // the bridge tile: 7 tiles down road 2, 19 tiles along road 1
     ok(Math.hypot(up.x - low.x, up.z - low.z) < 1 && up.gy - low.gy > DECK_GAP, `test enemies are above each other (gap ${(up.gy - low.gy).toFixed(1)})`);
     const hp = () => [up.maxHp - up.hp, low.maxHp - low.hp];
     priv(s).aoe(up.x, up.z, 2.8, 50, -1, true, up.gy);
@@ -296,15 +297,15 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
   }
   {
     // Aftershock covers Bullet Storm and Surge too
-    const storm = (pow: number) => { const s = mk(), t = s.build('pulse', 3, 4)!, e = put(s, 'grunt', 10); s.mods.specPow = pow; t.charge = 1; s.triggerSpecial(t.id, 0); run(s, 4.9); return e.maxHp - e.hp; };
+    const storm = (pow: number) => { const s = mk(), t = s.build('pulse', 3, 5)!, e = put(s, 'grunt', 10); s.mods.specPow = pow; t.charge = 1; s.triggerSpecial(t.id, 0); run(s, 4.9); return e.maxHp - e.hp; };
     const d1 = storm(1), d2 = storm(2);
     ok(Math.abs(d2 / d1 - 2) < 0.05, `Aftershock scales Bullet Storm (${d1.toFixed(0)} -> ${d2.toFixed(0)})`);
-    const s = mk(), bc = s.build('beacon', 3, 4)!; s.mods.specPow = 1.25; bc.charge = 1;
+    const s = mk(), bc = s.build('beacon', 3, 5)!; s.mods.specPow = 1.25; bc.charge = 1;
     ok(s.triggerSpecial(bc.id, 0) && Math.abs(bc.spec - 10) < 1e-9, 'Aftershock makes Surge last longer');
   }
   {
     // Deep Well: every stack and every level adds drag
-    const pull = (lvl: number, stacks: number) => { const s = mk(), g = s.build('gravity', 3, 4)!; g.lvl = lvl; g.cd = 0; s.mods.gravPull = stacks; const e = put(s, 'grunt', 10, 0, 3); s.step(1 / 60); return e.pull; };
+    const pull = (lvl: number, stacks: number) => { const s = mk(), g = s.build('gravity', 3, 5)!; g.lvl = lvl; g.cd = 0; s.mods.gravPull = stacks; const e = put(s, 'grunt', 10, 0, 3); s.step(1 / 60); return e.pull; };
     let mono = true;
     for (let lvl = 1; lvl <= 3; lvl++) for (let st = 0; st <= CARD_BY_ID.g_deep.max; st++) {
       if (st > 0 && pull(lvl, st) < pull(lvl, st - 1) * 1.1) mono = false;
@@ -331,7 +332,7 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
   }
   {
     // pulse cards: extra bolts are weaker
-    const s = mk(), t = s.build('pulse', 3, 4)!; put(s, 'grunt', 10); s.mods.twin = 2; t.cd = 0; s.step(1 / 60);
+    const s = mk(), t = s.build('pulse', 3, 5)!; put(s, 'grunt', 10); s.mods.twin = 2; t.cd = 0; s.step(1 / 60);
     const b = s.projs.filter((p) => p.kind === 'bolt').map((p) => p.dmg);
     ok(b.length === 3 && Math.abs(b[1] / b[0] - TWIN_BOLT) < 1e-9 && TWIN_BOLT < 1, 'Twin Barrels bolts are weaker than the main bolt');
   }
@@ -359,7 +360,7 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
   {
     // snapshot: state events survive a flood of cosmetic ones, damage numbers are summed, modifiers are replicated
     const h = mk({ mode: 'coop', players: 2 }), c = mk({ mode: 'coop', players: 2 }); c.replica = true;
-    const t = h.build('pulse', 3, 4)!;
+    const t = h.build('pulse', 3, 5)!;
     const flood: Ev[] = [{ k: 'heroOff', p: 1, x: 0, y: 0, z: 0 }];
     for (let i = 0; i < 400; i++) flood.push({ k: 'dmg', x: 0, y: 0, z: 0, n: 5, p: 1, id: 100 + (i % 200) });
     flood.push({ k: 'wave', n: 3 });

@@ -13,6 +13,16 @@ export function canvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderin
   return [c, c.getContext('2d', { willReadFrequently: true })!];
 }
 
+/** Trace a pointy-top hexagon (corners up and down) with circumradius r into the current path. */
+export function hexPath(g: CanvasRenderingContext2D, x: number, y: number, r: number) {
+  g.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = (Math.PI / 3) * i - Math.PI / 2, px = x + Math.cos(a) * r, py = y + Math.sin(a) * r;
+    if (i) g.lineTo(px, py); else g.moveTo(px, py);
+  }
+  g.closePath();
+}
+
 /** Tileable grey value-noise canvas (used as an overlay for grit). */
 export function noiseCanvas(size: number, seed: number, contrast = 1): HTMLCanvasElement {
   const [c, g] = canvas(size, size), r = rng(seed);
@@ -87,9 +97,9 @@ export function glowTexture(): THREE.Texture {
   return glowTex;
 }
 
-/** Flat additive ground light pool. */
+/** Flat additive ground light pool. No fog: fog on an additive material tints the whole quad and shows its square outline. */
 export function lightPool(radius: number, color: THREE.ColorRepresentation, intensity = 1): THREE.Mesh {
-  const m = new THREE.Mesh(POOL_GEO, new THREE.MeshBasicMaterial({ map: glowTexture(), color: new THREE.Color(color).multiplyScalar(intensity), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: true }));
+  const m = new THREE.Mesh(POOL_GEO, new THREE.MeshBasicMaterial({ map: glowTexture(), color: new THREE.Color(color).multiplyScalar(intensity), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: true, fog: false }));
   m.scale.setScalar(radius);
   return m;
 }

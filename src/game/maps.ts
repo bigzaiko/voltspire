@@ -1,47 +1,72 @@
 // Pre-made maps, ordered from simple to complex. Every map carries at least one Uplink Spire (the only tower Kestrel can uplink to).
 import { DEFAULT_MAP } from './map.ts';
-import type { MapDef } from './map.ts';
+import type { MapDef, LanePoint } from './map.ts';
+import { route } from './hex.ts';
 
+// Directions: east, south-east, south-west, west, north-west, north-east.
+const E = 0, SE = 1, SW = 2, W = 3, NW = 4, NE = 5;
+/** A road from a gate tile and a list of [direction, steps, level at the end of the stretch] moves. */
+function road(start: [number, number], moves: [number, number, number?][], level = 0): LanePoint[] {
+  const pts = route(start, moves.map(([d, n]) => [d, n]));
+  const lv = [level, ...moves.map((m) => m[2] || 0)];
+  return pts.map(([cx, cz], i): LanePoint => (lv[i] && i < pts.length - 1 ? [cx, cz, lv[i]] : [cx, cz]));
+}
 const B = (...cells: number[]): [number, number][] => { const o: [number, number][] = []; for (let i = 0; i < cells.length; i += 2) o.push([cells[i], cells[i + 1]]); return o; };
 const spire = (cx: number, cz: number): MapDef['towers'][number] => ({ t: 'spire', cx, cz });
 
 export const MAPS: MapDef[] = [
-  { ...DEFAULT_MAP, towers: [spire(14, 9)] },
+  { ...DEFAULT_MAP, towers: [spire(13, 9)], blocked: B(1, 9, 1, 10, 2, 10, 17, 18, 18, 18, 18, 17, 23, 2, 24, 2, 24, 3) },
   {
-    id: 'spiral', name: 'Coil', desc: 'A long spiral into the heart of the grid. Plenty of time to shoot — and to overreach.', tier: 1,
-    lanes: [B(-2, 1, 23, 1, 23, 15, 3, 15, 3, 5, 18, 5, 18, 11, 8, 11, 8, 8, 11.4, 8)],
-    core: [13, 8], gold: 190, lives: 20, towers: [spire(6, 8)], blocked: [],
+    id: 'spiral', name: 'Coil', desc: 'A long spiral into the heart of the grid. Plenty of time to shoot, and to overreach.', tier: 1,
+    lanes: [road([-2, 1], [[E, 19], [SE, 8], [SW, 8], [W, 8], [NW, 8], [NE, 5], [E, 8], [SE, 5], [SW, 5], [W, 5], [NW, 5], [E, 3]])],
+    core: [13, 9], gold: 190, lives: 20, towers: [spire(8, 7)], blocked: B(1, 15, 2, 15, 2, 16, 23, 15, 24, 15, 23, 16, 23, 3, 24, 3),
   },
   {
     id: 'crossfire', name: 'Crossfire', desc: 'Two roads from the west that close on the core side by side.', tier: 2,
-    lanes: [B(-2, 2, 8, 2, 8, 7, 18, 7, 18, 8, 22.4, 8), B(-2, 15, 12, 15, 12, 10, 20, 10, 20, 9, 22.4, 9)],
-    core: [24, 8], gold: 320, lives: 20, towers: [spire(14, 9)], blocked: B(3, 8, 3, 9, 4, 9, 15, 3, 16, 3, 16, 14, 17, 14),
+    lanes: [
+      road([-2, 3], [[E, 9], [SE, 4], [E, 6], [NE, 3], [E, 3], [SE, 4]]),
+      road([-2, 16], [[E, 9], [NE, 4], [E, 6], [SE, 3], [E, 3], [NE, 3]]),
+    ],
+    core: [22, 10], gold: 320, lives: 20, towers: [spire(13, 10)], blocked: B(3, 9, 3, 10, 4, 10, 12, 2, 13, 2, 12, 17, 13, 17),
   },
   {
     id: 'gauntlet', name: 'Gauntlet', desc: 'A short road through wreckage. Few tiles, no room for mistakes.', tier: 2,
-    lanes: [B(-2, 9, 7, 9, 7, 5, 13, 5, 13, 12, 19, 12, 19, 9, 22.4, 9)],
-    core: [24, 9], gold: 300, lives: 18, towers: [{ t: 'pulse', cx: 8, cz: 7 }, spire(12, 8)],
-    blocked: B(2, 7, 3, 7, 2, 11, 3, 11, 4, 11, 9, 3, 10, 3, 11, 3, 5, 6, 5, 5, 10, 8, 10, 9, 11, 9, 15, 7, 16, 7, 16, 8, 15, 14, 16, 14, 17, 14, 21, 6, 21, 7, 21, 11, 21, 12, 9, 13, 10, 13, 10, 14, 17, 10),
+    lanes: [road([-2, 10], [[E, 6], [NE, 5], [E, 5], [SE, 8], [E, 4], [NE, 3]])],
+    core: [23, 10], gold: 300, lives: 18, towers: [{ t: 'pulse', cx: 8, cz: 7 }, spire(12, 9)],
+    blocked: B(
+      2, 7, 3, 7, 2, 8, 2, 12, 3, 12, 3, 13, 9, 3, 10, 3, 9, 2, 7, 9, 8, 9, 8, 10, 13, 4, 14, 4, 14, 5, 15, 5, 16, 8, 17, 8, 17, 9, 16, 9,
+      16, 15, 17, 15, 17, 16, 10, 12, 11, 12, 10, 13, 20, 7, 21, 7, 21, 6, 22, 14, 23, 14, 23, 15, 18, 10, 18, 11,
+    ),
   },
   {
     id: 'overpass', name: 'Overpass', desc: 'One road that climbs, doubles back and bridges over its own first stretch.', tier: 2,
-    lanes: [[[-2, 10], [16, 10], [16, 3], [14, 3], [11, 3, 1], [8, 3, 1], [8, 11, 1], [8, 14], [21.4, 14]]],
-    core: [23, 14], gold: 230, lives: 20, towers: [spire(12, 7)], blocked: B(3, 5, 3, 6, 4, 6, 20, 5, 20, 6, 21, 6, 12, 16, 13, 16, 4, 13, 19, 9, 20, 9),
+    lanes: [road([-2, 10], [[E, 16], [NE, 6], [W, 3, 1], [W, 3, 1], [SW, 8, 1], [SW, 3], [E, 10], [NE, 3], [E, 3]])],
+    core: [22, 12], gold: 230, lives: 20, towers: [spire(11, 7)], blocked: B(2, 5, 3, 5, 3, 6, 21, 4, 22, 4, 22, 5, 11, 17, 12, 17),
   },
   {
     id: 'pincer', name: 'Pincer', desc: 'The core sits in the middle and the Static comes from both sides at once.', tier: 3,
-    lanes: [B(-2, 4, 6, 4, 6, 13, 10, 13, 10, 9, 11.4, 9), B(27, 13, 20, 13, 20, 4, 16, 4, 16, 9, 14.6, 9)],
-    core: [13, 9], gold: 340, lives: 20, towers: [spire(8, 8), spire(18, 9)], blocked: B(12, 2, 13, 2, 14, 2, 12, 15, 13, 15, 14, 15, 1, 15, 2, 15, 24, 2, 23, 2),
+    lanes: [
+      road([-2, 4], [[E, 8], [SE, 5], [SW, 5], [E, 7], [NE, 4]]),
+      road([27, 15], [[W, 8], [NW, 5], [NE, 5], [W, 6], [SW, 4]]),
+    ],
+    core: [13, 10], gold: 340, lives: 20, towers: [spire(10, 11), spire(16, 8)], blocked: B(12, 2, 13, 2, 13, 3, 12, 16, 13, 16, 12, 17),
   },
   {
     id: 'trident', name: 'Trident', desc: 'Three roads, one core. Decide which flank you can afford to lose.', tier: 3,
-    lanes: [B(-2, 2, 14, 2, 14, 7, 22.4, 7.6), B(-2, 9, 6, 9, 6, 6, 10, 6, 10, 9, 22.4, 9), B(-2, 16, 18, 16, 18, 11, 22.4, 10.4)],
-    core: [24, 9], gold: 400, lives: 22, towers: [spire(8, 7), spire(16, 12)], blocked: B(3, 4, 3, 5, 4, 5, 11, 12, 11, 13, 12, 13, 20, 3, 20, 4, 21, 14, 21, 15),
+    lanes: [
+      road([-2, 2], [[E, 12], [SE, 4], [E, 8], [SE, 2]]),
+      road([-2, 10], [[E, 5], [NE, 3], [E, 4], [SE, 3], [E, 10]]),
+      road([-2, 17], [[E, 12], [NE, 4], [E, 8], [NE, 1]]),
+    ],
+    core: [22, 10], gold: 400, lives: 22, towers: [spire(9, 5), spire(14, 12)], blocked: B(3, 5, 3, 6, 4, 6, 3, 13, 3, 14, 4, 14),
   },
   {
-    id: 'highline', name: 'Highline', desc: 'Two roads. The northern one rides a high viaduct over the other and only ramps down at the core.', tier: 3,
-    lanes: [B(-2, 13, 5, 13, 5, 4, 13, 4, 13, 14, 22, 14, 22, 10.6), [[10, -2, 2], [10, 9, 2], [14, 9, 2], [20.4, 9]]],
-    core: [22, 9], gold: 360, lives: 20, towers: [spire(8, 8), spire(17, 11)], blocked: B(2, 7, 2, 8, 3, 8, 17, 3, 18, 3, 18, 4, 8, 16, 9, 16, 24, 4, 24, 5),
+    id: 'highline', name: 'Highline', desc: 'Two roads. The northern one rides a viaduct over the other and ramps down at the core.', tier: 3,
+    lanes: [
+      road([-2, 15], [[E, 5], [NE, 10], [E, 13], [SE, 5], [SW, 2]]),
+      road([9, -2], [[SE, 12, 2], [SE, 3, 1], [E, 3]], 2),
+    ],
+    core: [21, 13], gold: 360, lives: 20, towers: [spire(8, 9), spire(18, 9)], blocked: B(1, 7, 2, 7, 2, 8, 23, 3, 24, 3, 24, 4, 9, 17, 10, 17),
   },
 ];
 export const mapById = (id: unknown) => MAPS.find((m) => m.id === id);

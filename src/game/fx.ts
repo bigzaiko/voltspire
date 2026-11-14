@@ -1,5 +1,6 @@
 // Pooled visual effects: heat-coloured sparks, hot-cored beams, lightning, shockwave rings,
-// soft flashes, smoke puffs and short-lived ground scorch decals.
+// soft flashes, smoke puffs and short-lived ground scorch decals. Everything takes world coordinates;
+// ground effects take the deck height where they happen (roads can be raised).
 import * as THREE from 'three';
 import { glowTexture, POOL_GEO } from './tex.ts';
 import { FX_LAYER } from './world.ts';
@@ -7,6 +8,7 @@ import { FX_LAYER } from './world.ts';
 const UP = new THREE.Vector3(0, 1, 0);
 const v1 = new THREE.Vector3();
 const c1 = new THREE.Color();
+const BEAM_GEO = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true).translate(0, 0.5, 0);
 
 interface Timed { mesh: THREE.Mesh; color: THREE.Color; tint: THREE.Color; life: number; max: number; r0: number; r1: number }
 
@@ -27,6 +29,24 @@ const glowMat = (power: number, core: number) => new THREE.ShaderMaterial({
   vertexShader: GLOW_VERT, fragmentShader: GLOW_FRAG, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false,
 });
 
+/** A beam the caller keeps and places every frame (a Lance holding its target). Dispose its material when done. */
+export function makeBeam(): THREE.Mesh {
+  const m = new THREE.Mesh(BEAM_GEO, glowMat(1.8, 0.7));
+  m.frustumCulled = false; m.visible = false; m.layers.set(FX_LAYER);
+  return m;
+}
+/** Place a kept beam from a to b. core 0..1 = how white-hot the centre is. */
+export function placeBeam(m: THREE.Mesh, ax: number, ay: number, az: number, bx: number, by: number, bz: number, width: number, color: number, gain: number, core = 0.7) {
+  v1.set(bx - ax, by - ay, bz - az);
+  const L = v1.length() || 0.001, u = (m.material as THREE.ShaderMaterial).uniforms;
+  m.position.set(ax, ay, az);
+  m.quaternion.setFromUnitVectors(UP, v1.divideScalar(L));
+  m.scale.set(width, L, width);
+  (u.color.value as THREE.Color).setHex(color).multiplyScalar(gain);
+  u.core.value = core;
+  m.visible = true;
+}
+
 export class Fx {
   group = new THREE.Group();
   private N = 6000;
@@ -38,12 +58,14 @@ export class Fx {
   private life = new Float32Array(this.N);
   private max = new Float32Array(this.N);
   private grav = new Float32Array(this.N);
+  private cold = new Uint8Array(this.N);
   private sz0 = new Float32Array(this.N);
+  private heat = new Float32Array(this.N).fill(1);
   private head = 0;
   private points: THREE.Points;
   private pmat: THREE.ShaderMaterial;
   // smoke
-  private SN = 420;
+  private SN = 900;
   private spos = new Float32Array(this.SN * 3);
   private svel = new Float32Array(this.SN * 3);
   private sdat = new Float32Array(this.SN * 3); // size, alpha, shade
@@ -90,7 +112,7 @@ export class Fx {
         void main(){ vD=dat.yz; vec4 mv=modelViewMatrix*vec4(position,1.0); gl_PointSize=min(420.0, dat.x*scale/max(0.1,-mv.z)); gl_Position=projectionMatrix*mv; }`,
       fragmentShader: `varying vec2 vD; void main(){ vec2 p=gl_PointCoord-0.5; float d=length(p)*2.0; if(d>1.0) discard;
         float a=pow(max(1.0-d,0.0),1.6)*vD.x;
-        // fake top-lighting: cool moonlit top, warm dark belly
+        // fake top lighting: cool moonlit top, warm dark belly
         vec3 c=mix(vec3(0.085,0.062,0.05), vec3(0.2,0.235,0.3), clamp(0.5-p.y*1.3,0.0,1.0))*vD.y;
         gl_FragColor=vec4(c,a);
         #include <tonemapping_fragment>
@@ -116,10 +138,9 @@ export class Fx {
     // ground decals first so everything else draws over them
     mk(POOL_GEO, 36, this.scorches, basic({ color: 0x000000, alphaMap: glowTexture(), opacity: 0, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
     mk(POOL_GEO, 28, this.embers, basic({ map: glowTexture(), blending: THREE.AdditiveBlending }));
-    const cyl = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true);
-    cyl.translate(0, 0.5, 0);
-    mk(cyl, 260, this.beams, () => glowMat(1.8, 0.7));
-    const ring = new THREE.RingGeometry(0.925, 1, 64);
+    mk(BEAM_GEO, 300, this.beams, () => glowMat(1.8, 0.7));
+    // a fine line: the tile-border ripple in the deck shader carries the area, not this
+    const ring = new THREE.RingGeometry(0.968, 1, 96);
     ring.rotateX(-Math.PI / 2);
     mk(ring, 70, this.rings, basic({ blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
     mk(new THREE.SphereGeometry(1, 16, 12), 40, this.flashes, () => glowMat(2.6, 0.5));
@@ -127,14 +148,17 @@ export class Fx {
     this.group.traverse((o) => o.layers.set(FX_LAYER));
   }
 
-  spark(x: number, y: number, z: number, vx: number, vy: number, vz: number, life: number, size: number, color: number, grav = 0) {
+  /** heat: how white-hot the particle starts (1 = sparks; fire uses less so a stream of it does not burn out to white). */
+  spark(x: number, y: number, z: number, vx: number, vy: number, vz: number, life: number, size: number, color: number, grav = 0, heat = 1) {
     const i = this.head; this.head = (this.head + 1) % this.N;
     const j = i * 3;
     this.pos[j] = x; this.pos[j + 1] = y; this.pos[j + 2] = z;
     this.vel[j] = vx; this.vel[j + 1] = vy; this.vel[j + 2] = vz;
     c1.setHex(color);
     this.base[j] = c1.r; this.base[j + 1] = c1.g; this.base[j + 2] = c1.b;
-    this.life[i] = life; this.max[i] = life; this.sz0[i] = size; this.grav[i] = grav;
+    this.life[i] = life; this.max[i] = life; this.sz0[i] = size; this.grav[i] = grav; this.heat[i] = heat;
+    // cold colours (the Static, frost) fade as they are; warm ones cool down like hot metal
+    this.cold[i] = c1.b > c1.r ? 1 : 0;
   }
   burst(x: number, y: number, z: number, n: number, speed: number, color: number, life = 0.5, size = 0.35, grav = 6, up = 0.4) {
     for (let i = 0; i < n; i++) {
@@ -155,13 +179,39 @@ export class Fx {
     }
     this.sactive = this.SN;
   }
-  /** Short-lived ground decal: a dark scorch that lingers plus a hot glow that cools quickly. */
-  scorch(x: number, z: number, r: number, color = 0xff7a2a, life = 6) {
+  /** One small puff with a set lifetime (missile trails, vents). */
+  puff(x: number, y: number, z: number, size: number, life: number, rise = 0.3) {
+    const i = this.shead; this.shead = (this.shead + 1) % this.SN;
+    const j = i * 3;
+    this.spos[j] = x; this.spos[j + 1] = y; this.spos[j + 2] = z;
+    this.svel[j] = (Math.random() - 0.5) * 0.5; this.svel[j + 1] = rise; this.svel[j + 2] = (Math.random() - 0.5) * 0.5;
+    this.slife[i] = this.smax[i] = life;
+    this.ssz[i] = size;
+    this.sdat[j + 2] = 0.7 + Math.random() * 0.5;
+    this.sactive = this.SN;
+  }
+  /** A gout of fire: fat sparks thrown along (dx, dz) that rise as they burn out. spread = half angle in radians. */
+  flame(x: number, y: number, z: number, yaw: number, spread: number, reach: number, n: number, color: number) {
+    for (let i = 0; i < n; i++) {
+      const a = yaw + (Math.random() - 0.5) * 2 * spread, life = 0.28 + Math.random() * 0.22, sp = (reach / life) * (0.55 + Math.random() * 0.5);
+      this.spark(x + Math.sin(a) * 0.5, y + (Math.random() - 0.5) * 0.15, z + Math.cos(a) * 0.5, Math.sin(a) * sp, (Math.random() - 0.65) * 2.2, Math.cos(a) * sp, life, 0.7 + Math.random() * 0.7, color, -5, 0.25);
+    }
+  }
+  /** Short straight rays out of one point (a weak-point hit). */
+  star(x: number, y: number, z: number, r: number, color: number, n = 6, life = 0.22) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, b = Math.acos(2 * Math.random() - 1), l = r * (0.6 + Math.random() * 0.6);
+      const dx = Math.sin(b) * Math.cos(a), dy = Math.cos(b), dz = Math.sin(b) * Math.sin(a);
+      this.beam(x + dx * r * 0.15, y + dy * r * 0.15, z + dz * r * 0.15, x + dx * l, y + dy * l, z + dz * l, color, 0.07, life * (0.7 + Math.random() * 0.6));
+    }
+  }
+  /** Short-lived ground decal: a dark scorch that lingers plus a hot glow that cools quickly. gy = deck height. */
+  scorch(x: number, z: number, r: number, color = 0xff7a2a, life = 6, gy = 0) {
     const s = this.scorches[this.si]; this.si = (this.si + 1) % this.scorches.length;
-    s.mesh.position.set(x, 0.022 + this.si * 0.0006, z); s.mesh.scale.setScalar(r * 1.15); s.mesh.rotation.y = Math.random() * 6.28;
+    s.mesh.position.set(x, gy + 0.022 + this.si * 0.0006, z); s.mesh.scale.setScalar(r * 1.15); s.mesh.rotation.y = Math.random() * 6.28;
     s.life = s.max = life * (0.8 + Math.random() * 0.4); s.mesh.visible = true;
     const e = this.embers[this.ei]; this.ei = (this.ei + 1) % this.embers.length;
-    e.mesh.position.set(x, 0.05 + this.ei * 0.0006, z); e.mesh.scale.setScalar(r * 0.95);
+    e.mesh.position.set(x, gy + 0.05 + this.ei * 0.0006, z); e.mesh.scale.setScalar(r * 0.95);
     e.color.setHex(color).lerp(c1.setHex(0xff5a14), 0.55); e.life = e.max = 0.9; e.mesh.visible = true;
   }
   beam(ax: number, ay: number, az: number, bx: number, by: number, bz: number, color: number, width = 0.12, life = 0.2) {
@@ -190,10 +240,11 @@ export class Fx {
       this.burst(bx, by, bz, 3, 4, color, 0.22, 0.22, 0);
     }
   }
-  ring(x: number, y: number, z: number, r: number, color: number, life = 0.45, r0 = 0.15) {
+  /** Flat ring that runs from r * r0 to r (r0 above 1 makes it close in instead of spreading). */
+  ring(x: number, y: number, z: number, r: number, color: number, life = 0.45, r0 = 0.15, gain = 1) {
     const g = this.rings[this.ri]; this.ri = (this.ri + 1) % this.rings.length;
     g.mesh.position.set(x, y, z);
-    g.color.setHex(color); g.life = g.max = life; g.r0 = r * r0; g.r1 = r;
+    g.color.setHex(color).multiplyScalar(gain); g.life = g.max = life; g.r0 = r * r0; g.r1 = r;
     g.mesh.visible = true;
   }
   flash(x: number, y: number, z: number, r: number, color: number, life = 0.25) {
@@ -202,14 +253,14 @@ export class Fx {
     g.color.setHex(color); g.life = g.max = life; g.r0 = r * 0.3; g.r1 = r;
     g.mesh.visible = true;
   }
-  /** Standard explosion: brief flash, hot sparks that cool to embers, smoke, and a scorch mark. */
-  boom(x: number, y: number, z: number, r: number, color: number, small = false) {
-    this.ring(x, 0.12, z, r, color, small ? 0.26 : 0.42);
+  /** Standard explosion: brief flash, hot sparks that cool to embers, smoke, and a scorch mark. gy = deck height under it. */
+  boom(x: number, y: number, z: number, r: number, color: number, small = false, gy = 0) {
+    this.ring(x, gy + 0.12, z, r, color, small ? 0.26 : 0.42);
     this.flash(x, y, z, r * (small ? 0.4 : 0.5), color, small ? 0.14 : 0.22);
     this.burst(x, y + 0.2, z, small ? 6 : 16, r * 4, color, small ? 0.35 : 0.6, small ? 0.24 : 0.36, 9);
     this.burst(x, y + 0.2, z, small ? 3 : 12, r * 3.2, 0xffb45a, small ? 0.4 : 0.8, 0.22, 12);
-    if (!small) { this.smoke(x, y + 0.4, z, 5, r * 0.75, r * 0.7); this.scorch(x, z, r * 0.85, color); }
-    else if (y < 1.5) this.scorch(x, z, r * 0.6, color, 3);
+    if (!small) { this.smoke(x, y + 0.4, z, 5, r * 0.75, r * 0.7); this.scorch(x, z, r * 0.85, color, 6, gy); }
+    else if (y - gy < 1.5) this.scorch(x, z, r * 0.6, color, 3, gy);
   }
   column(x: number, y: number, z: number, color: number, h = 30) {
     this.beam(x, y, z, x, y + h, z, color, 0.5, 0.55);
@@ -221,7 +272,7 @@ export class Fx {
   update(dt: number, camera: THREE.PerspectiveCamera, viewH: number) {
     const scale = viewH / (2 * Math.tan((camera.fov * Math.PI) / 360));
     this.pmat.uniforms.scale.value = scale; this.smat.uniforms.scale.value = scale;
-    const { pos, vel, col, base, life, max, size, sz0, grav } = this;
+    const { pos, vel, col, base, life, max, size, sz0, grav, cold, heat } = this;
     for (let i = 0; i < this.N; i++) {
       if (life[i] <= 0) { if (size[i] !== 0) size[i] = 0; continue; }
       life[i] -= dt;
@@ -232,8 +283,9 @@ export class Fx {
       pos[j] += vel[j] * dt; pos[j + 1] += vel[j + 1] * dt; pos[j + 2] += vel[j + 2] * dt;
       if (pos[j + 1] < 0.05 && grav[i] > 0) { pos[j + 1] = 0.05; vel[j + 1] *= -0.35; }
       // heat ramp: white-hot when fresh, the base hue mid-life, cooling toward a dull red ember
-      const f = Math.max(0, life[i] / max[i]), hot = f * f * f * 0.75;
-      col[j] = base[j] * f + hot; col[j + 1] = base[j + 1] * f * (0.4 + 0.6 * f) + hot * 0.85; col[j + 2] = base[j + 2] * f * (0.15 + 0.85 * f) + hot * 0.6;
+      const f = Math.max(0, life[i] / max[i]), hot = f * f * f * 0.75 * heat[i];
+      if (cold[i]) { col[j] = base[j] * f + hot * 0.8; col[j + 1] = base[j + 1] * f + hot * 0.9; col[j + 2] = base[j + 2] * f + hot; }
+      else { col[j] = base[j] * f + hot; col[j + 1] = base[j + 1] * f * (0.4 + 0.6 * f) + hot * 0.85; col[j + 2] = base[j + 2] * f * (0.15 + 0.85 * f) + hot * 0.6; }
       size[i] = sz0[i] * (0.3 + 0.55 * f);
     }
     const g = this.points.geometry;
@@ -271,7 +323,7 @@ export class Fx {
       r.life -= dt;
       if (r.life <= 0) { r.mesh.visible = false; continue; }
       const f = r.life / r.max, s = r.r0 + (r.r1 - r.r0) * (1 - f * f);
-      r.tint.copy(r.color).multiplyScalar(f * f * 1.3);
+      r.tint.copy(r.color).multiplyScalar(f * f * 0.7);
       r.mesh.scale.setScalar(s);
     }
     for (const r of this.flashes) {

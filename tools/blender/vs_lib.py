@@ -27,7 +27,7 @@ def hex_rgb(h):
 
 
 def industrial(h, value=0.40, sat=0.58, min_sat=0.30):
-    """Darker, desaturated 'factory paint' version of a neon accent (same hue, ~40 % value)."""
+    """Darker, desaturated 'factory paint' version of an accent colour (same hue, ~40 % value)."""
     import colorsys
     h = h.lstrip('#')
     r, g, b = [int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4)]
@@ -428,7 +428,7 @@ class Node:
 
 class Model:
     """mats: dict name -> hex colour | (hex, metallic, roughness). Names starting with glow_ are emissive."""
-    DEFAULTS = {'hull': ('#23262d', 0.6, 0.45), 'trim': ('#8a9099', 0.6, 0.4)}
+    DEFAULTS = {'hull': ('#27221e', 0.6, 0.45), 'trim': ('#8c8378', 0.6, 0.4)}
 
     def __init__(self, name, mats, glow_strength=4.0):
         self.name = name
@@ -449,7 +449,7 @@ class Model:
                 bsdf.inputs['Metallic'].default_value = 0.0
                 bsdf.inputs['Roughness'].default_value = 0.4
                 bsdf.inputs['Emission Color'].default_value = (*col, 1.0)
-                bsdf.inputs['Emission Strength'].default_value = glow_strength
+                bsdf.inputs['Emission Strength'].default_value = glow_strength * (0.5 if mname in ('glow_node', 'glow_weak') else 1.0)
             else:
                 bsdf.inputs['Metallic'].default_value = spec[1]
                 bsdf.inputs['Roughness'].default_value = spec[2]

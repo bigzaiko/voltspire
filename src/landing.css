@@ -1,4 +1,4 @@
-/* VOLTSPIRE landing page — "Ember": printed field manual for the last garrison.
+/* VOLTSPIRE landing page - "Ember": printed field manual for the last garrison.
    Soot ground, sand ink, apricot for the one action, rust for hazard, verdigris for the Uplink,
    cold blue-white only where the enemy is named. Matte: no glow, no glass, no skew. */
 :root {
@@ -149,6 +149,13 @@ kbd { display: inline-block; min-width: 1.9em; padding: 1px 6px; border: 1px sol
 .unit-tag span:last-child { color: var(--sand); letter-spacing: 0.08em; }
 .unit h3 { font-size: 1.8rem; font-weight: 600; color: var(--sand); }
 .t-pulse { --c: #e3dc92; } .t-cryo { --c: #bfe3ea; } .t-arc { --c: #b48cff; } .t-mortar { --c: #f68b56; } .t-rail { --c: #ff5a3c; } .t-beacon { --c: #9ccf6a; }
+.t-flame { --c: #ffb02e; } .t-lance { --c: #ff8fa8; } .t-missile { --c: #d9a05b; } .t-gravity { --c: #7a8cff; } .t-spire { --c: #6fe0c8; }
+/* the towers without a render: a plain ruled list under the cards */
+.roster-more { list-style: none; margin: 16px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+.roster-more li { --c: var(--sand); display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: baseline; padding: 14px 18px 16px; background: var(--soot-2); border: 1px solid var(--line); border-top: 4px solid var(--c); }
+.roster-more b { font-family: var(--display); font-size: 1.35rem; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; color: var(--sand); }
+.roster-more span { font-family: var(--mono); font-size: 0.68rem; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--sand); }
+.roster-more p { grid-column: 1 / -1; margin: 0; color: var(--muted); }
 
 /* ---------- enemies: threat index in the enemy's cold ink ---------- */
 .foes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }

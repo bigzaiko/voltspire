@@ -1,17 +1,17 @@
 // Procedural animation for VOLTSPIRE's rigid-jointed models (no glTF clips, no skinning).
 //
-// ───────────────────────────── RIG NAMING (nodes in the GLB files) ─────────────────────────────
-// All models are parent→child hierarchies of rigid meshes whose origins sit on the joints.
+// ---- RIG NAMING (nodes in the GLB files) ----
+// All models are parent/child hierarchies of rigid meshes whose origins sit on the joints.
 // Game space (glTF / three.js): +Y up, FRONT = +Z, the machine's LEFT = +X.
 //
 // Two kinds of joints are exported by tools/blender/vs_lib.py:
-//   • "joint"  – rest rotation = identity (model axes). Animated with small delta angles:
+//   * "joint": rest rotation = identity (model axes). Animated with small delta angles:
 //                rotation.x = pitch (+ = nose/front DOWN), rotation.y = yaw (+ = turn LEFT),
 //                rotation.z = roll (+ = left side UP).
-//   • "bone"   – limb segment in a canonical frame: the segment runs along local −Y, the hinge is local X.
+//   * "bone": limb segment in a canonical frame: the segment runs along local -Y, the hinge is local X.
 //                The exported rest rotation is only the default pose; the animation writes ABSOLUTE
 //                angles: a bone at angle a (measured from straight down towards the limb's front)
-//                has rotation.x = −a relative to its parent frame.
+//                has rotation.x = -a relative to its parent frame.
 //
 // Enemies  (root = enemy_<type>)
 //   body                     main mass; bobs / pitches / rolls. Everything hangs off it.
@@ -23,19 +23,26 @@
 //   leg_<id>_upper > leg_<id>_lower [> leg_<id>_foot] > leg_<id>_toe
 //                            bones (hip, knee[, ankle]) + a toe joint that is kept level.
 //                            id = l | r (bipeds), fl | fr | hl | hr (runner), 1..3 (tripod), 1..6 (boss:
-//                            1-3 left front→rear, 4-6 right front→rear).
+//                            1-3 left front to rear, 4-6 right front to rear).
 //   leg_<id>                 radial legs only (tripod, boss): yaw root at the hip whose FRONT (+Z) points
 //                            away from the body; the leg chain below it flexes about local X like any other.
 //   spin_<n>                 free-spinning parts (rotors, projector ring, reactor ring): spin about local Y.
 //
 // Towers  (root = tower_<type>)
 //   base, turret             turret yaws about Y (not arc / beacon).
-//   barrel | barrel_1, barrel_2   child of turret (pulse: twin, rail: rails); recoils along turret −Z.
+//   barrel | barrel_1, barrel_2   child of turret (pulse: twin, rail: rails); recoils along turret -Z.
 //   cradle > barrel          mortar: cradle pitches about X at the trunnion (elevation), the barrel slides
 //                            along its own bore (local +Y of the barrel node).
-//   dish                     cryo nozzle, child of turret: recoil along −Z + scale pulse.
+//   dish                     cryo nozzle, child of turret: recoil along -Z + scale pulse.
 //   orb                      arc pylon discharge sphere, child of turret: scale pulse.
-//   spin_<n>                 beacon mast.
+//   spin_<n>                 beacon mast, gravity rings, spire dishes.
+//   barrel (flame nozzle, lance emitter), barrel_1.. (missile pods): same recoil rule as above.
+//   orb                      gravity well core: contracts on every pulse.
+//   node                     optional power node (the thing the player shoots to fire the special). The view lights it
+//                            by charge; without it the view draws its own emblem above the tower.
+//   lvl2, lvl3               optional groups shown from tower level 2 / 3 (also lvl2_<x>, lvl3_<x>).
+//   weak_<n>                 enemies (brute, boss): optional weak-point parts, lit by the view.
+//   tier2 .. tier5           hero and bow: optional parts shown once the bow has reached that tier.
 //
 // Hero  (root = hero)
 //   pelvis > torso > head
@@ -48,7 +55,7 @@
 //   torso > quiver, torso > cape_1 > cape_2 > cape_3            cape segments: pitch (x) + roll (z) sway
 //   pelvis > leg_<l|r>_upper > leg_<l|r>_lower > leg_<l|r>_foot  bones, 3-D IK; feet are planted in deck space and
 //           step round (one at a time) when she turns.
-// ────────────────────────────────────────────────────────────────────────────────────────────────
+// ----
 //
 // API:  makeEnemyRig / resetEnemy / updateEnemy,  makeTowerRig / updateTower / towerShot,
 //       makeHeroRig / updateHero / heroTrigger.   Rigs cache every joint once; updates allocate nothing.
@@ -74,7 +81,7 @@ function relPos(node: O3, root: O3, out: THREE.Vector3) {
   return root.worldToLocal(out.setFromMatrixPosition(node.matrixWorld));
 }
 
-// ═════════════════════════════════════════ legs ═════════════════════════════════════════
+// ---------- legs ----------
 // Feet are planted in WORLD space: a foot that touches down stays exactly where it landed until its phase
 // in the gait lifts it again, whatever the body does in between (bob, sway, turning, slowing, stopping).
 // The swing carries it to the spot where the leg's neutral point will be half a stance later.
@@ -143,7 +150,7 @@ function solveLeg(L: Leg, tz: number, ty: number, a3: number, abd: number) {
 
 interface Gait {
   stride: number;   // ground distance a planted foot travels under the body (model units)
-  duty: number;     // fraction of the cycle a foot is planted  → one cycle covers stride / duty
+  duty: number;     // fraction of the cycle a foot is planted, so one cycle covers stride / duty
   lift: number;     // swing height
   toe: number;      // toe-down pitch at lift-off (rad)
   meta: number;     // extra fold of the third segment while the foot is in the air (rad)
@@ -157,7 +164,7 @@ const QBI = new THREE.Quaternion(), QC = new THREE.Quaternion(), QD = new THREE.
 
 function stepLeg(r: EnemyRig, L: Leg, G: Gait) {
   const p = frac(r.cyc + L.ph), nx = L.fx, nz = L.fz;
-  // velocity of this leg's neutral point over the ground (root space) → where the next footfall has to be
+  // velocity of this leg's neutral point over the ground (root space), which gives the spot for the next footfall
   const vnx = C.vx + C.om * nz, vnz = C.vz - C.om * nx, den = Math.max(C.sp, C.spMin);
   let ox = vnx * G.stride * 0.5 / den, oz = vnz * G.stride * 0.5 / den;
   const ol = Math.hypot(ox, oz), omax = G.stride * 0.6;
@@ -227,13 +234,15 @@ function stepLeg(r: EnemyRig, L: Leg, G: Gait) {
   L.toe.quaternion.copy(QC.invert()).multiply(QD);
 }
 
-// ═════════════════════════════════════════ enemies ═════════════════════════════════════════
+// ---------- enemies ----------
+/** How far the Colossus plants its feet from the hips (1 = the model's rest pose). Kept tight: it walks a road one tile wide between towers. */
+const BOSS_STANCE = 1.0;
 const GAITS: Record<EnemyType, Gait> = {
   grunt: { stride: 0.85, duty: 0.5, lift: 0.16, toe: 0.9, meta: 0.5, roll: 0.32, ph: [0, 0.5] },
   runner: { stride: 0.62, duty: 0.38, lift: 0.09, toe: 0.7, meta: 0, roll: 0, ph: [0.5, 0.0, 0.62, 0.1] },      // fl hl fr hr: bounding gallop
   brute: { stride: 1.0, duty: 0.62, lift: 0.2, toe: 0.4, meta: 0, roll: 0, ph: [0, 0.5] },
   shield: { stride: 0.8, duty: 0.67, lift: 0.2, toe: 0.3, meta: 0, roll: 0, ph: [0, 1 / 3, 2 / 3] },
-  boss: { stride: 1.5, duty: 0.72, lift: 0.5, toe: 0.3, meta: 0.25, roll: 0.1, ph: [2 / 3, 1 / 3, 0, 1 / 6, 5 / 6, 0.5] },   // metachronal wave, rear → front
+  boss: { stride: 1.5, duty: 0.72, lift: 0.5, toe: 0.3, meta: 0.25, roll: 0.1, ph: [2 / 3, 1 / 3, 0, 1 / 6, 5 / 6, 0.5] },   // metachronal wave, rear to front
   drone: { stride: 1, duty: 0.5, lift: 0, toe: 0, meta: 0, roll: 0, ph: [] },
 };
 const LEG_IDS: Record<EnemyType, string[]> = {
@@ -257,7 +266,7 @@ export function makeEnemyRig(root: O3, type: EnemyType): EnemyRig {
   LEG_IDS[type].forEach((id, i) => { const l = makeLeg(root, id, g.ph[i], body); if (l) legs.push(l); });
   if (type === 'runner') legs.forEach((l) => { l.fz += l.fz > 0 ? 0.05 : -0.05; });          // fore and hind feet never bunch up
   if (type === 'shield') legs.forEach((l) => { l.fx = l.hx + (l.fx - l.hx) * 1.1; l.fz = l.hz + (l.fz - l.hz) * 1.1; });   // wider stance: room for the stride
-  if (type === 'boss') legs.forEach((l) => { l.fx = l.hx + (l.fx - l.hx) * 1.25; l.fz = l.hz + (l.fz - l.hz) * 1.25; });     // keeps the long tibia mid-reach
+  if (type === 'boss') legs.forEach((l) => { l.fx = l.hx + (l.fx - l.hx) * BOSS_STANCE; l.fz = l.hz + (l.fz - l.hz) * BOSS_STANCE; });
   const spins: O3[] = [];
   root.traverse((o) => { if (o.name.startsWith('spin')) spins.push(o); });
   let footR = 0;
@@ -357,7 +366,7 @@ export function updateEnemy(r: EnemyRig, dt: number, hpFrac: number, sing: boole
     }
     case 'brute': {
       // slow stomp: the mass drops onto each planted foot and is heaved over it; shoulders roll against the hips
-      const st = Math.sin(w - g.duty * PI + PI / 2);                       // +1 left mid-stance, −1 right
+      const st = Math.sin(w - g.duty * PI + PI / 2);                       // +1 left mid-stance, -1 right
       const drop = Math.pow(Math.abs(Math.cos(w - 0.3)), 2.2);           // sag as each foot takes the weight
       by = 0.02 - 0.075 * amp * drop - 0.3 * spawn - 0.04 * fl;
       bx = 0.09 * amp * st;
@@ -419,12 +428,24 @@ export function updateEnemy(r: EnemyRig, dt: number, hpFrac: number, sing: boole
   for (let i = 0; i < r.spins.length; i++) r.spins[i].rotateY(i & 1 ? -spin : spin);
 }
 
-// ═════════════════════════════════════════ towers ═════════════════════════════════════════
+// ---------- towers ----------
 export interface TowerRig {
   type: TowerType; turret: O3 | null; barrels: O3[]; rest: THREE.Vector3[]; axis: THREE.Vector3[]; kick: number[]; next: number;
   cradle: O3 | null; dish: O3 | null; orb: O3 | null; spins: O3[]; glow: THREE.MeshStandardMaterial | null; glow0: number;
-  since: number; idle: number; sweep: number; t: number; elev: number; elevTo: number; ty: number;
+  since: number; idle: number; sweep: number; t: number; elev: number; elevTo: number; ty: number; slump: number;
 }
+/** What the view tells a tower rig each frame beyond the sim's aim. */
+export interface TowerState {
+  /** true while the tower is offline after a special: it slumps and nothing moves */
+  down: boolean;
+  /** true while its special runs */
+  spec: boolean;
+  /** brightness of its lights, 1 = normal */
+  power: number;
+  /** lance heat 0..1 */
+  heat: number;
+}
+const IDLE_STATE: TowerState = { down: false, spec: false, power: 1, heat: 0 };
 const RECOIL: Record<TowerType, { d: number; T: number; pitch: number }> = {
   pulse: { d: 0.16, T: 0.26, pitch: 0.035 }, cryo: { d: 0.07, T: 0.5, pitch: 0.03 }, arc: { d: 0, T: 0.45, pitch: 0 },
   mortar: { d: 0.26, T: 1.1, pitch: 0.11 }, rail: { d: 0.4, T: 1.5, pitch: 0.07 }, beacon: { d: 0, T: 1, pitch: 0 },
@@ -436,13 +457,13 @@ export function makeTowerRig(root: O3, type: TowerType): TowerRig {
   root.traverse((o) => { if (o.name.startsWith('spin')) spins.push(o); else if (o.name === 'barrel' || o.name.startsWith('barrel_')) barrels.push(o); });
   barrels.sort((a, b) => (a.name < b.name ? -1 : 1));
   let glow: THREE.MeshStandardMaterial | null = null;
-  if (type === 'rail' && barrels[0]) {
-    // the charge glow is per tower: give this barrel its own copy of the emissive material
+  if ((type === 'rail' || type === 'lance') && barrels[0]) {
+    // charge / heat glow of the barrel. The view gives every tower its own copies of the emissive materials before it
+    // builds the rig, so this one belongs to this tower alone.
     barrels[0].traverse((o) => {
       const m = o as THREE.Mesh;
-      if (!m.isMesh) return;
-      const swap = (mat: THREE.Material) => (mat.name.startsWith('glow') ? (glow ||= (mat as THREE.MeshStandardMaterial).clone()) : mat);
-      m.material = Array.isArray(m.material) ? m.material.map(swap) : swap(m.material);
+      if (!m.isMesh || glow) return;
+      for (const mat of Array.isArray(m.material) ? m.material : [m.material]) if (mat.name.startsWith('glow')) { glow = mat as THREE.MeshStandardMaterial; break; }
     });
   }
   return {
@@ -451,7 +472,7 @@ export function makeTowerRig(root: O3, type: TowerType): TowerRig {
     axis: barrels.map((b) => (type === 'mortar' ? new THREE.Vector3(0, -1, 0).applyQuaternion(b.quaternion) : new THREE.Vector3(0, 0, -1))),
     kick: barrels.map(() => 9), next: 0, cradle: find(root, 'cradle'), dish: find(root, 'dish'), orb: find(root, 'orb'), spins,
     glow, glow0: glow ? (glow as THREE.MeshStandardMaterial).emissiveIntensity : 1,
-    since: 9, idle: 0, sweep: Math.random() * 6, t: Math.random() * 10, elev: 0, elevTo: 0, ty: NaN,
+    since: 9, idle: 0, sweep: Math.random() * 6, t: Math.random() * 10, elev: 0, elevTo: 0, ty: NaN, slump: 0,
   };
 }
 
@@ -460,15 +481,19 @@ export function towerShot(r: TowerRig, dist = 0) {
   r.since = 0;
   if (r.barrels.length) { r.kick[r.next] = 0; r.next = (r.next + 1) % r.barrels.length; }
   if (r.type === 'mortar' && dist > 0) r.elevTo = clamp((dist - 7.5) / 9, -0.5, 0.5) * 0.42;
+  if (r.type === 'missile') r.elevTo = -0.42;   // pods tip up to launch
 }
 
 /** Recoil curve: slams back within ~35 ms, then a slow eased return. */
 const recoil = (t: number, T: number) => (t >= T ? 0 : t < 0.035 ? t / 0.035 : 1 - ease((t - 0.035) / (T - 0.035)));
 
-/** @param cd the sim's cooldown for this tower: ≤ 0 for a while means "no target" → idle sweep */
-export function updateTower(r: TowerRig, yaw: number, cd: number, rate: number, dt: number) {
+/** @param cd the sim's cooldown for this tower: at or below 0 for a while means "no target", so it idles and sweeps */
+export function updateTower(r: TowerRig, yaw: number, cd: number, rate: number, dt: number, st: TowerState = IDLE_STATE) {
   const R = RECOIL[r.type];
   r.t += dt; r.since += dt;
+  // offline: the turret sags onto its stops, comes back up when the tower reboots
+  r.slump = damp(r.slump, st.down ? 1 : 0, st.down ? 3.5 : 6, dt);
+  const sl = r.slump, live = 1 - sl;
   const k = recoil(r.since, R.T);
   for (let i = 0; i < r.barrels.length; i++) {
     r.kick[i] += dt;
@@ -476,26 +501,48 @@ export function updateTower(r: TowerRig, yaw: number, cd: number, rate: number, 
     r.barrels[i].position.copy(r.rest[i]).addScaledVector(r.axis[i], d);
   }
   const tur = r.turret;
-  if (tur && r.type !== 'beacon' && r.type !== 'arc') {
-    r.idle = damp(r.idle, cd < -0.7 ? 1 : 0, cd < -0.7 ? 1.2 : 9, dt);
+  if (tur && r.type !== 'beacon' && r.type !== 'arc' && r.type !== 'gravity' && r.type !== 'spire') {
+    const idle = cd < -0.7 && !st.down;
+    r.idle = damp(r.idle, idle ? 1 : 0, idle ? 1.2 : 9, dt);
     if (r.idle > 0.001) r.sweep += dt * 0.45;
     if (r.ty !== r.ty) r.ty = tur.position.y;
-    tur.rotation.set(-k * R.pitch + r.idle * 0.02 * Math.sin(r.sweep * 2.3), yaw + r.idle * 0.7 * Math.sin(r.sweep), 0);
+    // the mortar aims with its cradle, so its turret stays level
+    const sag = r.cradle ? 0 : 0.3;
+    tur.rotation.set(-k * R.pitch + r.idle * 0.02 * Math.sin(r.sweep * 2.3) + sl * sag, yaw + r.idle * 0.7 * Math.sin(r.sweep), sl * 0.04);
     tur.position.y = r.ty - (r.type === 'mortar' ? 0.05 * recoil(r.since, 0.5) : 0);
   }
-  if (r.cradle) { r.elev = damp(r.elev, r.elevTo, 4, dt); r.cradle.rotation.x = r.elev + k * R.pitch * 1.2 - r.idle * 0.06 * (1 + Math.sin(r.sweep * 1.3)); }
-  if (r.dish) { const s = 1 + 0.16 * recoil(r.since, 0.35) + 0.012 * Math.sin(r.t * 3); r.dish.scale.set(s, s, 1); r.dish.position.z = (r.dish.userData.z0 ??= r.dish.position.z) - k * R.d; }
-  if (r.orb) { const p = recoil(r.since, R.T); const s = 1 + 0.42 * p + 0.035 * Math.sin(r.t * 5.2) + 0.02 * Math.sin(r.t * 13.7); r.orb.scale.set(s, s * (1 - 0.15 * p), s); r.orb.rotation.y += dt * (1.5 + 14 * p); }
-  if (r.glow) {
-    // rail: capacitors glow brighter as the next shot comes up, flash on release, then go dark
-    const charge = rate > 0 ? sat(1 - cd * rate) : 0;
-    const flash = recoil(r.since, 0.22);
-    r.glow.emissiveIntensity = r.glow0 * (0.22 + 1.5 * charge * charge * charge * (cd > -0.7 ? 1 : 0.35) + 3.2 * flash) * (1 + (charge > 0.8 ? 0.12 * Math.sin(r.t * 40) : 0));
+  if (r.type === 'missile' && r.since > 1.6) r.elevTo = -0.1;
+  if (r.cradle) { r.elev = damp(r.elev, r.elevTo, 4, dt); r.cradle.rotation.x = r.elev + k * R.pitch * 1.2 - r.idle * 0.06 * (1 + Math.sin(r.sweep * 1.3)) + sl * 0.5; }
+  if (r.dish) { const s = 1 + 0.16 * recoil(r.since, 0.35) + 0.012 * Math.sin(r.t * 3) * live; r.dish.scale.set(s, s, 1); r.dish.position.z = (r.dish.userData.z0 ??= r.dish.position.z) - k * R.d; }
+  if (r.orb) {
+    const p = recoil(r.since, R.T);
+    if (r.type === 'gravity') {
+      // the well's core clenches on every pulse and hangs low while offline
+      const s = (1 - 0.32 * p + 0.03 * Math.sin(r.t * 2.1) * live) * (1 - 0.3 * sl) * (st.spec ? 1.25 + 0.1 * Math.sin(r.t * 17) : 1);
+      r.orb.scale.set(s, s, s);
+      r.orb.rotation.y += dt * (0.8 + 9 * p) * live;
+    } else {
+      const s = (1 + 0.42 * p + (0.035 * Math.sin(r.t * 5.2) + 0.02 * Math.sin(r.t * 13.7)) * live) * (1 - 0.22 * sl);
+      r.orb.scale.set(s, s * (1 - 0.15 * p), s);
+      r.orb.rotation.y += dt * (1.5 + 14 * p) * live;
+    }
   }
-  for (let i = 0; i < r.spins.length; i++) r.spins[i].rotateY(dt * 2.5);
+  if (r.glow) {
+    if (r.type === 'lance') {
+      // the emitter runs from a dull glow to white-hot with the beam's heat
+      r.glow.emissiveIntensity = r.glow0 * (0.3 + 2.4 * st.heat * st.heat + (st.spec ? 1.5 + 0.5 * Math.sin(r.t * 30) : 0)) * st.power;
+    } else {
+      // rail: capacitors glow brighter as the next shot comes up, flash on release, then go dark
+      const charge = rate > 0 ? sat(1 - cd * rate) : 0;
+      const flash = recoil(r.since, 0.22);
+      r.glow.emissiveIntensity = r.glow0 * (0.22 + 1.5 * charge * charge * charge * (cd > -0.7 ? 1 : 0.35) + 3.2 * flash) * (1 + (charge > 0.8 ? 0.12 * Math.sin(r.t * 40) : 0)) * st.power;
+    }
+  }
+  const spin = dt * 2.5 * live * (st.spec ? 4 : 1);
+  for (let i = 0; i < r.spins.length; i++) r.spins[i].rotateY(i & 1 ? -spin : spin);
 }
 
-// ═════════════════════════════════════════ hero ═════════════════════════════════════════
+// ---------- hero ----------
 const XA = new THREE.Vector3(1, 0, 0), YA = new THREE.Vector3(0, 1, 0);
 const BXv = new THREE.Vector3(), BYv = new THREE.Vector3(), BZv = new THREE.Vector3();
 const QU = new THREE.Quaternion(), QLW = new THREE.Quaternion(), QI = new THREE.Quaternion();
@@ -519,10 +566,10 @@ function ik3(S: THREE.Vector3, Tg: THREE.Vector3, pole: THREE.Vector3, l1: numbe
   const L = V5.length() || 1e-4, Lc = clamp(L, Math.abs(l1 - l2) + 1e-3, (l1 + l2) * 0.999);
   V5.multiplyScalar(1 / L);                                           // dn
   const cA = clamp((l1 * l1 + Lc * Lc - l2 * l2) / (2 * l1 * Lc), -1, 1), sA = Math.sqrt(1 - cA * cA);
-  BZv.copy(pole).addScaledVector(V5, -pole.dot(V5));                  // pole ⟂ dn
+  BZv.copy(pole).addScaledVector(V5, -pole.dot(V5));                  // pole made perpendicular to dn
   if (BZv.lengthSq() < 1e-8) BZv.set(V5.y, V5.z, V5.x).addScaledVector(V5, -BZv.dot(V5));
   BZv.normalize();
-  BYv.copy(V5).multiplyScalar(-cA).addScaledVector(BZv, -sA);         // −d1
+  BYv.copy(V5).multiplyScalar(-cA).addScaledVector(BZv, -sA);         // -d1
   BZv.multiplyScalar(cA).addScaledVector(V5, -sA);                    // bone "front" (towards the pole)
   BXv.crossVectors(BYv, BZv);
   QU.setFromRotationMatrix(M.makeBasis(BXv, BYv, BZv));
@@ -589,6 +636,11 @@ export function makeHeroRig(root: O3): HeroRig | null {
 /** A skill lets go of the bow: back to the arrow loop at full draw, ready to loose. */
 function endAct(r: HeroRig) { r.act = ACT_NONE; r.fireT = r.fireInt; r.settle = 0; }
 
+/** Back to standing ready, with nothing half-played left over from an earlier match. */
+export function resetHero(r: HeroRig) {
+  r.on = 9; r.tin = 9; r.off = -1; r.tout = -1; r.act = ACT_NONE; r.fireT = 9; r.reset = true; r.root.visible = true;
+}
+
 export function heroTrigger(r: HeroRig, ev: HeroEvent) {
   switch (ev) {
     case 'arrow':
@@ -628,13 +680,13 @@ export function updateHero(r: HeroRig, yaw: number, pitch: number, dt: number, b
   r.still = Math.abs(r.yawV) < 0.4 ? r.still + dt : 0;
   if (r.act !== ACT_NONE && r.at >= SKILL_LOCK[r.act - 1]) endAct(r);
 
-  // ── targets for the pose parameters ────────────────────────────────────────────────
+  // targets for the pose parameters
   let crouch = 0.04 + 0.006 * Math.sin(t * 1.8), twist = TW0 + 0.02 * Math.sin(t * 0.9), pelYaw = PY0, aim = pitch, headAim = pitch;
   let bowUp = 1, lean = 0, pelLean = 0, slide = 0, cast = 0, thrust = 0, follow = 0, quiv = 0, bowRoll = 0, dip = 0, skid = 0, push = 0, noStep = false;
   let draw = r.draw, hold = 1, arrowOn = true, kick = 0, tremble = 0, vib = 0, rate = 9 + 13 * sat(r.settle / 0.3);
   const at = r.at;
   if (r.act === ACT_NONE) {
-    // arrow volley: release → string snaps, hand follows through → re-nock → draw, timed to the measured fire interval.
+    // arrow volley: release, string snaps, hand follows through, re-nock, draw; timed to the measured fire interval.
     // A fast volley shortens the stroke instead of strobing the arm: short snap draws near the anchor.
     const T = r.fireInt, ft = r.fireT, u = ft / T, fast = sat((0.15 - T) / 0.06), dmin = (T < 0.3 ? 0.34 : 0.1) + 0.36 * fast;
     if (ft < 0.03) draw = 1 + (dmin - 1) * (ft / 0.03);
@@ -655,7 +707,7 @@ export function updateHero(r: HeroRig, yaw: number, pitch: number, dt: number, b
     lean = -0.02 * draw + 0.03 * kick;
   } else if (r.act === ACT_RAIL) {
     // rail shot: overdraw and brace, loose on the beat, the recoil throws her back (rear foot skids, front leg
-    // straightens), the draw hand flies back along the arrow line, then quiver → nock → draw
+    // straightens), the draw hand flies back along the arrow line, then quiver, nock, draw
     const s = at - SKILL_CAST[0];
     rate = 34;
     if (s < 0) { draw = 1.22; tremble = 1; crouch = 0.12; twist = TW0 - 0.14; lean = -0.04; noStep = true; }
@@ -674,7 +726,7 @@ export function updateHero(r: HeroRig, yaw: number, pitch: number, dt: number, b
     }
   } else if (r.act === ACT_RAIN) {
     // arrow rain: the head leads, hips forward and a backbend shared by pelvis and torso, three shafts loosed at the
-    // sky (quiver → nock → draw → loose each time), then back down
+    // sky (quiver, nock, draw, loose each time), then back down
     const R0 = SKILL_CAST[1], G = RAIN_GAP, end = R0 + 2 * G;
     const w = ease(at / 0.2) * (1 - ease((at - end - 0.06) / 0.16));
     rate = 26; aim = pitch + (1.12 - pitch) * w; headAim = pitch + (1.25 - pitch) * ease(at / 0.12) * (1 - ease((at - end - 0.02) / 0.14));
@@ -732,7 +784,7 @@ export function updateHero(r: HeroRig, yaw: number, pitch: number, dt: number, b
   const D = r.draw, up = r.bowUp, ap = r.aim, cst = r.cast;
   const tr = tremble * 0.006, trx = tr * Math.sin(t * 97), try_ = tr * Math.sin(t * 83 + 1);
 
-  // ── feet: planted on the deck; they step (one at a time, rear first) when the stance has turned away from them ──
+  // feet: planted on the deck; they step (one at a time, rear first) when the stance has turned away from them
   const cy = Math.cos(yaw), sn = Math.sin(yaw);
   for (let i = 0; i < 2; i++) {
     const F = FOOT[i];
@@ -774,7 +826,7 @@ export function updateHero(r: HeroRig, yaw: number, pitch: number, dt: number, b
   const sup = r.stepFoot >= 0 ? 1 - r.stepFoot : -1;
   const shx = sup >= 0 ? 0.22 * RX[sup] * stepLift : 0, shz = sup >= 0 ? 0.22 * RZ[sup] * stepLift : 0;
 
-  // ── pelvis / torso / head (root space) ─────────────────────────────────────────────
+  // pelvis / torso / head (root space)
   const sway = 0.008 * Math.sin(t * 0.7);
   r.pelvis.position.set(r.pel0.x - 0.012 + sway + shx, r.pel0.y - r.crouch - 0.012 * stepLift, r.pel0.z - 0.02 + r.slide + 0.07 * cst + shz);
   // the hips stay between the feet: they follow a turn only half way until the feet have stepped round
@@ -790,7 +842,7 @@ export function updateHero(r: HeroRig, yaw: number, pitch: number, dt: number, b
   // anchor: the corner of the jaw on the draw side. The arrow line runs through it, outside the face.
   ANCH.set(-0.112, 0.075, 0.03).applyQuaternion(QHD).add(HP);
 
-  // ── bow arm ────────────────────────────────────────────────────────────────────────
+  // bow arm
   const n0 = r.nock0;
   AIMV.set(0, Math.sin(ap), Math.cos(ap));
   basisQ(QB, AIMV, V.set(-0.14, 1, 0));                                           // aimed, slightly canted
@@ -814,7 +866,7 @@ export function updateHero(r: HeroRig, yaw: number, pitch: number, dt: number, b
   ik3(P2, P3, POLE.set(0.5, -1, -0.5), r.armL1, r.armL2, QT, r.aLU, r.aLL);
   r.hL.quaternion.copy(QI.copy(QLW).invert()).multiply(QH);
 
-  // ── string, arrow ──────────────────────────────────────────────────────────────────
+  // string, arrow
   const nz = n0.z - D * drawLen, nx = n0.x + vib * 0.018;
   for (let i = 0; i < 2; i++) {
     const s = i ? r.sL : r.sU;
@@ -827,7 +879,7 @@ export function updateHero(r: HeroRig, yaw: number, pitch: number, dt: number, b
   r.arrow.position.set(n0.x, n0.y, nz);
   NOCK.set(n0.x, n0.y, nz).applyQuaternion(QB).add(GRIP);                         // nock, root space
 
-  // ── draw arm ───────────────────────────────────────────────────────────────────────
+  // draw arm
   P2.copy(r.aRU.position).applyQuaternion(QT).add(P1);                            // right shoulder
   // released: the hand travels straight back along the arrow line and opens away from the face
   V.copy(ANCH).addScaledVector(AIMV, -0.03 - 0.2 * r.follow);
@@ -846,7 +898,7 @@ export function updateHero(r: HeroRig, yaw: number, pitch: number, dt: number, b
   ik3(P2, P3, POLE, r.armL1, r.armL2, QT, r.aRU, r.aRL);
   r.hR.quaternion.copy(r.hRq);
 
-  // ── legs ───────────────────────────────────────────────────────────────────────────
+  // legs
   for (let i = 0; i < 2; i++) {
     const up1 = i ? r.lRU : r.lLU, lo = i ? r.lRL : r.lLL, ft = i ? r.fR : r.fL;
     P2.copy(up1.position).applyQuaternion(QP).add(r.pelvis.position);              // hip
@@ -857,7 +909,7 @@ export function updateHero(r: HeroRig, yaw: number, pitch: number, dt: number, b
     ft.quaternion.copy(QI.copy(QLW).invert()).multiply(Q.setFromEuler(E.set(0.35 * LIFT[i], fy, 0, 'YXZ')));
   }
 
-  // ── cape + quiver: damped springs dragged by turning and recoil, a light wind; it curls, it never planks ──
+  // cape + quiver: damped springs dragged by turning and recoil, a light wind; it curls, it never planks
   const A = r.capeA, Vv = r.capeV, h = Math.min(dt, 1 / 30);
   const wind = Math.sin(t * 1.3) + 0.6 * Math.sin(t * 2.9 + 1);
   const yv = clamp(r.yawV, -3, 3), whip = r.whip, flut = r.flut;

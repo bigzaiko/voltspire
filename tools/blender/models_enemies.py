@@ -1,11 +1,19 @@
-"""VOLTSPIRE enemies - "the Static": black / dark-crimson rogue machines with hot red-orange glows."""
+"""VOLTSPIRE enemies - "the Static": cold machines. Dark slate hulls, gunmetal-violet plating, blue-white glows.
+Brute and boss carry weak points: nodes weak_<n> with material glow_weak, placed where the game's hit test expects them."""
 import math
 from vs_lib import *
 
 
 def enemy_model(name):
-    return Model(name, {'hull': ('#17181e', 0.6, 0.45), 'paint': ('#5c272c', 0.3, 0.55), 'trim': ('#5d626c', 0.65, 0.42),
-                        'glow_main': '#ff3b1f'})
+    return Model(name, {'hull': ('#171a22', 0.6, 0.45), 'paint': ('#3d3958', 0.35, 0.55), 'trim': ('#5d6470', 0.65, 0.42),
+                        'glow_main': '#8fd0ff', 'glow_weak': '#8a7dff'})
+
+
+def weak_point(m, name, at, r, parent):
+    """Weak point: a faceted core centred exactly on `at` (model space)."""
+    w = m.joint(name, at, parent=parent)
+    w.sphere(r, 'glow_weak', segs=10, rings=6, at=at)
+    return w
 
 
 SIDES = ((1, 'l', Matrix.Identity(4)), (-1, 'r', MIRROR_X))     # +X is the machine's LEFT
@@ -18,7 +26,7 @@ def sx(p, s):
 # ------------------------------------------------------------------ 7. grunt
 def enemy_grunt():
     """Hunched bipedal combat drone: low sensor head slung under a layered carapace, digitigrade
-    legs, twin forearm guns. Reads from above as overlapping crimson back plates.
+    legs, twin forearm guns. Reads from above as overlapping violet back plates.
     Rig: body > torso > head, arm_[lr]_upper > arm_[lr]_lower, body > leg_[lr]_upper > _lower > _foot > _toe."""
     m = enemy_model('enemy_grunt')
     body = m.joint('body', (0, 0.06, 0.64))
@@ -262,8 +270,14 @@ def enemy_brute():
             b.box((0.028, 0.30, 0.03), 'hull', bevel=0.006, at=(x, 0, 0.065))
     # power pack + exhaust stacks
     b.box((0.50, 0.20, 0.56), 'hull', bevel=0.05, at=(0, 0.47, 1.38))
-    b.box((0.30, 0.03, 0.05), 'glow_main', bevel=0, at=(0, 0.572, 1.52))
-    b.box((0.34, 0.04, 0.24), 'paint', bevel=0.012, at=(0, 0.565, 1.28))
+    # back-mounted core in an open collar: weak_1, glTF (0, 1.3, -0.55)
+    WK = (0, 0.55, 1.30)
+    with b.frames(T(at=WK, rot=BACK)):
+        b.ring(0.37, 0.07, 0.14, 'trim', segs=10, bevel=0.015, at=(0, 0, 0.04))
+        with b.frames(radial(4, start=45)):
+            b.prism([(0.33, -0.02), (0.46, -0.02), (0.46, 0.14), (0.40, 0.24), (0.345, 0.20)], 0.12, 'paint',
+                    plane='xz')
+    weak_point(m, 'weak_1', WK, 0.32, b)
     with b.sym():
         b.cyl(0.07, 0.40, 'trim', segs=8, bevel=0.012, at=(0.19, 0.44, 1.62), rot=(-10, 0, 0))
         b.cyl(0.05, 0.02, 'glow_main', segs=8, at=(0.19, 0.51, 2.012), rot=(-10, 0, 0))
@@ -438,7 +452,8 @@ def enemy_boss():
     # reactor (rear top)
     RC = (0, 0.42, 2.52)
     b.lathe([(0.60, 2.10), (0.64, 2.16), (0.56, 2.26), (0.40, 2.30), (0.0, 2.30)], 'trim', segs=14, at=(0, 0.42, 0))
-    b.sphere(0.40, 'glow_main', segs=14, rings=8, at=RC)
+    b.sphere(0.40, 'paint', segs=12, rings=6, at=RC)
+    b.torus(0.36, 0.03, 'glow_main', segs=14, rsegs=4, at=(0, 0.42, 2.70))
     b.lathe([(0.66, 2.14), (0.70, 2.22), (0.60, 2.36), (0.46, 2.40), (0.40, 2.34)], 'hull', segs=14, at=(0, 0.42, 0))
     with b.frames(T(at=RC) @ rotz(45)):
         with b.frames(radial(4)):
@@ -459,7 +474,23 @@ def enemy_boss():
         b.box((0.12, 0.50, 0.36), 'paint', bevel=0.04, at=(1.17, 0, 1.76), rot=(0, -6, 0))
         b.lathe([(0.07, 0.0), (0.0, 0.22)], 'trim', segs=6, rot=RIGHT, at=(1.2, 0, 1.80))
     b.sphere(1.0, 'hull', segs=12, rings=7, at=(0, 1.35, 1.72), scale=(0.66, 0.62, 0.50))
-    b.sphere(1.0, 'paint', segs=12, rings=7, at=(0, 1.40, 1.86), scale=(0.52, 0.50, 0.40))
+    # exposed reactor at the rear: weak_1, glTF (0, 2.1, -1.6)
+    W1 = (0, 1.60, 2.10)
+    with b.frames(T(at=W1, rot=(-38, 0, 0))):
+        b.ring(0.57, 0.10, 0.16, 'trim', segs=12, at=(0, 0, -0.16))
+        with b.frames(radial(4, start=45)):
+            b.prism([(0.50, -0.30), (0.68, -0.26), (0.70, 0.04), (0.60, 0.30), (0.535, 0.26), (0.59, 0.04),
+                     (0.56, -0.10)], 0.20, 'paint', plane='xz')
+    weak_point(m, 'weak_1', W1, 0.50, b)
+    # sensor on a boom over the head: weak_2, glTF (0, 2.9, 1.5). It is fixed to the hull so the head can turn under it.
+    W2 = (0, -1.50, 2.90)
+    with b.sym():
+        b.tube([(0.80, -0.48, 2.02), (0.64, -0.80, 2.64), (0.34, -1.22, 2.90), (0.14, -1.40, 2.90)],
+               [0.075, 0.065, 0.05, 0.045], 'hull', segs=6)
+        b.box((0.20, 0.24, 0.16), 'paint', bevel=0, at=(0.78, -0.50, 2.10))
+    b.ring(0.42, 0.08, 0.16, 'paint', segs=12, rot=FWD, at=(0, -1.40, 2.90))
+    b.box((0.30, 0.10, 0.10), 'hull', bevel=0, at=(0, -1.32, 3.30))
+    weak_point(m, 'weak_2', W2, 0.36, b)
     with b.sym():
         # rear pylons with glow tips (total height 3.4)
         b.prism([(1.00, 1.90), (1.30, 1.80), (1.50, 2.90), (1.44, 3.24), (1.36, 2.90), (1.14, 2.14)], 0.10, 'hull',

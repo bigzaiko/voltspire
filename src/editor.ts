@@ -1,13 +1,17 @@
-// Map editor: draw roads, place the core, scenery and starting towers, set starting conditions,
-// then save / share / test-play the result. DOM is built with createElement + textContent only;
-// anything read from storage or a share code goes through sanitizeMap / decodeMap.
+// Map editor on the hex board: draw roads along the hex lines, set their height levels, place the core,
+// scenery and starting towers, set starting conditions, then save / share / test-play the result.
+// DOM is built with createElement + textContent only; anything read from storage or a share code goes
+// through sanitizeMap / decodeMap.
 import './editor.css';
 import { GW, GH, TOWERS, TOWER_TYPES } from './game/data.ts';
 import type { TowerType } from './game/data.ts';
+import { CELL, HEX_SIZE, cellX, cellZ, worldToCell, neighbor, hexDist, lineDir, lineCells, disc, inBoard } from './game/hex.ts';
 import { GameMap, validateMap, sanitizeMap, encodeMap, decodeMap } from './game/map.ts';
-import type { MapDef } from './game/map.ts';
+import type { MapDef, LanePoint } from './game/map.ts';
 import { MAPS } from './game/maps.ts';
-import { drawMap } from './game/mapdraw.ts';
+import { generateMap } from './game/mapgen.ts';
+import { drawMap, drawRoads, hexPath, outlinePath, boardCells } from './game/mapdraw.ts';
+import type { Proj } from './game/mapdraw.ts';
 
 export interface EditorHost { play(def: MapDef): void; close(): void; sound(name: string): void }
 const KEY = 'voltspire-maps';
@@ -25,31 +29,49 @@ export function saveCustomMaps(maps: MapDef[]): void {
 
 // ---------- draft model ----------
 type Pt = [number, number];
+/** A road corner: column, row, height level 0..3. */
+type RP = [number, number, number];
 interface Draft {
   name: string; tier: number; gold: number; lives: number; core: Pt;
-  lanes: Pt[][]; // always 3 entries, possibly empty
+  lanes: RP[][]; // always 3 entries, possibly empty
   blocked: Set<number>; towers: Map<number, TowerType>;
 }
-type Tool = 'r0' | 'r1' | 'r2' | 'core' | 'block' | 'erase' | 'tower';
+type Tool = 'r0' | 'r1' | 'r2' | 'level' | 'core' | 'block' | 'erase' | 'tower';
 
-const M = 3; // margin cells around the board (spawn zone) — matches the lane bounds sanitizeMap accepts (-3 … GW+2)
-const COLS = GW + M * 2, ROWS = GH + M * 2;
-const MAX_PTS = 48, MAX_BLOCKED = 240, MAX_TOWERS = 30, END_R = 2.6;
+const M = 2; // tiles of spawn margin drawn around the board
+const PAD = 0.5; // world units of air around the margin
+const MAX_PTS = 48, MAX_BLOCKED = 240, MAX_TOWERS = 30, MAX_LEVEL = 3, END_R = 2;
 const LANE_COL = ['#e3dc92', '#f68b56', '#7fb8ad'];
+const BRIDGE_RULE = 'Roads can only cross as a bridge: raise one of them at the crossing';
+// The part of the world the canvas shows.
+const MIN_X = cellX(-M, 0) - CELL / 2 - PAD, MAX_X = cellX(GW + M - 1, 1) + CELL / 2 + PAD;
+const MIN_Z = cellZ(-M) - HEX_SIZE - PAD, MAX_Z = cellZ(GH + M - 1) + HEX_SIZE + PAD;
+const VW = MAX_X - MIN_X, VH = MAX_Z - MIN_Z;
+const MARGIN_CELLS: Pt[] = [];
+for (let cz = -M; cz < GH + M; cz++) for (let cx = -M; cx < GW + M; cx++) if (!inBoard(cx, cz)) MARGIN_CELLS.push([cx, cz]);
+
 const hex = (n: number) => '#' + n.toString(16).padStart(6, '0');
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-const inBoard = (cx: number, cz: number) => cx >= 0 && cx < GW && cz >= 0 && cz < GH;
 const idx = (cx: number, cz: number) => cz * GW + cx;
+const same = (a: ArrayLike<number>, b: ArrayLike<number>) => a[0] === b[0] && a[1] === b[1];
+const cellKey = (cx: number, cz: number) => (cz + 16) * 128 + cx + 16;
 
 function blankDraft(): Draft {
-  return { name: 'Untitled sector', tier: 2, gold: 220, lives: 20, core: [22, 9], lanes: [[], [], []], blocked: new Set(), towers: new Map() };
+  return { name: 'Untitled sector', tier: 2, gold: 220, lives: 20, core: [22, 10], lanes: [[], [], []], blocked: new Set(), towers: new Map() };
 }
 function draftFrom(def: MapDef): Draft {
   const d = blankDraft();
   d.name = def.name.slice(0, 28); d.tier = clamp(Math.round(def.tier) || 2, 1, 3);
   d.gold = clamp(Math.round(def.gold) || 220, 50, 3000); d.lives = clamp(Math.round(def.lives) || 20, 1, 60);
   d.core = [clamp(Math.round(def.core[0]), 1, GW - 2), clamp(Math.round(def.core[1]), 1, GH - 2)];
-  def.lanes.slice(0, 3).forEach((l, i) => { d.lanes[i] = l.slice(0, MAX_PTS).map((p) => [p[0], p[1]] as Pt); });
+  def.lanes.slice(0, 3).forEach((l, i) => {
+    const out: RP[] = [];
+    for (const p of l.slice(0, MAX_PTS)) {
+      const q: RP = [clamp(Math.round(p[0]), -3, GW + 2), clamp(Math.round(p[1]), -3, GH + 2), clamp(Math.round(p[2] || 0), 0, MAX_LEVEL)];
+      if (!out.length || !same(out[out.length - 1], q)) out.push(q);
+    }
+    d.lanes[i] = out;
+  });
   for (const [cx, cz] of def.blocked) if (inBoard(cx, cz) && d.blocked.size < MAX_BLOCKED) d.blocked.add(idx(cx, cz));
   for (const t of def.towers) {
     if (!inBoard(t.cx, t.cz) || d.towers.size >= MAX_TOWERS || !TOWER_TYPES.includes(t.t)) continue;
@@ -66,14 +88,39 @@ const sigOf = (m?: MapDef | null) => { try { return m ? encodeMap(m) : ''; } cat
 function slug(name: string) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 17).replace(/-+$/, '') || 'map';
 }
-/** `occ` (road/core cells) hides scenery and towers that are currently covered; they stay in the draft. */
-function draftToDef(d: Draft, lanes: Pt[][], occ?: Uint8Array): MapDef {
+const linked = (l: RP[], core: Pt) => l.length > 1 && hexDist(l[l.length - 1][0], l[l.length - 1][1], core[0], core[1]) <= END_R;
+/** Levels as the game will see them: a road that reaches the core arrives on deck level. */
+function shown(l: RP[], core: Pt): RP[] {
+  if (!linked(l, core) || !l[l.length - 1][2]) return l;
+  return l.map((p, k) => (k === l.length - 1 ? [p[0], p[1], 0] : p));
+}
+/** `occ` (road/core tiles) hides scenery and towers that are currently covered; they stay in the draft. */
+function draftToDef(d: Draft, lanes: RP[][], occ?: Uint8Array): MapDef {
   return {
     id: 'custom-' + slug(d.name), name: d.name.trim() || 'Custom map', desc: 'Custom map', tier: d.tier,
-    lanes: lanes.map((l) => l.map((p) => [p[0], p[1]] as Pt)), core: [d.core[0], d.core[1]], gold: d.gold, lives: d.lives,
+    lanes: lanes.map((l) => l.map((p, k) => (p[2] && k < l.length - 1 ? [p[0], p[1], p[2]] : [p[0], p[1]]) as LanePoint)),
+    core: [d.core[0], d.core[1]], gold: d.gold, lives: d.lives,
     towers: [...d.towers].filter(([k]) => !occ || !occ[k]).map(([k, t]) => ({ t, cx: k % GW, cz: Math.floor(k / GW) })),
     blocked: [...d.blocked].filter((k) => !occ || !occ[k]).map((k) => [k % GW, Math.floor(k / GW)] as Pt),
   };
+}
+/** Every tile a stretch passes over, both ends included. Falls back to sampling when it leaves the hex lines. */
+function stretchCells(a: ArrayLike<number>, b: ArrayLike<number>): Pt[] {
+  if (lineDir(a[0], a[1], b[0], b[1]) >= 0) return lineCells(a[0], a[1], b[0], b[1]);
+  const out: Pt[] = [[a[0], a[1]]];
+  const ax = cellX(a[0], a[1]), az = cellZ(a[1]), bx = cellX(b[0], b[1]), bz = cellZ(b[1]);
+  const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 0.5));
+  for (let s = 1; s <= n; s++) { const c = worldToCell(ax + ((bx - ax) * s) / n, az + ((bz - az) * s) / n); if (!same(out[out.length - 1], c)) out.push(c); }
+  return out;
+}
+/** The tiles of a whole road in order, with the height at each. */
+function roadCells(l: RP[]): { cx: number; cz: number; h: number }[] {
+  const out: { cx: number; cz: number; h: number }[] = [];
+  for (let i = 1; i < l.length; i++) {
+    const cells = stretchCells(l[i - 1], l[i]), n = cells.length - 1;
+    for (let k = out.length ? 1 : 0; k <= n; k++) out.push({ cx: cells[k][0], cz: cells[k][1], h: n ? l[i - 1][2] + ((l[i][2] - l[i - 1][2]) * k) / n : l[i][2] });
+  }
+  return out;
 }
 
 // ---------- tiny DOM helpers (no HTML strings anywhere) ----------
@@ -95,7 +142,9 @@ let dispose: (() => void) | null = null;
 // These outlive a single openEditor call, so closing the editor never throws work away.
 let lastDraft: Draft | null = null; // the draft being edited when the editor was last open
 let lastFrom = '';                  // signature of the map that draft was opened from / last test-played as
-let prevDraft: Draft | null = null; // one step of history: the draft replaced by New / template / Load / Import
+let prevDraft: Draft | null = null; // one step of history: the draft replaced by New / template / Load / Import / Generate
+let genSeed = 0;                    // last generator seed and tier, kept between visits
+let genTier = 2;
 
 export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef): void {
   if (dispose) dispose();
@@ -113,6 +162,7 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     d = initial ? draftFrom(initial) : blankDraft();
   }
   lastDraft = d; lastFrom = from;
+  if (!genSeed) genSeed = 1 + Math.floor(Math.random() * 999999);
   let tool: Tool = 'r0';
   let towerType: TowerType = TOWER_TYPES[0];
   let occ = new Uint8Array(GW * GH); // 1 = road or core
@@ -121,11 +171,16 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   let saved = loadCustomMaps();
   let confirmSave = false;
   let confirmDelete = -1;
-  let visBlocked = 0, visTowers = 0; // scenery / towers not hidden under a road or the core
+  let visBlocked = 0, visTowers = 0, visSpires = 0; // scenery / towers not hidden under a road or the core
+  let clashes: Pt[] = []; // tiles where two stretches meet on the same level
+  let bridges = 0;
+  let sel: { l: number; i: number } | null = null; // corner picked with the Level tool
+  let lastLane = 0;
   let hover: Pt | null = null;
   let painting = false;
   let lastPaint: Pt | null = null;
-  let cell = 20, dpr = 1;
+  let dpr = 1;
+  const P: Proj = { u: 10, x0: 0, z0: 0 };
 
   const sfx = (n: string) => { try { host.sound(n); } catch { /* sound is optional */ } };
 
@@ -134,32 +189,51 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     const lanes = d.lanes.filter((l) => l.length > 0);
     const m = new GameMap(draftToDef({ ...d, blocked: new Set(), towers: new Map() }, lanes));
     occ = m.grid;
-    for (const l of lanes) if (l.length === 1) { const cx = Math.round(l[0][0]), cz = Math.round(l[0][1]); if (inBoard(cx, cz)) occ[idx(cx, cz)] = 1; }
+    for (const l of lanes) if (l.length === 1 && inBoard(l[0][0], l[0][1])) occ[idx(l[0][0], l[0][1])] = 1;
     // Scenery and towers under a road or the core are only hidden (not drawn, not exported), never deleted:
     // dragging the core across the board or undoing a road point brings them back.
-    visBlocked = 0; visTowers = 0;
+    visBlocked = 0; visTowers = 0; visSpires = 0;
     for (const k of d.blocked) if (!occ[k]) visBlocked++;
-    for (const k of d.towers.keys()) if (!occ[k]) visTowers++;
+    for (const [k, t] of d.towers) if (!occ[k]) { visTowers++; if (t === 'spire') visSpires++; }
+    findCrossings();
     validate(lanes);
   }
-  /** Drop hidden entries for good — only used to make room when a limit is reached. */
+  /** Two stretches may share a tile only with a full level between them, or next to the core where roads meet. */
+  function findCrossings() {
+    clashes = []; bridges = 0;
+    const seen = new Map<number, { lane: number; at: number; h: number }[]>();
+    const bad = new Set<number>(), over = new Set<number>();
+    d.lanes.forEach((raw, lane) => {
+      roadCells(shown(raw, d.core)).forEach((c, at) => {
+        if (hexDist(c.cx, c.cz, d.core[0], d.core[1]) <= END_R) return;
+        const k = cellKey(c.cx, c.cz), prev = seen.get(k);
+        if (prev) for (const q of prev) {
+          if (q.lane === lane && at - q.at < 2) continue;
+          if (Math.abs(q.h - c.h) < 1) { if (!bad.has(k)) { bad.add(k); clashes.push([c.cx, c.cz]); } } else over.add(k);
+        }
+        if (prev) prev.push({ lane, at, h: c.h }); else seen.set(k, [{ lane, at, h: c.h }]);
+      });
+    });
+    for (const k of over) if (!bad.has(k)) bridges++;
+  }
+  /** Drop hidden entries for good. Only used to make room when a limit is reached. */
   function pruneHidden() {
     for (const k of [...d.blocked]) if (occ[k]) d.blocked.delete(k);
     for (const k of [...d.towers.keys()]) if (occ[k]) d.towers.delete(k);
   }
-  function validate(lanes: Pt[][]) {
+  function validate(lanes: RP[][]) {
     clean = null;
-    if (!lanes.length) { problem = 'Draw Road 1: click just outside the board for the spawn, then click towards the core.'; return; }
-    for (let i = 0; i < 3; i++) {
-      const l = d.lanes[i];
-      if (!l.length) continue;
-      const msg = validateMap(draftToDef({ ...d, blocked: new Set(), towers: new Map() }, [l]));
-      if (msg && msg.startsWith('Road 1')) {
-        let out = 'Road ' + (i + 1) + msg.slice(6);
-        if (msg.includes('end next to the core')) out = `Road ${i + 1} must end next to the core — finish it on or beside the core.`;
-        problem = out; return;
-      }
-    }
+    if (!lanes.length) { problem = 'Draw Road 1: pick a tile in the dim margin outside the board for the spawn, then work towards the core.'; return; }
+    const bare = { ...d, blocked: new Set<number>(), towers: new Map<number, TowerType>() };
+    const each = d.lanes.map((l) => (l.length ? validateMap(draftToDef(bare, [l])) : null));
+    const say = (i: number, msg: string) => {
+      if (msg.includes('end next to the core')) return `Road ${i + 1} must end next to the core. Finish it within two tiles of the core.`;
+      return 'Road ' + (i + 1) + msg.slice(6);
+    };
+    // a stretch off the hex lines first, then crossings, then everything else
+    for (let i = 0; i < 3; i++) { const msg = each[i]; if (msg && msg.includes('hex grid')) { problem = say(i, msg); return; } }
+    if (clashes.length) { problem = BRIDGE_RULE; return; }
+    for (let i = 0; i < 3; i++) { const msg = each[i]; if (msg && msg.startsWith('Road 1')) { problem = say(i, msg); return; } }
     const def = draftToDef(d, lanes, occ);
     problem = validateMap(def);
     if (problem) return;
@@ -167,19 +241,27 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     if (!clean) problem = 'This map has values that are out of range.';
   }
   const free = (cx: number, cz: number) => inBoard(cx, cz) && !occ[idx(cx, cz)];
-  function snap(prev: Pt, cx: number, cz: number): Pt {
-    return Math.abs(cx - prev[0]) >= Math.abs(cz - prev[1]) ? [cx, prev[1]] : [prev[0], cz];
+  const inView = (cx: number, cz: number) => cx >= -M && cx < GW + M && cz >= -M && cz < GH + M;
+  /** The tile on one of the six hex lines through `prev` that is closest to the pointed tile. */
+  function snap(prev: ArrayLike<number>, cx: number, cz: number): Pt {
+    if (prev[0] === cx && prev[1] === cz) return [cx, cz];
+    const dx = cellX(cx, cz) - cellX(prev[0], prev[1]), dz = cellZ(cz) - cellZ(prev[1]);
+    const dir = ((Math.round(Math.atan2(dz, dx) / (Math.PI / 3)) % 6) + 6) % 6, a = (dir * Math.PI) / 3;
+    const n = Math.max(1, Math.round((dx * Math.cos(a) + dz * Math.sin(a)) / CELL));
+    let c: Pt = [prev[0], prev[1]];
+    for (let i = 0; i < n; i++) { const nx = neighbor(c[0], c[1], dir); if (!inView(nx[0], nx[1])) break; c = nx; }
+    return c;
   }
   const laneOf = (t: Tool) => (t === 'r0' ? 0 : t === 'r1' ? 1 : t === 'r2' ? 2 : -1);
 
   function addPoint(li: number, cx: number, cz: number) {
     const l = d.lanes[li];
-    if (l.length >= MAX_PTS) { flash(`A road can have at most ${MAX_PTS} points.`, true); return; }
-    let p: Pt = [cx, cz];
+    if (l.length >= MAX_PTS) { flash(`A road can have at most ${MAX_PTS} corners.`, true); return; }
+    let p: RP = [cx, cz, 0];
     if (l.length) {
-      const prev = l[l.length - 1];
-      p = snap(prev, cx, cz);
-      if (p[0] === prev[0] && p[1] === prev[1]) return;
+      const prev = l[l.length - 1], s = snap(prev, cx, cz);
+      if (same(s, prev)) return;
+      p = [s[0], s[1], prev[2]]; // a new corner carries on at the level of the one before
     }
     l.push(p); sfx('build'); changed();
   }
@@ -193,10 +275,65 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     const a = d.blocked.delete(k), b = d.towers.delete(k); // both, never short-circuit
     if (a || b) { if (!quiet) sfx('sell'); changed(); }
   }
-  /** Apply the active tool to a cell. `drag` is true for cells reached by dragging. */
+  // ---------- levels ----------
+  /** The corner the level controls act on: the one picked with the Level tool, or the last corner of the road being drawn. */
+  function target(): { l: number; i: number } | null {
+    if (tool === 'level') return sel && d.lanes[sel.l][sel.i] ? sel : null;
+    const li = laneOf(tool);
+    return li >= 0 && d.lanes[li].length ? { l: li, i: d.lanes[li].length - 1 } : null;
+  }
+  const levelAt = (t: { l: number; i: number }) => shown(d.lanes[t.l], d.core)[t.i][2];
+  function setLevel(v: number) {
+    const t = target();
+    if (!t) { flash(tool === 'level' ? 'Pick a road corner first.' : 'Place a corner first.', true); return; }
+    const l = d.lanes[t.l];
+    if (t.i === l.length - 1 && linked(l, d.core)) { flash('A road reaches the core on deck level.', true); return; }
+    const nv = clamp(v, 0, MAX_LEVEL);
+    if (nv === l[t.i][2]) { if (v !== nv) sfx('error'); return; }
+    l[t.i][2] = nv; sfx('click'); changed();
+  }
+  const nudgeLevel = (by: number) => { const t = target(); setLevel((t ? levelAt(t) : 0) + by); };
+  /** What the Level tool finds on a tile: an existing corner, or a stretch where a corner can be added. */
+  function pickRoad(cx: number, cz: number): { l: number; i: number; insert: boolean; h: number } | null {
+    const order = [lastLane, 0, 1, 2].filter((v, k, a) => a.indexOf(v) === k);
+    for (const l of order) { const i = d.lanes[l].findIndex((p) => p[0] === cx && p[1] === cz); if (i >= 0) return { l, i, insert: false, h: d.lanes[l][i][2] }; }
+    for (const l of order) {
+      const lane = d.lanes[l];
+      for (let i = 1; i < lane.length; i++) {
+        if (lineDir(lane[i - 1][0], lane[i - 1][1], lane[i][0], lane[i][1]) < 0) continue;
+        const cells = stretchCells(lane[i - 1], lane[i]), k = cells.findIndex((c) => c[0] === cx && c[1] === cz);
+        if (k > 0) return { l, i, insert: true, h: Math.round(lane[i - 1][2] + ((lane[i][2] - lane[i - 1][2]) * k) / (cells.length - 1)) };
+      }
+    }
+    return null;
+  }
+  function levelClick(cx: number, cz: number) {
+    const hit = pickRoad(cx, cz);
+    if (!hit) { flash('Pick a road corner, or a road tile to add a corner there.', true); return; }
+    if (hit.insert) {
+      if (d.lanes[hit.l].length >= MAX_PTS) { flash(`A road can have at most ${MAX_PTS} corners.`, true); return; }
+      d.lanes[hit.l].splice(hit.i, 0, [cx, cz, hit.h]);
+      sel = { l: hit.l, i: hit.i }; lastLane = hit.l; sfx('build'); changed(); return;
+    }
+    if (sel && sel.l === hit.l && sel.i === hit.i) { setLevel((levelAt(sel) + 1) % (MAX_LEVEL + 1)); return; } // a second click steps the level up
+    sel = { l: hit.l, i: hit.i }; lastLane = hit.l; sfx('click'); refresh();
+  }
+  /** A corner in the middle of a straight run can go without bending the road. */
+  function canRemove(t: { l: number; i: number } | null) {
+    if (!t) return false;
+    const l = d.lanes[t.l];
+    return t.i > 0 && t.i < l.length - 1 && lineDir(l[t.i - 1][0], l[t.i - 1][1], l[t.i + 1][0], l[t.i + 1][1]) >= 0;
+  }
+  function removeCorner() {
+    const t = target();
+    if (!t || !canRemove(t)) { sfx('error'); return; }
+    d.lanes[t.l].splice(t.i, 1); sel = null; sfx('sell'); changed();
+  }
+  /** Apply the active tool to a tile. `drag` is true for tiles reached by dragging. */
   function apply(cx: number, cz: number, drag: boolean) {
     const li = laneOf(tool);
     if (li >= 0) { if (!drag) addPoint(li, cx, cz); return; }
+    if (tool === 'level') { if (!drag) levelClick(cx, cz); return; }
     if (tool === 'core') {
       const nx = clamp(cx, 1, GW - 2), nz = clamp(cz, 1, GH - 2);
       if (nx === d.core[0] && nz === d.core[1]) return;
@@ -208,13 +345,13 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     if (occ[k]) { if (!drag) flash('Roads and the core must stay clear.', true); return; }
     if (tool === 'block') {
       if (d.blocked.has(k)) return;
-      if (d.towers.has(k)) { if (!drag) flash('There is a tower on that tile — erase it first.', true); return; }
+      if (d.towers.has(k)) { if (!drag) flash('There is a tower on that tile. Erase it first.', true); return; }
       if (d.blocked.size >= MAX_BLOCKED) pruneHidden();
       if (d.blocked.size >= MAX_BLOCKED) { if (!drag) flash(`At most ${MAX_BLOCKED} blocked tiles.`, true); return; }
       d.blocked.add(k); if (!drag) sfx('build'); changed(); return;
     }
     if (tool === 'tower' && !drag) {
-      if (d.blocked.has(k)) { flash('That tile is blocked — erase it first.', true); return; }
+      if (d.blocked.has(k)) { flash('That tile is blocked. Erase it first.', true); return; }
       if (d.towers.get(k) === towerType) return;
       if (!d.towers.has(k) && d.towers.size >= MAX_TOWERS) pruneHidden();
       if (!d.towers.has(k) && d.towers.size >= MAX_TOWERS) { flash(`At most ${MAX_TOWERS} starting towers.`, true); return; }
@@ -225,10 +362,10 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   function setDraft(nd: Draft, note: string, keepPrev = true) {
     const old = d;
     if (keepPrev && old !== nd && hasContent(old)) prevDraft = old;
-    d = nd; lastDraft = nd; confirmSave = false; hover = null;
+    d = nd; lastDraft = nd; confirmSave = false; hover = null; sel = null; lastLane = 0;
     nameIn.value = d.name; goldIn.value = String(d.gold); livesIn.value = String(d.lives);
     changed();
-    flash(keepPrev && prevDraft === old ? note + ' “Restore previous draft” undoes this.' : note);
+    flash(keepPrev && prevDraft === old ? note + ' "Restore previous draft" undoes this.' : note);
   }
   function restorePrev() {
     if (!prevDraft) { sfx('error'); return; }
@@ -295,10 +432,11 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     { id: 'r0', name: 'Road 1', key: '1', col: LANE_COL[0] },
     { id: 'r1', name: 'Road 2', key: '2', col: LANE_COL[1] },
     { id: 'r2', name: 'Road 3', key: '3', col: LANE_COL[2] },
+    { id: 'level', name: 'Level', key: 'L', col: '#c9b27a' },
     { id: 'core', name: 'Core', key: 'C', col: '#efe9d6' },
     { id: 'block', name: 'Block', key: 'B', col: '#8a7f70' },
     { id: 'erase', name: 'Erase', key: 'E', col: '#ce6b44' },
-    { id: 'tower', name: 'Start tower', key: 'T', col: '#a9c46c' },
+    { id: 'tower', name: 'Start tower', key: 'T', col: '#6fe0c8' },
   ];
   const toolBtns = new Map<Tool, HTMLButtonElement>();
   const toolMeta = new Map<Tool, HTMLElement>();
@@ -319,17 +457,35 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   // context: road actions
   const roadCtx = el('div', 'ed-ctx');
   const roadInfo = el('p', 'small muted', '');
-  const undoBtn = button('btn small ghost', 'Undo point', () => { const li = laneOf(tool); if (li >= 0) undoPoint(li); }, 'Undo last road point (Backspace)');
+  const roadBtns = el('div', 'ed-pair');
+  const undoBtn = button('btn small ghost', 'Undo corner', () => { const li = laneOf(tool); if (li >= 0) undoPoint(li); }, 'Undo last road corner (Backspace)');
   const clearBtn = button('btn small ghost', 'Clear road', () => { const li = laneOf(tool); if (li >= 0 && d.lanes[li].length) { d.lanes[li] = []; sfx('sell'); changed(); } });
-  roadCtx.append(roadInfo, undoBtn, clearBtn);
+  roadBtns.append(undoBtn, clearBtn);
+  roadCtx.append(roadInfo, roadBtns);
+  // context: height level of a corner (shown for the road tools and the Level tool)
+  const levelCtx = el('div', 'ed-ctx');
+  const levelInfo = el('p', 'small muted', '');
+  const levelRow = el('div', 'ed-level');
+  levelRow.setAttribute('role', 'group'); levelRow.setAttribute('aria-label', 'Height level of the corner');
+  const lowerBtn = button('chip', '-', () => nudgeLevel(-1), 'Lower the corner one level (hotkey [)');
+  const raiseBtn = button('chip', '+', () => nudgeLevel(1), 'Raise the corner one level (hotkey ])');
+  const levelBtns: HTMLButtonElement[] = [];
+  levelRow.appendChild(lowerBtn);
+  for (let v = 0; v <= MAX_LEVEL; v++) { const b = button('chip ed-lv', String(v), () => setLevel(v), `Set level ${v}`); levelBtns.push(b); levelRow.appendChild(b); }
+  levelRow.appendChild(raiseBtn);
+  const levelKeys = el('p', 'small muted ed-keys');
+  levelKeys.append(el('kbd', '', '['), el('kbd', '', ']'), el('span', '', 'lower / raise'));
+  const removeBtn = button('btn small ghost', 'Remove corner', () => removeCorner(), 'Remove the picked corner');
+  levelCtx.append(levelInfo, levelRow, levelKeys, removeBtn);
   // context: tower type
   const towerCtx = el('div', 'ed-ctx');
   const towerInfo = el('p', 'small muted', '');
   const towerGrid = el('div', 'ed-towers');
   towerGrid.setAttribute('role', 'radiogroup'); towerGrid.setAttribute('aria-label', 'Starting tower type');
   const towerBtns = new Map<TowerType, HTMLButtonElement>();
-  for (const t of TOWER_TYPES) {
-    const b = el('button', 'ed-tw'); b.type = 'button';
+  // the spire leads the list: it is the one tower every map needs
+  for (const t of [...TOWER_TYPES].sort((x, y) => Number(y === 'spire') - Number(x === 'spire'))) {
+    const b = el('button', 'ed-tw' + (t === 'spire' ? ' spire' : '')); b.type = 'button';
     b.style.setProperty('--c', hex(TOWERS[t].color));
     b.setAttribute('role', 'radio'); b.setAttribute('aria-label', TOWERS[t].name);
     b.appendChild(el('i', 'ed-sw'));
@@ -341,7 +497,7 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   const otherCtx = el('div', 'ed-ctx');
   const otherInfo = el('p', 'small muted', '');
   otherCtx.appendChild(otherInfo);
-  toolsPanel.append(roadCtx, towerCtx, otherCtx);
+  toolsPanel.append(roadCtx, levelCtx, towerCtx, otherCtx);
 
   // stage (centre)
   const centre = el('div', 'ed-centre');
@@ -349,7 +505,7 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   const canvas = el('canvas', 'ed-canvas');
   canvas.tabIndex = 0;
   canvas.setAttribute('role', 'application');
-  canvas.setAttribute('aria-label', 'Map grid. Click or use arrow keys and Enter to apply the selected tool.');
+  canvas.setAttribute('aria-label', 'Hex map. Click or use arrow keys and Enter to apply the selected tool.');
   stage.appendChild(canvas);
   const foot = el('div', 'ed-foot');
   const hint = el('span', 'ed-hint', '');
@@ -362,41 +518,67 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
 
   const props = el('div', 'panel');
   props.appendChild(el('h3', '', 'Start conditions'));
-  function numField(label: string, min: number, max: number, step: number, get: () => number, set: (v: number) => void) {
+  function numField(parent: HTMLElement, label: string, min: number, max: number, step: number, get: () => number, set: (v: number) => void) {
     const row = el('label', 'ed-row');
     row.appendChild(el('span', '', label));
     const inp = el('input', 'ed-in ed-num');
     inp.type = 'number'; inp.min = String(min); inp.max = String(max); inp.step = String(step); inp.value = String(get());
     inp.setAttribute('aria-label', `${label} (${min} to ${max})`);
-    inp.addEventListener('input', () => { const v = Number(inp.value); if (inp.value !== '' && Number.isFinite(v)) { set(clamp(Math.round(v), min, max)); confirmSave = false; changed(); } });
+    inp.addEventListener('input', () => { const v = Number(inp.value); if (inp.value !== '' && Number.isFinite(v)) set(clamp(Math.round(v), min, max)); });
     inp.addEventListener('change', () => { inp.value = String(get()); });
     row.appendChild(inp);
-    props.appendChild(row);
+    parent.appendChild(row);
     return inp;
   }
-  const goldIn = numField('Starting credits', 50, 3000, 10, () => d.gold, (v) => { d.gold = v; });
-  const livesIn = numField('Core integrity', 1, 60, 1, () => d.lives, (v) => { d.lives = v; });
-  const tierRow = el('div', 'ed-row col');
-  tierRow.appendChild(el('span', '', 'Complexity'));
-  const tierSeg = el('div', 'ed-seg');
-  tierSeg.setAttribute('role', 'radiogroup'); tierSeg.setAttribute('aria-label', 'Complexity tier');
-  const tierBtns: HTMLButtonElement[] = [];
-  ['Simple', 'Tricky', 'Complex'].forEach((n, i) => {
-    const b = button('chip', `${i + 1} ${n}`, () => { d.tier = i + 1; sfx('click'); changed(); });
-    b.setAttribute('role', 'radio');
-    tierBtns.push(b); tierSeg.appendChild(b);
-  });
-  tierRow.appendChild(tierSeg);
-  props.appendChild(tierRow);
+  const edited = (set: (v: number) => void) => (v: number) => { set(v); confirmSave = false; changed(); };
+  const goldIn = numField(props, 'Starting credits', 50, 3000, 10, () => d.gold, edited((v) => { d.gold = v; }));
+  const livesIn = numField(props, 'Core integrity', 1, 60, 1, () => d.lives, edited((v) => { d.lives = v; }));
+  const TIER_NAMES = ['Simple', 'Tricky', 'Complex'];
+  function tierSeg(parent: HTMLElement, label: string, aria: string, names: string[], pick: (tier: number) => void) {
+    const row = el('div', 'ed-row col');
+    row.appendChild(el('span', '', label));
+    const seg = el('div', 'ed-seg');
+    seg.setAttribute('role', 'radiogroup'); seg.setAttribute('aria-label', aria);
+    const btns = names.map((n, i) => {
+      const b = button('chip', n, () => pick(i + 1));
+      b.setAttribute('role', 'radio'); seg.appendChild(b);
+      return b;
+    });
+    row.appendChild(seg); parent.appendChild(row);
+    return btns;
+  }
+  const tierBtns = tierSeg(props, 'Complexity', 'Complexity tier', TIER_NAMES.map((n, i) => `${i + 1} ${n}`), (v) => { d.tier = v; sfx('click'); changed(); });
 
   const start = el('div', 'panel');
   start.appendChild(el('h3', '', 'Start from'));
   const tplRow = el('div', 'ed-seg wrap');
   tplRow.appendChild(button('chip', 'New (blank)', () => { sfx('click'); setDraft(blankDraft(), 'Blank map.'); }, 'New blank map'));
-  for (const m of MAPS) tplRow.appendChild(button('chip', m.name, () => { sfx('click'); const nd = draftFrom(m); nd.name = (m.name + ' remix').slice(0, 28); setDraft(nd, `Template “${m.name}” loaded.`); }, `Start from template ${m.name}`));
+  for (const m of MAPS) tplRow.appendChild(button('chip', m.name, () => { sfx('click'); const nd = draftFrom(m); nd.name = (m.name + ' remix').slice(0, 28); setDraft(nd, `Template "${m.name}" loaded.`); }, `Start from template ${m.name}`));
   start.appendChild(tplRow);
   const restoreBtn = button('btn small ghost ed-restore hidden', 'Restore previous draft', () => restorePrev(), 'Restore the draft that was replaced');
   start.appendChild(restoreBtn);
+
+  // generator
+  const gen = el('div', 'panel');
+  gen.appendChild(el('h3', '', 'Generate'));
+  const genTierBtns = tierSeg(gen, 'Tier', 'Tier of the generated map', TIER_NAMES.map((n, i) => `${i + 1} ${n}`), (v) => { genTier = v; sfx('click'); refresh(); });
+  const seedRow = el('div', 'ed-row ed-seedrow');
+  const seedLab = el('label', 'ed-seedlab');
+  seedLab.appendChild(el('span', '', 'Seed'));
+  const seedIn = el('input', 'ed-in ed-num');
+  seedIn.type = 'number'; seedIn.min = '0'; seedIn.max = '999999'; seedIn.step = '1'; seedIn.value = String(genSeed);
+  seedIn.setAttribute('aria-label', 'Generator seed (0 to 999999)');
+  const readSeed = () => { const v = Number(seedIn.value); genSeed = seedIn.value !== '' && Number.isFinite(v) ? clamp(Math.round(v), 0, 999999) : genSeed; };
+  seedIn.addEventListener('input', readSeed, sig);
+  seedIn.addEventListener('change', () => { readSeed(); seedIn.value = String(genSeed); }, sig);
+  seedIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); generate(); } }, sig);
+  seedLab.appendChild(seedIn);
+  const dice = button('chip ed-dice', '', () => { genSeed = 1 + Math.floor(Math.random() * 999999); seedIn.value = String(genSeed); sfx('click'); }, 'Roll a random seed');
+  dice.appendChild(el('i', 'ed-die'));
+  dice.title = 'Random seed';
+  seedRow.append(seedLab, dice);
+  gen.appendChild(seedRow);
+  gen.appendChild(button('btn small ghost', 'Generate map', () => generate(), 'Generate a map from this tier and seed'));
 
   const savedPanel = el('div', 'panel');
   const savedTitle = el('h3', '', 'Saved maps');
@@ -409,13 +591,13 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   const outTa = el('textarea', 'ed-in ed-ta hidden');
   outTa.readOnly = true; outTa.rows = 2; outTa.spellcheck = false; outTa.setAttribute('aria-label', 'Share code for this map');
   const inTa = el('textarea', 'ed-in ed-ta');
-  inTa.rows = 2; inTa.spellcheck = false; inTa.placeholder = 'Paste a share code…'; inTa.maxLength = 20000; inTa.setAttribute('aria-label', 'Share code to import');
+  inTa.rows = 2; inTa.spellcheck = false; inTa.placeholder = 'Paste a share code...'; inTa.maxLength = 20000; inTa.setAttribute('aria-label', 'Share code to import');
   const importBtn = button('btn small ghost', 'Import from code', () => importCode());
   const shareMsg = el('p', 'small ed-sharemsg', '');
   shareMsg.setAttribute('role', 'status'); shareMsg.setAttribute('aria-live', 'polite');
   share.append(copyBtn, outTa, inTa, importBtn, shareMsg);
 
-  side.append(props, start, savedPanel, share);
+  side.append(props, start, gen, savedPanel, share);
   body.append(toolsPanel, centre, side);
   root.append(head, body);
 
@@ -429,9 +611,10 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   function toolHint() {
     const li = laneOf(tool);
     if (li >= 0) return d.lanes[li].length
-      ? 'Click to add a corner (segments snap straight). Finish on or beside the core. Right-click or Backspace undoes.'
-      : 'Click in the dim margin just outside the board to place this road’s spawn gate.';
-    if (tool === 'core') return 'Click or drag to move the core (3×3). Every road has to end beside it.';
+      ? 'Click to add a corner. Stretches snap to the six hex directions. End within two tiles of the core. Right-click or Backspace undoes.'
+      : 'Click a tile in the dim margin outside the board to place the spawn gate of this road.';
+    if (tool === 'level') return 'Click a corner to pick it, click again to step its level. Click a road tile to add a corner. Right-click lowers.';
+    if (tool === 'core') return 'Click or drag to move the core (seven tiles). Every road has to end within two tiles of it.';
     if (tool === 'block') return 'Click or drag to paint scenery that cannot be built on. Right-click erases.';
     if (tool === 'erase') return 'Click or drag to remove blocked tiles and starting towers.';
     return 'Click a free tile to place the selected tower. Right-click erases.';
@@ -440,7 +623,18 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   function setTool(t: Tool) {
     cancelDelete();
     if (tool === 'tower' && t === 'tower') towerType = TOWER_TYPES[(TOWER_TYPES.indexOf(towerType) + 1) % TOWER_TYPES.length];
+    if (laneOf(t) >= 0) lastLane = laneOf(t);
+    // coming from a road tool, the Level tool starts on the corner that was just placed
+    if (t === 'level' && laneOf(tool) >= 0 && d.lanes[laneOf(tool)].length) sel = { l: laneOf(tool), i: d.lanes[laneOf(tool)].length - 1 };
     tool = t; sfx('click'); refresh(); draw();
+  }
+  function generate() {
+    readSeed(); seedIn.value = String(genSeed);
+    let def: MapDef | null = null;
+    try { def = generateMap(genSeed, genTier); } catch { def = null; }
+    if (!def) { flash('The generator could not build a map from that seed. Try another one.', true); return; }
+    sfx('card');
+    setDraft(draftFrom(def), `Generated a tier ${genTier} map from seed ${genSeed}.`);
   }
   function save(force: boolean) {
     if (!clean) { sfx('error'); return; }
@@ -455,7 +649,7 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     const ok = back.some((m) => JSON.stringify(m) === want);
     saved = ok ? back : saved;
     confirmSave = false; confirmDelete = -1;
-    if (ok) { sfx('card'); flash(`Saved “${clean.name}”.`); } else flash('Could not write to browser storage — the map is kept for this session only.', true);
+    if (ok) { sfx('card'); flash(`Saved "${clean.name}".`); } else flash('Could not write to browser storage. The map is kept for this session only.', true);
     refresh(); renderSaved();
   }
   function setShareMsg(text: string, bad: boolean) { shareMsg.textContent = text; shareMsg.classList.toggle('bad', bad); shareMsg.classList.toggle('ok', !bad); }
@@ -467,7 +661,7 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
       outTa.focus(); outTa.select();
       let done = false;
       try { done = document.execCommand('copy'); } catch { done = false; }
-      setShareMsg(done ? 'Share code copied.' : 'Code selected — press Ctrl+C to copy it.', false);
+      setShareMsg(done ? 'Share code copied.' : 'Code selected. Press Ctrl+C to copy it.', false);
     };
     sfx('click');
     try {
@@ -481,12 +675,12 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     const def = decodeMap(text);
     if (!def) { sfx('error'); setShareMsg('That code is not a valid VOLTSPIRE map.', true); return; }
     inTa.value = ''; outTa.classList.add('hidden');
-    sfx('card'); setDraft(draftFrom(def), `Imported “${def.name}”.`);
-    setShareMsg(`Imported “${def.name}”.`, false);
+    sfx('card'); setDraft(draftFrom(def), `Imported "${def.name}".`);
+    setShareMsg(`Imported "${def.name}".`, false);
   }
 
   // ---------- refresh (DOM state) ----------
-  // Rebuilt only when the saved list or a pending delete changes — never from the generic refresh().
+  // Rebuilt only when the saved list or a pending delete changes, never from the generic refresh().
   function renderSaved(focus?: { row: number; btn: 'del' | 'keep' }) {
     let target: HTMLButtonElement | null = null;
     savedTitle.textContent = `Saved maps · ${saved.length}/${MAX_SAVED}`;
@@ -494,18 +688,18 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     if (!saved.length) { savedList.appendChild(el('p', 'small muted', 'Nothing saved yet. Maps are stored in this browser.')); return; }
     saved.forEach((m, i) => {
       const row = el('div', 'ed-savedrow');
-      const cv = el('canvas', 'ed-thumb'); cv.width = 104; cv.height = 72; cv.setAttribute('aria-hidden', 'true');
+      const cv = el('canvas', 'ed-thumb'); cv.width = 180; cv.height = 136; cv.setAttribute('aria-hidden', 'true');
       drawMap(cv, m);
       const info = el('div', 'ed-savedinfo');
       info.appendChild(el('b', '', m.name));
       info.appendChild(el('span', 'small muted', `${m.lanes.length} road${m.lanes.length > 1 ? 's' : ''} · tier ${m.tier} · ${m.gold} cr`));
       const btns = el('div', 'ed-savedbtns');
-      btns.appendChild(button('chip', 'Load', () => { sfx('click'); setDraft(draftFrom(m), `Loaded “${m.name}”.`); }, `Load ${m.name}`));
+      btns.appendChild(button('chip', 'Load', () => { sfx('click'); setDraft(draftFrom(m), `Loaded "${m.name}".`); }, `Load ${m.name}`));
       if (confirmDelete === i) {
         // "Keep" takes the place (and the focus) of "Delete": a double click or a second Enter never deletes.
         const keep = button('chip', 'Keep', () => { confirmDelete = -1; sfx('click'); renderSaved({ row: i, btn: 'del' }); }, `Keep ${m.name}`);
         const yes = button('chip danger', 'Really?', () => {
-          saved.splice(i, 1); saveCustomMaps(saved); confirmDelete = -1; sfx('sell'); flash(`Deleted “${m.name}”.`);
+          saved.splice(i, 1); saveCustomMaps(saved); confirmDelete = -1; sfx('sell'); flash(`Deleted "${m.name}".`);
           renderSaved(); canvas.focus({ preventScroll: true });
         }, `Confirm deleting ${m.name}`);
         btns.append(keep, yes);
@@ -525,40 +719,58 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     const ok = !problem;
     if (!ok) confirmSave = false;
     const ask = confirmSave && !!clean;
-    status.textContent = ask ? `“${clean!.name}” is already saved — overwrite it?` : ok ? 'Ready to play' : problem;
-    status.classList.toggle('ok', ok && !ask); status.classList.toggle('bad', !ok || ask);
+    const note = ok && !ask && !visSpires;
+    status.textContent = ask ? `"${clean!.name}" is already saved. Overwrite it?`
+      : note ? 'Ready to play. No Uplink Spire placed - one will be added automatically'
+      : ok ? 'Ready to play' : problem;
+    status.classList.toggle('ok', ok && !ask && !note); status.classList.toggle('note', note); status.classList.toggle('bad', !ok || ask);
     playBtn.disabled = !ok; saveBtn.disabled = !ok; copyBtn.disabled = !ok;
     saveBtn.classList.toggle('hidden', confirmSave);
     overwrite.classList.toggle('hidden', !confirmSave);
     for (const [id, b] of toolBtns) { b.classList.toggle('on', id === tool); b.setAttribute('aria-pressed', String(id === tool)); }
     for (let i = 0; i < 3; i++) {
       const l = d.lanes[i], meta = toolMeta.get((['r0', 'r1', 'r2'] as Tool[])[i])!;
-      const done = l.length > 1 && Math.hypot(l[l.length - 1][0] - d.core[0], l[l.length - 1][1] - d.core[1]) <= END_R;
+      const done = linked(l, d.core);
       meta.textContent = !l.length ? (i ? 'optional' : 'empty') : done ? 'linked' : `${l.length} pt${l.length > 1 ? 's' : ''}`;
       meta.classList.toggle('ok', done);
     }
+    toolMeta.get('level')!.textContent = clashes.length ? 'crossing' : bridges ? `${bridges} bridge${bridges > 1 ? 's' : ''}` : '';
+    toolMeta.get('level')!.classList.toggle('warn', clashes.length > 0);
     toolMeta.get('block')!.textContent = visBlocked ? String(visBlocked) : '';
-    toolMeta.get('tower')!.textContent = visTowers ? `${visTowers}/${MAX_TOWERS}` : '';
+    toolMeta.get('tower')!.textContent = visTowers ? String(visTowers) : '';
     const li = laneOf(tool);
     roadCtx.classList.toggle('hidden', li < 0);
+    levelCtx.classList.toggle('hidden', li < 0 && tool !== 'level');
     towerCtx.classList.toggle('hidden', tool !== 'tower');
-    otherCtx.classList.toggle('hidden', li >= 0 || tool === 'tower');
+    otherCtx.classList.toggle('hidden', li >= 0 || tool === 'tower' || tool === 'level');
     if (li >= 0) {
       const n = d.lanes[li].length;
-      roadInfo.textContent = n ? `Road ${li + 1}: ${n} of ${MAX_PTS} points.` : `Road ${li + 1} is empty${li ? ' (optional)' : ''}. Start at a board edge.`;
+      roadInfo.textContent = n ? `Road ${li + 1}: ${n} of ${MAX_PTS} corners.` : `Road ${li + 1} is empty${li ? ' (optional)' : ''}. Start outside the board.`;
       undoBtn.disabled = !n; clearBtn.disabled = !n;
     }
-    towerInfo.textContent = `Pre-built when the run starts (${visTowers}/${MAX_TOWERS}). Press T to cycle.`;
-    for (const [t, b] of towerBtns) { b.classList.toggle('on', t === towerType); b.setAttribute('aria-checked', String(t === towerType)); }
-    otherInfo.textContent = tool === 'core' ? 'The core is what the machines are after. It keeps one tile from the border.'
+    const t = target(), lv = t ? levelAt(t) : -1;
+    const fixed = !!t && t.i === d.lanes[t.l].length - 1 && linked(d.lanes[t.l], d.core);
+    levelInfo.textContent = !t ? (tool === 'level' ? 'No corner picked. Click a corner, or a road tile to add one.' : 'Level of the next stretch: place a corner first.')
+      : fixed ? `Road ${t.l + 1} ends here on deck level.`
+      : tool === 'level' ? `Road ${t.l + 1}, ${t.i ? 'corner ' + t.i : 'spawn gate'}: level ${lv}.`
+      : `Last corner: level ${lv}. New corners carry on at this level.`;
+    levelBtns.forEach((b, v) => { b.classList.toggle('on', v === lv); b.setAttribute('aria-pressed', String(v === lv)); b.disabled = !t || fixed; });
+    lowerBtn.disabled = !t || fixed || lv <= 0; raiseBtn.disabled = !t || fixed || lv >= MAX_LEVEL;
+    removeBtn.classList.toggle('hidden', tool !== 'level');
+    removeBtn.disabled = !canRemove(t);
+    towerInfo.textContent = `Built when the run starts (${visTowers}/${MAX_TOWERS}). Kestrel can only uplink to Spires. Press T to cycle.`;
+    for (const [tt, b] of towerBtns) { b.classList.toggle('on', tt === towerType); b.setAttribute('aria-checked', String(tt === towerType)); }
+    otherInfo.textContent = tool === 'core' ? 'The core is what the machines are after. It fills seven tiles and keeps one tile from the border.'
       : tool === 'block' ? `Scenery tiles: ${visBlocked} of ${MAX_BLOCKED}.` : 'Removes scenery and starting towers. Roads are edited with their own tool.';
     tierBtns.forEach((b, i) => { b.classList.toggle('on', d.tier === i + 1); b.setAttribute('aria-checked', String(d.tier === i + 1)); });
+    genTierBtns.forEach((b, i) => { b.classList.toggle('on', genTier === i + 1); b.setAttribute('aria-checked', String(genTier === i + 1)); });
     if (!hint.classList.contains('flash')) hint.textContent = toolHint();
     restoreBtn.classList.toggle('hidden', !prevDraft);
   }
   /** The draft changed: any pending delete confirmation and any share code on screen are now stale. */
   function changed() {
     cancelDelete();
+    if (sel && !d.lanes[sel.l][sel.i]) sel = null;
     if (!outTa.classList.contains('hidden') || shareMsg.textContent) { outTa.value = ''; outTa.classList.add('hidden'); setShareMsg('', false); }
     recompute(); refresh(); draw();
   }
@@ -568,165 +780,229 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   function resize() {
     const w = stage.clientWidth, h = stage.clientHeight;
     if (w < 10 || h < 10) return;
-    cell = Math.max(6, Math.floor(Math.min(w / COLS, h / ROWS) * 2) / 2);
+    const u = Math.max(3, Math.min(w / VW, h / VH));
+    const cw = Math.floor(VW * u), ch = Math.floor(VH * u);
     dpr = Math.min(3, window.devicePixelRatio || 1);
-    canvas.style.width = COLS * cell + 'px'; canvas.style.height = ROWS * cell + 'px';
-    const pw = Math.round(COLS * cell * dpr), ph = Math.round(ROWS * cell * dpr);
+    canvas.style.width = cw + 'px'; canvas.style.height = ch + 'px';
+    const pw = Math.round(cw * dpr), ph = Math.round(ch * dpr);
     if (canvas.width !== pw) canvas.width = pw;
     if (canvas.height !== ph) canvas.height = ph;
+    P.u = u; P.x0 = -MIN_X * u; P.z0 = -MIN_Z * u;
     draw();
   }
   function draw() {
     const g = ctx;
     if (!g) return;
-    const s = cell;
-    const X = (c: number) => (c + M + 0.5) * s, Z = (c: number) => (c + M + 0.5) * s; // cell centre
-    const L = (c: number) => (c + M) * s; // cell left/top edge
+    const u = P.u, s = CELL * u, R = HEX_SIZE * u; // s = tile width in CSS pixels
+    const X = (cx: number, cz: number) => P.x0 + cellX(cx, cz) * u, Z = (cz: number) => P.z0 + cellZ(cz) * u;
+    const FONT = "'Barlow Condensed', system-ui, sans-serif";
+    const tile = (cx: number, cz: number, k = 1) => hexPath(g, X(cx, cz), Z(cz), R * k);
+    const ring = (cx: number, cz: number, col: string, k = 0.92, w = 2) => { g.beginPath(); tile(cx, cz, k); g.strokeStyle = col; g.lineWidth = w; g.stroke(); };
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    g.shadowBlur = 0; g.setLineDash([]); g.globalAlpha = 1;
-    g.fillStyle = '#0c0a09'; g.fillRect(0, 0, COLS * s, ROWS * s);
-    // spawn margin: faint dots at cell centres
-    g.fillStyle = 'rgba(227,220,146,0.2)';
-    for (let cz = -M; cz < GH + M; cz++) for (let cx = -M; cx < GW + M; cx++) if (!inBoard(cx, cz)) g.fillRect(X(cx) - 1, Z(cz) - 1, 2, 2);
-    // board
-    const bg = g.createLinearGradient(0, L(0), 0, L(GH));
-    bg.addColorStop(0, '#231d19'); bg.addColorStop(1, '#1c1714');
-    g.fillStyle = bg; g.fillRect(L(0), L(0), GW * s, GH * s);
-    g.strokeStyle = 'rgba(227,220,146,0.07)'; g.lineWidth = 1;
+    g.shadowBlur = 0; g.setLineDash([]); g.globalAlpha = 1; g.lineJoin = 'round'; g.lineCap = 'round';
+    g.fillStyle = '#0c0a09'; g.fillRect(0, 0, VW * u, VH * u);
+    // spawn margin: faint tiles with a dot each
     g.beginPath();
-    for (let x = 1; x < GW; x++) { g.moveTo(Math.round(L(x)) + 0.5, L(0)); g.lineTo(Math.round(L(x)) + 0.5, L(GH)); }
-    for (let z = 1; z < GH; z++) { g.moveTo(L(0), Math.round(L(z)) + 0.5); g.lineTo(L(GW), Math.round(L(z)) + 0.5); }
-    g.stroke();
-    // road bed + core footprint
-    const inCore = (cx: number, cz: number) => Math.abs(cx - d.core[0]) <= 1 && Math.abs(cz - d.core[1]) <= 1;
-    g.fillStyle = '#0c0a09';
-    for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) if (occ[idx(cx, cz)] && !inCore(cx, cz)) g.fillRect(L(cx), L(cz), s, s);
-    // blocked scenery
+    for (const [cx, cz] of MARGIN_CELLS) tile(cx, cz);
+    g.strokeStyle = 'rgba(227,220,146,0.07)'; g.lineWidth = 1; g.stroke();
+    g.fillStyle = 'rgba(227,220,146,0.2)';
+    for (const [cx, cz] of MARGIN_CELLS) g.fillRect(X(cx, cz) - 1, Z(cz) - 1, 2, 2);
+    // board
+    const bg = g.createLinearGradient(0, Z(0), 0, Z(GH - 1));
+    bg.addColorStop(0, '#2a231e'); bg.addColorStop(1, '#231d19');
+    g.beginPath();
+    for (const [cx, cz] of boardCells()) tile(cx, cz);
+    g.fillStyle = bg; g.fill();
+    g.strokeStyle = 'rgba(227,220,146,0.12)'; g.lineWidth = 1; g.stroke();
+    // road bed (every tile a road covers) and the core footprint
+    const core = disc(d.core[0], d.core[1], 1);
+    const inCore = (cx: number, cz: number) => hexDist(cx, cz, d.core[0], d.core[1]) <= 1;
+    g.beginPath();
+    for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) if (occ[idx(cx, cz)] && !inCore(cx, cz)) tile(cx, cz);
+    g.fillStyle = '#171310'; g.fill();
+    g.strokeStyle = 'rgba(227,220,146,0.06)'; g.stroke();
+    // blocked scenery: a raised slab with a lit top edge
     for (const k of d.blocked) {
       if (occ[k]) continue;
-      const x = L(k % GW), z = L(Math.floor(k / GW));
-      g.fillStyle = '#3a3029'; g.fillRect(x + 1, z + 1, s - 2, s - 2);
-      g.fillStyle = '#4c4037'; g.fillRect(x + 1, z + 1, s - 2, Math.max(2, s * 0.16));
-      g.strokeStyle = 'rgba(16,14,12,0.7)'; g.lineWidth = 1;
-      g.beginPath(); g.moveTo(x + s * 0.3, z + s * 0.42); g.lineTo(x + s * 0.7, z + s * 0.78); g.moveTo(x + s * 0.7, z + s * 0.42); g.lineTo(x + s * 0.3, z + s * 0.78); g.stroke();
+      const cx = k % GW, cz = Math.floor(k / GW);
+      g.beginPath(); tile(cx, cz, 0.9); g.fillStyle = '#3a3029'; g.fill();
+      g.beginPath(); hexPath(g, X(cx, cz), Z(cz) - s * 0.05, R * 0.62); g.fillStyle = '#4c4037'; g.fill();
     }
-    g.strokeStyle = 'rgba(227,220,146,0.45)'; g.lineWidth = 1.5; g.strokeRect(L(0), L(0), GW * s, GH * s);
+    g.beginPath(); outlinePath(g, P, boardCells(), inBoard);
+    g.strokeStyle = 'rgba(227,220,146,0.45)'; g.lineWidth = 1.5; g.stroke();
     // core
     const activeLane = laneOf(tool);
-    g.fillStyle = 'rgba(239,233,214,0.08)'; g.fillRect(L(d.core[0] - 1), L(d.core[1] - 1), s * 3, s * 3);
-    g.strokeStyle = 'rgba(239,233,214,0.75)'; g.lineWidth = 1.5; g.strokeRect(L(d.core[0] - 1) + 1, L(d.core[1] - 1) + 1, s * 3 - 2, s * 3 - 2);
+    g.beginPath();
+    for (const [cx, cz] of core) tile(cx, cz);
+    g.fillStyle = '#2b2620'; g.fill();
+    g.beginPath(); outlinePath(g, P, core, inCore);
+    g.strokeStyle = 'rgba(239,233,214,0.8)'; g.lineWidth = 1.5; g.stroke();
     if (activeLane >= 0) {
-      g.strokeStyle = 'rgba(239,233,214,0.35)'; g.lineWidth = 1; g.setLineDash([4, 5]);
-      g.beginPath(); g.arc(X(d.core[0]), Z(d.core[1]), END_R * s, 0, Math.PI * 2); g.stroke(); g.setLineDash([]);
+      // where a road may end
+      const zone = disc(d.core[0], d.core[1], END_R);
+      g.beginPath(); outlinePath(g, P, zone, (cx, cz) => hexDist(cx, cz, d.core[0], d.core[1]) <= END_R);
+      g.strokeStyle = 'rgba(169,196,108,0.5)'; g.lineWidth = 1; g.setLineDash([3, 4]); g.stroke(); g.setLineDash([]);
     }
     // roads
+    const lanes = d.lanes.map((l) => shown(l, d.core));
+    drawRoads(g, lanes, P, Math.max(2.5, s * 0.26), LANE_COL);
     g.lineJoin = 'round'; g.lineCap = 'round';
-    d.lanes.forEach((l, i) => {
+    // crossings on the same level
+    for (const [cx, cz] of clashes) {
+      ring(cx, cz, '#0c0a09', 1.02, 5); ring(cx, cz, '#ff7a4a', 1.02, 2.5);
+    }
+    const tgt = target();
+    lanes.forEach((l, i) => {
       if (!l.length) return;
-      const col = LANE_COL[i], dim = activeLane >= 0 && activeLane !== i;
-      g.globalAlpha = dim ? 0.55 : 1;
-      if (l.length > 1) {
-        g.strokeStyle = col; g.lineWidth = Math.max(2, s * 0.22);
-        g.shadowColor = 'transparent'; g.shadowBlur = dim ? 0 : 8;
-        g.beginPath(); g.moveTo(X(l[0][0]), Z(l[0][1]));
-        for (const p of l.slice(1)) g.lineTo(X(p[0]), Z(p[1]));
-        g.stroke(); g.shadowBlur = 0;
-        // direction arrows
-        g.fillStyle = '#0c0a09';
-        for (let k = 1; k < l.length; k++) {
-          const a = l[k - 1], b = l[k], len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-          if (len < 3) continue;
-          const mx = X((a[0] + b[0]) / 2), mz = Z((a[1] + b[1]) / 2), ux = (b[0] - a[0]) / len, uz = (b[1] - a[1]) / len, r = s * 0.2;
-          g.beginPath(); g.moveTo(mx + ux * r, mz + uz * r); g.lineTo(mx - ux * r - uz * r, mz - uz * r + ux * r); g.lineTo(mx - ux * r + uz * r, mz - uz * r - ux * r); g.closePath();
-          g.strokeStyle = col; g.lineWidth = 1; g.fill(); g.stroke();
-        }
-      }
-      // corner points
+      const col = LANE_COL[i];
+      // direction arrows on the longer stretches
       for (let k = 1; k < l.length; k++) {
-        g.fillStyle = '#0c0a09'; g.strokeStyle = col; g.lineWidth = 1.5;
-        g.beginPath(); g.arc(X(l[k][0]), Z(l[k][1]), s * 0.17, 0, Math.PI * 2); g.fill(); g.stroke();
+        const ax = X(l[k - 1][0], l[k - 1][1]), az = Z(l[k - 1][1]), bx = X(l[k][0], l[k][1]), bz = Z(l[k][1]);
+        const len = Math.hypot(bx - ax, bz - az);
+        if (len < s * 2.9) continue;
+        const mx = (ax + bx) / 2, mz = (az + bz) / 2, ux = (bx - ax) / len, uz = (bz - az) / len, r = s * 0.2;
+        g.beginPath(); g.moveTo(mx + ux * r, mz + uz * r); g.lineTo(mx - ux * r - uz * r, mz - uz * r + ux * r); g.lineTo(mx - ux * r + uz * r, mz - uz * r - ux * r); g.closePath();
+        g.fillStyle = '#0c0a09'; g.strokeStyle = col; g.lineWidth = 1; g.fill(); g.stroke();
+      }
+      // corners: a small dot on deck level, a numbered disc when raised (or always while the Level tool is on)
+      for (let k = 1; k < l.length; k++) {
+        const x = X(l[k][0], l[k][1]), z = Z(l[k][1]), lv = l[k][2];
+        if (lv > 0 || tool === 'level') {
+          const r = Math.max(6, s * 0.33);
+          g.fillStyle = lv > 0 ? col : '#0c0a09'; g.strokeStyle = lv > 0 ? '#0c0a09' : col; g.lineWidth = 1.5;
+          g.beginPath(); g.arc(x, z, r, 0, Math.PI * 2); g.fill(); g.stroke();
+          g.fillStyle = lv > 0 ? '#1a0f08' : col; g.font = `700 ${Math.max(9, Math.round(r * 1.45))}px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+          g.fillText(String(lv), x, z + 0.5);
+        } else {
+          g.fillStyle = '#0c0a09'; g.strokeStyle = col; g.lineWidth = 1.5;
+          g.beginPath(); g.arc(x, z, s * 0.17, 0, Math.PI * 2); g.fill(); g.stroke();
+        }
       }
       // end marker: green when linked to the core
       if (l.length > 1) {
-        const e = l[l.length - 1], linked = Math.hypot(e[0] - d.core[0], e[1] - d.core[1]) <= END_R;
-        g.strokeStyle = linked ? '#a9c46c' : '#ce6b44'; g.lineWidth = 2;
-        g.beginPath(); g.arc(X(e[0]), Z(e[1]), s * 0.34, 0, Math.PI * 2); g.stroke();
+        const e = l[l.length - 1];
+        g.strokeStyle = linked(l, d.core) ? '#a9c46c' : '#ce6b44'; g.lineWidth = 2;
+        g.beginPath(); g.arc(X(e[0], e[1]), Z(e[1]), s * 0.4, 0, Math.PI * 2); g.stroke();
       }
-      // spawn gate
-      g.fillStyle = '#8fd0ff'; g.shadowColor = 'transparent'; g.shadowBlur = dim ? 0 : 10;
-      g.beginPath(); g.arc(X(l[0][0]), Z(l[0][1]), s * 0.42, 0, Math.PI * 2); g.fill(); g.shadowBlur = 0;
-      g.fillStyle = '#0c1420'; g.font = `700 ${Math.max(8, Math.round(s * 0.5))}px 'Barlow Condensed', system-ui, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
-      g.fillText(String(i + 1), X(l[0][0]), Z(l[0][1]) + 0.5);
-      g.globalAlpha = 1;
+      // spawn gate, with a level tag when the road starts raised
+      const gx = X(l[0][0], l[0][1]), gz = Z(l[0][1]);
+      g.fillStyle = '#0c0a09'; g.beginPath(); g.arc(gx, gz, s * 0.5, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#8fd0ff'; g.beginPath(); g.arc(gx, gz, s * 0.4, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#0c1420'; g.font = `700 ${Math.max(9, Math.round(s * 0.52))}px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(String(i + 1), gx, gz + 0.5);
+      if (l[0][2] > 0 || tool === 'level') {
+        const r = Math.max(5, s * 0.24), tx = gx + s * 0.42, tz = gz - s * 0.42;
+        g.fillStyle = col; g.strokeStyle = '#0c0a09'; g.lineWidth = 1.5; g.beginPath(); g.arc(tx, tz, r, 0, Math.PI * 2); g.fill(); g.stroke();
+        g.fillStyle = '#1a0f08'; g.font = `700 ${Math.max(8, Math.round(r * 1.5))}px ${FONT}`; g.fillText(String(l[0][2]), tx, tz + 0.5);
+      }
     });
+    // the corner the level controls act on
+    if (tgt && (tool === 'level' || tgt.i > 0)) {
+      const p = d.lanes[tgt.l][tgt.i];
+      ring(p[0], p[1], '#0c0a09', 0.98, 4); ring(p[0], p[1], '#efe9d6', 0.98, 1.5);
+    }
     // core emblem (above the road ends)
-    g.fillStyle = '#efe9d6'; g.shadowColor = 'transparent'; g.shadowBlur = 14;
-    g.beginPath(); g.arc(X(d.core[0]), Z(d.core[1]), s * 0.62, 0, Math.PI * 2); g.fill(); g.shadowBlur = 0;
-    g.fillStyle = '#100e0c'; g.beginPath(); g.arc(X(d.core[0]), Z(d.core[1]), s * 0.26, 0, Math.PI * 2); g.fill();
-    // starting towers
+    const kx = X(d.core[0], d.core[1]), kz = Z(d.core[1]);
+    g.fillStyle = '#efe9d6'; g.beginPath(); g.arc(kx, kz, s * 0.58, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#100e0c'; g.beginPath(); g.arc(kx, kz, s * 0.34, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#efe9d6'; g.beginPath(); g.arc(kx, kz, s * 0.14, 0, Math.PI * 2); g.fill();
+    // starting towers: a socket in the tower's colour, spires as a tall diamond
     const tower = (cx: number, cz: number, t: TowerType, alpha: number) => {
-      const c = hex(TOWERS[t].color);
+      const c = hex(TOWERS[t].color), x = X(cx, cz), z = Z(cz);
       g.globalAlpha = alpha;
-      g.fillStyle = '#100e0c'; g.strokeStyle = c; g.lineWidth = 1.5;
-      g.beginPath(); g.rect(L(cx) + 2, L(cz) + 2, s - 4, s - 4); g.fill(); g.stroke();
-      g.fillStyle = c; g.shadowColor = 'transparent'; g.shadowBlur = 6;
-      g.beginPath(); g.arc(X(cx), Z(cz), s * 0.22, 0, Math.PI * 2); g.fill();
-      g.shadowBlur = 0; g.globalAlpha = 1;
+      g.beginPath(); tile(cx, cz, 0.8); g.fillStyle = '#100e0c'; g.fill(); g.strokeStyle = c; g.lineWidth = 1.5; g.stroke();
+      g.fillStyle = c;
+      if (t === 'spire') {
+        const r = s * 0.36;
+        g.beginPath(); g.moveTo(x, z - r); g.lineTo(x + r * 0.62, z); g.lineTo(x, z + r); g.lineTo(x - r * 0.62, z); g.closePath(); g.fill();
+      } else { g.beginPath(); g.arc(x, z, s * 0.2, 0, Math.PI * 2); g.fill(); }
+      g.globalAlpha = 1;
     };
     for (const [k, t] of d.towers) if (!occ[k]) tower(k % GW, Math.floor(k / GW), t, 1);
     // hover / tool preview
     if (hover) {
       const [hx, hz] = hover;
-      const outline = (cx: number, cz: number, w: number, col: string) => { g.strokeStyle = col; g.lineWidth = 2; g.strokeRect(L(cx) + 1, L(cz) + 1, s * w - 2, s * w - 2); };
       if (activeLane >= 0) {
         const l = d.lanes[activeLane], col = LANE_COL[activeLane];
         if (l.length) {
           const prev = l[l.length - 1], p = snap(prev, hx, hz);
-          g.strokeStyle = col; g.lineWidth = Math.max(2, s * 0.14); g.setLineDash([s * 0.3, s * 0.3]); g.globalAlpha = 0.85;
-          g.beginPath(); g.moveTo(X(prev[0]), Z(prev[1])); g.lineTo(X(p[0]), Z(p[1])); g.stroke();
-          g.setLineDash([]); g.globalAlpha = 1;
-          const linked = Math.hypot(p[0] - d.core[0], p[1] - d.core[1]) <= END_R;
-          g.strokeStyle = linked ? '#a9c46c' : col; g.lineWidth = 2;
-          g.beginPath(); g.arc(X(p[0]), Z(p[1]), s * 0.36, 0, Math.PI * 2); g.stroke();
+          if (!same(p, hover)) ring(hx, hz, 'rgba(239,233,214,0.3)', 0.9, 1); // the tile pointed at, when the snap lands elsewhere
+          if (!same(p, prev)) {
+            g.strokeStyle = col; g.lineWidth = Math.max(2, s * 0.14); g.setLineDash([s * 0.3, s * 0.3]); g.globalAlpha = 0.9;
+            g.beginPath(); g.moveTo(X(prev[0], prev[1]), Z(prev[1])); g.lineTo(X(p[0], p[1]), Z(p[1])); g.stroke();
+            g.setLineDash([]); g.globalAlpha = 1;
+            const ends = hexDist(p[0], p[1], d.core[0], d.core[1]) <= END_R;
+            ring(p[0], p[1], '#0c0a09', 0.92, 4); ring(p[0], p[1], ends ? '#a9c46c' : col, 0.92, 2);
+            // length of the stretch, next to the target
+            const n = hexDist(prev[0], prev[1], p[0], p[1]), right = X(p[0], p[1]) > VW * u - s * 2.5;
+            g.font = `700 ${Math.max(10, Math.round(s * 0.5))}px ${FONT}`; g.textBaseline = 'middle'; g.textAlign = right ? 'right' : 'left';
+            const tx = X(p[0], p[1]) + (right ? -s * 0.75 : s * 0.75), tz = Z(p[1]) - s * 0.55;
+            g.strokeStyle = '#0c0a09'; g.lineWidth = 3; g.strokeText(String(n), tx, tz); g.fillStyle = ends ? '#a9c46c' : col; g.fillText(String(n), tx, tz);
+          }
         } else {
-          outline(hx, hz, 1, col);
-          g.fillStyle = col; g.font = `700 ${Math.max(8, Math.round(s * 0.42))}px 'Barlow Condensed', system-ui, sans-serif`; g.textBaseline = 'middle';
+          ring(hx, hz, col);
+          g.fillStyle = col; g.font = `700 ${Math.max(9, Math.round(s * 0.46))}px ${FONT}`; g.textBaseline = 'middle';
           const right = hx > GW / 2; g.textAlign = right ? 'right' : 'left';
-          g.fillText('SPAWN', right ? L(hx) - 4 : L(hx + 1) + 4, Z(hz) + 0.5);
+          g.fillText('SPAWN', X(hx, hz) + (right ? -s * 0.7 : s * 0.7), Z(hz) + 0.5);
         }
+      } else if (tool === 'level') {
+        const hit = pickRoad(hx, hz);
+        if (hit) {
+          ring(hx, hz, '#0c0a09', 0.92, 4); ring(hx, hz, LANE_COL[hit.l], 0.92, 2);
+          if (hit.insert) {
+            // a plus: clicking adds a corner here
+            const x = X(hx, hz), z = Z(hz), r = s * 0.2;
+            g.strokeStyle = '#0c0a09'; g.lineWidth = 4; g.beginPath(); g.moveTo(x - r, z); g.lineTo(x + r, z); g.moveTo(x, z - r); g.lineTo(x, z + r); g.stroke();
+            g.strokeStyle = '#efe9d6'; g.lineWidth = 2; g.stroke();
+          }
+        } else ring(hx, hz, 'rgba(239,233,214,0.3)', 0.9, 1);
       } else if (tool === 'core') {
-        outline(clamp(hx, 1, GW - 2) - 1, clamp(hz, 1, GH - 2) - 1, 3, '#efe9d6');
+        const c: Pt = [clamp(hx, 1, GW - 2), clamp(hz, 1, GH - 2)];
+        g.beginPath(); outlinePath(g, P, disc(c[0], c[1], 1), (cx, cz) => hexDist(cx, cz, c[0], c[1]) <= 1);
+        g.strokeStyle = '#efe9d6'; g.lineWidth = 2; g.stroke();
       } else if (tool === 'erase') {
-        if (inBoard(hx, hz)) outline(hx, hz, 1, '#ce6b44');
+        if (inBoard(hx, hz)) ring(hx, hz, '#ce6b44');
       } else if (inBoard(hx, hz)) {
         const k = idx(hx, hz);
         const ok = free(hx, hz) && (tool === 'block' ? !d.towers.has(k) : !d.blocked.has(k));
         if (ok && tool === 'tower' && !d.towers.has(k)) tower(hx, hz, towerType, 0.6);
-        outline(hx, hz, 1, ok ? '#a9c46c' : '#ce6b44');
+        ring(hx, hz, ok ? '#a9c46c' : '#ce6b44');
       }
     }
   }
 
   function cellAt(ev: PointerEvent | MouseEvent): Pt {
     const r = canvas.getBoundingClientRect();
-    const sx = r.width / COLS || cell;
-    return [clamp(Math.floor((ev.clientX - r.left) / sx) - M, -M, GW + M - 1), clamp(Math.floor((ev.clientY - r.top) / sx) - M, -M, GH + M - 1)];
+    const k = r.width > 0 ? VW / r.width : 1 / P.u;
+    const c = worldToCell((ev.clientX - r.left) * k + MIN_X, (ev.clientY - r.top) * k + MIN_Z);
+    return [clamp(c[0], -M, GW + M - 1), clamp(c[1], -M, GH + M - 1)];
   }
   function setHover(p: Pt | null) {
     hover = p;
-    coord.textContent = p ? `x ${p[0]} · z ${p[1]}${inBoard(p[0], p[1]) ? '' : ' · spawn margin'}` : '';
+    if (!p) { coord.textContent = ''; return; }
+    let extra = inBoard(p[0], p[1]) ? '' : ' · spawn margin';
+    const li = laneOf(tool);
+    if (li >= 0 && d.lanes[li].length) { const s = snap(d.lanes[li][d.lanes[li].length - 1], p[0], p[1]); p = s; extra = inBoard(s[0], s[1]) ? '' : ' · spawn margin'; }
+    coord.textContent = `col ${p[0]} · row ${p[1]}${extra}`;
   }
-  /** Apply a drag across every cell between the previous painted cell and this one. */
+  /** Apply a drag to every tile between the previous painted tile and this one. */
   function paintTo(p: Pt) {
     const a = lastPaint || p;
-    const n = Math.max(Math.abs(p[0] - a[0]), Math.abs(p[1] - a[1]));
-    for (let i = 1; i <= n; i++) apply(Math.round(a[0] + ((p[0] - a[0]) * i) / n), Math.round(a[1] + ((p[1] - a[1]) * i) / n), true);
+    for (const c of stretchCells(a, p).slice(1)) apply(c[0], c[1], true);
     lastPaint = p;
   }
   function secondary(p: Pt) {
     const li = laneOf(tool);
-    if (li >= 0) undoPoint(li); else eraseAt(p[0], p[1], false);
+    if (li >= 0) undoPoint(li);
+    else if (tool === 'level') {
+      const hit = pickRoad(p[0], p[1]);
+      if (hit && !hit.insert) { sel = { l: hit.l, i: hit.i }; lastLane = hit.l; setLevel(levelAt(sel) - 1); refresh(); }
+    } else eraseAt(p[0], p[1], false);
   }
+  // Painting tools act as soon as the pointer goes down. Tools that place one thing (a corner, a level, a tower)
+  // act when it comes up, so on a touch screen you can slide to the right tile and see the preview first.
+  const paints = () => tool === 'block' || tool === 'erase' || tool === 'core';
+  let downId = -1;
   canvas.addEventListener('contextmenu', (e) => e.preventDefault(), sig);
   canvas.addEventListener('pointerdown', (e) => {
     const p = cellAt(e);
@@ -737,21 +1013,31 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     canvas.classList.remove('kb');
     canvas.focus({ preventScroll: true });
     try { canvas.setPointerCapture(e.pointerId); } catch { /* not capturable */ }
-    painting = true; lastPaint = p;
-    apply(p[0], p[1], false); draw();
-  }, sig);
-  canvas.addEventListener('pointermove', (e) => {
-    const p = cellAt(e);
-    if (hover && hover[0] === p[0] && hover[1] === p[1]) return;
-    setHover(p);
-    if (painting && (tool === 'block' || tool === 'erase' || tool === 'core')) paintTo(p);
+    downId = e.pointerId;
+    if (paints()) { painting = true; lastPaint = p; apply(p[0], p[1], false); }
     draw();
   }, sig);
-  const endPaint = () => { painting = false; lastPaint = null; };
-  canvas.addEventListener('pointerup', endPaint, sig);
-  canvas.addEventListener('pointercancel', endPaint, sig);
-  canvas.addEventListener('pointerleave', () => { if (!painting) { setHover(null); draw(); } }, sig);
-  // keyboard cursor on the grid
+  canvas.addEventListener('pointermove', (e) => {
+    if (downId !== -1 && e.pointerId !== downId) return;
+    const p = cellAt(e);
+    if (hover && same(hover, p)) return;
+    setHover(p);
+    if (painting && paints()) paintTo(p);
+    draw();
+  }, sig);
+  canvas.addEventListener('pointerup', (e) => {
+    if (e.pointerId !== downId) return;
+    downId = -1;
+    const was = painting;
+    painting = false; lastPaint = null;
+    if (!was && e.button === 0) { const p = cellAt(e); setHover(p); apply(p[0], p[1], false); }
+    if (e.pointerType === 'touch') setHover(null); // no pointer left over the board
+    draw();
+  }, sig);
+  canvas.addEventListener('pointercancel', () => { downId = -1; painting = false; lastPaint = null; setHover(null); draw(); }, sig);
+  canvas.addEventListener('pointerleave', () => { if (downId === -1) { setHover(null); draw(); } }, sig);
+  // keyboard cursor on the grid. Left and right follow the row; up and down step to the row above or below,
+  // which is always a neighbour on a hex board.
   canvas.addEventListener('keydown', (e) => {
     const mv: Record<string, Pt> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
     const h: Pt = hover || [d.core[0], d.core[1]];
@@ -774,6 +1060,10 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     if (e.key === 'Backspace') {
       const li = laneOf(tool);
       if (li >= 0) { e.preventDefault(); undoPoint(li); }
+      return;
+    }
+    if (e.key === '[' || e.key === ']') {
+      if (laneOf(tool) >= 0 || tool === 'level') { e.preventDefault(); nudgeLevel(e.key === ']' ? 1 : -1); }
       return;
     }
     const hit = TOOLS.find((x) => x.key === e.key.toUpperCase());

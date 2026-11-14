@@ -3,8 +3,8 @@ import type { Plugin } from 'vite';
 import { resolve } from 'path';
 
 // Strict Content-Security-Policy for the published site (GitHub Pages cannot send headers,
-// so it is delivered as a <meta> tag). Only our own files may run; the only network peers
-// allowed are the PeerJS matchmaking relay used to introduce two players to each other.
+// so it is delivered as a <meta> tag). Only our own files may run. The only network peer
+// allowed is the PeerJS matchmaking relay that introduces two players to each other.
 const CSP = [
   "default-src 'self'",
   "script-src 'self'",
@@ -14,6 +14,8 @@ const CSP = [
   "media-src 'self'",
   "connect-src 'self' https://0.peerjs.com wss://0.peerjs.com",
   "worker-src 'self' blob:",
+  // the player's own playlist (Music sheet) plays in embeds from these two hosts and nowhere else
+  "frame-src https://www.youtube-nocookie.com https://open.spotify.com",
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",
@@ -22,7 +24,22 @@ const CSP = [
 const csp = (): Plugin => ({
   name: 'voltspire-csp',
   apply: 'build',
-  transformIndexHtml: (html) => html.replace('<head>', `<head>\n  <meta http-equiv="Content-Security-Policy" content="${CSP}" />`),
+  // A tag descriptor, not a text replace: it still lands in the head when the head tag is written differently.
+  transformIndexHtml: () => [{ tag: 'meta', attrs: { 'http-equiv': 'Content-Security-Policy', content: CSP }, injectTo: 'head-prepend' }],
+  // Never ship a page without the policy.
+  generateBundle: {
+    order: 'post',
+    handler(_opts, bundle) {
+      let pages = 0;
+      for (const f of Object.values(bundle)) {
+        if (f.type !== 'asset' || !f.fileName.endsWith('.html')) continue;
+        pages++;
+        const html = typeof f.source === 'string' ? f.source : Buffer.from(f.source).toString('utf8');
+        if (!html.includes('http-equiv="Content-Security-Policy"')) throw new Error(`${f.fileName} was built without a Content-Security-Policy`);
+      }
+      if (!pages) throw new Error('no built page found to check for the Content-Security-Policy');
+    },
+  },
 });
 
 export default defineConfig({

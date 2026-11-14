@@ -5,8 +5,8 @@ from vs_lib import *
 
 # ------------------------------------------------------------------ 14. core
 def core():
-    m = Model('core', {'hull': ('#262a33', 0.6, 0.45), 'paint': ('#2c5068', 0.25, 0.6), 'trim': ('#7d848e', 0.65, 0.42),
-                       'glow_core': '#35f0ff'})
+    m = Model('core', {'hull': ('#2a2520', 0.6, 0.45), 'paint': ('#7a5f36', 0.35, 0.55), 'trim': ('#8c8378', 0.65, 0.42),
+                       'glow_core': '#ffe4a8'})
     b = m.node('base')
     G = 'glow_core'
     b.lathe([(2.20, 0.0), (2.25, 0.05), (2.25, 0.20), (2.08, 0.34), (1.58, 0.34), (1.46, 0.52), (1.12, 0.52),
@@ -71,8 +71,8 @@ def core():
 
 # ------------------------------------------------------------------ 15. barrier
 def prop_barrier():
-    m = Model('prop_barrier', {'hull': ('#2a2e37', 0.5, 0.55), 'paint': ('#8f6a24', 0.2, 0.6), 'trim': ('#7d848e', 0.65, 0.42),
-                               'glow_main': '#19e3ff'})
+    m = Model('prop_barrier', {'hull': ('#2b2622', 0.5, 0.55), 'paint': ('#8a5a2c', 0.2, 0.6), 'trim': ('#8c8378', 0.65, 0.42),
+                               'glow_main': '#f68b56'})
     b = m.node('body')
     prof = [(-0.26, 0.0), (-0.26, 0.10), (-0.12, 0.30), (-0.085, 0.70), (0.085, 0.70), (0.12, 0.30), (0.26, 0.10),
             (0.26, 0.0)]
@@ -87,7 +87,7 @@ def prop_barrier():
     b.box((1.50, 0.10, 0.02), 'paint', bevel=0.006, at=(0, 0, 0.705))
     for side in (0, 180):
         with b.frames(rotz(side)):
-            # slanted neon chevrons on the upper face, neon line on the skirt
+            # slanted lit chevrons on the upper face, lit line on the skirt
             for i, x in enumerate((-0.62, -0.47, -0.12, 0.03, 0.18, 0.53, 0.68)):
                 b.prism([(-0.075, -0.15), (-0.005, -0.15), (0.075, 0.15), (0.005, 0.15)], 0.014, 'glow_main',
                         plane='xz', at=(x, -0.103, 0.50), rot=(-5, 0, 0))
@@ -99,8 +99,8 @@ def prop_barrier():
 
 # ------------------------------------------------------------------ 16. lamp
 def prop_lamp():
-    m = Model('prop_lamp', {'hull': ('#262a33', 0.6, 0.45), 'paint': ('#2b5a60', 0.25, 0.6), 'trim': ('#7d848e', 0.65, 0.42),
-                            'glow_main': '#ff2bd6'})
+    m = Model('prop_lamp', {'hull': ('#2a2520', 0.6, 0.45), 'paint': ('#6b4a36', 0.25, 0.6), 'trim': ('#8c8378', 0.65, 0.42),
+                            'glow_main': '#ffd9a0'})
     b = m.node('body')
     b.lathe([(0.25, 0.0), (0.25, 0.06), (0.17, 0.16), (0.13, 0.50), (0.09, 0.58)], 'hull', segs=8, phase=22.5, sharp=30)
     with b.frames(radial(4, radius=0.20, start=45)):
@@ -134,8 +134,8 @@ def prop_lamp():
 
 # ------------------------------------------------------------------ 17. crate
 def prop_crate():
-    m = Model('prop_crate', {'hull': ('#2a2e37', 0.6, 0.45), 'paint': ('#3a4f3c', 0.2, 0.6), 'trim': ('#7d848e', 0.65, 0.42),
-                             'glow_main': '#ffd23f'})
+    m = Model('prop_crate', {'hull': ('#2b2622', 0.6, 0.45), 'paint': ('#5c5638', 0.2, 0.6), 'trim': ('#8c8378', 0.65, 0.42),
+                             'glow_main': '#e3dc92'})
     b = m.node('body')
     b.box((0.84, 0.84, 0.56), 'hull', bevel=0.04, o='b', at=(0, 0, 0.03))
     b.box((0.84, 0.84, 0.25), 'hull', bevel=0.04, o='b', at=(0, 0, 0.63))

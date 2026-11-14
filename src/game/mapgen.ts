@@ -1,11 +1,13 @@
 // Procedural maps. generateMap(seed, tier) is pure and deterministic: the same seed and tier always give the same map.
 //
-// How it works: roads are drawn on a jittered lattice (grid lines 3-5 cells apart), so parallel stretches always leave
-// room for towers. A road starts as a randomly weighted shortest path from a board edge to the core and is then
-// lengthened with U-shaped detours through unused lattice nodes. Bridges are planned, not accidental: a road is routed
-// straight through a node that another stretch passes straight through at a right angle. Heights are then solved per
-// road with a small dynamic programme (flat steps, or 3-cell ramps of one level) under the constraints the bridges set.
-import { GW, GH } from './data.ts';
+// How it works: roads are drawn on a triangular lattice of hex tiles (nodes 3-5 tiles apart along all three hex axes,
+// with a random offset), so any two stretches that do not share a node leave at least two free tiles for towers.
+// A road starts as a randomly weighted path from a board edge to the core and is then lengthened with chevrons,
+// trapezoid bumps and switchbacks through unused nodes. A style per map (wander, diagonal, terraces, orbit) biases
+// the weights. Bridges are planned, not accidental: a road is routed straight through a node that another stretch
+// passes straight through on a different axis. Heights are then solved per road with a small dynamic programme
+// (flat steps, or 3-tile ramps of one level) under the constraints the bridges set.
+import { GW, GH, CELL, HEX_DIRS, cellX, cellZ, fromAxial, hexDist, lineDir, lineCells, neighbor, neighbors, inBoard } from './hex.ts';
 import { GameMap, validateMap } from './map.ts';
 import type { MapDef, LanePoint } from './map.ts';
 
@@ -32,114 +34,162 @@ const int = (r: Rng, n: number) => Math.floor(r() * n);
 const pick = <T>(r: Rng, a: readonly T[]): T => a[Math.min(a.length - 1, int(r, a.length))];
 function shuffle<T>(r: Rng, a: T[]) { for (let i = a.length - 1; i > 0; i--) { const j = int(r, i + 1); const t = a[i]; a[i] = a[j]; a[j] = t; } return a; }
 
-/** Minimum free buildable cells a generated map keeps. */
-export const MIN_FREE = 120;
-const RAMP = 3; // cells of road per level of climb
+/** Minimum free buildable tiles a generated map keeps. */
+export const MIN_FREE = 150;
+const RAMP = 3; // tiles of road per level of climb
 const EDGE_NAMES = ['west', 'east', 'north', 'south'];
+/** Distance between two tile centres, in tiles. */
+const tileDist = (ax: number, az: number, bx: number, bz: number) => Math.hypot(cellX(ax, az) - cellX(bx, bz), cellZ(az) - cellZ(bz)) / CELL;
+/** How far direction b is turned from direction a: 0 straight, 1 gentle (60 degrees), 2 sharp (120 degrees), 3 back. */
+const turn = (a: number, b: number) => { const t = (((b - a) % 6) + 6) % 6; return t > 3 ? 6 - t : t; };
 
 // ---------- lattice ----------
-interface Lat { xs: number[]; zs: number[]; nc: number; nr: number }
-function axis(r: Rng, hi: number, gaps: readonly number[]) {
-  const out: number[] = [];
-  for (let v = 1; v <= hi; v += pick(r, gaps)) out.push(v);
-  const slack = hi - out[out.length - 1];
-  const shift = int(r, slack + 1);
-  return out.map((v) => v + shift);
-}
-const nx = (L: Lat, n: number) => L.xs[n % L.nc];
-const nz = (L: Lat, n: number) => L.zs[(n / L.nc) | 0];
-function nbrs(L: Lat, n: number): number[] {
-  const i = n % L.nc, j = (n / L.nc) | 0, o: number[] = [];
-  if (i > 0) o.push(n - 1);
-  if (i < L.nc - 1) o.push(n + 1);
-  if (j > 0) o.push(n - L.nc);
-  if (j < L.nr - 1) o.push(n + L.nc);
-  return o;
-}
-const ndist = (L: Lat, a: number, b: number) => Math.abs(nx(L, a) - nx(L, b)) + Math.abs(nz(L, a) - nz(L, b));
-
-/** Randomly weighted shortest path over free lattice nodes. */
-function route(L: Lat, from: number, goal: (n: number) => boolean, blk: Uint8Array, r: Rng, wig: number): number[] | null {
-  const N = L.nc * L.nr;
-  if (from < 0 || from >= N || blk[from]) return null;
-  const dist = new Float64Array(N).fill(Infinity), prev = new Int16Array(N).fill(-1), done = new Uint8Array(N);
-  dist[from] = 0;
-  for (;;) {
-    let u = -1, best = Infinity;
-    for (let n = 0; n < N; n++) if (!done[n] && dist[n] < best) { best = dist[n]; u = n; }
-    if (u < 0) return null;
-    if (goal(u)) { const p: number[] = []; for (let n = u; n >= 0; n = prev[n]) p.push(n); return p.reverse(); }
-    done[u] = 1;
-    for (const v of nbrs(L, u)) {
-      if (blk[v] || done[v]) continue;
-      const w = ndist(L, u, v) * (1 + r() * wig);
-      if (dist[u] + w < dist[v]) { dist[v] = dist[u] + w; prev[v] = u; }
-    }
+/** Nodes every `k` tiles along the hex axes. Nodes outside the board exist so entry stretches can claim them. */
+interface Lat { k: number; n: number; cx: number[]; cz: number[]; wx: number[]; wz: number[]; inside: Uint8Array; nb: Int16Array }
+function lattice(k: number, q0: number, r0: number): Lat {
+  const cx: number[] = [], cz: number[] = [], at = new Map<number, number>(), ij: Cell[] = [];
+  for (let j = -4; j <= 12; j++) for (let i = -14; i <= 16; i++) {
+    const [x, z] = fromAxial(q0 + k * i, r0 + k * j);
+    if (x < -7 || x > GW + 6 || z < -7 || z > GH + 6) continue;
+    at.set((j + 8) * 64 + i + 20, cx.length);
+    cx.push(x); cz.push(z); ij.push([i, j]);
   }
+  const n = cx.length, nb = new Int16Array(n * 6).fill(-1), inside = new Uint8Array(n);
+  for (let u = 0; u < n; u++) {
+    inside[u] = cx[u] >= 1 && cx[u] <= GW - 2 && cz[u] >= 1 && cz[u] <= GH - 2 ? 1 : 0;
+    for (let d = 0; d < 6; d++) { const v = at.get((ij[u][1] + HEX_DIRS[d][1] + 8) * 64 + ij[u][0] + HEX_DIRS[d][0] + 20); if (v !== undefined) nb[u * 6 + d] = v; }
+  }
+  return { k, n, cx, cz, wx: cx.map((x, u) => cellX(x, cz[u])), wz: cz.map((z) => cellZ(z)), inside, nb };
 }
+const dirOf = (L: Lat, u: number, v: number) => { for (let d = 0; d < 6; d++) if (L.nb[u * 6 + d] === v) return d; return -1; };
+
+// ---------- styles ----------
+interface Style {
+  /** Cost multiplier per axis: 0 = east-west, 1 = south-east/north-west, 2 = south-west/north-east. */
+  axis: [number, number, number];
+  /** Pull along a circle around the core (0 = none). */
+  orbit: number;
+  /** Extra cost of a 60 degree bend and of a 120 degree hairpin while routing. */
+  bend: number; sharp: number;
+  /** How willing the lengthening pass is to add a hairpin (1 = does not care). */
+  hair: number;
+  /** Weights for the three ways to lengthen a road. */
+  chev: number; bump: number; back: number;
+}
+const STYLES: Style[] = [
+  { axis: [1, 1, 1], orbit: 0, bend: 0.1, sharp: 1, hair: 0.2, chev: 1, bump: 2, back: 1 }, // wander
+  { axis: [2.6, 1, 1], orbit: 0, bend: 0.5, sharp: 0.8, hair: 0.4, chev: 1.5, bump: 1, back: 0.5 }, // long diagonals and chevrons
+  { axis: [1, 2.4, 2.4], orbit: 0, bend: 0.2, sharp: 0.4, hair: 0.6, chev: 0.4, bump: 0.6, back: 2 }, // terraces joined by short diagonals
+  { axis: [1, 1, 1], orbit: 1, bend: 0, sharp: 1.5, hair: 0.08, chev: 0.3, bump: 2.5, back: 0.6 }, // loops around the core
+  { axis: [1.3, 1, 1], orbit: 0, bend: 0.8, sharp: 0.2, hair: 0.8, chev: 2.5, bump: 0.3, back: 1 }, // zigzag
+];
 
 // ---------- roads ----------
-interface Road { edge: number; spawn: Cell; nodes: number[]; target: number }
+interface Road { edge: number; spawn: Cell; dir: number; nodes: number[]; target: number }
 interface Plan { target: number; min: number; max: number; self?: boolean; over?: number; overOptional?: boolean }
+interface Entry { node: number; spawn: Cell; dir: number; outs: number[] }
 
-function roadLen(L: Lat, rd: Road) {
-  let len = Math.abs(rd.spawn[0] - nx(L, rd.nodes[0])) + Math.abs(rd.spawn[1] - nz(L, rd.nodes[0])) - 1;
-  for (let k = 1; k < rd.nodes.length; k++) len += ndist(L, rd.nodes[k - 1], rd.nodes[k]);
-  return len;
-}
-function roadCells(L: Lat, rd: Road): Cell[] {
-  const pts: Cell[] = [rd.spawn, ...rd.nodes.map((n): Cell => [nx(L, n), nz(L, n)])];
-  const a = pts[pts.length - 2], c = pts[pts.length - 1];
-  pts[pts.length - 1] = [c[0] - Math.sign(c[0] - a[0]), c[1] - Math.sign(c[1] - a[1])];
-  const out: Cell[] = [[pts[0][0], pts[0][1]]];
-  for (let k = 1; k < pts.length; k++) {
-    let [x, z] = pts[k - 1];
-    const dx = Math.sign(pts[k][0] - x), dz = Math.sign(pts[k][1] - z);
-    while (x !== pts[k][0] || z !== pts[k][1]) { x += dx; z += dz; out.push([x, z]); }
+/** Ways onto the board from one edge: straight along a row from the west or east, down or up a diagonal from the north or south. */
+function entries(L: Lat, edge: number): Entry[] {
+  const out: Entry[] = [];
+  const dirs = edge === 0 ? [0] : edge === 1 ? [3] : edge === 2 ? [1, 2] : [4, 5];
+  for (let u = 0; u < L.n; u++) {
+    if (!L.inside[u]) continue;
+    for (const dir of dirs) {
+      const back = (dir + 3) % 6, prev = L.nb[u * 6 + back];
+      if (prev >= 0 && L.inside[prev]) continue; // not the first node on this line
+      let c: Cell = [L.cx[u], L.cz[u]], gone = 0, steps = 0;
+      while (gone < 2 && steps < 12) { c = neighbor(c[0], c[1], back); steps++; if (!inBoard(c[0], c[1])) gone++; else if (gone) break; }
+      if (gone < 2) continue;
+      const ok = edge === 0 ? c[0] === -2 : edge === 1 ? c[0] === GW + 1 : edge === 2 ? c[1] === -2 && c[0] >= 0 && c[0] < GW : c[1] === GH + 1 && c[0] >= 0 && c[0] < GW;
+      if (!ok || steps - 2 < 1) continue;
+      const outs: number[] = [];
+      for (let m = prev, s = L.k; m >= 0 && s <= steps + L.k; m = L.nb[m * 6 + back], s += L.k) outs.push(m);
+      out.push({ node: u, spawn: c, dir, outs });
+    }
   }
   return out;
 }
 
-/** Lengthen a road with U-shaped detours through unused nodes until it reaches its target length. */
-function expand(L: Lat, rd: Road, occ: Uint8Array, xing: Uint8Array, r: Rng) {
+/** Tiles of a road from the gate to the last tile before the core. */
+function roadCells(L: Lat, rd: Road, core: Cell): Cell[] {
+  const out: Cell[] = [rd.spawn];
+  let a = rd.spawn;
+  for (const n of rd.nodes) {
+    const b: Cell = [L.cx[n], L.cz[n]];
+    const seg = lineCells(a[0], a[1], b[0], b[1]);
+    for (let i = 1; i < seg.length; i++) out.push(seg[i]);
+    a = b;
+  }
+  while (out.length > 2 && hexDist(out[out.length - 1][0], out[out.length - 1][1], core[0], core[1]) < 2) out.pop();
+  return out;
+}
+function roadLen(L: Lat, rd: Road) {
+  // the last edge stops two tiles short of the core tile
+  return hexDist(rd.spawn[0], rd.spawn[1], L.cx[rd.nodes[0]], L.cz[rd.nodes[0]]) + (rd.nodes.length - 1) * L.k - 2;
+}
+/** Hairpins (120 degree turns) along a node list, counting the turn at the entry node. */
+function hairpins(L: Lat, nodes: number[], dir0: number) {
+  let n = 0, din = dir0;
+  for (let i = 1; i < nodes.length; i++) { const d = dirOf(L, nodes[i - 1], nodes[i]); if (turn(din, d) >= 2) n++; din = d; }
+  return n;
+}
+
+/** Lengthen a road through unused nodes until it reaches its target length. */
+function expand(L: Lat, rd: Road, occ: Uint8Array, xing: Uint8Array, r: Rng, st: Style) {
+  const free = (n: number) => n >= 0 && L.inside[n] && !occ[n];
   let len = roadLen(L, rd);
   for (let guard = 0; guard < 60 && len < rd.target; guard++) {
-    const c: { k: number; a: number; b: number; add: number }[] = [];
+    const base = hairpins(L, rd.nodes, rd.dir);
+    const c: { k: number; del: number; ins: number[]; add: number; w: number }[] = [];
+    const offer = (k: number, del: number, ins: number[], add: number, w: number) => {
+      if (len + add > rd.target + 4) return;
+      const nodes = rd.nodes.slice();
+      nodes.splice(k + 1, del, ...ins);
+      const extra = Math.max(0, hairpins(L, nodes, rd.dir) - base);
+      c.push({ k, del, ins, add, w: w * Math.pow(st.hair, extra) });
+    };
     for (let k = 0; k < rd.nodes.length - 2; k++) {
       const u = rd.nodes[k], v = rd.nodes[k + 1];
       if (xing[u] || xing[v]) continue;
-      const horiz = Math.abs(u - v) === 1;
-      for (const s of [-1, 1]) {
-        const step = horiz ? s * L.nc : s;
-        if (horiz) { const j = ((u / L.nc) | 0) + s; if (j < 0 || j >= L.nr) continue; } else { const i = (u % L.nc) + s; if (i < 0 || i >= L.nc) continue; }
-        const a = u + step, b = v + step;
-        if (occ[a] || occ[b]) continue;
-        c.push({ k, a, b, add: 2 * ndist(L, u, a) });
+      const d = dirOf(L, u, v);
+      for (const s of [1, 5]) {
+        // chevron: out to the node both ends share, and back
+        const w = L.nb[u * 6 + ((d + s) % 6)];
+        if (free(w)) offer(k, 0, [w], L.k, L.k === 3 ? st.chev * 0.35 : st.chev); // a 3-tile chevron is a cramped triangle
+        // trapezoid bump over a straight run of two edges
+        const m = rd.nodes[k + 2];
+        if (k < rd.nodes.length - 3 && !xing[m] && dirOf(L, v, m) === d && free(w)) { const b = L.nb[w * 6 + d]; if (free(b)) offer(k, 1, [w, b], L.k, st.bump); }
+      }
+      for (const s of [1, 2, 4, 5]) {
+        // switchback: shift the edge sideways by one lattice step
+        const a = L.nb[u * 6 + ((d + s) % 6)], b = L.nb[v * 6 + ((d + s) % 6)];
+        if (free(a) && free(b)) offer(k, 0, [a, b], 2 * L.k, st.back);
       }
     }
     if (!c.length) break;
-    const fit = c.filter((e) => len + e.add <= rd.target + 5);
-    if (!fit.length) break;
-    const e = pick(r, fit);
-    rd.nodes.splice(e.k + 1, 0, e.a, e.b);
-    occ[e.a] = occ[e.b] = 1;
+    let sum = 0;
+    for (const e of c) sum += e.w;
+    let at = r() * sum, e = c[c.length - 1];
+    for (const o of c) { at -= o.w; if (at <= 0) { e = o; break; } }
+    for (const gone of rd.nodes.splice(e.k + 1, e.del, ...e.ins)) occ[gone] = 0;
+    for (const n of e.ins) occ[n] = 1;
     len += e.add;
   }
   return len;
 }
 
 // ---------- heights ----------
-/** Cheapest height profile along a road: need[i] >= 0 pins a level, cost[i] is the price of one level at cell i. */
+/** Cheapest height profile along a road: need[i] >= 0 pins a level, cost[i] is the price of one level at tile i. */
 function solveHeights(cells: Cell[], need: Int8Array, cost: Float32Array, maxL: number): number[] | null {
   const n = cells.length, W = maxL + 1, INF = 1e9;
   const dp = new Float64Array(n * W).fill(INF), from = new Int8Array(n * W);
   const ok = (i: number, l: number) => need[i] < 0 || need[i] === l;
-  const inside = (c: Cell) => c[0] >= 0 && c[0] < GW && c[1] >= 0 && c[1] < GH;
   const rampable = (i: number) => {
     if (i + RAMP >= n || need[i + 1] >= 0 || need[i + 2] >= 0) return false;
     const a = cells[i], b = cells[i + RAMP];
-    if (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) !== RAMP || (a[0] !== b[0] && a[1] !== b[1])) return false;
-    for (let k = 0; k <= RAMP; k++) if (!inside(cells[i + k])) return false;
+    if (hexDist(a[0], a[1], b[0], b[1]) !== RAMP || lineDir(a[0], a[1], b[0], b[1]) < 0) return false;
+    for (let k = 0; k <= RAMP; k++) if (!inBoard(cells[i + k][0], cells[i + k][1])) return false;
     return true;
   };
   for (let l = 0; l < W; l++) if (ok(0, l)) dp[l] = 0;
@@ -175,9 +225,9 @@ function toLane(cells: Cell[], h: number[]): LanePoint[] {
     let keep = i === 0 || i === n - 1;
     if (!keep) {
       const a = cells[i - 1], b = cells[i], c = cells[i + 1];
-      const turn = b[0] - a[0] !== c[0] - b[0] || b[1] - a[1] !== c[1] - b[1];
+      const corner = lineDir(a[0], a[1], b[0], b[1]) !== lineDir(b[0], b[1], c[0], c[1]);
       const bend = Math.abs(h[i] - h[i - 1] - (h[i + 1] - h[i])) > 1e-6;
-      keep = turn || bend;
+      keep = corner || bend;
     }
     if (!keep) continue;
     const lv = Math.round(h[i]);
@@ -195,37 +245,36 @@ const WORDS = [
 ];
 const LETTERS = 'ABCDEFGHJKLMNPQRSTVXYZ';
 function sectorName(r: Rng) {
-  return `Sector ${LETTERS[int(r, LETTERS.length)]}-${String(1 + int(r, 98)).padStart(2, '0')} · ${pick(r, WORDS)}`.slice(0, 28);
+  return `Sector ${LETTERS[int(r, LETTERS.length)]}-${String(1 + int(r, 98)).padStart(2, '0')} ${pick(r, WORDS)}`.slice(0, 28);
 }
 const NUM = ['no', 'one', 'two', 'three', 'four', 'five', 'six'];
 
 // ---------- statistics ----------
 export interface MapCrossing { x: number; z: number; over: number; under: number; overLevel: number; underLevel: number }
 export interface MapStats {
-  /** Road length in cells, per lane. */
+  /** Road length in tiles, per lane. */
   roads: number[];
   total: number;
-  /** Buildable cells left (not road, core, scenery or a pre-placed tower). */
+  /** Buildable tiles left (not road, core, scenery or a pre-placed tower). */
   free: number;
   crossings: MapCrossing[];
   maxLevel: number;
 }
-/** Cells a lane runs over, in order, with the (possibly fractional) height level at each. */
+/** Tiles a lane runs over, in order, with the (possibly fractional) height level at each. */
 export function laneCells(lane: LanePoint[]): { x: number; z: number; h: number }[] {
   const out: { x: number; z: number; h: number }[] = [];
-  const add = (x: number, z: number, h: number) => { const l = out[out.length - 1]; if (!l || l.x !== x || l.z !== z) out.push({ x, z, h }); };
   for (let i = 1; i < lane.length; i++) {
     const a = lane[i - 1], b = lane[i], ha = a[2] || 0, hb = b[2] || 0;
-    const n = Math.max(1, Math.ceil(Math.max(Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]))));
-    for (let s = 0; s <= n; s++) add(Math.round(a[0] + ((b[0] - a[0]) * s) / n), Math.round(a[1] + ((b[1] - a[1]) * s) / n), ha + ((hb - ha) * s) / n);
+    const seg = lineCells(a[0], a[1], b[0], b[1]), n = Math.max(1, seg.length - 1);
+    for (let s = i === 1 ? 0 : 1; s < seg.length; s++) out.push({ x: seg[s][0], z: seg[s][1], h: ha + ((hb - ha) * s) / n });
   }
   return out;
 }
 export function mapStats(def: MapDef): MapStats {
-  const roads = def.lanes.map((l) => { let len = 0; for (let k = 1; k < l.length; k++) len += Math.hypot(l[k][0] - l[k - 1][0], l[k][1] - l[k - 1][1]); return Math.round(len * 10) / 10; });
+  const roads = def.lanes.map((l) => { let len = 0; for (let k = 1; k < l.length; k++) len += hexDist(l[k - 1][0], l[k - 1][1], l[k][0], l[k][1]); return len; });
   const g = new GameMap(def).grid;
   const tw = new Set<number>();
-  for (const t of def.towers) { const k = t.cz * GW + t.cx; if (t.cx >= 0 && t.cx < GW && t.cz >= 0 && t.cz < GH && g[k] === 0) tw.add(k); }
+  for (const t of def.towers) { const k = t.cz * GW + t.cx; if (inBoard(t.cx, t.cz) && g[k] === 0) tw.add(k); }
   let free = -tw.size;
   for (let i = 0; i < g.length; i++) if (g[i] === 0) free++;
   const seen = new Map<string, { lane: number; h: number }[]>();
@@ -234,7 +283,7 @@ export function mapStats(def: MapDef): MapStats {
   def.lanes.forEach((l, li) => {
     for (const p of l) maxLevel = Math.max(maxLevel, p[2] || 0);
     const cells = laneCells(l);
-    // the last cells run into the core, where roads may legitimately meet
+    // the last tiles run into the core, where roads may legitimately meet
     cells.forEach((c, ci) => {
       if (ci >= cells.length - 2) return;
       const k = c.x + ',' + c.z, prev = seen.get(k);
@@ -245,27 +294,27 @@ export function mapStats(def: MapDef): MapStats {
       if (prev) prev.push({ lane: li, h: c.h }); else seen.set(k, [{ lane: li, h: c.h }]);
     });
   });
-  return { roads, total: Math.round(roads.reduce((a, b) => a + b, 0) * 10) / 10, free, crossings, maxLevel };
+  return { roads, total: roads.reduce((a, b) => a + b, 0), free, crossings, maxLevel };
 }
 
 // ---------- furniture: spires and scenery ----------
-/** Free cells with the best view of the roads, away from the core. `minView` = road cells that must lie within 7 cells. */
+/** Free tiles with the best view of the roads, away from the core. `minView` = road tiles that must lie within 7 tiles. */
 export function pickSpires(def: MapDef, count: number, r: Rng = () => 0.5, minView = 0): Cell[] {
   const g = new GameMap(def).grid;
   const road: Cell[] = [];
-  for (const l of def.lanes) for (const c of laneCells(l)) if (c.x >= 0 && c.x < GW && c.z >= 0 && c.z < GH) road.push([c.x, c.z]);
-  for (const t of def.towers) if (t.cx >= 0 && t.cx < GW && t.cz >= 0 && t.cz < GH) g[t.cz * GW + t.cx] = 2;
+  for (const l of def.lanes) for (const c of laneCells(l)) if (inBoard(c.x, c.z)) road.push([c.x, c.z]);
+  for (const t of def.towers) if (inBoard(t.cx, t.cz)) g[t.cz * GW + t.cx] = 2;
   const covered = new Float32Array(road.length);
   const out: Cell[] = [];
   while (out.length < count) {
     let best: Cell | null = null, bs = 0;
     for (let z = 1; z < GH - 1; z++) for (let x = 1; x < GW - 1; x++) {
       if (g[z * GW + x] !== 0) continue;
-      if (Math.max(Math.abs(x - def.core[0]), Math.abs(z - def.core[1])) < 5) continue;
-      if (out.some((o) => Math.max(Math.abs(o[0] - x), Math.abs(o[1] - z)) < 5)) continue;
+      if (hexDist(x, z, def.core[0], def.core[1]) < 5) continue;
+      if (out.some((o) => hexDist(o[0], o[1], x, z) < 6)) continue;
       let s = 0, view = 0;
       for (let i = 0; i < road.length; i++) {
-        const d = Math.hypot(road[i][0] - x, road[i][1] - z);
+        const d = tileDist(road[i][0], road[i][1], x, z);
         if (d <= 7) view++;
         if (d < 9) s += (1 - d / 9) * (1 - 0.85 * covered[i]); // a second spire favours road the first cannot see well
       }
@@ -275,30 +324,26 @@ export function pickSpires(def: MapDef, count: number, r: Rng = () => 0.5, minVi
     }
     if (!best) break;
     out.push(best);
-    for (let i = 0; i < road.length; i++) { const d = Math.hypot(road[i][0] - best[0], road[i][1] - best[1]); if (d < 9) covered[i] = Math.max(covered[i], 1 - d / 9); }
+    for (let i = 0; i < road.length; i++) { const d = tileDist(road[i][0], road[i][1], best[0], best[1]); if (d < 9) covered[i] = Math.max(covered[i], 1 - d / 9); }
   }
   return out;
 }
 
-/** Scenery: a few separate clumps of blocked cells, mostly away from the roads and never near a gate or a spire. */
-function scatter(def: MapDef, entries: Cell[], r: Rng): Cell[] {
+/** Scenery: a few separate clumps of blocked tiles, mostly away from the roads and never near a gate or a spire. */
+function scatter(def: MapDef, gates: Cell[], r: Rng): Cell[] {
   const g = new Uint8Array(new GameMap(def).grid);
   const near = new Uint8Array(GW * GH); // 1 = next to a road
   const owner = new Int8Array(GW * GH).fill(-1);
   for (let z = 0; z < GH; z++) for (let x = 0; x < GW; x++) {
-    for (let dz = -1; dz <= 1 && !near[z * GW + x]; dz++) for (let dx = -1; dx <= 1; dx++) {
-      const X = x + dx, Z = z + dz;
-      if (X >= 0 && X < GW && Z >= 0 && Z < GH && g[Z * GW + X] === 1) { near[z * GW + x] = 1; break; }
-    }
+    for (const [X, Z] of neighbors(x, z)) if (inBoard(X, Z) && g[Z * GW + X] === 1) { near[z * GW + x] = 1; break; }
   }
   const ok = (x: number, z: number, id: number) => {
-    if (x < 0 || x >= GW || z < 0 || z >= GH || g[z * GW + x] !== 0) return false;
-    for (const e of entries) if (Math.max(Math.abs(e[0] - x), Math.abs(e[1] - z)) <= 2) return false;
-    for (const t of def.towers) if (Math.max(Math.abs(t.cx - x), Math.abs(t.cz - z)) <= 1) return false;
-    // clumps stay clumps: keep a clear cell between different ones
-    for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
-      const X = x + dx, Z = z + dz;
-      if (X >= 0 && X < GW && Z >= 0 && Z < GH && owner[Z * GW + X] >= 0 && owner[Z * GW + X] !== id) return false;
+    if (!inBoard(x, z) || g[z * GW + x] !== 0) return false;
+    for (const e of gates) if (hexDist(e[0], e[1], x, z) <= 2) return false;
+    for (const t of def.towers) if (hexDist(t.cx, t.cz, x, z) <= 1) return false;
+    // clumps stay clumps: keep a clear tile between different ones
+    for (let Z = z - 2; Z <= z + 2; Z++) for (let X = x - 2; X <= x + 2; X++) {
+      if (inBoard(X, Z) && owner[Z * GW + X] >= 0 && owner[Z * GW + X] !== id && hexDist(x, z, X, Z) <= 2) return false;
     }
     return true;
   };
@@ -314,8 +359,7 @@ function scatter(def: MapDef, entries: Cell[], r: Rng): Cell[] {
     const cl: Cell[] = [seed];
     g[seed[1] * GW + seed[0]] = 3; owner[seed[1] * GW + seed[0]] = made;
     for (let t = 0; t < 40 && cl.length < size; t++) {
-      const b = pick(r, cl), d = pick(r, [[1, 0], [-1, 0], [0, 1], [0, -1]] as const);
-      const x = b[0] + d[0], z = b[1] + d[1];
+      const b = pick(r, cl), [x, z] = neighbor(b[0], b[1], int(r, 6));
       if (!ok(x, z, made) || (!roadside && near[z * GW + x] && r() < 0.7)) continue;
       g[z * GW + x] = 3; owner[z * GW + x] = made; cl.push([x, z]);
     }
@@ -328,14 +372,16 @@ function scatter(def: MapDef, entries: Cell[], r: Rng): Cell[] {
 
 // ---------- one attempt ----------
 function attempt(r: Rng, tier: number, seed: number): MapDef | null {
-  const L: Lat = { xs: axis(r, GW - 2, [3, 3, 4, 4, 5]), zs: axis(r, GH - 2, [3, 3, 3, 4]), nc: 0, nr: 0 };
-  L.nc = L.xs.length; L.nr = L.zs.length;
-  const N = L.nc * L.nr;
+  const k = pick(r, tier === 1 ? [3, 3, 3, 4] : [3, 3, 3, 4, 4, 5]);
+  const L = lattice(k, int(r, k), int(r, k));
+  const N = L.n;
+  const st = pick(r, STYLES), spin = r() < 0.5 ? 1 : -1;
+  const wig = pick(r, [0.2, 0.6, 1.2, 2.2, 3.5]);
   const coreOpts: number[] = [];
-  for (let n = 0; n < N; n++) if (nx(L, n) >= 3 && nx(L, n) <= GW - 4 && nz(L, n) >= 3 && nz(L, n) <= GH - 4) coreOpts.push(n);
+  for (let n = 0; n < N; n++) if (L.cx[n] >= 3 && L.cx[n] <= GW - 4 && L.cz[n] >= 3 && L.cz[n] <= GH - 4) coreOpts.push(n);
   if (!coreOpts.length) return null;
   const coreNode = pick(r, coreOpts);
-  const core: Cell = [nx(L, coreNode), nz(L, coreNode)];
+  const core: Cell = [L.cx[coreNode], L.cz[coreNode]];
 
   // what to build
   const plans: Plan[] = [];
@@ -353,53 +399,82 @@ function attempt(r: Rng, tier: number, seed: number): MapDef | null {
   }
 
   const occ = new Uint8Array(N), xing = new Uint8Array(N);
+  for (let n = 0; n < N; n++) if (!L.inside[n]) occ[n] = 3;
   occ[coreNode] = 2;
-  const wig = pick(r, [0.2, 0.6, 1.2, 2.2, 3.5]);
   const edges = shuffle(r, [0, 1, 2, 3]);
   const roads: Road[] = [];
-  const coreNbr = (blk: Uint8Array) => (n: number) => !blk[n] && nbrs(L, coreNode).includes(n);
-  const straightAt = (rd: Road, k: number) => {
-    if (k < 1 || k > rd.nodes.length - 3) return 0; // not the entry node, not the node before the core
-    const a = rd.nodes[k - 1], b = rd.nodes[k], c = rd.nodes[k + 1];
-    if (b - a !== c - b) return 0;
-    return Math.abs(b - a) === 1 ? 1 : 2; // 1 = runs east-west, 2 = runs north-south
+  const arrivals: number[] = []; // directions (seen from the core) roads already come in from
+  const coreNbr = (blk: Uint8Array) => (n: number) => {
+    if (blk[n]) return false;
+    const d = dirOf(L, coreNode, n);
+    return d >= 0 && arrivals.every((a) => turn(a, d) >= 2);
+  };
+  const DX = [1, 0.5, -0.5, -1, -0.5, 0.5], DZ = [0, 0.866, 0.866, 0, -0.866, -0.866];
+  const edgeCost = (u: number, d: number, din: number) => {
+    let c = st.axis[d % 3];
+    if (st.orbit) {
+      const rx = L.wx[u] - L.wx[coreNode], rz = L.wz[u] - L.wz[coreNode], rl = Math.hypot(rx, rz) || 1;
+      const along = ((rx * DZ[d] - rz * DX[d]) / rl) * spin, inward = -(rx * DX[d] + rz * DZ[d]) / rl;
+      c *= 1.7 - 1.1 * along + 0.5 * Math.max(0, inward);
+    }
+    c *= 1 + r() * wig;
+    if (din >= 0) { const t = turn(din, d); c += t >= 2 ? st.sharp : t === 1 ? st.bend : 0; }
+    return c;
+  };
+  /** Randomly weighted cheapest path over free nodes; the turn cost uses the direction each node was first reached by. */
+  const path = (from: number, dir0: number, goal: (n: number) => boolean, blk: Uint8Array): number[] | null => {
+    if (from < 0 || blk[from]) return null;
+    const dist = new Float64Array(N).fill(Infinity), prev = new Int16Array(N).fill(-1), din = new Int8Array(N).fill(-1), done = new Uint8Array(N);
+    dist[from] = 0; din[from] = dir0;
+    for (;;) {
+      let u = -1, best = Infinity;
+      for (let n = 0; n < N; n++) if (!done[n] && dist[n] < best) { best = dist[n]; u = n; }
+      if (u < 0) return null;
+      if (goal(u)) { const p: number[] = []; for (let n = u; n >= 0; n = prev[n]) p.push(n); return p.reverse(); }
+      done[u] = 1;
+      for (let d = 0; d < 6; d++) {
+        const v = L.nb[u * 6 + d];
+        if (v < 0 || blk[v] || done[v] || (din[u] >= 0 && turn(din[u], d) === 3)) continue;
+        const w = edgeCost(u, d, din[u]);
+        if (dist[u] + w < dist[v]) { dist[v] = dist[u] + w; prev[v] = u; din[v] = d; }
+      }
+    }
+  };
+  const free = (n: number) => n >= 0 && !occ[n];
+  const straightAt = (rd: Road, i: number) => {
+    if (i < 1 || i > rd.nodes.length - 3) return -1; // not the entry node, not the node before the core
+    const d = dirOf(L, rd.nodes[i - 1], rd.nodes[i]);
+    return d === dirOf(L, rd.nodes[i], rd.nodes[i + 1]) ? d : -1;
   };
 
   for (let pi = 0; pi < plans.length; pi++) {
     const plan = plans[pi], edge = edges[pi];
-    // entry node on this edge
-    const cand: number[] = [];
-    if (edge < 2) for (let j = 0; j < L.nr; j++) cand.push(j * L.nc + (edge === 0 ? 0 : L.nc - 1));
-    else for (let i = 0; i < L.nc; i++) cand.push((edge === 2 ? 0 : L.nr - 1) * L.nc + i);
-    shuffle(r, cand);
+    const cand = shuffle(r, entries(L, edge));
     let made: Road | null = null;
-    for (const start of cand) {
-      if (occ[start]) continue;
-      const spawn: Cell = edge === 0 ? [-2, nz(L, start)] : edge === 1 ? [GW + 1, nz(L, start)] : edge === 2 ? [nx(L, start), -2] : [nx(L, start), GH + 1];
-      if (Math.hypot(spawn[0] - core[0], spawn[1] - core[1]) < 8) continue;
+    for (const en of cand) {
+      const start = en.node;
+      if (occ[start] || en.outs.some((m) => occ[m] === 1)) continue;
+      if (hexDist(en.spawn[0], en.spawn[1], core[0], core[1]) < 8) continue;
       let nodes: number[] | null = null;
       let crossed = -1;
       if (plan.self) {
         const xs: number[] = [];
-        for (let n = 0; n < N; n++) if (!occ[n] && n !== start && nbrs(L, n).length === 4 && nbrs(L, n).every((m) => !occ[m])) xs.push(n);
+        for (let n = 0; n < N; n++) if (free(n) && n !== start) { let all = true; for (let d = 0; d < 6; d++) if (!free(L.nb[n * 6 + d])) all = false; if (all) xs.push(n); }
         shuffle(r, xs);
         for (const X of xs.slice(0, 8)) {
-          const ew = r() < 0.5, fl1 = r() < 0.5, fl2 = r() < 0.5;
-          let A = X - 1, B = X + 1, C = X - L.nc, D = X + L.nc;
-          if (fl1) [A, B] = [B, A];
-          if (fl2) [C, D] = [D, C];
-          if (!ew) [A, B, C, D] = [C, D, A, B];
+          const a = int(r, 6), b = (a + pick(r, [1, 2, 4, 5])) % 6;
+          const A = L.nb[X * 6 + ((a + 3) % 6)], B = L.nb[X * 6 + a], C = L.nb[X * 6 + ((b + 3) % 6)], D = L.nb[X * 6 + b];
           const blk = new Uint8Array(occ);
           blk[X] = blk[B] = blk[C] = blk[D] = 1;
-          const p1 = route(L, start, (n) => n === A, blk, r, wig);
+          const p1 = path(start, en.dir, (n) => n === A, blk);
           if (!p1) continue;
           for (const n of p1) blk[n] = 1;
           blk[B] = blk[C] = 0;
-          const p2 = route(L, B, (n) => n === C, blk, r, wig);
+          const p2 = path(B, a, (n) => n === C, blk);
           if (!p2) continue;
           for (const n of p2) blk[n] = 1;
           blk[D] = 0;
-          const p3 = route(L, D, coreNbr(blk), blk, r, wig);
+          const p3 = path(D, b, coreNbr(blk), blk);
           if (!p3) continue;
           nodes = [...p1, X, ...p2, X, ...p3, coreNode];
           crossed = X;
@@ -407,22 +482,20 @@ function attempt(r: Rng, tier: number, seed: number): MapDef | null {
         }
       } else if (plan.over !== undefined && roads[plan.over]) {
         const q = roads[plan.over], ks: number[] = [];
-        for (let k = 1; k < q.nodes.length - 2; k++) if (straightAt(q, k) && !xing[q.nodes[k]]) ks.push(k);
+        for (let i = 1; i < q.nodes.length - 2; i++) if (straightAt(q, i) >= 0 && !xing[q.nodes[i]]) ks.push(i);
         shuffle(r, ks);
-        for (const k of ks) {
-          const X = q.nodes[k], dir = straightAt(q, k);
-          const i = X % L.nc, j = (X / L.nc) | 0;
-          let A: number, B: number;
-          if (dir === 1) { if (j < 1 || j > L.nr - 2) continue; A = X - L.nc; B = X + L.nc; } else { if (i < 1 || i > L.nc - 2) continue; A = X - 1; B = X + 1; }
-          if (r() < 0.5) [A, B] = [B, A];
-          if (occ[A] || occ[B]) continue;
+        for (const i of ks) {
+          const X = q.nodes[i], dq = straightAt(q, i);
+          const b = (dq + pick(r, [1, 2, 4, 5])) % 6;
+          const A = L.nb[X * 6 + ((b + 3) % 6)], B = L.nb[X * 6 + b];
+          if (!free(A) || !free(B)) continue;
           const blk = new Uint8Array(occ);
           blk[B] = 1;
-          const p1 = route(L, start, (n) => n === A, blk, r, wig);
+          const p1 = path(start, en.dir, (n) => n === A, blk);
           if (!p1) continue;
           for (const n of p1) blk[n] = 1;
           blk[B] = 0;
-          const p2 = route(L, B, coreNbr(blk), blk, r, wig);
+          const p2 = path(B, b, coreNbr(blk), blk);
           if (!p2) continue;
           nodes = [...p1, X, ...p2, coreNode];
           crossed = X;
@@ -432,32 +505,35 @@ function attempt(r: Rng, tier: number, seed: number): MapDef | null {
       }
       if (!nodes) {
         if (plan.self) continue;
-        const p = route(L, start, coreNbr(occ), occ, r, wig);
+        const p = path(start, en.dir, coreNbr(occ), occ);
         if (!p) continue;
         nodes = [...p, coreNode];
       }
-      made = { edge, spawn, nodes, target: plan.target };
+      made = { edge, spawn: en.spawn, dir: en.dir, nodes, target: plan.target };
       for (const n of nodes) if (n !== coreNode) occ[n] = 1;
+      for (const m of en.outs) occ[m] = 1;
       if (crossed >= 0) xing[crossed] = 1;
+      arrivals.push(dirOf(L, coreNode, nodes[nodes.length - 2]));
       break;
     }
     if (!made) return null;
     roads.push(made);
   }
   // lengthen (shortest first, so no road hogs the lattice)
-  for (let pass = 0; pass < 2; pass++) for (const rd of [...roads].sort((a, b) => roadLen(L, a) - roadLen(L, b))) expand(L, rd, occ, xing, r);
-  for (let i = 0; i < roads.length; i++) { const len = roadLen(L, roads[i]); if (len < plans[i].min || len > plans[i].max) return null; }
-  { const ls = roads.map((rd) => roadLen(L, rd)); if (Math.min(...ls) < Math.max(...ls) * 0.55) return null; } // no road is a shortcut compared with the others
-  if (tier === 3 && !xing.some((v) => v)) return null;
+  for (let pass = 0; pass < 2; pass++) for (const rd of [...roads].sort((a, b) => roadLen(L, a) - roadLen(L, b))) expand(L, rd, occ, xing, r, st);
 
-  // cells and crossings
-  const cells = roads.map((rd) => roadCells(L, rd));
+  // tiles and crossings
+  const cells = roads.map((rd) => roadCells(L, rd, core));
+  const lens = cells.map((c) => c.length - 1);
+  for (let i = 0; i < roads.length; i++) if (lens[i] < plans[i].min || lens[i] > plans[i].max) return null;
+  if (Math.min(...lens) < Math.max(...lens) * 0.55) return null; // no road is a shortcut compared with the others
+  if (tier === 3 && !xing.some((v) => v)) return null;
   const at = new Map<number, { rd: number; i: number }[]>();
-  const key = (c: Cell) => (c[1] + 4) * 64 + c[0] + 4;
+  const key = (c: Cell) => (c[1] + 8) * 64 + c[0] + 8;
   const X: { a: { rd: number; i: number }; b: { rd: number; i: number } }[] = [];
   for (let rd = 0; rd < cells.length; rd++) for (let i = 0; i < cells[rd].length; i++) {
-    const k = key(cells[rd][i]), prev = at.get(k);
-    if (!prev) { at.set(k, [{ rd, i }]); continue; }
+    const kk = key(cells[rd][i]), prev = at.get(kk);
+    if (!prev) { at.set(kk, [{ rd, i }]); continue; }
     if (prev.length > 1) return null;
     X.push({ a: prev[0], b: { rd, i } });
     prev.push({ rd, i });
@@ -468,9 +544,10 @@ function attempt(r: Rng, tier: number, seed: number): MapDef | null {
   // heights: a fancy configuration first, then plain ones (every over/under choice, shortest bridges)
   let heights: number[][] | null = null;
   const tryConfig = (upperBits: number, fancy: boolean): number[][] | null => {
-    const maxL = tier === 3 ? (fancy && r() < 0.3 ? 3 : 2) : 1;
+    const maxL = tier === 3 ? (fancy && r() < 0.3 ? 3 : 2) : fancy && r() < 0.25 ? 2 : 1;
     const need = cells.map((c) => new Int8Array(c.length).fill(-1));
     const cost = cells.map((c) => new Float32Array(c.length).fill(1));
+    let clash = false;
     const pin = (rd: number, i: number, v: number) => { if (need[rd][i] >= 0 && need[rd][i] !== v) return false; need[rd][i] = v; return true; };
     for (let rd = 0; rd < cells.length; rd++) {
       const n = cells[rd].length;
@@ -487,22 +564,23 @@ function attempt(r: Rng, tier: number, seed: number): MapDef | null {
       const up = (upperBits >> ci) & 1 ? c.b : c.a, lo = up === c.a ? c.b : c.a;
       const base = fancy && maxL >= 2 && r() < 0.2 ? 1 : 0;
       const top = Math.min(maxL, base + (fancy && maxL >= 2 && r() < 0.4 ? 2 : 1));
-      for (let d = -1; d <= 1; d++) if (!pin(up.rd, up.i + d, top) || !pin(lo.rd, lo.i + d, base)) need[0][0] = 99; // contradiction: poisons the solve
+      for (let d = -1; d <= 1; d++) if (!pin(up.rd, up.i + d, top) || !pin(lo.rd, lo.i + d, base)) clash = true;
     });
+    if (clash) return null;
     const out: number[][] = [];
     for (let rd = 0; rd < cells.length; rd++) { const h = solveHeights(cells[rd], need[rd], cost[rd], maxL); if (!h) return null; out.push(h); }
     return out;
   };
   const combos = 1 << X.length;
   const first = int(r, combos);
-  for (let t = 0; t < 3 && !heights; t++) heights = tryConfig(int(r, combos), true);
+  if (tier > 1) for (let t = 0; t < 3 && !heights; t++) heights = tryConfig(int(r, combos), true);
   for (let b = 0; b < combos && !heights; b++) heights = tryConfig((first + b) % combos, false);
   if (!heights) return null;
+  if (tier === 3 && !heights.some((h) => h.some((v) => v > 0))) return null;
 
   const lanes = cells.map((c, i) => toLane(c, heights![i]));
   if (lanes.some((l) => l.length > 48)) return null;
 
-  const lens = roads.map((rd) => roadLen(L, rd));
   const minLen = Math.min(...lens);
   const gold = Math.max(180, Math.min(460, Math.round((150 + 70 * (roads.length - 1) + Math.max(0, 70 - minLen) * 3) / 10) * 10));
   const def: MapDef = {
@@ -511,9 +589,9 @@ function attempt(r: Rng, tier: number, seed: number): MapDef | null {
   };
   for (const [cx, cz] of pickSpires(def, tier === 3 ? 2 : 1, r, tier === 3 ? 14 : 20)) def.towers.push({ t: 'spire', cx, cz });
   if (def.towers.length !== (tier === 3 ? 2 : 1)) return null;
-  const entries: Cell[] = [];
-  for (const c of cells) { let n = 0; for (const p of c) if (p[0] >= 0 && p[0] < GW && p[1] >= 0 && p[1] < GH && n++ < 4) entries.push(p); }
-  def.blocked = scatter(def, entries, r);
+  const gates: Cell[] = [];
+  for (const c of cells) { let n = 0; for (const p of c) if (inBoard(p[0], p[1]) && n++ < 4) gates.push(p); }
+  def.blocked = scatter(def, gates, r);
   if (def.blocked.length < 6 || def.blocked.length > 24) return null;
 
   // description
@@ -537,23 +615,29 @@ function attempt(r: Rng, tier: number, seed: number): MapDef | null {
 // ---------- known-good layouts, used only if every attempt fails ----------
 const FALLBACK: Omit<MapDef, 'id' | 'name'>[] = [
   {
-    desc: 'One long winding road from the west, 60 tiles from gate to core.', tier: 1,
-    lanes: [[[-2, 3], [5, 3], [5, 13], [11, 13], [11, 5], [17, 5], [17, 13], [22, 13], [22, 9]]],
-    core: [22, 8], gold: 190, lives: 20, towers: [{ t: 'spire', cx: 14, cz: 9 }], blocked: [[2, 8], [2, 9], [3, 9], [8, 16], [9, 16], [14, 1], [15, 1], [15, 2]],
+    desc: 'One long winding road from the south, 86 tiles from gate to core.', tier: 1,
+    lanes: [[[2, 21], [4, 17], [7, 17], [6, 14], [3, 14], [1, 11], [3, 8], [1, 5], [3, 2], [9, 2], [10, 5], [7, 11], [10, 17], [22, 17], [24, 14], [21, 14], [19, 11], [21, 8], [18, 8], [15, 14], [12, 14], [13, 11], [13, 10]]],
+    core: [12, 8], gold: 180, lives: 20, towers: [{ t: 'spire', cx: 15, cz: 12 }],
+    blocked: [[22, 7], [23, 8], [19, 3], [19, 2], [18, 3], [18, 2], [6, 1], [7, 0], [23, 1], [23, 0], [18, 15], [17, 15], [18, 16], [19, 16]],
   },
   {
-    desc: 'One road from the west that loops back and bridges over itself. 62 tiles to hold.', tier: 2,
-    lanes: [[[-2, 10], [16, 10], [16, 3], [14, 3], [11, 3, 1], [8, 3, 1], [8, 11, 1], [8, 14], [21, 14]]],
-    core: [22, 14], gold: 180, lives: 20, towers: [{ t: 'spire', cx: 12, cz: 7 }], blocked: [[3, 5], [3, 6], [4, 6], [20, 5], [20, 6], [21, 6], [12, 16], [13, 16]],
+    desc: 'One road from the north that loops back and bridges over itself. 63 tiles to hold.', tier: 2,
+    lanes: [[[4, -2], [6, 3], [9, 3], [11, 6], [8, 12], [5, 12], [3, 15], [2, 12], [3, 9], [6, 9], [5, 6], [8, 6, 1], [11, 12, 1], [9, 15], [11, 18], [14, 18], [12, 15], [15, 15], [14, 12], [14, 11]]],
+    core: [15, 9], gold: 180, lives: 20, towers: [{ t: 'spire', cx: 9, cz: 11 }],
+    blocked: [[8, 16], [8, 17], [8, 15], [7, 16], [15, 2], [14, 1], [15, 0], [15, 1], [18, 6], [18, 7], [17, 6], [23, 10], [22, 9], [22, 10], [22, 11], [23, 11], [24, 10]],
   },
   {
-    desc: 'Two roads from the west and north: two bridges, high viaducts.', tier: 3,
-    lanes: [[[-2, 4], [13, 4], [13, 14], [22, 14], [22, 10]], [[10, -2, 2], [10, 9, 2], [15, 9, 2], [21, 9]]],
-    core: [22, 9], gold: 370, lives: 20, towers: [{ t: 'spire', cx: 8, cz: 8 }, { t: 'spire', cx: 17, cz: 11 }], blocked: [[2, 9], [2, 10], [3, 10], [17, 3], [18, 3], [18, 4], [8, 16], [9, 16]],
+    desc: 'Two roads from the east and south: one bridge, high viaducts.', tier: 3,
+    lanes: [
+      [[27, 7, 2], [24, 7, 2], [23, 10, 2], [21, 7, 1], [15, 7, 1], [14, 10, 2], [17, 16, 2], [14, 16, 1], [12, 13], [9, 7], [7, 11]],
+      [[20, 21], [23, 16], [20, 10], [17, 10], [20, 4], [17, 4, 1], [12, 4, 1], [9, 4], [8, 4], [3, 13], [4, 13]],
+    ],
+    core: [6, 13], gold: 310, lives: 20, towers: [{ t: 'spire', cx: 17, cz: 8 }, { t: 'spire', cx: 10, cz: 10 }],
+    blocked: [[6, 16], [5, 17], [6, 18], [6, 17], [6, 3], [5, 3], [4, 3], [11, 2], [11, 3]],
   },
 ];
 
-/** The hand-checked layout a tier falls back to (never needed so far in testing; exported so the tests can check it). */
+/** The known-good layout a tier falls back to (never needed so far in testing; exported so the tests can check it). */
 export function fallbackMap(s: number, t: number): MapDef {
   const f = FALLBACK[t - 1];
   const def: MapDef = {

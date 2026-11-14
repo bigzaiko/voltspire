@@ -25,7 +25,7 @@ for mod in (vs_lib, models_towers, models_enemies, models_hero, models_misc):
 BUILDERS = models_towers.TOWERS + models_enemies.ENEMIES + models_hero.HERO + models_misc.MISC
 
 BUDGET = {'enemy_grunt': 2500, 'enemy_runner': 2500, 'enemy_drone': 2500, 'enemy_brute': 4000, 'enemy_shield': 4000,
-          'enemy_boss': 10000, 'hero': 9000, 'core': 12000}
+          'enemy_boss': 10000, 'hero': 9000, 'core': 12000, 'tower_spire': 9000}
 
 
 def budget(name):
@@ -34,13 +34,15 @@ def budget(name):
     return 8000 if name.startswith('tower_') else 1500
 
 
-def tri_count(objs):
+def tri_count(objs, per=None):
     dg = bpy.context.evaluated_depsgraph_get()
     total = 0
     for ob in objs:
         me = ob.evaluated_get(dg).to_mesh()
         me.calc_loop_triangles()
         total += len(me.loop_triangles)
+        if per is not None:
+            per[ob.name] = len(me.loop_triangles)
     return total
 
 
@@ -49,7 +51,8 @@ def build(fn):
     model = fn()
     root, objs = model.finish()
     bpy.context.view_layer.update()
-    tris = tri_count(objs)
+    per = {}
+    tris = tri_count(objs, per)
     for ob in bpy.context.scene.objects:
         ob.select_set(True)
     bpy.context.view_layer.objects.active = root
@@ -62,7 +65,7 @@ def build(fn):
     kb = os.path.getsize(path) / 1024
     flag = '' if tris <= budget(model.name) and kb <= 400 else '   <-- OVER BUDGET'
     print(f'[build] {model.name:14s} tris={tris:6d}/{budget(model.name):<6d} {kb:7.1f} KB  '
-          f'nodes={[o.name for o in objs]}{flag}')
+          f'nodes={per}{flag}')
     return model.name
 
 

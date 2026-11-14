@@ -14,6 +14,9 @@ export class Sound {
   cueLog: { t: number; name: string }[] | null = null;
   clock = 0;
   private offset = 0;
+  /** Scheduled beats of the built-in score (audio clock time, accent 0..1), read by beatLevel(). */
+  private beats: { t: number; a: number }[] = [];
+  private scoreMuted = false;
 
   init() {
     if (this.ctx) { if (this.ctx.state === 'suspended') void this.ctx.resume(); return; }
@@ -39,13 +42,32 @@ export class Sound {
     const bus = (dry: number, send: number) => { const g = c.createGain(); g.gain.value = dry; g.connect(this.master); const s = c.createGain(); s.gain.value = send; g.connect(s).connect(rev); return g; };
     this.sfxG = bus(0.9, 0.28);
     this.uiG = bus(0.8, 0.12);
-    this.musG = bus(this.musicVol * 0.55, 0.5);
+    this.musG = bus(this.scoreMuted ? 0 : this.musicVol * 0.55, 0.5);
     this.noiseBuf = c.createBuffer(1, c.sampleRate * 2, c.sampleRate);
     const d = this.noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
   }
   setVolume(v: number) { this.volume = v; if (this.ctx) this.master.gain.value = v; }
-  setMusic(v: number) { this.musicVol = v; if (this.ctx) this.musG.gain.value = v * 0.55; }
+  setMusic(v: number) { this.musicVol = v; if (this.ctx) this.musG.gain.value = this.scoreMuted ? 0 : v * 0.55; }
+  /** Silence the built-in score (the player's own music is playing) without touching the saved volume. */
+  setScoreMuted(on: boolean) {
+    if (this.scoreMuted === on) return;
+    this.scoreMuted = on;
+    if (this.ctx) this.musG.gain.value = on ? 0 : this.musicVol * 0.55;
+  }
+  /**
+   * Beat envelope of the built-in score: 1 on a beat, decaying to 0 before the next one.
+   * 0 when the score is off, muted or silent. The sequencer schedules a little ahead, so the beats are known.
+   */
+  beatLevel(): number {
+    const c = this.ctx;
+    if (!c || !this.playing || this.scoreMuted || this.musicVol <= 0 || c.state !== 'running') return 0;
+    const now = c.currentTime, b = this.beats;
+    while (b.length > 1 && b[1].t <= now) b.shift();
+    if (!b.length || b[0].t > now) return 0;
+    const age = now - b[0].t;
+    return age > 1 ? 0 : b[0].a * Math.exp(-age * 5.5);
+  }
 
   private v(o: V) {
     const c = this.ctx!, t = c.currentTime + this.offset + (o.when || 0), att = o.att ?? 0.006;
@@ -87,7 +109,8 @@ export class Sound {
   play(name: string) {
     const log = this.cueLog;
     if (!log && (!this.ctx || this.ctx.state !== 'running')) return;
-    const now = log ? this.clock * 1000 : performance.now(), gap = name === 'shot' || name === 'hit' ? 85 : name === 'die' || name === 'arrow' ? 50 : 35;
+    const now = log ? this.clock * 1000 : performance.now();
+    const gap = name === 'flame' || name === 'lance' ? 220 : name === 'gravity' ? 400 : name === 'shot' || name === 'hit' ? 85 : name === 'die' || name === 'arrow' ? 50 : 35;
     if (now - (this.last[name] || 0) < gap && now >= (this.last[name] || 0)) return;
     this.last[name] = now;
     if (log) { log.push({ t: this.clock, name }); return; }
@@ -125,6 +148,14 @@ export class Sound {
       case 'clear': this.horn([146.8, 220, 293.7], 1.4, 0.22, 800); this.v({ f: 880, dur: 1.2, vol: 0.018, att: 0.3 }); break;
       case 'win': this.thump(60, 1.4, 0.6); this.horn([73.4, 146.8, 220, 293.7, 370, 440], 4.2, 0.6, 1300); this.v({ f: 1174.7, dur: 3.5, vol: 0.025, att: 1 }); break;
       case 'lose': this.thump(52, 2, 0.7); this.v({ f: 110, to: 49, dur: 3.6, vol: 0.34, type: 'sawtooth', lp: 320, lpTo: 90 }); this.v({ f: 116.5, to: 52, dur: 3.6, vol: 0.26, type: 'sawtooth', lp: 320, lpTo: 90 }); break;
+      case 'missile': this.n({ dur: 0.34, vol: 0.09, freq: 700, to: 3200, q: 1.1, att: 0.05 }); this.v({ f: 130, to: 70, dur: 0.2, vol: 0.12 }); break;
+      case 'flame': this.n({ dur: 0.3, vol: 0.05, freq: 900, to: 420, q: 0.6, att: 0.05, type: 'lowpass' }); break;
+      case 'lance': this.v({ f: 310, to: 330, dur: 0.24, vol: 0.022, type: 'sawtooth', lp: 1400, att: 0.05 }); break;
+      case 'gravity': this.v({ f: 70, to: 38, dur: 0.6, vol: 0.14, att: 0.12 }); this.n({ dur: 0.5, vol: 0.04, freq: 300, to: 120, q: 1.4, att: 0.2 }); break;
+      case 'special': this.thump(84, 0.7, 0.5); this.horn([110, 164.8], 1.0, 0.24, 900); this.n({ dur: 0.5, vol: 0.12, freq: 600, to: 4200, q: 1, att: 0.3 }); break;
+      case 'down': this.v({ f: 220, to: 60, dur: 0.5, vol: 0.12, type: 'sawtooth', lp: 500, lpTo: 120 }); break;
+      case 'up': this.v({ f: 160, to: 320, dur: 0.3, vol: 0.06, type: 'triangle' }); this.n({ dur: 0.05, vol: 0.05, freq: 3000, q: 2, when: 0.26 }); break;
+      case 'crit': this.n({ dur: 0.05, vol: 0.12, freq: 3600, type: 'highpass' }); this.v({ f: 880, to: 1320, dur: 0.12, vol: 0.06, type: 'triangle' }); this.thump(120, 0.18, 0.22); break;
       case 'shield': this.v({ f: 1400, to: 620, dur: 0.25, vol: 0.05 }); this.n({ dur: 0.2, vol: 0.06, freq: 5200, type: 'highpass' }); break;
     }
   }
@@ -135,7 +166,7 @@ export class Sound {
     this.playing = true; this.nextT = this.ctx.currentTime + 0.15; this.step = 0;
     this.timer = window.setInterval(() => this.schedule(), 90);
   }
-  stopMusic() { this.playing = false; clearInterval(this.timer); }
+  stopMusic() { this.playing = false; clearInterval(this.timer); this.beats.length = 0; }
   private schedule() {
     const c = this.ctx!;
     if (c.state !== 'running') return;
@@ -169,6 +200,8 @@ export class Sound {
       spb = 60 / (hot ? 104 : 84) / 4;
       const s = this.step % 16, barN = Math.floor(this.step / 16), bar = barN % 4, w = this.nextT - c.currentTime;
       const root = roots[bar], bl = spb * 16;
+      // one beat per quarter note, the bar's first beat strongest (live playback only)
+      if (!hotAt && s % 4 === 0) { this.beats.push({ t: this.nextT, a: s === 0 ? 1 : hot ? 0.8 : 0.6 }); if (this.beats.length > 32) this.beats.shift(); }
       if (s === 0) {
         // pad: root, fifth, third an octave up - slow filtered saws
         for (const [n, vol] of [[0, 0.1], [7, 0.07], [12 + third[bar], 0.05], [12, 0.05]] as const)

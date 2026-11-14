@@ -19,6 +19,7 @@ MODELS = os.path.join(ROOT, 'public', 'models')
 PREVIEWS = os.path.join(ROOT, 'docs', 'previews')
 
 ORDER = ['tower_pulse', 'tower_cryo', 'tower_arc', 'tower_mortar', 'tower_rail', 'tower_beacon',
+         'tower_flame', 'tower_lance', 'tower_missile', 'tower_gravity', 'tower_spire',
          'enemy_grunt', 'enemy_runner', 'enemy_drone', 'enemy_brute', 'enemy_shield', 'enemy_boss',
          'hero', 'core', 'prop_barrier', 'prop_lamp', 'prop_crate']
 
@@ -103,9 +104,9 @@ def setup_render():
     lp = nt.nodes.new('ShaderNodeLightPath')
     amb = nt.nodes.new('ShaderNodeBackground')
     cam = nt.nodes.new('ShaderNodeBackground')
-    amb.inputs[0].default_value = (0.20, 0.24, 0.34, 1)
+    amb.inputs[0].default_value = (0.30, 0.28, 0.26, 1)
     amb.inputs[1].default_value = 0.8
-    cam.inputs[0].default_value = (0.012, 0.013, 0.02, 1)
+    cam.inputs[0].default_value = (0.016, 0.014, 0.012, 1)
     nt.links.new(lp.outputs['Is Camera Ray'], mix.inputs[0])
     nt.links.new(amb.outputs[0], mix.inputs[1])
     nt.links.new(cam.outputs[0], mix.inputs[2])
@@ -148,12 +149,27 @@ def add_light(kind, loc, target, energy, color, size=1.0):
 VIEWS = {'hero': (-0.85, -1.0, 0.45), 'enemy_drone': (0.72, -1.0, 0.45)}
 
 
-def render_one(name, view=None, out=None):
+# add-on groups: the plain previews show level 1 / tier 1, so these are hidden unless asked for
+ADDONS = ('lvl2', 'lvl3', 'tier2', 'tier3', 'tier4', 'tier5')
+
+
+def addon_of(ob):
+    while ob is not None:
+        for a in ADDONS:
+            if ob.name.startswith(a):
+                return a
+        ob = ob.parent
+    return None
+
+
+def render_one(name, view=None, out=None, show=()):
+    """show: add-on group names (see ADDONS) to keep; all others are hidden but still count for the framing."""
     view = view or VIEWS.get(name, (0.72, -1.0, 0.62))
     clear()
     path = os.path.join(MODELS, name + '.glb')
     bpy.ops.import_scene.gltf(filepath=path)
     bpy.context.view_layer.update()
+    hidden = [ob for ob in bpy.context.scene.objects if (addon_of(ob) or 'x') not in ('x',) + tuple(show)]
     lo = Vector((1e9,) * 3)
     hi = Vector((-1e9,) * 3)
     pts = []
@@ -168,6 +184,8 @@ def render_one(name, view=None, out=None):
     size = hi - lo
     c = (lo + hi) / 2
     R = size.length / 2
+    for ob in hidden:
+        ob.hide_render = True
     st = glb_stats(path)
     kb = os.path.getsize(path) / 1024
     print(f'[stats] {name:14s} tris={st["tris"]:6d} {kb:6.1f}KB  size(x,y,z)=({size.x:.2f},{size.y:.2f},{size.z:.2f}) '
@@ -178,7 +196,7 @@ def render_one(name, view=None, out=None):
     gm = bpy.data.materials.new('ground')
     gm.use_nodes = True
     bs = gm.node_tree.nodes['Principled BSDF']
-    bs.inputs['Base Color'].default_value = (0.006, 0.007, 0.011, 1)
+    bs.inputs['Base Color'].default_value = (0.010, 0.009, 0.008, 1)
     bs.inputs['Roughness'].default_value = 1.0
     bs.inputs['Specular IOR Level'].default_value = 0.0
     bpy.ops.mesh.primitive_plane_add(size=max(60.0, R * 40), location=(c.x, c.y, lo.z - (0.0 if lo.z > -0.01 else R * 0.6)))
@@ -208,7 +226,7 @@ def render_one(name, view=None, out=None):
     # lights
     s = max(R, 0.5)
     add_light('SUN', c + Vector((2.5, -3.0, 4.0)), c, 2.6, (1.0, 0.96, 0.9))
-    add_light('SUN', c + Vector((-3.0, 3.5, 2.2)), c, 4.0, (0.55, 0.75, 1.0))
+    add_light('SUN', c + Vector((-3.0, 3.5, 2.2)), c, 3.0, (0.75, 0.82, 1.0))
     add_light('AREA', c + Vector((-2.2, -2.0, 0.6)) * s, c, 60 * s * s, (0.8, 0.85, 1.0), size=2.5 * s)
     bpy.context.scene.render.filepath = out or os.path.join(PREVIEWS, name + '.png')
     bpy.ops.render.render(write_still=True)
@@ -223,6 +241,10 @@ ANGLES = {
     'enemy_boss': {'front': (0.2, -1.0, 0.3), 'side': (1.0, -0.1, 0.25), 'back': (-0.6, 1.0, 0.5),
                    'top': (0.3, -0.5, 1.0)},
 }
+for _n in ('tower_flame', 'tower_lance', 'tower_missile', 'tower_gravity'):
+    ANGLES[_n] = {'back': (-0.6, 1.0, 0.5), 'top': (0.3, -0.5, 1.0), 'side': (1.0, -0.1, 0.3)}
+ANGLES['tower_spire'] = {'back': (-0.6, 1.0, 0.5), 'top': (0.3, -0.5, 1.0), 'side': (1.0, -0.1, 0.12),
+                         'low': (0.7, -1.0, -0.12)}
 DEFAULT_ANGLES = {'back': (-0.6, 1.0, 0.5), 'top': (0.3, -0.5, 1.0)}
 
 
@@ -235,12 +257,43 @@ def render_angles(names):
             render_one(n, view=view, out=os.path.join(out, f'{n}_{tag}.png'))
 
 
+LEVELS = (('1', ()), ('2', ('lvl2', 'tier2')), ('3', ('lvl2', 'lvl3', 'tier2', 'tier3')),
+          ('4', ('tier2', 'tier3', 'tier4')), ('5', ('tier2', 'tier3', 'tier4', 'tier5')))
+
+
+def render_levels(names, views=None):
+    """Side by side comparison of the upgrade levels (towers: 1-3, hero: bow tiers 1-5) from two angles,
+    written to docs/previews/levels/<name>.png."""
+    out = os.path.join(PREVIEWS, 'levels')
+    os.makedirs(out, exist_ok=True)
+    setup_render()
+    for n in names:
+        lv = LEVELS if n == 'hero' else LEVELS[:3]
+        vs = views or ({'a': (-0.9, -0.8, 0.4), 'b': (0.5, 0.9, 0.5)} if n == 'hero' else
+                       {'a': (0.72, -1.0, 0.62), 'top': (0.25, -0.45, 1.0)})
+        rows = []
+        for tag, view in vs.items():
+            files = []
+            for k, show in lv:
+                f = os.path.join(out, f'_{n}_{tag}_{k}.png')
+                render_one(n, view=view, out=f, show=show)
+                files.append(f)
+            row = os.path.join(out, f'_{n}_{tag}.png')
+            subprocess.run(['magick', *files, '+append', row], check=True)
+            for f in files:
+                os.remove(f)
+            rows.append(row)
+        subprocess.run(['magick', *rows, '-append', os.path.join(out, n + '.png')], check=True)
+        for f in rows:
+            os.remove(f)
+
+
 def contact_sheet():
     files = [os.path.join(PREVIEWS, n + '.png') for n in ORDER if os.path.exists(os.path.join(PREVIEWS, n + '.png'))]
     out = os.path.join(PREVIEWS, 'contact_sheet.png')
     try:
-        subprocess.run(['magick', 'montage', '-label', '%t', *files, '-tile', '6x3', '-geometry', '320x320+3+3',
-                        '-background', '#0b0c12', '-fill', '#c8d2e0', '-pointsize', '15', out], check=True)
+        subprocess.run(['magick', 'montage', '-label', '%t', *files, '-tile', '7x4', '-geometry', '320x320+3+3',
+                        '-background', '#100e0c', '-fill', '#d8cfc0', '-pointsize', '15', '-depth', '8', '-strip', out], check=True)
     except Exception as e:
         print('[preview] montage with labels failed, using ffmpeg tile:', e)
         lst = os.path.join(PREVIEWS, '_list.txt')
@@ -248,7 +301,7 @@ def contact_sheet():
             for p in files:
                 f.write(f"file '{p}'\n")
         subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', lst, '-vf',
-                        'scale=320:320,tile=6x3:padding=4:color=0x0b0c12', '-frames:v', '1', out], check=True)
+                        'scale=320:320,tile=7x4:padding=4:color=0x0b0c12', '-frames:v', '1', out], check=True)
         os.remove(lst)
     print('[preview] contact sheet ->', out)
 
@@ -268,5 +321,7 @@ if __name__ == '__main__':
     names = [a for a in argv if not a.startswith('--')]
     if '--angles' in argv:
         render_angles(names[0].split(',') if names else list(ANGLES))
+    elif '--levels' in argv:
+        render_levels(names[0].split(',') if names else [n for n in ORDER if n.startswith('tower_')] + ['hero'])
     else:
         render_all(names[0].split(',') if names else None, sheet=not names)

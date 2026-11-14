@@ -1,0 +1,61 @@
+/* Music sheet and the small player dock. Tokens come from style.css. */
+.mu { display: grid; gap: 14px; text-align: left; }
+.mu-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: var(--r); background: var(--soot-1); max-height: min(46vh, 420px); overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; }
+.mu-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 12px; border-bottom: 1px solid var(--line); border-left: 3px solid transparent; }
+.mu-row:last-child { border-bottom: 0; }
+.mu-row.on { border-left-color: var(--apricot); background: var(--soot-2); }
+.mu-row.last { border-left-color: var(--line-2); }
+.mu-main { flex: 1 1 200px; min-width: 0; display: grid; gap: 2px; }
+.mu-name { font-family: var(--display); font-size: 19px; font-weight: 600; letter-spacing: 0.04em; line-height: 1.1; color: var(--sand); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mu-meta { font-family: var(--mono); font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mu-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.mu-bpm { display: flex; align-items: center; gap: 6px; }
+.mu-bpm input { width: 64px; height: 36px; padding: 0 6px; font-family: var(--mono); font-size: 14px; text-align: center; color: var(--bone); background: var(--soot-0); border: 1px solid var(--line-2); border-radius: var(--r); user-select: text; -webkit-user-select: text; }
+.mu-chip { cursor: pointer; }
+.mu-del { color: var(--muted); }
+.mu-del:hover { color: var(--rust); border-color: var(--rust); }
+
+.mu-add { display: flex; flex-wrap: wrap; gap: 8px; }
+.mu-input { flex: 3 1 240px; min-width: 0; height: 40px; padding: 0 10px; font-family: var(--mono); font-size: 13px; color: var(--bone); background: var(--soot-0); border: 1px solid var(--line-2); border-radius: var(--r); user-select: text; -webkit-user-select: text; }
+.mu-input.mu-name-in { flex: 1 1 150px; font-family: var(--body); font-size: 15px; }
+.mu-input::placeholder, .mu-area::placeholder { color: var(--muted); opacity: 0.8; }
+.mu-input:focus, .mu-area:focus, .mu-bpm input:focus { outline: none; border-color: var(--sand); }
+.mu-note { font-size: 14px; color: var(--muted); }
+.mu-io { display: grid; gap: 10px; }
+.mu-io-box { display: grid; gap: 8px; }
+.mu-io-box:empty { display: none; }
+.mu-area { width: 100%; min-height: 120px; padding: 8px 10px; resize: vertical; font-family: var(--mono); font-size: 12px; line-height: 1.45; color: var(--bone); background: var(--soot-0); border: 1px solid var(--line-2); border-radius: var(--r); user-select: text; -webkit-user-select: text; }
+
+/* The dock sits above the HUD and above open sheets, so the embed can always be reached. */
+.mu-dock { position: fixed; z-index: 25; left: calc(12px + var(--safe-l)); top: calc(var(--top-h) + 12px); width: min(320px, calc(100vw - 24px)); background: var(--plate); border: 1px solid var(--line-2); border-radius: var(--r); pointer-events: auto; }
+.mu-dock-bar { display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 10px; }
+.mu-dock-title { flex: 1; min-width: 0; font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--sand); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mu-dock .mu-chip { min-width: 0; min-height: 32px; padding: 0 10px; font-size: 13px; }
+.mu-dock-body { border-top: 1px solid var(--line); }
+/* Minimised: the frame keeps playing, so it is clipped, not removed. */
+.mu-dock.min { width: min(240px, calc(100vw - 24px)); }
+.mu-dock.min .mu-dock-body { height: 0; overflow: hidden; border-top: 0; visibility: hidden; }
+.mu-frame { display: block; width: 100%; border: 0; background: var(--soot-0); }
+.mu-frame.yt { aspect-ratio: 16 / 9; min-height: 200px; }
+.mu-frame.sp { height: 152px; }
+.mu-dock-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px; }
+.mu-vol { flex: 1; min-width: 80px; height: 28px; accent-color: var(--apricot); }
+.mu-hint { flex-basis: 100%; margin: 0; font-size: 12px; line-height: 1.35; color: var(--muted); }
+
+@media (pointer: coarse) {
+  .mu-bpm input, .mu-input { height: 44px; }
+  .mu-row .chip, .mu-row .btn.small { min-height: 44px; }
+  .mu-dock .mu-chip { min-height: 40px; }
+  .mu-vol { height: 40px; }
+}
+@media (max-height: 520px) {
+  /* Too short for a list that scrolls on its own: let the whole sheet scroll. */
+  .mu-list { max-height: none; overflow: visible; }
+  .mu-frame.yt { min-height: 0; height: 120px; aspect-ratio: auto; }
+  .mu-frame.sp { height: 80px; }
+}
+/* Wide screens: an open sheet moves aside so the dock does not cover the list.
+   The :not(#mu-none) only adds weight, so this wins over the overlay padding rules in style.css. */
+@media (min-width: 900px) {
+  body:has(.mu-dock:not(.min)) .overlay:has(.mu):not(#mu-none) { padding-left: calc(356px + var(--safe-l)); }
+}
