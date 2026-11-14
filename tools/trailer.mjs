@@ -28,14 +28,12 @@ page.on('pageerror', (e) => console.error('[pageerror]', e.message));
 await page.goto(BASE + '/play.html?capture=1', { waitUntil: 'load' });
 await page.waitForFunction('window.__volt', { timeout: 60000 });
 await page.addStyleTag({ content: `
-  #tr-cap { position: fixed; left: 0; right: 0; bottom: 13%; z-index: 90; text-align: center; pointer-events: none; font-family: Orbitron, sans-serif; font-weight: 900; font-size: 64px; letter-spacing: .2em; text-transform: uppercase; color: #fff; text-shadow: 0 0 30px rgba(0,0,0,.9), 0 0 22px #19e3ff; opacity: 0; }
+  #tr-cap { position: fixed; left: 0; right: 0; bottom: 20%; z-index: 90; text-align: center; pointer-events: none; font-family: Orbitron, sans-serif; font-weight: 900; font-size: 64px; letter-spacing: .2em; text-transform: uppercase; color: #fff; text-shadow: 0 0 30px rgba(0,0,0,.9), 0 0 22px #19e3ff; opacity: 0; }
   #tr-cap small { display: block; margin-top: 14px; font-size: 24px; letter-spacing: .38em; color: #ffc46b; font-weight: 700; }
   #tr-cap.mid { bottom: 42%; font-size: 92px; }
   #tr-fade { position: fixed; inset: 0; z-index: 95; background: #000; opacity: 0; pointer-events: none; }
-  #tr-bars::before, #tr-bars::after { content: ''; position: fixed; left: 0; right: 0; height: 7.5%; background: #000; z-index: 89; }
-  #tr-bars::before { top: 0; } #tr-bars::after { bottom: 0; }
   body.tr-clean #hud, body.tr-clean #vignette { display: none !important; }
-  #toasts, #tip, #btn-pause, #btn-speed { display: none !important; }
+  #toasts, #tip, #btn-pause, #btn-speed, #bottom, #marks { display: none !important; }
 ` });
 await page.evaluate(() => {
   for (const id of ['tr-cap', 'tr-fade', 'tr-bars']) { const d = document.createElement('div'); d.id = id; document.body.appendChild(d); }
