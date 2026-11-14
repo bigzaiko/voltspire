@@ -32,8 +32,8 @@ export default defineConfig({
     target: 'es2022',
     rollupOptions: {
       input: {
-        main: resolve(__dirname, 'index.html'),
-        play: resolve(__dirname, 'play.html'),
+        main: resolve(import.meta.dirname, 'index.html'),
+        play: resolve(import.meta.dirname, 'play.html'),
       },
     },
   },

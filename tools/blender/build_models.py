@@ -1,6 +1,6 @@
 """VOLTSPIRE model builder.
 
-    blender -b --python tools/blender/build_models.py [-- --only a,b,c] [--no-render]
+    blender -b --python tools/blender/build_models.py [-- --only a,b,c] [--no-render] [--angles]
 
 Builds every model procedurally, exports public/models/<name>.glb and (unless
 --no-render) renders docs/previews/<name>.png plus contact_sheet.png.
@@ -82,6 +82,8 @@ def main():
         import render_previews
         importlib.reload(render_previews)
         render_previews.render_all(names, sheet=only is None)
+        if '--angles' in argv:
+            render_previews.render_angles(names)
 
 
 main()

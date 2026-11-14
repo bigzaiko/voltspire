@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" />
+  <meta name="theme-color" content="#0a0b10" />
+  <title>VOLTSPIRE — Build the grid. Become the storm.</title>
+  <meta name="description" content="VOLTSPIRE is a free cyberpunk tower defense for your browser. Build the grid from above, then drop onto your towers as Kestrel, a third-person archer. Solo, online co-op and 1v1. No account, no ads, no tracking." />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="VOLTSPIRE" />
+  <meta property="og:title" content="VOLTSPIRE — Build the grid. Become the storm." />
+  <meta property="og:description" content="Cyberpunk tower defense where your ultimate drops you onto the towers as a third-person archer. Free in your browser, solo or online." />
+  <meta property="og:image" content="./media/poster.jpg" />
+  <meta property="og:image:width" content="1920" />
+  <meta property="og:image:height" content="1080" />
+  <meta property="og:image:alt" content="Kestrel the archer firing from a tower into a column of machines in a neon megacity." />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="./src/landing.css" />
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav" id="nav">
+    <a class="brand" href="#top" aria-label="VOLTSPIRE, back to top"><span>VOLT</span><span class="brand-b">SPIRE</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#trailer">Trailer</a>
+      <a href="#game">The game</a>
+      <a href="#towers">Towers</a>
+      <a href="#static">The Static</a>
+      <a href="#multiplayer">Multiplayer</a>
+      <a href="#controls">Controls</a>
+    </nav>
+    <a class="btn btn-sm" href="./play.html">Play</a>
+  </header>
+
+  <main id="main">
+    <!-- HERO -->
+    <section class="hero" id="top">
+      <div class="hero-bg" aria-hidden="true"></div>
+      <div class="hero-scan" aria-hidden="true"></div>
+      <div class="wrap hero-inner">
+        <p class="eyebrow">Tower defense <i></i> Third-person archer <i></i> Free in your browser</p>
+        <h1 class="wordmark"><span class="wm-a">VOLT</span><span class="wm-b">SPIRE</span></h1>
+        <p class="tagline">Build the grid. Become the storm.</p>
+        <p class="pitch">Command the last defense of a neon megacity from above: lay down turrets, pylons and railguns along the kill lane. Then, when your Uplink is charged, drop onto any tower as Kestrel and fight the swarm yourself, bow in hand, in third person. One run, twenty waves, and a deck of upgrades that never deals the same hand twice.</p>
+        <div class="cta">
+          <a class="btn btn-lg" href="./play.html">Play free in your browser</a>
+          <a class="btn btn-ghost btn-lg" href="#trailer" id="watch-trailer"><span class="tri" aria-hidden="true"></span>Watch trailer</a>
+        </div>
+        <ul class="facts" aria-label="At a glance">
+          <li><b>6</b><span>tower types</span></li>
+          <li><b>20</b><span>waves per run</span></li>
+          <li><b>5</b><span>bow tiers</span></li>
+          <li><b>1–2</b><span>players, solo or online</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- TRAILER -->
+    <section class="section trailer" id="trailer" aria-labelledby="h-trailer">
+      <div class="wrap">
+        <header class="head">
+          <p class="kicker">Transmission 01</p>
+          <h2 id="h-trailer">See the storm</h2>
+        </header>
+        <div class="frame" id="trailer-frame">
+          <video id="trailer-video" controls preload="metadata" playsinline poster="./media/poster.jpg" aria-label="VOLTSPIRE gameplay trailer">
+            <source src="./media/trailer.mp4" type="video/mp4" />
+          </video>
+          <div class="frame-fallback" id="trailer-fallback" hidden>
+            <p class="ff-title">Trailer signal pending</p>
+            <p class="ff-text">The trailer is not available right now. The game is, and it loads in seconds.</p>
+            <a class="btn btn-sm" href="./play.html">Play instead</a>
+          </div>
+          <span class="corner c-tl" aria-hidden="true"></span><span class="corner c-tr" aria-hidden="true"></span>
+          <span class="corner c-bl" aria-hidden="true"></span><span class="corner c-br" aria-hidden="true"></span>
+        </div>
+        <p class="frame-cap">Captured in-engine, in a browser tab. Nothing to install.</p>
+      </div>
+    </section>
+
+    <!-- THREE BEATS -->
+    <section class="section" id="game" aria-labelledby="h-game">
+      <div class="wrap">
+        <header class="head">
+          <p class="kicker">The game</p>
+          <h2 id="h-game">Two games, one battlefield</h2>
+          <p class="lede">VOLTSPIRE moves between a commander's map and an archer's sightline. The cards you draw decide how both of them grow.</p>
+        </header>
+
+        <article class="beat">
+          <figure class="beat-img"><img src="./media/shot-bird.jpg" width="1920" height="1080" loading="lazy" alt="Bird's-eye view of the grid: towers lining a glowing lane while machines march toward the core." /></figure>
+          <div class="beat-txt">
+            <span class="num" aria-hidden="true">01</span>
+            <h3>Command view</h3>
+            <p>From above, the district is a board. Place towers on any free tile beside the lane, upgrade each one twice, and sell what no longer earns its square. Six tower types cover every job: rapid fire, slows, chain lightning, long-range blasts, piercing beams and support auras.</p>
+            <ul class="ticks">
+              <li>Start with the Pulse Turret and Cryo Emitter; earn the other four as blueprints</li>
+              <li>Call the next wave early for bonus credits</li>
+              <li>A Colossus arrives every fifth wave; survive twenty to win, then push on in endless mode</li>
+            </ul>
+          </div>
+        </article>
+
+        <article class="beat beat-flip">
+          <figure class="beat-img"><img src="./media/shot-hero.jpg" width="1920" height="1080" loading="lazy" alt="Third-person view of Kestrel on a tower, firing a rail shot down the lane at a group of machines." /></figure>
+          <div class="beat-txt">
+            <span class="num num-hot" aria-hidden="true">02</span>
+            <h3>Uplink</h3>
+            <p>Every kill charges your ultimate. When it is full, the camera drops from the sky to a tower top and you are Kestrel: an archer in third person with a few seconds to turn the wave. Aim at another tower and teleport to it to follow the fight.</p>
+            <ul class="skills">
+              <li><kbd>LMB</kbd><span><b>Rapid arrows</b> Hold to loose a steady stream of shots.</span></li>
+              <li><kbd>RMB</kbd><span><b>Rail Shot</b> One heavy line that tears through the column.</span></li>
+              <li><kbd>Q</kbd><span><b>Arrow Rain</b> Saturate an area from above.</span></li>
+              <li><kbd>E</kbd><span><b>Singularity</b> A gravity well that drags the swarm together, then detonates.</span></li>
+              <li><kbd>F</kbd><span><b>Teleport</b> Jump to the tower in your sights.</span></li>
+            </ul>
+          </div>
+        </article>
+
+        <article class="beat">
+          <figure class="beat-img"><img src="./media/shot-cards.jpg" width="1920" height="1080" loading="lazy" alt="VOLTSPIRE title screen over the night skyline of Nyx-9." /></figure>
+          <div class="beat-txt">
+            <span class="num" aria-hidden="true">03</span>
+            <h3>Cards</h3>
+            <p>Each level you are dealt three upgrade cards and keep one. Tower blueprints open new builds, per-tower upgrades sharpen the ones you rely on, hero powers reshape Kestrel's kit, and economy cards pay for all of it.</p>
+            <p>The bow evolves on its own as the run goes on, every four waves, through five tiers.</p>
+            <ol class="bow" aria-label="Bow tiers">
+              <li class="b1"><b>Carbon</b><span>Standard arrows</span></li>
+              <li class="b2"><b>Pulse</b><span>Pierces a target</span></li>
+              <li class="b3"><b>Tempest</b><span>Extra arrow</span></li>
+              <li class="b4"><b>Nova</b><span>Explodes on impact</span></li>
+              <li class="b5"><b>Singularity</b><span>Chains lightning</span></li>
+            </ol>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- TOWERS -->
+    <section class="section alt" id="towers" aria-labelledby="h-towers">
+      <div class="wrap">
+        <header class="head">
+          <p class="kicker">Arsenal</p>
+          <h2 id="h-towers">Tower roster</h2>
+          <p class="lede">Six machines, six jobs. Each upgrades through three levels, and each has cards of its own.</p>
+        </header>
+        <ul class="roster">
+          <li class="unit t-pulse">
+            <div class="unit-img"><img src="./media/tower_pulse.png" width="640" height="640" loading="lazy" alt="Pulse Turret render" /></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Rapid fire</span><span>50 cr</span></p><h3>Pulse Turret</h3><p>Rapid homing bolts. Cheap, reliable, and the backbone of every opening.</p></div>
+          </li>
+          <li class="unit t-cryo">
+            <div class="unit-img"><img src="./media/tower_cryo.png" width="640" height="640" loading="lazy" alt="Cryo Emitter render" /></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Crowd control</span><span>70 cr</span></p><h3>Cryo Emitter</h3><p>Chills a whole group and slows it, holding the column in everyone else's range.</p></div>
+          </li>
+          <li class="unit t-arc">
+            <div class="unit-img"><img src="./media/tower_arc.png" width="640" height="640" loading="lazy" alt="Arc Pylon render" /></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Chain damage</span><span>110 cr</span></p><h3>Arc Pylon</h3><p>Lightning that jumps from enemy to enemy. The tighter the pack, the better it pays.</p></div>
+          </li>
+          <li class="unit t-mortar">
+            <div class="unit-img"><img src="./media/tower_mortar.png" width="640" height="640" loading="lazy" alt="Plasma Mortar render" /></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Artillery</span><span>140 cr</span></p><h3>Plasma Mortar</h3><p>Long-range area blasts over the rooftops. Cannot hit flyers or anything at its feet.</p></div>
+          </li>
+          <li class="unit t-rail">
+            <div class="unit-img"><img src="./media/tower_rail.png" width="640" height="640" loading="lazy" alt="Railgun render" /></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Heavy sniper</span><span>190 cr</span></p><h3>Railgun</h3><p>A slow, piercing beam with the longest reach on the grid. It picks the toughest target.</p></div>
+          </li>
+          <li class="unit t-beacon">
+            <div class="unit-img"><img src="./media/tower_beacon.png" width="640" height="640" loading="lazy" alt="Signal Beacon render" /></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Support</span><span>120 cr</span></p><h3>Signal Beacon</h3><p>Fires nothing. Boosts the damage and speed of every tower standing near it.</p></div>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ENEMIES -->
+    <section class="section" id="static" aria-labelledby="h-static">
+      <div class="wrap">
+        <header class="head">
+          <p class="kicker kicker-hot">Threat index</p>
+          <h2 id="h-static">The Static</h2>
+          <p class="lede">A machine swarm with no pilot and no off switch. It arrives in waves, and each wave is tougher than the last.</p>
+        </header>
+        <ul class="foes">
+          <li class="foe"><img src="./media/enemy_grunt.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Grunt</h3><p class="foe-tag">From wave 1</p><p>The line infantry of the swarm. Weak alone, never alone.</p></div></li>
+          <li class="foe"><img src="./media/enemy_runner.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Runner</h3><p class="foe-tag">From wave 2</p><p>Fragile and very fast. Slips past slow guns in packs.</p></div></li>
+          <li class="foe"><img src="./media/enemy_drone.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Drone</h3><p class="foe-tag">From wave 4 · Flying</p><p>Flies over the lane, out of reach of mortars.</p></div></li>
+          <li class="foe"><img src="./media/enemy_shield.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Aegis</h3><p class="foe-tag">From wave 6 · Shielded</p><p>Carries an energy shield you must break before the hull.</p></div></li>
+          <li class="foe"><img src="./media/enemy_brute.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Brute</h3><p class="foe-tag">From wave 8 · Armored</p><p>Slow, plated, and costs three core integrity if it gets through.</p></div></li>
+          <li class="foe foe-boss"><img src="./media/enemy_boss.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Colossus</h3><p class="foe-tag">Every 5th wave · Boss</p><p>A walking siege engine. Let one reach the Heart and it takes half your core with it.</p></div></li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- LORE -->
+    <section class="lore" id="lore" aria-labelledby="h-lore">
+      <div class="lore-bg" aria-hidden="true"></div>
+      <div class="wrap lore-inner">
+        <p class="kicker">Nyx-9 <i></i> 2187</p>
+        <h2 id="h-lore">One core left. One archer on the wire.</h2>
+        <p>The megacity of Nyx-9 has gone dark district by district. The Static, a rogue machine swarm that answers to no one, has taken every power core but one. Now it is marching on the last: the Heart.</p>
+        <p>You are Kestrel. You hold the district grid from the command deck, and when the towers are not enough you ride the Uplink down to the rooftops and hold it by hand.</p>
+      </div>
+    </section>
+
+    <!-- MULTIPLAYER -->
+    <section class="section" id="multiplayer" aria-labelledby="h-mp">
+      <div class="wrap">
+        <header class="head">
+          <p class="kicker">Online</p>
+          <h2 id="h-mp">Bring one more</h2>
+          <p class="lede">Two ways to play with a friend, both joined with a six-character room code and nothing else.</p>
+        </header>
+        <div class="modes">
+          <article class="mode">
+            <p class="mode-tag">2 players · Together</p>
+            <h3>Co-op</h3>
+            <p>Defend one grid and one core together, with shared credits and two archers. Each of you charges your own Uplink, so one can hold the rooftops while the other keeps building.</p>
+          </article>
+          <article class="mode mode-hot">
+            <p class="mode-tag">1 v 1 · Against</p>
+            <h3>Versus</h3>
+            <p>Each of you defends your own grid. Spend credits to send squads at your rival: Runner Packs, Drone Wings, Aegis Trios and Brute Pairs. The last core standing wins.</p>
+          </article>
+          <aside class="room" aria-label="How joining works">
+            <p class="room-label">Room code</p>
+            <p class="room-code" aria-hidden="true"><span>K</span><span>7</span><span>X</span><span>2</span><span>Q</span><span>F</span></p>
+            <p class="room-text">One player opens a room and reads out the code. The other types it in. The two browsers then connect directly, peer-to-peer.</p>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <!-- CONTROLS + SAFETY -->
+    <section class="section alt" id="controls" aria-labelledby="h-controls">
+      <div class="wrap split">
+        <div>
+          <header class="head">
+            <p class="kicker">Controls</p>
+            <h2 id="h-controls">Keyboard and mouse</h2>
+          </header>
+          <div class="keys">
+            <h3>Command view</h3>
+            <dl>
+              <div><dt><kbd>1</kbd>–<kbd>6</kbd></dt><dd>Pick a tower, then click a tile to build. Hold <kbd>Shift</kbd> to keep building.</dd></div>
+              <div><dt><kbd>U</kbd> <kbd>X</kbd></dt><dd>Upgrade or sell the selected tower.</dd></div>
+              <div><dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>Pan the camera, or drag with the right mouse button. Wheel zooms.</dd></div>
+              <div><dt><kbd>N</kbd></dt><dd>Call the next wave early.</dd></div>
+              <div><dt><kbd>Space</kbd></dt><dd>Launch the Uplink when it is fully charged.</dd></div>
+              <div><dt><kbd>Esc</kbd> <kbd>P</kbd></dt><dd>Pause.</dd></div>
+            </dl>
+            <h3>Uplink</h3>
+            <dl>
+              <div><dt><kbd>Mouse</kbd></dt><dd>Aim. Hold the left button to shoot.</dd></div>
+              <div><dt><kbd>RMB</kbd> <kbd>Q</kbd> <kbd>E</kbd></dt><dd>Rail Shot, Arrow Rain, Singularity.</dd></div>
+              <div><dt><kbd>F</kbd></dt><dd>Teleport to the tower you are aiming at.</dd></div>
+              <div><dt><kbd>Space</kbd></dt><dd>End the Uplink early and keep part of the charge.</dd></div>
+            </dl>
+          </div>
+        </div>
+        <aside class="safe" aria-labelledby="h-safe">
+          <p class="kicker">Safe by design</p>
+          <h2 id="h-safe">Just the game</h2>
+          <ul class="ticks">
+            <li><b>No account, no login.</b> Open the page and play.</li>
+            <li><b>No ads, no tracking.</b> No analytics, no third-party scripts.</li>
+            <li><b>Nothing stored on a server.</b> Your settings stay in your own browser.</li>
+            <li><b>Direct multiplayer.</b> A match connects the two browsers to each other, so only share a room code with someone you trust.</li>
+            <li><b>Open source.</b> Every line is public and can be checked.</li>
+          </ul>
+        </aside>
+      </div>
+    </section>
+
+    <!-- FINAL CTA -->
+    <section class="final" aria-labelledby="h-final">
+      <div class="wrap">
+        <h2 id="h-final">The Heart is still beating.</h2>
+        <p>Keep it that way.</p>
+        <a class="btn btn-lg" href="./play.html">Play free in your browser</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="wrap foot-inner">
+      <a class="brand" href="#top" aria-label="VOLTSPIRE, back to top"><span>VOLT</span><span class="brand-b">SPIRE</span></a>
+      <p>Made with Three.js and Blender.</p>
+      <p><a href="https://github.com/bigzaiko/voltspire" rel="noopener noreferrer">Open source on GitHub</a></p>
+    </div>
+  </footer>
+
+  <script type="module" src="./src/landing.ts"></script>
+</body>
+</html>

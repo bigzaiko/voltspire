@@ -2,13 +2,14 @@
 import math
 from vs_lib import *
 
-HULL = ('#262a33', 0.6, 0.45)
-TRIM = ('#9aa3ad', 0.6, 0.4)
+HULL = ('#22252d', 0.6, 0.45)
+TRIM = ('#7d848e', 0.65, 0.42)     # worn gunmetal
 DARK = ('#0f1116', 0.6, 0.45)
 
 
 def tower_model(name, accent):
-    return Model(name, {'hull': HULL, 'paint': accent, 'trim': TRIM, 'glow_main': accent})
+    # 'paint' is a dark, desaturated industrial coat of the accent hue; only glow_main carries the neon
+    return Model(name, {'hull': HULL, 'paint': (industrial(accent), 0.25, 0.6), 'trim': TRIM, 'glow_main': accent})
 
 
 def tower_base(m):
@@ -27,9 +28,15 @@ def tower_base(m):
                 bevel=0.008, plane='xz')
         b.cyl(0.035, 0.03, 'trim', segs=8, at=(1.0, 0, 0.075), bevel=0.008)
         b.box((0.012, 0.16, 0.05), 'glow_main', bevel=0, at=(1.052, 0, 0.045))
+        # worn steel: scuffed foot edge + bare strip along the painted fairing
+        b.box((0.05, 0.31, 0.03), 'trim', bevel=0.008, at=(1.035, 0, 0.012))
+        b.box((0.24, 0.018, 0.012), 'trim', bevel=0, at=(0.83, 0.075, 0.283), rot=(0, 21.5, 0))
     # cardinal armour plates + sloped panels
     with b.frames(radial(4)):
         b.box((0.03, 0.44, 0.075), 'paint', bevel=0.01, at=(0.835, 0, 0.095))
+        for y in (-0.19, 0.19):
+            b.cyl(0.014, 0.012, 'trim', segs=5, rot=RIGHT, at=(0.845, y, 0.095))
+        b.box((0.02, 0.36, 0.014), 'trim', bevel=0, at=(0.728, 0, 0.452), rot=(0, -54.5, 0))
         b.box((0.03, 0.36, 0.13), 'paint', bevel=0.01, at=(0.685, 0, 0.395), rot=(0, -54.5, 0))
         for y in (-0.1, 0, 0.1):
             b.box((0.036, 0.05, 0.085), 'hull', bevel=0.006, at=(0.69, y, 0.398), rot=(0, -54.5, 0))

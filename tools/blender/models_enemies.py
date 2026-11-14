@@ -4,55 +4,75 @@ from vs_lib import *
 
 
 def enemy_model(name):
-    return Model(name, {'hull': ('#17181e', 0.6, 0.45), 'paint': '#7a1020', 'trim': ('#565c68', 0.6, 0.4),
+    return Model(name, {'hull': ('#17181e', 0.6, 0.45), 'paint': ('#5c272c', 0.3, 0.55), 'trim': ('#5d626c', 0.65, 0.42),
                         'glow_main': '#ff3b1f'})
 
 
 # ------------------------------------------------------------------ 7. grunt
 def enemy_grunt():
+    """Hunched bipedal combat drone: low sensor head slung under a layered carapace, digitigrade
+    legs, twin forearm guns. Reads from above as overlapping crimson back plates."""
     m = enemy_model('enemy_grunt')
     b = m.node('body')
-    pod = [(-0.24, 0.62), (-0.30, 0.76), (-0.21, 0.94), (0.10, 1.00), (0.27, 0.88), (0.26, 0.66), (0.10, 0.56),
-           (-0.12, 0.56)]
-    b.prism(pod, 0.36, 'hull', bevel=0.04, plane='yz')
-    b.prism([(-0.235, 0.925), (0.10, 0.995), (0.285, 0.87), (0.25, 0.945), (0.10, 1.04), (-0.19, 0.975)], 0.27, 'paint',
-            bevel=0.012, plane='yz')
+    # core hull (profile in the YZ plane, front = -Y), pelvis and neck
+    b.prism([(0.16, 0.58), (0.23, 0.74), (0.13, 0.95), (-0.10, 1.03), (-0.29, 0.92), (-0.33, 0.78), (-0.20, 0.66),
+             (-0.02, 0.56)], 0.28, 'hull', bevel=0.035, plane='yz')
+    b.box((0.25, 0.17, 0.13), 'hull', bevel=0.03, at=(0, 0.06, 0.60))
+    b.box((0.12, 0.05, 0.08), 'trim', bevel=0.015, at=(0, -0.02, 0.535))
+    b.rod((0, -0.26, 0.80), (0, -0.40, 0.74), 0.05, 'trim', segs=6)
+    # layered carapace, each plate overlapping the next one back
+    b.prism(slab([(-0.36, 0.875), (-0.29, 0.995), (-0.09, 1.095), (0.03, 1.08)], 0.045), 0.40, 'paint', bevel=0.014,
+            plane='yz')
+    b.prism(slab([(-0.37, 0.885), (-0.295, 1.01), (-0.09, 1.112), (0.05, 1.092)], 0.03), 0.075, 'hull', plane='yz')
     with b.sym():
-        b.prism([(-0.19, 0.66), (-0.235, 0.76), (-0.16, 0.90), (0.08, 0.94), (0.21, 0.86), (0.21, 0.68)], 0.05, 'paint',
-                bevel=0.012, plane='yz', at=(0.185, 0, 0))
-        # legs (digitigrade)
-        H, K, A = (0.20, 0.04, 0.64), (0.26, 0.21, 0.40), (0.24, 0.02, 0.13)
-        b.cyl(0.095, 0.08, 'trim', segs=10, bevel=0.015, o='c', rot=RIGHT, at=(0.21, 0.04, 0.64))
-        b.limb(H, K, 0.08, 0.058, 'hull', segs=8, power=3)
-        b.box((0.04, 0.12, 0.2), 'paint', bevel=0.012, m=aim(H, K, (1, 0, 0)), at=(0, 0.065, 0.15), rot=(0, 0, 90))
-        b.cyl(0.062, 0.12, 'trim', segs=8, bevel=0.012, o='c', rot=RIGHT, at=K)
-        b.limb(K, A, 0.052, 0.04, 'hull', segs=8, power=3)
-        b.prism([(-0.20, 0.0), (-0.17, 0.07), (-0.02, 0.14), (0.07, 0.11), (0.10, 0.0)], 0.15, 'hull', bevel=0.02,
-                plane='yz', at=(0.24, 0, 0))
-        b.prism([(-0.25, 0.0), (-0.21, 0.055), (-0.13, 0.085), (-0.14, 0.0)], 0.11, 'paint', bevel=0.01, plane='yz',
-                at=(0.24, 0, 0))
-        # arm guns
-        b.box((0.09, 0.22, 0.11), 'hull', bevel=0.02, at=(0.25, -0.02, 0.80))
-        b.cyl(0.038, 0.20, 'trim', segs=8, rot=FWD, at=(0.25, -0.12, 0.79))
-        b.cyl(0.048, 0.05, 'hull', segs=8, bevel=0.01, rot=FWD, at=(0.25, -0.27, 0.79))
-        b.cyl(0.028, 0.012, 'glow_main', segs=8, rot=FWD, at=(0.25, -0.317, 0.79))
-        b.box((0.07, 0.02, 0.13), 'glow_main', bevel=0, at=(0.08, 0.268, 0.78))
-    # eye
-    with b.frames(T(at=(0, -0.255, 0.775), rot=(80, 0, 0))):
-        b.cyl(0.125, 0.07, 'trim', segs=12, bevel=0.02, at=(0, 0, -0.02))
-        b.sphere(0.088, 'glow_main', segs=12, rings=6, at=(0, 0, 0.035))
-    b.box((0.30, 0.10, 0.045), 'paint', bevel=0.012, at=(0, -0.25, 0.915), rot=(-25, 0, 0))
-    b.rod((0.10, 0.16, 0.98), (0.13, 0.24, 1.10), 0.010, 'trim', segs=5, r2=0.005)
-    b.box((0.2, 0.12, 0.10), 'hull', bevel=0.02, at=(0, 0.02, 0.57))
-    # roof ribs, hatch, side vents, exhaust
-    for y, z, tilt in ((-0.10, 1.012, -12), (0.02, 1.036, -12)):
-        b.box((0.30, 0.035, 0.03), 'hull', bevel=0.008, at=(0, y, z), rot=(tilt, 0, 0))
-    b.cyl(0.06, 0.03, 'trim', segs=8, bevel=0.008, at=(-0.05, 0.17, 0.965), rot=(-34, 0, 0))
+        b.prism(slab([(-0.33, 0.945), (-0.285, 1.008), (-0.09, 1.104), (0.0, 1.092)], 0.012), 0.012, 'glow_main',
+                plane='yz', at=(0.05, 0, 0))
+    b.prism(slab([(-0.05, 1.065), (0.10, 1.035), (0.215, 0.93)], 0.04), 0.35, 'paint', bevel=0.012, plane='yz')
+    b.prism(slab([(0.17, 0.945), (0.265, 0.83), (0.275, 0.69)], 0.04), 0.29, 'paint', bevel=0.012, plane='yz')
+    b.box((0.36, 0.03, 0.025), 'trim', bevel=0.006, at=(0, -0.35, 0.882), rot=(58, 0, 0))     # worn leading edge
+    # head: narrow wedge with a brow plate and a slanted eye slit
+    b.prism([(-0.61, 0.68), (-0.55, 0.81), (-0.38, 0.84), (-0.30, 0.70), (-0.36, 0.62), (-0.52, 0.60)], 0.20, 'hull',
+            bevel=0.025, plane='yz')
+    b.prism(slab([(-0.575, 0.815), (-0.52, 0.85), (-0.36, 0.875)], 0.03), 0.24, 'paint', bevel=0.01, plane='yz')
     with b.sym():
-        for i in range(3):
-            b.box((0.012, 0.035, 0.10), 'glow_main', bevel=0, at=(0.212, 0.02 + i * 0.06, 0.80), rot=(15, 0, 0))
-        b.cyl(0.035, 0.16, 'trim', segs=6, bevel=0.008, at=(0.12, 0.25, 0.84), rot=(-25, 0, 0))
-        b.lathe([(0.03, 0.0), (0.0, 0.10)], 'trim', segs=5, m=aim((0.26, 0.21, 0.40), (0.28, 0.36, 0.44)))
+        b.box((0.082, 0.02, 0.03), 'glow_main', bevel=0, at=(0.052, -0.585, 0.745), rot=(-25, -18, 0))
+        b.prism([(-0.66, 0.55), (-0.57, 0.63), (-0.46, 0.61), (-0.53, 0.57)], 0.025, 'trim', plane='yz',
+                at=(0.07, 0, 0))                                                            # mandible
+        # flank plates
+        b.prism([(-0.25, 0.80), (-0.13, 0.95), (0.10, 0.91), (0.17, 0.74), (0.02, 0.64), (-0.17, 0.68)], 0.03,
+                'paint', plane='yz', at=(0.15, 0, 0))
+        b.box((0.012, 0.10, 0.03), 'glow_main', bevel=0, at=(0.168, 0.02, 0.76), rot=(-18, 0, 0))
+        # digitigrade legs: hip -> forward knee -> raised hock -> clawed foot
+        H, K, A, F = (0.19, 0.06, 0.64), (0.22, -0.15, 0.42), (0.22, 0.13, 0.25), (0.22, -0.02, 0.07)
+        b.cyl(0.085, 0.075, 'trim', segs=8, bevel=0.015, o='c', rot=RIGHT, at=(0.20, 0.06, 0.64))
+        b.limb(H, K, 0.078, 0.056, 'hull', segs=6, power=3)
+        b.box((0.035, 0.15, 0.25), 'paint', bevel=0.012, m=aim(H, K, (1, 0, 0)), at=(0, 0.062, 0.13), rot=(0, 0, 90))
+        b.cyl(0.055, 0.11, 'trim', segs=7, bevel=0.012, o='c', rot=RIGHT, at=K)
+        b.lathe([(0.035, 0.0), (0.0, 0.10)], 'paint', segs=4, m=aim(K, (0.22, -0.30, 0.47)))  # knee spike
+        b.limb(K, A, 0.048, 0.036, 'hull', segs=6, power=3)
+        b.cyl(0.042, 0.09, 'trim', segs=6, o='c', rot=RIGHT, at=A)
+        b.limb(A, F, 0.036, 0.03, 'hull', segs=6)
+        b.lathe([(0.026, 0.0), (0.0, 0.10)], 'trim', segs=4, m=aim(A, (0.22, 0.27, 0.30)))
+        b.prism([(-0.17, 0.0), (-0.14, 0.055), (-0.02, 0.10), (0.06, 0.075), (0.08, 0.0)], 0.12, 'hull', bevel=0.016,
+                plane='yz', at=(0.22, 0, 0))
+        for dx in (-0.036, 0.036):
+            b.prism([(-0.275, 0.0), (-0.22, 0.045), (-0.14, 0.06), (-0.15, 0.0)], 0.042, 'trim',
+                    plane='yz', at=(0.22 + dx, 0, 0), rot=(0, 0, dx * 300))
+        # shoulders and forearm guns
+        b.box((0.13, 0.20, 0.10), 'paint', bevel=0.03, taper=(0.7, 0.8), at=(0.275, -0.10, 0.93), rot=(0, 16, 0))
+        S, E = (0.275, -0.10, 0.89), (0.31, -0.03, 0.68)
+        b.limb(S, E, 0.05, 0.04, 'hull', segs=6, power=3)
+        with b.frames(T(at=E, rot=(9, 0, 0))):
+            b.box((0.085, 0.28, 0.10), 'hull', bevel=0.02, at=(0, -0.10, 0.0))
+            b.box((0.07, 0.17, 0.02), 'paint', bevel=0.006, at=(0, -0.10, 0.056))
+            b.cyl(0.03, 0.20, 'trim', segs=7, rot=FWD, at=(0, -0.22, -0.005))
+            b.cyl(0.042, 0.055, 'hull', segs=7, bevel=0.01, rot=FWD, at=(0, -0.385, -0.005))
+            b.cyl(0.024, 0.012, 'glow_main', segs=6, rot=FWD, at=(0, -0.437, -0.005))
+            b.box((0.05, 0.10, 0.05), 'trim', bevel=0.01, at=(0, 0.02, -0.065))                # magazine
+        # exhaust stacks + rear vents
+        b.cyl(0.03, 0.17, 'trim', segs=6, bevel=0.006, at=(0.09, 0.15, 0.96), rot=(-30, 0, 0))
+        b.box((0.07, 0.02, 0.03), 'glow_main', bevel=0, at=(0.065, 0.20, 0.65), rot=(-20, 0, 0))
+    b.rod((-0.11, 0.10, 1.02), (-0.14, 0.20, 1.20), 0.009, 'trim', segs=4, r2=0.004)
     return m
 
 
@@ -75,6 +95,7 @@ def enemy_runner():
             b.prism([(-0.76, 0.16), (-0.62, 0.25), (-0.50, 0.20)], 0.03, 'trim', bevel=0.006, plane='yz',
                     at=(0.075, 0, 0))
             b.box((0.015, 0.34, 0.028), 'glow_main', bevel=0, at=(0.131, 0.06, 0.40), rot=(4, 0, 0))
+            b.box((0.012, 0.30, 0.02), 'trim', bevel=0, at=(0.088, 0.10, 0.535), rot=(-4, 0, 0))   # worn rail
             # front leg
             S, E, P = (0.17, -0.30, 0.36), (0.21, -0.17, 0.19), (0.21, -0.33, 0.045)
             b.cyl(0.095, 0.07, 'paint', segs=10, bevel=0.018, o='c', rot=RIGHT, at=S)
@@ -108,6 +129,7 @@ def enemy_drone():
             scale=sc)
     b.lathe([(0.165, 0.065), (0.13, 0.115), (0.0, 0.135)], 'paint', segs=10, scale=sc)
     b.ring(0.212, 0.02, 0.03, 'trim', segs=10, scale=sc, at=(0, 0, 0.0))
+    b.ring(0.168, 0.012, 0.012, 'trim', segs=10, scale=sc, at=(0, 0, 0.068))
     R = 0.40
     with b.frames(radial(4, start=45)):
         b.box((0.28, 0.055, 0.04), 'hull', bevel=0.012, at=(0.24, 0, 0.03))
@@ -147,6 +169,10 @@ def enemy_brute():
     b.prism(torso, 0.54, 'hull', bevel=0.06, plane='xz', at=(0, 0.04, 0))
     b.prism([(-0.22, 1.02), (-0.42, 1.27), (-0.40, 1.56), (-0.22, 1.69), (0.22, 1.69), (0.40, 1.56), (0.42, 1.27),
              (0.22, 1.02)], 0.10, 'paint', bevel=0.025, plane='xz', at=(0, -0.24, 0))
+    with b.sym():   # worn edge strips + rivets on the chest plate
+        b.box((0.03, 0.02, 0.27), 'trim', bevel=0.006, at=(0.395, -0.292, 1.415))
+        for z in (1.10, 1.62):
+            b.cyl(0.022, 0.014, 'trim', segs=5, rot=FWD, at=(0.24, -0.288, z))
     # chest core
     with b.frames(T(at=(0, -0.29, 1.36), rot=FWD)):
         b.cyl(0.19, 0.06, 'trim', segs=14, bevel=0.018)
@@ -202,6 +228,7 @@ def enemy_shield():
             segs=12)
     b.ring(0.355, 0.03, 0.05, 'glow_main', segs=12, at=(0, 0, 0.64))
     b.lathe([(0.31, 0.72), (0.34, 0.74), (0.285, 0.875), (0.21, 0.925), (0.19, 0.91)], 'paint', segs=12)
+    b.ring(0.335, 0.02, 0.02, 'trim', segs=12, at=(0, 0, 0.745))
     # tripod legs
     with b.frames(radial(3, start=90)):
         Hh, K, F = (0.27, 0, 0.56), (0.60, 0, 0.74), (0.72, 0, 0.06)
@@ -251,33 +278,48 @@ def enemy_boss():
     b.loft([(2.00, 0.90, 1.20), (2.16, 0.60, 0.90), (2.20, 0.40, 0.66), (2.20, 0.0, 0.0)], 'paint', segs=12, power=2.6,
            at=(0, 0, 0.012))
     # belly reactor vents + belly gun
-    b.lathe([(0.30, 1.22), (0.34, 1.12), (0.24, 1.02), (0.0, 1.0)], 'trim', segs=10)
-    b.ring(0.30, 0.05, 0.03, 'glow_main', segs=10, at=(0, 0, 1.10))
+    b.lathe([(0.30, 1.0), (0.34, 0.90), (0.24, 0.80), (0.0, 0.78)], 'trim', segs=10)
+    b.ring(0.30, 0.05, 0.03, 'glow_main', segs=10, at=(0, 0, 0.88))
     with b.sym():
-        for y in (-0.5, 0.0, 0.5):
-            b.box((0.03, 0.26, 0.07), 'glow_main', bevel=0, at=(1.11 - abs(y) * 0.14, y, 1.58), rot=(0, -20, 0))
-    # legs
-    hip = [(1.30, 0, 1.70), (1.52, 0, 2.52), (2.0, 0, 0.0)]
+        b.box((0.03, 0.30, 0.05), 'glow_main', bevel=0, at=(1.11, 0.0, 1.58), rot=(0, -20, 0))
+    # deeper belly keel + layered top deck round the reactor + riveted waist band
+    b.loft([(0.94, 0.0, 0.0), (0.98, 0.44, 0.62), (1.10, 0.66, 0.90), (1.26, 0.72, 0.98)], 'hull', segs=12, power=2.6,
+           sharp=40)
+    with b.frames([rotz(a) for a in (-42, 42, 138, 222)]):
+        b.prism(slab([(0.52, 2.235), (0.94, 2.13), (1.24, 1.84)], 0.07), 0.78, 'paint', bevel=0.02, plane='xz')
+        b.prism(slab([(0.82, 2.215), (1.06, 2.10), (1.30, 1.86)], 0.035), 0.16, 'trim', plane='xz')
+    with b.frames(radial(12, radius=1.0, start=15)):
+        b.cyl(0.035, 0.03, 'trim', segs=5, rot=RIGHT, at=(0.155, 0, 1.76))
+    # legs: armoured femur up to a high knee, long splayed tibia, short tarsus, clawed foot
+    Hh, K, M, F = (1.30, 0, 1.70), (1.70, 0, 2.40), (2.22, 0, 1.04), (2.34, 0, 0.28)
     frames = [rotz(a) @ T(at=(-0.20, 0, 0)) for a in (-48, 0, 48, 132, 180, 228)]
     with b.frames(frames):
-        Hh, K, _ = hip
-        b.sphere(0.24, 'trim', segs=10, rings=6, at=Hh)
-        b.limb(Hh, K, 0.21, 0.18, 'hull', segs=8, power=3, up=(0, 0, 1))
-        b.prism([(1.22, 1.98), (1.50, 2.44), (1.40, 2.66), (1.10, 2.16)], 0.36, 'paint', bevel=0.02, plane='xz')
-        b.cyl(0.24, 0.40, 'trim', segs=10, bevel=0.03, o='c', rot=(90, 0, 0), at=K)
-        b.cyl(0.10, 0.02, 'glow_main', segs=8, o='c', rot=(90, 0, 0), at=(K[0], -0.205, K[2]))
-        b.cyl(0.10, 0.02, 'glow_main', segs=8, o='c', rot=(90, 0, 0), at=(K[0], 0.205, K[2]))
-        b.prism([(1.36, 2.64), (1.70, 2.56), (2.08, 0.34), (2.05, 0.10), (1.88, 0.10), (1.72, 1.00), (1.40, 2.28)],
-                0.30, 'hull', bevel=0.03, plane='xz')
-        b.prism([(1.60, 2.74), (1.78, 2.58), (2.13, 0.80), (2.06, 0.74), (1.72, 2.30)], 0.38, 'paint', bevel=0.02,
+        b.sphere(0.25, 'trim', segs=8, rings=5, at=Hh)
+        b.limb(Hh, K, 0.22, 0.19, 'hull', segs=6, power=3, up=(0, 0, 1))
+        b.prism(slab([(1.10, 1.98), (1.50, 2.60), (1.80, 2.74)], 0.11), 0.42, 'paint', bevel=0.02, plane='xz')
+        b.rod((0.95, 0, 2.02), (1.36, 0, 2.30), 0.05, 'trim', segs=6)
+        b.cyl(0.25, 0.44, 'trim', segs=10, o='c', rot=(90, 0, 0), at=K)
+        for y in (-0.225, 0.225):
+            b.cyl(0.09, 0.02, 'glow_main', segs=6, o='c', rot=(90, 0, 0), at=(K[0], y, K[2]))
+        b.prism([(1.58, 2.46), (1.90, 2.58), (2.40, 1.12), (2.32, 0.90), (2.08, 0.96), (1.74, 2.14)], 0.30, 'hull',
+                bevel=0.03, plane='xz')
+        b.prism(slab([(1.80, 2.76), (2.02, 2.60), (2.50, 1.30)], 0.09), 0.40, 'paint', bevel=0.02, plane='xz')
+        b.prism(slab([(2.03, 2.62), (2.30, 1.90)], 0.03), 0.10, 'trim', plane='xz', at=(0.022, 0, 0.008))
+        b.box((0.03, 0.06, 0.34), 'glow_main', bevel=0, at=(2.435, 0, 1.56), rot=(0, 20.3, 0))
+        b.rod((1.62, 0, 2.02), (2.02, 0, 1.52), 0.05, 'trim', segs=6)
+        b.cyl(0.17, 0.36, 'trim', segs=8, o='c', rot=(90, 0, 0), at=M)
+        b.limb(M, F, 0.15, 0.12, 'hull', segs=6, power=3, up=(0, 0, 1))
+        b.box((0.07, 0.30, 0.42), 'paint', bevel=0.02, at=(2.40, 0, 0.66), rot=(0, 9, 0))
+        b.prism([(2.12, 0.0), (2.16, 0.22), (2.34, 0.38), (2.52, 0.30), (2.66, 0.0)], 0.44, 'hull', bevel=0.03,
                 plane='xz')
-        b.box((0.03, 0.07, 0.80), 'glow_main', bevel=0, at=(2.0, 0, 1.42), rot=(0, 11.2, 0))
-        b.lathe([(0.25, 0.36), (0.28, 0.24), (0.13, 0.06), (0.0, 0.0)], 'trim', segs=8, at=(1.97, 0, 0))
-        b.rod((0.95, 0, 2.02), (1.30, 0, 2.36), 0.045, 'trim', segs=6)
+        for y in (-0.14, 0.14):
+            b.prism([(2.56, 0.0), (2.60, 0.21), (2.92, 0.0)], 0.14, 'trim', plane='xz', at=(0, y, 0))
+        b.prism([(2.16, 0.0), (2.14, 0.16), (1.92, 0.0)], 0.14, 'trim', plane='xz')
     # reactor (rear top)
     RC = (0, 0.42, 2.52)
     b.lathe([(0.60, 2.10), (0.64, 2.16), (0.56, 2.26), (0.40, 2.30), (0.0, 2.30)], 'trim', segs=14, at=(0, 0.42, 0))
-    b.sphere(0.46, 'glow_main', segs=16, rings=10, at=RC)
+    b.sphere(0.40, 'glow_main', segs=14, rings=8, at=RC)
+    b.lathe([(0.66, 2.14), (0.70, 2.22), (0.60, 2.36), (0.46, 2.40), (0.40, 2.34)], 'hull', segs=14, at=(0, 0.42, 0))
     with b.frames(T(at=RC) @ rotz(45)):
         with b.frames(radial(4)):
             b.prism([(0.42, -0.30), (0.58, -0.28), (0.66, 0.10), (0.52, 0.48), (0.20, 0.64), (0.16, 0.56),

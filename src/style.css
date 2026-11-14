@@ -150,3 +150,21 @@ body.hero #vignette { background: radial-gradient(ellipse at center, transparent
 .bar.load { width: min(420px, 70vw); }
 
 @media (max-width: 900px) { .stat.wide, #bow, .tw .nm { display: none; } .tw { width: 60px; } }
+
+#marks .mark { position: absolute; left: -9px; top: -9px; width: 18px; height: 18px; display: none; font-style: normal; font-size: 12px; line-height: 18px; text-align: center; color: #06140a; background: var(--grn); border-radius: 50%; box-shadow: 0 0 10px var(--grn); animation: bob 1s ease-in-out infinite alternate; pointer-events: none; }
+@keyframes bob { to { margin-top: -6px; } }
+.card .kind { color: var(--tc, var(--muted)); }
+
+/* ---------- run setup ---------- */
+.seg { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.seg .chip { padding: 9px 16px; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; }
+.seg .chip.on, .chip.on { background: var(--cyan); color: #041018; border-color: var(--cyan); }
+#map-row { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; max-width: 1100px; }
+.mapcard { width: 226px; padding: 8px 8px 10px; text-align: left; color: var(--text); font-family: var(--body); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; transition: transform 0.12s, border-color 0.12s; }
+.mapcard:hover { transform: translateY(-4px); border-color: var(--cyan); }
+.mapcard.on { border-color: var(--yel); box-shadow: 0 0 22px rgba(255, 210, 63, 0.35); }
+.mapcard canvas { display: block; width: 100%; border-radius: 3px; margin-bottom: 7px; }
+.mapcard b { display: block; font-family: var(--display); font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; }
+.mapcard span { font-size: 13px; color: var(--muted); }
+#setup-desc { min-height: 2.6em; }
+#editor { justify-content: flex-start; }

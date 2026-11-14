@@ -1,7 +1,7 @@
 // Autoplayer: drives the menu attract mode, the trailer, and headless balance tests.
 import { GW, GH, TOWERS, MAX_ENERGY, CARD_BY_ID, cellX, cellZ } from './data.ts';
 import type { TowerType } from './data.ts';
-import { Sim, PATH_POINTS, PATH_LEN, pathPos } from './sim.ts';
+import { Sim } from './sim.ts';
 
 /** Buildable cells ranked by how much path they cover. */
 function rankSpots(sim: Sim, range: number) {
@@ -11,7 +11,7 @@ function rankSpots(sim: Sim, range: number) {
     if (sim.grid[cz * GW + cx] !== 0) continue;
     const x = cellX(cx), z = cellZ(cz);
     let s = 0;
-    for (let d = 8; d < PATH_LEN; d += 1.5) { pathPos(d, p); if (Math.hypot(p.x - x, p.z - z) <= range) s += 1 + d / PATH_LEN; }
+    for (let l = 0; l < sim.map.lanes.length; l++) { const len = sim.map.lanes[l].len; for (let d = Math.min(8, len * 0.2); d < len; d += 1.5) { sim.map.pos(l, d, p); if (Math.hypot(p.x - x, p.z - z) <= range) s += (1 + d / len) / sim.map.lanes.length; } }
     if (s > 0) { for (const t of sim.towers) if (Math.hypot(t.x - x, t.z - z) < 4.5) s -= 2.2; out.push({ cx, cz, s }); }
   }
   return out.sort((a, b) => b.s - a.s);
@@ -59,7 +59,8 @@ export class Bot {
       }
       // ultimate
       if (!p.heroActive && p.energy >= MAX_ENERGY && s.enemies.length > 5 && s.towers.length) {
-        const lead = s.enemies.reduce((a, b) => (b.dist > a.dist ? b : a));
+        const pr = (e: (typeof s.enemies)[number]) => e.dist - s.map.lanes[e.lane].len;
+        const lead = s.enemies.reduce((a, b) => (pr(b) > pr(a) ? b : a));
         const t = s.towers.reduce((a, b) => (Math.hypot(b.x - lead.x, b.z - lead.z) < Math.hypot(a.x - lead.x, a.z - lead.z) ? b : a));
         s.activateHero(this.pi, t.id);
       }
@@ -68,7 +69,7 @@ export class Bot {
       const o = s.heroOrigin(this.pi);
       if (!o) return;
       let tgt = null as null | (typeof s.enemies)[number], bd = 1e9;
-      for (const e of s.enemies) { const d = Math.hypot(e.x - o.x, e.z - o.z) - e.dist * 0.15; if (d < bd) { bd = d; tgt = e; } }
+      for (const e of s.enemies) { const d = Math.hypot(e.x - o.x, e.z - o.z) - (e.dist - s.map.lanes[e.lane].len) * 0.15; if (d < bd) { bd = d; tgt = e; } }
       if (tgt) {
         const k = Math.min(1, dt * 9);
         this.aim.x += (tgt.x - this.aim.x) * k; this.aim.y += (tgt.y - this.aim.y) * k; this.aim.z += (tgt.z - this.aim.z) * k;
@@ -88,4 +89,3 @@ export class Bot {
   }
 }
 
-export { PATH_POINTS };

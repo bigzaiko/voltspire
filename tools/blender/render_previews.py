@@ -214,6 +214,27 @@ def render_one(name, view=None, out=None):
     bpy.ops.render.render(write_still=True)
 
 
+# extra angles for close inspection (written to docs/previews/angles/<name>_<tag>.png)
+ANGLES = {
+    'hero': {'back': (-0.25, 1.0, 0.5), 'backleft': (0.9, 0.8, 0.35), 'backright': (-1.0, 0.45, 0.3),
+             'front': (-0.3, -1.0, 0.25), 'side': (-1.0, -0.15, 0.2), 'top': (0.2, 0.5, 1.0)},
+    'enemy_grunt': {'front': (0.15, -1.0, 0.25), 'side': (1.0, -0.05, 0.2), 'back': (-0.6, 1.0, 0.45),
+                    'top': (0.3, -0.5, 1.0)},
+    'enemy_boss': {'front': (0.2, -1.0, 0.3), 'side': (1.0, -0.1, 0.25), 'back': (-0.6, 1.0, 0.5),
+                   'top': (0.3, -0.5, 1.0)},
+}
+DEFAULT_ANGLES = {'back': (-0.6, 1.0, 0.5), 'top': (0.3, -0.5, 1.0)}
+
+
+def render_angles(names):
+    out = os.path.join(PREVIEWS, 'angles')
+    os.makedirs(out, exist_ok=True)
+    setup_render()
+    for n in names:
+        for tag, view in ANGLES.get(n, DEFAULT_ANGLES).items():
+            render_one(n, view=view, out=os.path.join(out, f'{n}_{tag}.png'))
+
+
 def contact_sheet():
     files = [os.path.join(PREVIEWS, n + '.png') for n in ORDER if os.path.exists(os.path.join(PREVIEWS, n + '.png'))]
     out = os.path.join(PREVIEWS, 'contact_sheet.png')
@@ -244,4 +265,8 @@ def render_all(names=None, sheet=True):
 
 if __name__ == '__main__':
     argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
-    render_all(argv[0].split(',') if argv else None, sheet=not argv)
+    names = [a for a in argv if not a.startswith('--')]
+    if '--angles' in argv:
+        render_angles(names[0].split(',') if names else list(ANGLES))
+    else:
+        render_all(names[0].split(',') if names else None, sheet=not names)

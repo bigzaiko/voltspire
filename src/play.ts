@@ -5,7 +5,7 @@ import '@fontsource/rajdhani/500.css';
 import '@fontsource/rajdhani/600.css';
 import './style.css';
 import * as THREE from 'three';
-import { GW, GH, TOWERS, TOWER_TYPES, ENEMIES, CARD_BY_ID, RARITY, BOW_TIERS, MAX_ENERGY, WIN_WAVE, SQUADS, LVL_DMG, LVL_RATE, worldToCell } from './game/data.ts';
+import { GW, GH, TOWERS, TOWER_TYPES, ENEMIES, CARD_BY_ID, RARITY, BOW_TIERS, MAX_ENERGY, WIN_WAVE, SQUADS, worldToCell } from './game/data.ts';
 import type { TowerType } from './game/data.ts';
 import { Sim, SKILL_CD } from './game/sim.ts';
 import type { Ev, Mode } from './game/sim.ts';
@@ -13,6 +13,11 @@ import { Bot } from './game/bot.ts';
 import { View } from './game/render.ts';
 import { Sound } from './game/audio.ts';
 import { Net, cleanCode } from './game/net.ts';
+import { DIFFS, diffById, sanitizeMap } from './game/map.ts';
+import type { MapDef } from './game/map.ts';
+import { MAPS, mapById } from './game/maps.ts';
+import { drawMap } from './game/mapdraw.ts';
+import { openEditor, loadCustomMaps } from './editor.ts';
 import type { Msg } from './game/net.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -23,7 +28,7 @@ const CAPTURE = params.has('capture');
 const STEP = 1 / 60;
 
 // ---------- settings (local only) ----------
-const settings = { vol: 70, mus: 50, sens: 100, q: 'high' as 'high' | 'low', best: 0 };
+const settings = { vol: 70, mus: 50, sens: 100, q: 'high' as 'high' | 'low', best: 0, bestSurv: 0, map: 'switchback', diff: 'normal' };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('voltspire') || '{}')); } catch { /* storage unavailable */ }
 const save = () => { try { localStorage.setItem('voltspire', JSON.stringify(settings)); } catch { /* ignore */ } };
 
@@ -46,6 +51,8 @@ let snapT = 0, lookT = 0, vsT = 0;
 let netEvs: Ev[] = [];
 let cardKey = '', ended = false, readyShown = false, lastTier = 0;
 let lobbyMode: 'coop' | 'versus' = 'coop';
+const choice: { map: MapDef; diff: string; survival: boolean } = { map: MAPS[0], diff: 'normal', survival: false };
+let setupFor: 'solo' | 'lobby' = 'solo';
 let rival = { l: 20, w: 0, k: 0 };
 const hover = { cx: -1, cz: -1 };
 const keys = new Set<string>();
@@ -163,7 +170,8 @@ function showCards() {
     const c = CARD_BY_ID[id];
     const d = el('button', 'card');
     d.style.setProperty('--rc', ['#19e3ff', '#a35bff', '#ffd23f'][c.rar]);
-    d.append(el('kbd', '', String(i + 1)), el('div', 'ci', c.icon), el('div', 'rar', RARITY[c.rar]), el('h4', '', c.name), el('p', '', c.desc), el('div', 'kind', c.kind === 'eco' ? 'economy' : c.kind));
+    d.append(el('kbd', '', String(i + 1)), el('div', 'ci', c.icon), el('div', 'rar', RARITY[c.rar]), el('h4', '', c.name), el('p', '', c.desc), el('div', 'kind', c.needs ? TOWERS[c.needs].name : c.kind === 'eco' ? 'economy' : c.kind === 'tower' ? 'all towers' : c.kind === 'hero' ? 'Kestrel' : c.kind));
+    if (c.needs) d.style.setProperty('--tc', '#' + TOWERS[c.needs].color.toString(16).padStart(6, '0'));
     d.addEventListener('click', () => pickCard(i));
     d.addEventListener('mouseenter', () => sound.play('hover'));
     row.appendChild(d);
@@ -243,7 +251,7 @@ function fastForward(seconds: number) {
   for (let i = 0; i < seconds * 60 && !sim.over; i++) { bot?.step(STEP); sim.step(STEP); sim.events.length = 0; }
 }
 function resetUi() {
-  for (const id of ['cards', 'menu', 'lobby', 'help', 'settings', 'pause', 'end', 'herohud', 'tower', 'vs', 'tip']) show(id, false);
+  for (const id of ['cards', 'menu', 'lobby', 'help', 'settings', 'pause', 'end', 'herohud', 'tower', 'vs', 'tip', 'setup', 'editor']) show(id, false);
   document.body.classList.remove('hero');
   $('toasts').textContent = ''; $('dmg').textContent = '';
   if (document.pointerLockElement) document.exitPointerLock();
@@ -260,12 +268,15 @@ function startAttract() {
   fastForward(150);
   view.setSim(sim, 0); view.orbit = true;
   show('hud', false); show('menu');
-  setText('best', settings.best ? `Best run: wave ${settings.best}` : '');
+  setText('best', [settings.best ? `Best campaign: wave ${settings.best}` : '', settings.bestSurv ? `Best survival: wave ${settings.bestSurv}` : ''].filter(Boolean).join(' · '));
 }
-function startGame(m: Mode, opts: { client?: boolean; seed?: number; demo?: boolean } = {}) {
+function startGame(m: Mode, opts: { client?: boolean; seed?: number; demo?: boolean; map?: MapDef; diff?: string; survival?: boolean } = {}) {
   resetUi();
   mode = m; isClient = !!opts.client; me = isClient ? 1 : 0;
-  sim = new Sim({ mode: m, players: m === 'coop' ? 2 : 1, pauseOnCards: m === 'solo' && !opts.demo, seed: opts.seed });
+  sim = new Sim({
+    mode: m, players: m === 'coop' ? 2 : 1, pauseOnCards: m === 'solo' && !opts.demo, seed: opts.seed ?? ((Math.random() * 2 ** 31) | 0),
+    map: opts.map ?? choice.map, diff: opts.diff ?? choice.diff, survival: m === 'versus' ? false : opts.survival ?? choice.survival,
+  });
   sim.replica = isClient;
   bot = opts.demo ? new Bot(sim, 0, 1.5) : null;
   view.setSim(sim, me); view.orbit = false;
@@ -275,7 +286,7 @@ function startGame(m: Mode, opts: { client?: boolean; seed?: number; demo?: bool
   rival = { l: 20, w: 0, k: 0 };
   sound.init(); sound.startMusic();
   if (!opts.demo) {
-    announce('Defend the Heart', m === 'coop' ? 'Co-op uplink established' : m === 'versus' ? 'Outlast your rival' : 'Nyx-9 · 2187');
+    announce('Defend the Heart', m === 'coop' ? 'Co-op uplink established' : m === 'versus' ? 'Outlast your rival' : `${sim.map.def.name} · ${sim.endless ? 'Survival' : sim.diff.name}`);
     setTimeout(() => { if (sim.wave === 0 && mode === m) toast('Pick a tower below (or press 1), then click a tile beside the road.'); }, 1500);
   }
 }
@@ -285,7 +296,9 @@ function endGame(win: boolean, title?: string, sub?: string) {
   if (document.pointerLockElement) document.exitPointerLock();
   document.body.classList.remove('hero'); show('herohud', false); show('cards', false);
   sound.play(win ? 'win' : 'lose'); sound.intense = 0;
-  if (mode === 'solo' && sim.wave > settings.best) { settings.best = sim.wave; save(); }
+  if (mode === 'solo' && !sim.endless && sim.wave > settings.best) { settings.best = sim.wave; save(); }
+  if (mode === 'solo' && sim.endless && sim.wave > settings.bestSurv) { settings.bestSurv = sim.wave; save(); }
+  if (!win && sim.endless && !title) { title = 'Overrun'; sub = `You held the line for ${Math.max(0, sim.wave - 1)} waves.`; }
   const e = $('end');
   e.classList.toggle('win', win); e.classList.toggle('lose', !win);
   setText('end-title', title || (win ? 'Grid secured' : 'Core breached'));
@@ -307,8 +320,9 @@ const int = (v: unknown) => (fin(v) ? Math.trunc(v) : -1);
 function onNet(m: Msg) {
   if (!net) return;
   if (m.t === 'start' && !net.isHost && mode === 'attract') {
-    if (m.v !== 1 || (m.m !== 'coop' && m.m !== 'versus')) { lobbyStatus('l-join-status', 'Version mismatch — both players should reload.'); return; }
-    startGame(m.m, { client: m.m === 'coop', seed: int(m.seed) >>> 0 });
+    const map = sanitizeMap(m.map);
+    if (m.v !== 2 || (m.m !== 'coop' && m.m !== 'versus') || !map) { lobbyStatus('l-join-status', 'Version mismatch — both players should reload.'); return; }
+    startGame(m.m, { client: m.m === 'coop', seed: int(m.seed) >>> 0, map, diff: diffById(m.diff).id, survival: m.surv === true });
     return;
   }
   if (mode === 'coop' && isClient && m.t === 'snap') { sim.applySnapshot(m.s); return; }
@@ -351,6 +365,7 @@ function openLobby(m: 'coop' | 'versus') {
   show('menu', false); show('lobby'); show('l-code', false);
   lobbyStatus('l-host-status', ''); lobbyStatus('l-join-status', '');
   ($('l-host') as HTMLButtonElement).disabled = false; ($('l-join') as HTMLButtonElement).disabled = false;
+  setText('l-choice', `${choice.map.name} · ${diffById(choice.diff).name}${m === 'coop' && choice.survival ? ' · Survival' : ''}`);
 }
 function newNet() {
   net?.close();
@@ -365,7 +380,7 @@ $('l-host').addEventListener('click', async () => {
   const n = newNet(), m = lobbyMode;
   n.onOpen = () => {
     const seed = (Math.random() * 2 ** 31) | 0;
-    n.send({ t: 'start', v: 1, m, seed });
+    n.send({ t: 'start', v: 2, m, seed, map: choice.map, diff: choice.diff, surv: choice.survival });
     startGame(m, { seed });
   };
   try {
@@ -386,10 +401,62 @@ $('l-join').addEventListener('click', async () => {
 $<HTMLInputElement>('l-input').addEventListener('input', (e) => { const i = e.target as HTMLInputElement; i.value = cleanCode(i.value); });
 $('l-back').addEventListener('click', () => { net?.close(); net = null; show('lobby', false); show('menu'); });
 
+// ---------- run setup: mode, map, difficulty ----------
+function openSetup(target: 'solo' | 'lobby') {
+  setupFor = target;
+  for (const id of ['menu', 'lobby', 'editor']) show(id, false);
+  const all = [...MAPS, ...loadCustomMaps()];
+  if (!all.some((m) => m === choice.map || m.id === choice.map.id)) all.push(choice.map);
+  const row = $('map-row');
+  row.textContent = '';
+  const refresh = () => {
+    [...row.children].forEach((c, i) => c.classList.toggle('on', all[i].id === choice.map.id && all[i].name === choice.map.name));
+    [...$('setup-diff').children].forEach((c) => c.classList.toggle('on', (c as HTMLElement).dataset.v === choice.diff));
+    [...$('setup-mode').children].forEach((c) => c.classList.toggle('on', ((c as HTMLElement).dataset.v === 'survival') === choice.survival));
+    setText('setup-desc', `${choice.map.desc || 'A custom map.'} ${diffById(choice.diff).desc}`);
+  };
+  for (const m of all) {
+    const b = el('button', 'mapcard');
+    const cv = document.createElement('canvas'); cv.width = 208; cv.height = 144;
+    drawMap(cv, m);
+    b.append(cv, el('b', '', m.name), el('span', '', `${'◆'.repeat(m.tier)}${'◇'.repeat(3 - m.tier)} · ${m.lanes.length} road${m.lanes.length > 1 ? 's' : ''}`));
+    b.addEventListener('click', () => { choice.map = m; sound.play('click'); refresh(); });
+    row.appendChild(b);
+  }
+  const df = $('setup-diff');
+  df.textContent = '';
+  for (const d of DIFFS) {
+    const b = el('button', 'chip', d.name);
+    b.dataset.v = d.id;
+    b.addEventListener('click', () => { choice.diff = d.id; sound.play('click'); refresh(); });
+    df.appendChild(b);
+  }
+  show('setup-mode', lobbyMode !== 'versus' || target === 'solo');
+  setText('setup-go', target === 'solo' ? 'Start' : 'Use this map');
+  refresh();
+  show('setup');
+}
+for (const b of $('setup-mode').children) b.addEventListener('click', () => { choice.survival = (b as HTMLElement).dataset.v === 'survival'; sound.play('click'); [...$('setup-mode').children].forEach((c) => c.classList.toggle('on', ((c as HTMLElement).dataset.v === 'survival') === choice.survival)); });
+function openEditorScreen() {
+  for (const id of ['menu', 'setup', 'lobby']) show(id, false);
+  show('editor');
+  openEditor($('editor'), {
+    play(def) { choice.map = def; choice.survival = false; show('editor', false); startGame('solo'); },
+    close() { show('editor', false); show('menu'); },
+    sound(name) { sound.play(name); },
+  }, MAPS.includes(choice.map) ? undefined : choice.map);
+}
+{ const m = mapById(settings.map); if (m) choice.map = m; choice.diff = diffById(settings.diff).id; }
+
 // ---------- menus ----------
 const click = (id: string, fn: () => void) => $(id).addEventListener('click', () => { sound.init(); sound.play('click'); fn(); });
 let helpFrom = 'menu', setFrom = 'menu';
-click('m-solo', () => startGame('solo'));
+click('m-solo', () => openSetup('solo'));
+click('m-editor', () => openEditorScreen());
+click('l-change', () => openSetup('lobby'));
+click('setup-back', () => { show('setup', false); show(setupFor === 'solo' ? 'menu' : 'lobby'); });
+click('setup-editor', () => openEditorScreen());
+click('setup-go', () => { settings.map = choice.map.id; settings.diff = choice.diff; save(); if (setupFor === 'solo') startGame('solo'); else openLobby(lobbyMode); show('setup', false); });
 click('m-coop', () => openLobby('coop'));
 click('m-versus', () => openLobby('versus'));
 click('m-help', () => { helpFrom = 'menu'; show('menu', false); show('help'); });
@@ -446,7 +513,7 @@ const lastMouse = { x: innerWidth / 2, y: innerHeight / 2 };
 const playing = () => mode !== 'attract' && !ended && !bot;
 
 addEventListener('keydown', (e) => {
-  if (e.target instanceof HTMLInputElement) return;
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
   const k = e.key.toLowerCase();
   keys.add(k);
   if (!playing()) return;
@@ -555,13 +622,13 @@ function updateHud() {
     view.setSelected(t, sim.range(t));
     const d = TOWERS[t.type];
     setText('t-name', `${d.name} · Mk ${t.lvl}`);
-    const key = `${t.id}:${t.lvl}:${t.buff}:${sim.mods.tDmg}:${sim.mods.tRate}:${sim.mods.tRange}`;
+    const key = `${t.id}:${t.lvl}:${t.buff}:${sim.level}:${sim.towerDmg(t)}:${sim.towerRate(t)}:${sim.range(t)}`;
     if (cache.tstats !== key) {
       cache.tstats = key;
       const st = $('t-stats'); st.textContent = '';
       const line = (k: string, v: string) => { st.append(k + ' ', el('b', '', v), el('br')); };
       if (t.type === 'beacon') line('Boost', `+${Math.round((0.25 + 0.1 * (t.lvl - 1) + sim.mods.beacon) * 100)}% damage`);
-      else { line('Damage', (d.dmg * LVL_DMG[t.lvl - 1] * sim.mods.tDmg * (1 + t.buff)).toFixed(0)); line('Fire rate', (d.rate * LVL_RATE[t.lvl - 1] * sim.mods.tRate * (1 + t.buff * 0.6)).toFixed(2) + '/s'); }
+      else { line('Damage', sim.towerDmg(t).toFixed(0)); line('Fire rate', sim.towerRate(t).toFixed(2) + '/s'); }
       line('Range', sim.range(t).toFixed(1));
       if (t.buff > 0) line('Beacon', 'boosted');
     }
@@ -579,10 +646,31 @@ function updateHud() {
       box.classList.toggle('cd', f > 0);
     }
   }
+  updateMarks(hero);
   if (mode === 'versus') setText('vs-status', `Core ${rival.l} · Wave ${rival.w} · ${rival.k} kills`);
 }
 
+// "upgrade available" chevrons floating over towers you can afford to upgrade
+const marks: HTMLElement[] = [];
+function updateMarks(hero: boolean) {
+  let n = 0;
+  if (!hero && !ended && view.heroBlend < 0.05) {
+    for (const t of sim.towers) {
+      if (t.lvl >= 3 || sim.gold < sim.upCost(t) || n >= 40) continue;
+      const [x, y, ok] = view.project(t.x, t.h + 0.9, t.z);
+      if (!ok) continue;
+      let m = marks[n];
+      if (!m) { m = marks[n] = el('i', 'mark', '▲'); $('marks').appendChild(m); }
+      m.style.transform = `translate(${x.toFixed(0)}px, ${y.toFixed(0)}px)`;
+      m.style.display = 'block';
+      n++;
+    }
+  }
+  for (let i = n; i < marks.length; i++) marks[i].style.display = 'none';
+}
+
 function frame(dt: number) {
+  if (CAPTURE) sound.clock += dt;
   if (!paused) {
     acc += dt * (mode === 'attract' ? 1.4 : speed);
     let n = 0;
@@ -647,13 +735,31 @@ function frame(dt: number) {
   if (CAPTURE) {
     // deterministic stepping for the trailer recorder
     startAttract(); show('menu', false);
+    sound.cueLog = [];
     (window as unknown as Record<string, unknown>).__volt = {
       frame, view, announce, toast,
       get sim() { return sim; },
-      demo(seed: number, ff: number) { startGame('solo', { demo: true, seed }); sound.stopMusic(); fastForward(ff); view.setSim(sim, 0); },
+      demo(seed: number, ff: number, mapId?: string) { startGame('solo', { demo: true, seed, map: mapById(mapId) || MAPS[0], diff: 'normal', survival: false }); sound.stopMusic(); fastForward(ff); view.setSim(sim, 0); },
       attract() { startAttract(); show('menu', false); },
       menu() { startAttract(); },
       energy(v: number) { sim.players[0].energy = v; },
+      sound,
+      /** hand control from the bot to the "player" so the card picker can be shown */
+      takeover() { bot = null; sim.opts.pauseOnCards = true; },
+      async renderAudio(seconds: number, hot: [number, number][]) {
+        const cues = sound.cueLog || [];
+        sound.cueLog = null;
+        const buf = await sound.renderOffline(seconds, cues, hot);
+        const n = buf.length, L = buf.getChannelData(0), R = buf.getChannelData(1), out = new DataView(new ArrayBuffer(44 + n * 4));
+        const w = (o: number, s: string) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+        w(0, 'RIFF'); out.setUint32(4, 36 + n * 4, true); w(8, 'WAVEfmt '); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 2, true);
+        out.setUint32(24, buf.sampleRate, true); out.setUint32(28, buf.sampleRate * 4, true); out.setUint16(32, 4, true); out.setUint16(34, 16, true); w(36, 'data'); out.setUint32(40, n * 4, true);
+        for (let i = 0; i < n; i++) { out.setInt16(44 + i * 4, Math.max(-1, Math.min(1, L[i])) * 32767, true); out.setInt16(46 + i * 4, Math.max(-1, Math.min(1, R[i])) * 32767, true); }
+        const bytes = new Uint8Array(out.buffer);
+        let bin = '';
+        for (let i = 0; i < bytes.length; i += 32768) bin += String.fromCharCode(...bytes.subarray(i, i + 32768));
+        return btoa(bin);
+      },
     };
     return;
   }

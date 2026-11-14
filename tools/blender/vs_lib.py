@@ -26,6 +26,30 @@ def hex_rgb(h):
     return tuple(x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4 for x in c)
 
 
+def industrial(h, value=0.40, sat=0.58, min_sat=0.30):
+    """Darker, desaturated 'factory paint' version of a neon accent (same hue, ~40 % value)."""
+    import colorsys
+    h = h.lstrip('#')
+    r, g, b = [int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4)]
+    hh, ss, _ = colorsys.rgb_to_hsv(r, g, b)
+    r, g, b = colorsys.hsv_to_rgb(hh, max(min_sat, ss * sat), value)
+    return '#%02x%02x%02x' % (round(r * 255), round(g * 255), round(b * 255))
+
+
+def slab(top, th):
+    """Closed 2D polygon for an armour plate: a polyline plus the same line offset by `th`
+    to the right of its direction (use with prism())."""
+    n = len(top)
+    low = []
+    for i, p in enumerate(top):
+        a = top[max(i - 1, 0)]
+        c = top[min(i + 1, n - 1)]
+        tx, ty = c[0] - a[0], c[1] - a[1]
+        l = math.hypot(tx, ty) or 1.0
+        low.append((p[0] + ty / l * th, p[1] - tx / l * th))
+    return list(top) + low[::-1]
+
+
 def T(at=(0, 0, 0), rot=(0, 0, 0), scale=1.0):
     if isinstance(scale, (int, float)):
         scale = (scale, scale, scale)
@@ -314,12 +338,16 @@ class Node:
         """Mirror across the node's X=0 plane."""
         return self.frames(SYM)
 
-    def add(self, tmp, mat='hull', at=(0, 0, 0), rot=(0, 0, 0), scale=1.0, sharp=50.0, smooth=True, m=None):
+    def add(self, tmp, mat='hull', at=(0, 0, 0), rot=(0, 0, 0), scale=1.0, sharp=50.0, smooth=True, m=None,
+            band=None):
+        """band: material name for faces tagged in the int face layer 'band' (cloth hems, edge trims)."""
         idx = self.model.mat_index(mat)
         bmesh.ops.recalc_face_normals(tmp, faces=tmp.faces[:])
         lim = math.radians(sharp)
+        lay = tmp.faces.layers.int.get('band') if band else None
+        bidx = self.model.mat_index(band) if band else idx
         for f in tmp.faces:
-            f.material_index = idx
+            f.material_index = bidx if (lay is not None and f[lay]) else idx
             f.smooth = smooth
         for e in tmp.edges:
             if len(e.link_faces) == 2:

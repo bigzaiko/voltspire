@@ -17,6 +17,7 @@ export class Net {
   onClose: (why: string) => void = () => {};
   onMsg: (m: Msg) => void = () => {};
   private count = 0; private windowStart = 0; private closed = false;
+  private timer: ReturnType<typeof setTimeout> | undefined;
 
   private async mk(id?: string) {
     const { Peer } = await import('peerjs');
@@ -32,8 +33,16 @@ export class Net {
       if (++this.count > 400) return;
       if (d && typeof d === 'object' && !Array.isArray(d) && typeof (d as Msg).t === 'string') this.onMsg(d as Msg);
     });
-    conn.on('close', () => this.fail('The other player disconnected.'));
-    conn.on('error', () => this.fail('Connection error.'));
+    let opened = false;
+    conn.on('open', () => { opened = true; });
+    const gone = (why: string) => {
+      // a handshake that never completed must not use up the host's single guest slot
+      if (!opened && this.isHost) { if (this.conn === conn) this.conn = null; return; }
+      this.fail(why);
+    };
+    conn.on('close', () => gone('The other player disconnected.'));
+    // a failed send (for example an oversized message) is not a lost connection
+    conn.on('error', () => { if (!conn.open) gone('Connection error.'); });
   }
   private fail(why: string) { if (this.closed) return; this.closed = true; this.onClose(why); }
 
@@ -46,7 +55,8 @@ export class Net {
     const peer = (this.peer = await this.mk(PREFIX + this.code));
     return new Promise((res, rej) => {
       peer.on('open', () => res(this.code));
-      peer.on('error', (e) => { rej(e); this.fail('Could not reach the matchmaking relay.'); });
+      // once two players are linked, the relay is no longer needed: ignore its errors then
+      peer.on('error', (e) => { rej(e); if (!this.conn || !this.conn.open) this.fail('Could not reach the matchmaking relay.'); });
       peer.on('connection', (c) => {
         if (this.conn) { c.close(); return; } // one guest only
         this.wire(c);
@@ -57,18 +67,19 @@ export class Net {
     this.isHost = false; this.code = cleanCode(code);
     const peer = (this.peer = await this.mk());
     return new Promise((res, rej) => {
-      const to = setTimeout(() => rej(new Error('timeout')), 15000);
+      const to = (this.timer = setTimeout(() => rej(new Error('timeout')), 15000));
       peer.on('open', () => {
-        const c = peer.connect(PREFIX + this.code, { reliable: true, serialization: 'json' });
+        const c = peer.connect(PREFIX + this.code, { reliable: true });
         c.on('open', () => { clearTimeout(to); res(); });
         this.wire(c);
       });
       peer.on('error', (e) => { clearTimeout(to); rej(e); });
     });
   }
-  send(m: Msg) { if (this.conn && this.conn.open) this.conn.send(m); }
+  send(m: Msg) { try { if (this.conn && this.conn.open) this.conn.send(m); } catch { /* dropped */ } }
   close() {
     this.closed = true;
+    clearTimeout(this.timer);
     try { this.conn?.close(); this.peer?.destroy(); } catch { /* already gone */ }
     this.conn = null; this.peer = null;
   }

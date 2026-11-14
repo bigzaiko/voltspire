@@ -10,12 +10,18 @@ export class Sound {
   private noiseBuf!: AudioBuffer;
   private timer = 0; private step = 0; private nextT = 0;
   volume = 0.7; musicVol = 0.5; intense = 0; playing = false;
+  /** Trailer capture: when set, play() only records cue names against `clock`. */
+  cueLog: { t: number; name: string }[] | null = null;
+  clock = 0;
+  private offset = 0;
 
   init() {
     if (this.ctx) { if (this.ctx.state === 'suspended') void this.ctx.resume(); return; }
     const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AC) return;
-    const c = (this.ctx = new AC());
+    this.build((this.ctx = new AC()));
+  }
+  private build(c: BaseAudioContext) {
     this.master = c.createGain(); this.master.gain.value = this.volume;
     const comp = c.createDynamicsCompressor();
     comp.threshold.value = -16; comp.ratio.value = 5; comp.attack.value = 0.004; comp.release.value = 0.22;
@@ -42,7 +48,7 @@ export class Sound {
   setMusic(v: number) { this.musicVol = v; if (this.ctx) this.musG.gain.value = v * 0.55; }
 
   private v(o: V) {
-    const c = this.ctx!, t = c.currentTime + (o.when || 0), att = o.att ?? 0.006;
+    const c = this.ctx!, t = c.currentTime + this.offset + (o.when || 0), att = o.att ?? 0.006;
     const osc = c.createOscillator(), g = c.createGain();
     osc.type = o.type || 'sine'; osc.frequency.setValueAtTime(o.f, t);
     if (o.det) osc.detune.value = o.det;
@@ -58,7 +64,7 @@ export class Sound {
     osc.start(t); osc.stop(t + o.dur + 0.03);
   }
   private n(o: N) {
-    const c = this.ctx!, t = c.currentTime + (o.when || 0);
+    const c = this.ctx!, t = c.currentTime + this.offset + (o.when || 0);
     const s = c.createBufferSource(); s.buffer = this.noiseBuf; s.loop = true;
     const f = c.createBiquadFilter(); f.type = o.type || 'bandpass'; f.Q.value = o.q ?? 1; f.frequency.setValueAtTime(o.freq, t);
     if (o.to) f.frequency.exponentialRampToValueAtTime(o.to, t + o.dur);
@@ -79,10 +85,15 @@ export class Sound {
   }
 
   play(name: string) {
-    if (!this.ctx || this.ctx.state !== 'running') return;
-    const now = performance.now(), gap = name === 'shot' || name === 'hit' ? 85 : name === 'die' || name === 'arrow' ? 50 : 35;
-    if (now - (this.last[name] || 0) < gap) return;
+    const log = this.cueLog;
+    if (!log && (!this.ctx || this.ctx.state !== 'running')) return;
+    const now = log ? this.clock * 1000 : performance.now(), gap = name === 'shot' || name === 'hit' ? 85 : name === 'die' || name === 'arrow' ? 50 : 35;
+    if (now - (this.last[name] || 0) < gap && now >= (this.last[name] || 0)) return;
     this.last[name] = now;
+    if (log) { log.push({ t: this.clock, name }); return; }
+    this.emit(name);
+  }
+  private emit(name: string) {
     const r = 0.92 + Math.random() * 0.16, ui = this.uiG;
     switch (name) {
       case 'shot': this.n({ dur: 0.06, vol: 0.09, freq: 1700 * r, q: 1.4 }); this.v({ f: 210 * r, to: 95, dur: 0.07, vol: 0.09 }); break;
@@ -129,13 +140,33 @@ export class Sound {
     const c = this.ctx!;
     if (c.state !== 'running') return;
     if (this.nextT < c.currentTime) this.nextT = c.currentTime + 0.05;
-    const hot = this.intense > 0.5;
-    const spb = 60 / (hot ? 104 : 84) / 4; // sixteenth
+    this.scheduleUntil(c.currentTime + 0.3);
+  }
+  /** Render the score plus recorded cues to a buffer (used for the trailer soundtrack). */
+  async renderOffline(seconds: number, cues: { t: number; name: string }[], hot: [number, number][]): Promise<AudioBuffer> {
+    const c = new OfflineAudioContext(2, Math.ceil(seconds * 44100), 44100);
+    this.ctx = c as unknown as AudioContext;
+    this.build(c);
+    this.musG.gain.value = 0.42;
+    this.master.gain.setValueAtTime(0.0001, 0); this.master.gain.exponentialRampToValueAtTime(0.9, 1.2);
+    this.master.gain.setValueAtTime(0.9, seconds - 3); this.master.gain.exponentialRampToValueAtTime(0.0001, seconds - 0.05);
+    this.nextT = 0.4; this.step = 0;
+    this.scheduleUntil(seconds - 2, (t) => hot.some(([a, b]) => t >= a && t < b));
+    for (const q of cues) { if (q.t < 0 || q.t > seconds - 0.5) continue; this.offset = q.t; this.emit(q.name); }
+    this.offset = 0;
+    return c.startRendering();
+  }
+  private scheduleUntil(limit: number, hotAt?: (t: number) => boolean) {
+    const c = this.ctx!;
+    let hot = this.intense > 0.5;
+    let spb = 60 / (hot ? 104 : 84) / 4; // sixteenth
     const roots = [38, 34, 31, 33]; // D, Bb, G, A
     const third = [3, 4, 3, 4];
     const hz = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
     const M = this.musG;
-    while (this.nextT < c.currentTime + 0.3) {
+    while (this.nextT < limit) {
+      if (hotAt) hot = hotAt(this.nextT);
+      spb = 60 / (hot ? 104 : 84) / 4;
       const s = this.step % 16, barN = Math.floor(this.step / 16), bar = barN % 4, w = this.nextT - c.currentTime;
       const root = roots[bar], bl = spb * 16;
       if (s === 0) {

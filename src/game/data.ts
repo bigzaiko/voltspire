@@ -71,7 +71,7 @@ export interface EnemyDef {
 }
 
 export const ENEMIES: Record<EnemyType, EnemyDef> = {
-  grunt: { name: 'Grunt', hp: 30, speed: 3.0, bounty: 4, xp: 2, energy: 1.5, r: 0.55, y: 0.6, armor: 0, shield: 0, leak: 1, cost: 1, from: 1, scale: 1 },
+  grunt: { name: 'Grunt', hp: 30, speed: 3.0, bounty: 5, xp: 2, energy: 1.5, r: 0.55, y: 0.6, armor: 0, shield: 0, leak: 1, cost: 1, from: 1, scale: 1 },
   runner: { name: 'Runner', hp: 15, speed: 5.0, bounty: 2, xp: 1, energy: 0.9, r: 0.5, y: 0.4, armor: 0, shield: 0, leak: 1, cost: 0.6, from: 2, scale: 1 },
   drone: { name: 'Drone', hp: 24, speed: 3.8, bounty: 4, xp: 2, energy: 1.4, r: 0.55, y: 2.4, armor: 0, shield: 0, leak: 1, cost: 1.2, from: 4, fly: true, scale: 1 },
   shield: { name: 'Aegis', hp: 60, speed: 2.5, bounty: 9, xp: 5, energy: 3, r: 0.7, y: 0.8, armor: 0, shield: 60, leak: 2, cost: 3, from: 6, scale: 1 },
@@ -95,10 +95,15 @@ export interface Mods {
   tDmg: number; tRate: number; tRange: number;
   arcChain: number; shatter: number; napalm: number; twin: number; railCap: number;
   gold: number; xp: number; interest: number; beacon: number; cheap: number;
+  /** per-tower-type multipliers */
+  tw: Record<TowerType, { dmg: number; rate: number; range: number }>;
+  pulseCrit: number; cryoSlow: number; cryoAoe: number; arcSlow: number; mortarAoe: number; railBreak: number; beaconFeed: number;
 }
 export const baseMods = (): Mods => ({
   tDmg: 1, tRate: 1, tRange: 1, arcChain: 0, shatter: 0, napalm: 0, twin: 0, railCap: 0,
   gold: 1, xp: 1, interest: 0, beacon: 0, cheap: 1,
+  tw: Object.fromEntries(TOWER_TYPES.map((t) => [t, { dmg: 1, rate: 1, range: 1 }])) as Mods['tw'],
+  pulseCrit: 0, cryoSlow: 0, cryoAoe: 0, arcSlow: 0, mortarAoe: 0, railBreak: 0, beaconFeed: 0,
 });
 
 export interface HeroStats {
@@ -147,6 +152,24 @@ export const CARDS: Card[] = [
   { id: 'napalm', name: 'Plasma Pools', desc: 'Mortar blasts leave burning ground.', rar: 1, kind: 'tower', max: 3, icon: '♨', needs: 'mortar', apply: (c) => { c.mods.napalm += 1; } },
   { id: 'railcap', name: 'Rail Capacitor', desc: 'Railguns deal 50% more and pierce everything.', rar: 2, kind: 'tower', max: 2, icon: '⟫', needs: 'rail', apply: (c) => { c.mods.railCap += 1; } },
   { id: 'relay', name: 'Signal Relay', desc: 'Beacons boost 15% harder.', rar: 1, kind: 'tower', max: 3, icon: '✶', needs: 'beacon', apply: (c) => { c.mods.beacon += 0.15; } },
+  // dedicated upgrades for each tower type (offered once that tower is unlocked)
+  { id: 'p_servo', name: 'Tracking Servos', desc: 'Pulse Turrets fire 25% faster.', rar: 0, kind: 'tower', max: 4, icon: '»', needs: 'pulse', apply: (c) => { c.mods.tw.pulse.rate *= 1.25; } },
+  { id: 'p_crit', name: 'Overpressure Rounds', desc: 'Pulse bolts gain a 15% chance to deal triple damage.', rar: 1, kind: 'tower', max: 3, icon: '✸', needs: 'pulse', apply: (c) => { c.mods.pulseCrit += 0.15; } },
+  { id: 'p_dmg', name: 'Dense Cores', desc: 'Pulse Turrets deal 30% more damage.', rar: 0, kind: 'tower', max: 4, icon: '▲', needs: 'pulse', apply: (c) => { c.mods.tw.pulse.dmg *= 1.3; } },
+  { id: 'c_deep', name: 'Deep Freeze', desc: 'Cryo slows harder and for 1 second longer.', rar: 0, kind: 'tower', max: 3, icon: '❄', needs: 'cryo', apply: (c) => { c.mods.cryoSlow += 1; } },
+  { id: 'c_wide', name: 'Wide Nozzle', desc: 'Cryo blasts cover a 35% larger area.', rar: 0, kind: 'tower', max: 3, icon: '◌', needs: 'cryo', apply: (c) => { c.mods.cryoAoe += 1; } },
+  { id: 'c_brittle', name: 'Brittle Frost', desc: 'Cryo Emitters deal 80% more damage.', rar: 1, kind: 'tower', max: 3, icon: '✧', needs: 'cryo', apply: (c) => { c.mods.tw.cryo.dmg *= 1.8; } },
+  { id: 'a_volt', name: 'Overvolt', desc: 'Arc Pylons deal 30% more damage.', rar: 0, kind: 'tower', max: 4, icon: '▲', needs: 'arc', apply: (c) => { c.mods.tw.arc.dmg *= 1.3; } },
+  { id: 'a_static', name: 'Static Field', desc: 'Arc lightning briefly slows everything it hits.', rar: 1, kind: 'tower', max: 2, icon: '≋', needs: 'arc', apply: (c) => { c.mods.arcSlow += 1; } },
+  { id: 'a_reach', name: 'Tall Coils', desc: 'Arc Pylons gain 20% range.', rar: 0, kind: 'tower', max: 2, icon: '◎', needs: 'arc', apply: (c) => { c.mods.tw.arc.range *= 1.2; } },
+  { id: 'm_cluster', name: 'Cluster Shells', desc: 'Mortar blasts are 25% larger.', rar: 0, kind: 'tower', max: 3, icon: '❂', needs: 'mortar', apply: (c) => { c.mods.mortarAoe += 1; } },
+  { id: 'm_heavy', name: 'Heavy Payload', desc: 'Plasma Mortars deal 35% more damage.', rar: 0, kind: 'tower', max: 4, icon: '▲', needs: 'mortar', apply: (c) => { c.mods.tw.mortar.dmg *= 1.35; } },
+  { id: 'm_auto', name: 'Autoloader', desc: 'Plasma Mortars fire 30% faster.', rar: 1, kind: 'tower', max: 3, icon: '»', needs: 'mortar', apply: (c) => { c.mods.tw.mortar.rate *= 1.3; } },
+  { id: 'r_quick', name: 'Quick Capacitors', desc: 'Railguns fire 30% faster.', rar: 0, kind: 'tower', max: 3, icon: '»', needs: 'rail', apply: (c) => { c.mods.tw.rail.rate *= 1.3; } },
+  { id: 'r_break', name: 'Armour Breaker', desc: 'Rail slugs ignore armour and hit Brutes and Colossi 30% harder.', rar: 1, kind: 'tower', max: 2, icon: '⛏', needs: 'rail', apply: (c) => { c.mods.railBreak += 1; } },
+  { id: 'r_scope', name: 'Horizon Scope', desc: 'Railguns gain 25% range.', rar: 0, kind: 'tower', max: 2, icon: '◎', needs: 'rail', apply: (c) => { c.mods.tw.rail.range *= 1.25; } },
+  { id: 'b_wide', name: 'Wide Band', desc: 'Beacons reach 30% further.', rar: 0, kind: 'tower', max: 2, icon: '◎', needs: 'beacon', apply: (c) => { c.mods.tw.beacon.range *= 1.3; } },
+  { id: 'b_feed', name: 'Uplink Feed', desc: 'Each Beacon slowly charges your ultimate.', rar: 1, kind: 'tower', max: 2, icon: '⚡', needs: 'beacon', apply: (c) => { c.mods.beaconFeed += 1; } },
   { id: 'fab', name: 'Nano Fabricator', desc: 'Towers and upgrades cost 10% less.', rar: 1, kind: 'eco', max: 3, icon: '⬡', apply: (c) => { c.mods.cheap *= 0.9; } },
   // hero
   { id: 'split', name: 'Split Shot', desc: 'Kestrel fires 2 more arrows per shot.', rar: 1, kind: 'hero', max: 3, icon: '⋔', apply: (c) => { c.hero.arrows += 2; } },
