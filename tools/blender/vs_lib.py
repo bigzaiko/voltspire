@@ -314,14 +314,31 @@ def shell(bm, thickness):
 
 
 # --------------------------------------------------------------------------- model
+def bone_frame(p0, p1, hinge=(1, 0, 0)):
+    """Canonical bone frame: origin p0, local -Z along p0->p1, local +X as close to `hinge` as possible.
+    In the game (glTF) that is: bone along local -Y, hinge = local X."""
+    p0 = Vector(p0)
+    z = (p0 - Vector(p1)).normalized()
+    h = Vector(hinge).normalized()
+    x = (h - z * h.dot(z)).normalized()
+    y = z.cross(x).normalized()
+    m = Matrix((x, y, z)).transposed().to_4x4()
+    m.translation = p0
+    return m
+
+
 class Node:
-    def __init__(self, model, name, at=(0, 0, 0), rot=(0, 0, 0)):
+    """A child object. Three flavours (see Model.node / Model.joint / Model.bone):
+    local authoring (geometry in the node's own space) or world authoring (geometry given in MODEL
+    space and moved into the node by the inverse rest matrix W)."""
+
+    def __init__(self, model, name, W=None, parent=None, world=False):
         self.model = model
         self.name = name
-        self.at = at
-        self.rot = rot
+        self.parent = parent
+        self.W = W if W is not None else Matrix.Identity(4)      # rest matrix in model space
         self.bm = bmesh.new()
-        self.stack = [[Matrix.Identity(4)]]
+        self.stack = [[self.W.inverted()]] if world else [[Matrix.Identity(4)]]
 
     @contextmanager
     def frames(self, mats):
@@ -443,8 +460,26 @@ class Model:
     def mat_index(self, name):
         return self.mat_names.index(name)
 
-    def node(self, name, at=(0, 0, 0), rot=(0, 0, 0)):
-        n = Node(self, name, at, rot)
+    def node(self, name, at=(0, 0, 0), rot=(0, 0, 0), parent=None, scale=1.0):
+        """Locally authored node; at/rot(/scale) are relative to the parent (or the model root)."""
+        W = T(at, rot, scale)
+        if parent is not None:
+            W = parent.W @ W
+        n = Node(self, name, W, parent, world=False)
+        self.nodes.append(n)
+        return n
+
+    def joint(self, name, at=(0, 0, 0), parent=None, rot=(0, 0, 0), mat=None):
+        """World-authored node: pivot `at` (+ rest rotation) given in MODEL space; geometry added to it
+        is written in model space as well."""
+        n = Node(self, name, mat if mat is not None else T(at, rot), parent, world=True)
+        self.nodes.append(n)
+        return n
+
+    def bone(self, name, p0, p1, parent=None, hinge=(1, 0, 0)):
+        """World-authored limb segment from p0 to p1 with a canonical local frame (see bone_frame)."""
+        n = Node(self, name, bone_frame(p0, p1, hinge), parent, world=True)
+        n.p0, n.p1 = Vector(p0), Vector(p1)
         self.nodes.append(n)
         return n
 
@@ -468,9 +503,14 @@ class Model:
                 me.materials.append(self.materials[i])
             ob = bpy.data.objects.new(n.name, me)
             col.objects.link(ob)
-            ob.parent = root
-            ob.location = n.at
-            ob.rotation_euler = [math.radians(a) for a in n.rot]
+            ob.parent = n.parent.ob if n.parent is not None else root
+            n.ob = ob
+            local = (n.parent.W.inverted() @ n.W) if n.parent is not None else n.W
+            loc, quat, scl = local.decompose()
+            ob.location = loc
+            ob.scale = scl
+            ob.rotation_mode = 'QUATERNION'
+            ob.rotation_quaternion = quat
             mod = ob.modifiers.new('wn', 'WEIGHTED_NORMAL')
             mod.keep_sharp = True
             mod.weight = 50

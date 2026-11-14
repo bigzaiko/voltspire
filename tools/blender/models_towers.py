@@ -69,15 +69,18 @@ def tower_pulse():
         t.cyl(0.13, 0.05, 'trim', segs=12, bevel=0.012, rot=RIGHT, at=(0.27, 0.05, 0.34))
         t.cyl(0.06, 0.02, 'glow_main', segs=10, rot=RIGHT, at=(0.32, 0.05, 0.34))
         t.box((0.02, 0.30, 0.03), 'glow_main', bevel=0, at=(0.278, 0.24, 0.47), rot=(-18, 0, 0))
-        # barrels
-        with t.frames(T(at=(0.125, -0.33, 0.32), rot=FWD)):
-            t.cyl(0.095, 0.28, 'hull', segs=10, bevel=0.02)
+        t.cyl(0.07, 0.20, 'hull', segs=8, rot=FWD, at=(0.125, -0.20, 0.32))      # recoil sleeve
+    # twin barrels (own nodes: they recoil alternately)
+    for i, x in enumerate((0.125, -0.125)):
+        g = m.node(f'barrel_{i + 1}', at=(x, -0.33, 0.32), parent=t)
+        with g.frames(T(rot=FWD)):
+            g.cyl(0.095, 0.28, 'hull', segs=10, bevel=0.02)
             for z in (0.07, 0.14, 0.21):
-                t.cyl(0.108, 0.03, 'trim', segs=10, bevel=0.008, at=(0, 0, z))
-            t.cyl(0.055, 0.50, 'trim', segs=10)
-            t.cyl(0.078, 0.09, 'hull', segs=10, bevel=0.015, at=(0, 0, 0.42))
-            t.cyl(0.05, 0.02, 'glow_main', segs=10, at=(0, 0, 0.497))
-            t.ring(0.082, 0.02, 0.02, 'glow_main', segs=10, at=(0, 0, 0.37))
+                g.cyl(0.108, 0.03, 'trim', segs=10, bevel=0.008, at=(0, 0, z))
+            g.cyl(0.055, 0.50, 'trim', segs=10)
+            g.cyl(0.078, 0.09, 'hull', segs=10, bevel=0.015, at=(0, 0, 0.42))
+            g.cyl(0.05, 0.02, 'glow_main', segs=10, at=(0, 0, 0.497))
+            g.ring(0.082, 0.02, 0.02, 'glow_main', segs=10, at=(0, 0, 0.37))
     t.prism([(-0.21, 0.19), (-0.24, 0.32), (-0.20, 0.47), (0.20, 0.47), (0.24, 0.32), (0.21, 0.19)], 0.04, 'paint',
             bevel=0.012, plane='xz', at=(0, -0.385, 0))
     for i in range(3):
@@ -131,13 +134,15 @@ def tower_cryo():
         t.cyl(0.15, 0.20, 'hull', segs=12, bevel=0.02, at=(0, 0, -0.04))
         for z in (0.03, 0.09):
             t.cyl(0.17, 0.03, 'trim', segs=12, bevel=0.008, at=(0, 0, z))
-        t.lathe([(0.14, 0.14), (0.22, 0.22), (0.40, 0.42), (0.44, 0.43), (0.44, 0.49), (0.40, 0.50),
+    d = m.node('dish', at=(0, -0.26, 0.40), parent=t)        # pulses and recoils on every burst
+    with d.frames(T(rot=(84, 0, 0))):
+        d.lathe([(0.14, 0.14), (0.22, 0.22), (0.40, 0.42), (0.44, 0.43), (0.44, 0.49), (0.40, 0.50),
                  (0.21, 0.31), (0.0, 0.29)], 'paint', segs=16)
-        t.ring(0.44, 0.03, 0.05, 'hull', segs=16, bevel=0.008, at=(0, 0, 0.455))
-        t.torus(0.385, 0.018, 'glow_main', segs=16, rsegs=6, at=(0, 0, 0.495))
-        t.lathe([(0.0, 0.28), (0.15, 0.30), (0.15, 0.325), (0.06, 0.36), (0.035, 0.50), (0.0, 0.53)], 'glow_main', segs=10)
-        with t.frames(radial(6)):
-            t.box((0.16, 0.02, 0.14), 'trim', bevel=0.005, at=(0.235, 0, 0.21), rot=(0, -42, 0))
+        d.ring(0.44, 0.03, 0.05, 'hull', segs=16, bevel=0.008, at=(0, 0, 0.455))
+        d.torus(0.385, 0.018, 'glow_main', segs=16, rsegs=6, at=(0, 0, 0.495))
+        d.lathe([(0.0, 0.28), (0.15, 0.30), (0.15, 0.325), (0.06, 0.36), (0.035, 0.50), (0.0, 0.53)], 'glow_main', segs=10)
+        with d.frames(radial(6)):
+            d.box((0.16, 0.02, 0.14), 'trim', bevel=0.005, at=(0.235, 0, 0.21), rot=(0, -42, 0))
     with t.sym():
         t.tube([(0.44, 0.10, 0.92), (0.50, -0.02, 0.98), (0.44, -0.22, 0.78), (0.24, -0.34, 0.52), (0.12, -0.36, 0.45)],
                0.035, 'trim', segs=7)
@@ -174,9 +179,10 @@ def tower_arc():
         t.prism([(0.37, 0.14), (0.50, 0.38), (0.47, 0.70), (0.34, 0.87), (0.42, 0.68), (0.44, 0.40)], 0.11, 'paint',
                 bevel=0.01, plane='xz')
         t.sphere(0.035, 'glow_main', segs=8, rings=5, at=(0.215, 0, 0.925))
-    t.sphere(0.22, 'glow_main', segs=16, rings=10, at=(0, 0, 0.52))
-    t.torus(0.34, 0.03, 'glow_main', segs=20, rsegs=6, at=(0, 0, 0.42))
-    t.torus(0.31, 0.03, 'glow_main', segs=20, rsegs=6, at=(0, 0, 0.66))
+    o = m.node('orb', at=(0, 0, 0.52), parent=t)             # swells on every discharge
+    o.sphere(0.22, 'glow_main', segs=16, rings=10)
+    o.torus(0.34, 0.03, 'glow_main', segs=20, rsegs=6, at=(0, 0, -0.10))
+    o.torus(0.31, 0.03, 'glow_main', segs=20, rsegs=6, at=(0, 0, 0.14))
     t.torus(0.335, 0.03, 'trim', segs=20, rsegs=6, at=(0, 0, 0.30))
     return m
 
@@ -203,20 +209,23 @@ def tower_mortar():
         t.rod((0.27, -0.36, 0.16), (0.27, -0.44, 0.78), 0.04, 'trim', segs=8)
         t.rod((0.27, -0.36, 0.14), (0.27, -0.40, 0.48), 0.055, 'hull', segs=8, bevel=0.01)
     # barrel: elevation 58 deg
-    with t.frames(T(at=(0, 0.04, 0.50), rot=(32, 0, 0))):
-        t.lathe([(0.0, -0.36), (0.20, -0.34), (0.31, -0.24), (0.31, 0.02), (0.27, 0.06)], 'hull', segs=16)
-        t.cyl(0.27, 0.66, 'hull', segs=16, r2=0.25, at=(0, 0, 0.02))
-        t.lathe([(0.26, 0.56), (0.32, 0.60), (0.32, 0.72), (0.28, 0.74), (0.21, 0.74), (0.21, 0.66), (0.0, 0.66)],
+    cr = m.node('cradle', at=(0, 0.04, 0.50), parent=t)       # pitches at the trunnion
+    cr.cyl(0.10, 0.74, 'trim', segs=10, bevel=0.015, o='c', rot=RIGHT)
+    g = m.node('barrel', rot=(32, 0, 0), parent=cr)          # slides along its bore (local +Z)
+    if True:
+        g.lathe([(0.0, -0.36), (0.20, -0.34), (0.31, -0.24), (0.31, 0.02), (0.27, 0.06)], 'hull', segs=16)
+        g.cyl(0.27, 0.66, 'hull', segs=16, r2=0.25, at=(0, 0, 0.02))
+        g.lathe([(0.26, 0.56), (0.32, 0.60), (0.32, 0.72), (0.28, 0.74), (0.21, 0.74), (0.21, 0.66), (0.0, 0.66)],
                 'trim', segs=16)
-        t.cyl(0.21, 0.02, 'glow_main', segs=16, at=(0, 0, 0.665))
+        g.cyl(0.21, 0.02, 'glow_main', segs=16, at=(0, 0, 0.665))
         for z in (0.14, 0.30, 0.46):
-            t.ring(0.275 - z * 0.03, 0.035, 0.05, 'glow_main', segs=16, at=(0, 0, z))
-            t.ring(0.285 - z * 0.03, 0.03, 0.022, 'hull', segs=16, at=(0, 0, z + 0.036))
-            t.ring(0.285 - z * 0.03, 0.03, 0.022, 'hull', segs=16, at=(0, 0, z - 0.036))
-        t.box((0.30, 0.10, 0.44), 'paint', bevel=0.03, at=(0, -0.27, 0.30))
-        t.box((0.16, 0.14, 0.2), 'hull', bevel=0.03, at=(0, 0.30, -0.08))
-        with t.frames(radial(6, start=30)):
-            t.cyl(0.03, 0.03, 'hull', segs=6, at=(0.24, 0, -0.30), rot=(0, 40, 0))
+            g.ring(0.275 - z * 0.03, 0.035, 0.05, 'glow_main', segs=16, at=(0, 0, z))
+            g.ring(0.285 - z * 0.03, 0.03, 0.022, 'hull', segs=16, at=(0, 0, z + 0.036))
+            g.ring(0.285 - z * 0.03, 0.03, 0.022, 'hull', segs=16, at=(0, 0, z - 0.036))
+        g.box((0.30, 0.10, 0.44), 'paint', bevel=0.03, at=(0, -0.27, 0.30))
+        g.box((0.16, 0.14, 0.2), 'hull', bevel=0.03, at=(0, 0.30, -0.08))
+        with g.frames(radial(6, start=30)):
+            g.cyl(0.03, 0.03, 'hull', segs=6, at=(0.24, 0, -0.30), rot=(0, 40, 0))
     # shell rack at the rear
     for x in (-0.17, 0, 0.17):
         t.lathe([(0.0, 0.0), (0.075, 0.01), (0.075, 0.20), (0.05, 0.27)], 'paint', segs=10, at=(x, 0.44, 0.14))
@@ -252,18 +261,20 @@ def tower_rail():
     t.prism(body, 0.26, 'hull', bevel=0.03, plane='yz')
     t.prism([(-0.48, Z + 0.15), (0.30, Z + 0.19), (0.52, Z + 0.13), (0.30, Z + 0.225), (-0.44, Z + 0.185)], 0.14,
             'paint', bevel=0.01, plane='yz')
-    # rails
-    with t.frames([Matrix.Identity(4), T(at=(0, 0, 2 * Z)) @ Matrix.Diagonal((1, 1, -1, 1))]):
-        t.prism([(-0.50, Z + 0.035), (-1.50, Z + 0.035), (-1.58, Z + 0.06), (-1.52, Z + 0.10), (-0.95, Z + 0.13),
+    # rails + emitter: one sliding assembly
+    g = m.node('barrel', parent=t)
+    g.stack.append([T(scale=(1.3, 1.0, 1.14))])
+    with g.frames([Matrix.Identity(4), T(at=(0, 0, 2 * Z)) @ Matrix.Diagonal((1, 1, -1, 1))]):
+        g.prism([(-0.50, Z + 0.035), (-1.50, Z + 0.035), (-1.58, Z + 0.06), (-1.52, Z + 0.10), (-0.95, Z + 0.13),
                  (-0.50, Z + 0.17)], 0.085, 'trim', bevel=0.012, plane='yz')
-        t.prism([(-0.60, Z + 0.14), (-0.95, Z + 0.115), (-1.40, Z + 0.09), (-1.40, Z + 0.115), (-0.95, Z + 0.15),
+        g.prism([(-0.60, Z + 0.14), (-0.95, Z + 0.115), (-1.40, Z + 0.09), (-1.40, Z + 0.115), (-0.95, Z + 0.15),
                  (-0.60, Z + 0.19)], 0.05, 'paint', bevel=0.006, plane='yz')
-    t.box((0.03, 1.02, 0.03), 'glow_main', bevel=0, at=(0, -1.03, Z))
+    g.box((0.03, 1.02, 0.03), 'glow_main', bevel=0, at=(0, -1.03, Z))
     for y in (-0.72, -1.00, -1.28):
-        with t.sym():
-            t.box((0.022, 0.07, 0.30 - (-y - 0.72) * 0.12), 'hull', bevel=0.006, at=(0.052, y, Z))
-        t.box((0.05, 0.03, 0.05), 'glow_main', bevel=0.008, at=(0, y, Z))
-    t.lathe([(0.0, 0.0), (0.04, 0.02), (0.02, 0.10), (0.0, 0.12)], 'glow_main', segs=8, rot=FWD, at=(0, -1.46, Z))
+        with g.sym():
+            g.box((0.022, 0.07, 0.30 - (-y - 0.72) * 0.12), 'hull', bevel=0.006, at=(0.052, y, Z))
+        g.box((0.05, 0.03, 0.05), 'glow_main', bevel=0.008, at=(0, y, Z))
+    g.lathe([(0.0, 0.0), (0.04, 0.02), (0.02, 0.10), (0.0, 0.12)], 'glow_main', segs=8, rot=FWD, at=(0, -1.46, Z))
     # capacitor fins + cells
     with t.sym():
         for i in range(6):
@@ -342,4 +353,45 @@ def tower_beacon():
     return m
 
 
-TOWERS = [tower_pulse, tower_cryo, tower_arc, tower_mortar, tower_rail, tower_beacon]
+# ------------------------------------------------------------------ 7. uplink spire
+def tower_spire():
+    """Tall relay mast. Kestrel stands on the railed platform at its top: the platform floor is at z = 6.5
+    (x TOWER_SCALE 1.15 = sim TOWER_H.spire 7.475). No turret: nothing aims."""
+    m = tower_model('tower_spire', '#6fe0c8')
+    b = tower_base(m)
+    # tapered trunk
+    b.lathe([(0.40, 0.62), (0.40, 0.74), (0.27, 1.00), (0.20, 3.30), (0.15, 5.60), (0.19, 5.78), (0.19, 5.86)],
+            segs=8, phase=22.5, sharp=30)
+    # three buttress fins up the lower third, painted fairings on top of them
+    with b.frames(radial(3, start=90)):
+        b.prism([(0.20, 0.62), (0.62, 0.62), (0.62, 0.74), (0.26, 2.70), (0.18, 2.70)], 0.07, 'hull', bevel=0.012,
+                plane='xz')
+        b.prism([(0.40, 0.76), (0.55, 0.76), (0.27, 2.30), (0.22, 2.30)], 0.085, 'paint', bevel=0.008, plane='xz')
+        b.box((0.012, 0.03, 0.9), 'glow_main', bevel=0, at=(0.262, 0, 3.55))
+    # service collars with lit bands, cable runs between them
+    for z, r in ((1.55, 0.30), (2.75, 0.25), (3.95, 0.22), (5.05, 0.20)):
+        b.cyl(r + 0.04, 0.09, 'trim', segs=8, phase=22.5, bevel=0.015, at=(0, 0, z - 0.045))
+        b.ring(r + 0.045, 0.02, 0.025, 'glow_main', segs=8, phase=22.5, at=(0, 0, z))
+    with b.frames(radial(3, start=30)):
+        b.rod((0.30, 0, 1.6), (0.21, 0, 5.0), 0.014, 'trim', segs=5)
+        # relay vanes under the platform
+        b.prism([(0.18, 5.30), (0.62, 5.62), (0.66, 5.74), (0.18, 5.74)], 0.04, 'paint', bevel=0.008, plane='xz')
+        b.box((0.012, 0.05, 0.10), 'glow_main', bevel=0, at=(0.668, 0, 5.68))
+        b.rod((0.60, 0, 5.72), (0.86, 0, 5.38), 0.010, 'trim', segs=5, r2=0.005)
+    # platform: brace cone, floor plate (top at 6.5), lit rim, two rails on eight posts
+    b.lathe([(0.19, 5.86), (0.30, 6.04), (0.46, 6.40), (0.56, 6.43), (0.56, 6.50), (0.0, 6.50)], segs=16, sharp=30)
+    b.ring(0.33, 0.02, 0.03, 'glow_main', segs=16, at=(0, 0, 6.10))      # lit band under the floor (a lit rim would glare into the third-person camera)
+    b.ring(0.40, 0.03, 0.006, 'trim', segs=24, at=(0, 0, 6.50))
+    b.torus(0.55, 0.014, 'trim', segs=28, rsegs=5, at=(0, 0, 6.83))
+    b.torus(0.55, 0.012, 'hull', segs=28, rsegs=5, at=(0, 0, 6.68))
+    with b.frames(radial(8, start=22.5)):
+        b.cyl(0.014, 0.33, 'hull', segs=5, at=(0.55, 0, 6.50))
+    with b.frames(radial(4, start=45)):
+        b.prism([(0.30, 6.06), (0.52, 6.40), (0.46, 6.40), (0.27, 6.12)], 0.05, 'hull', bevel=0.008, plane='xz')
+    # antenna mast on the rim, clear of the archer
+    b.rod((-0.50, 0.22, 6.50), (-0.56, 0.25, 7.55), 0.012, 'trim', segs=5, r2=0.005)
+    b.sphere(0.022, 'glow_main', segs=6, rings=4, at=(-0.56, 0.25, 7.56))
+    return m
+
+
+TOWERS = [tower_pulse, tower_cryo, tower_arc, tower_mortar, tower_rail, tower_beacon, tower_spire]

@@ -3,12 +3,15 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { CELL, GW, GH, TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, BOW_TIERS, cellX, cellZ } from './data.ts';
 import type { TowerType, EnemyType } from './data.ts';
-import { Sim, TOWER_SCALE, DECK, HERO_SCALE } from './sim.ts';
+import { Sim, TOWER_SCALE, HERO_SCALE, SKILL_CAST, standY } from './sim.ts';
 import type { Ev, Tower } from './sim.ts';
+import type { GameMap } from './map.ts';
 import { Fx } from './fx.ts';
 import { buildWorld, noAO, FX_LAYER } from './world.ts';
 import { Post } from './post.ts';
 import { lightPool, glowTexture, POOL_GEO } from './tex.ts';
+import { makeEnemyRig, resetEnemy, updateEnemy, makeTowerRig, updateTower, towerShot, makeHeroRig, updateHero, heroTrigger, RAIN_GAP } from './anim.ts';
+import type { EnemyRig, TowerRig, HeroRig, HeroEvent } from './anim.ts';
 
 const MODEL_NAMES = [...TOWER_TYPES.map((t) => 'tower_' + t), ...ENEMY_TYPES.map((t) => 'enemy_' + t), 'hero', 'core', 'prop_barrier', 'prop_lamp', 'prop_crate'];
 const ENEMY_COLOR = 0xff4a22;
@@ -16,10 +19,55 @@ const HEAT = 0xffa24a; // hot metal sparks
 const HSL = { h: 0, s: 0, l: 0 };
 const V = new THREE.Vector3(), V2 = new THREE.Vector3(), Q = new THREE.Quaternion();
 
-interface EVis { obj: THREE.Object3D; spins: THREE.Object3D[]; glow: THREE.Mesh; bar: THREE.Sprite; sbar: THREE.Sprite | null; bubble: THREE.Mesh | null; type: EnemyType; phase: number; seen: number; fresh: boolean }
-interface TVis { obj: THREE.Object3D; turret: THREE.Object3D | null; spins: THREE.Object3D[]; pips: THREE.Group; buff: THREE.Mesh; type: TowerType; lvl: number; grow: number; seen: number }
+interface EVis { obj: THREE.Object3D; rig: EnemyRig; sx: number; sz: number; glow: THREE.Mesh; bar: THREE.Sprite; sbar: THREE.Sprite | null; bubble: THREE.Mesh | null; type: EnemyType; phase: number; seen: number; fresh: boolean }
+interface TVis { obj: THREE.Object3D; rig: TowerRig; pips: THREE.Group; buff: THREE.Mesh; type: TowerType; lvl: number; grow: number; seen: number }
 interface PVis { mesh: THREE.Mesh; kind: string; seen: number; fresh: boolean }
+/** tele > 0: still dissolving at the tower she is leaving; out: playing the uplink-end animation at `pos` */
+interface HVis { obj: THREE.Object3D; disc: THREE.Mesh; rig: HeroRig | null; pos: THREE.Vector3; tele: number; out: boolean; shown: boolean }
 interface ZVis { obj: THREE.Group; kind: string; seen: number; t: number }
+/** An effect held back until the hero's pose reaches its release beat. */
+interface Later { t: number; fn: () => void }
+
+/** Half-length of road (before and after a corner) over which each type swings through its turn, and the hardest it can turn (rad/s). */
+const TURN_A: Record<EnemyType, number> = { grunt: 0.8, runner: 1.0, drone: 1.3, shield: 1.0, brute: 1.0, boss: 1.6 };
+const TURN_RATE: Record<EnemyType, number> = { grunt: 5, runner: 7, drone: 6, shield: 3.2, brute: 2.6, boss: 1.1 };
+const PO = { x: 0, z: 0, dx: 0, dz: 0, y: 0, yaw: 0 };
+/**
+ * Where an enemy at distance d (lateral offset off) along a lane is drawn: like GameMap.pos, but every corner is
+ * replaced by a circular arc that starts `a` before it and ends `a` after it, so heading and position are continuous.
+ */
+function roundedPose(map: GameMap, lane: number, d: number, off: number, a: number, out: typeof PO) {
+  const L = map.lanes[lane] || map.lanes[0], n = L.pts.length;
+  map.pos(lane, d, out);
+  let hx = out.dx, hz = out.dz, px = out.x, pz = out.z;
+  d = Math.max(0, Math.min(L.len, d));
+  let i = 1;
+  while (i < n - 1 && L.cum[i] < d) i++;
+  for (let j = i - 1; j <= i; j++) {
+    if (j < 1 || j > n - 2) continue;
+    const s0 = L.cum[j] - L.cum[j - 1], s1 = L.cum[j + 1] - L.cum[j];
+    const aj = Math.min(a, 0.48 * s0, 0.48 * s1), s = d - L.cum[j];
+    if (aj < 1e-3 || Math.abs(s) >= aj) continue;
+    const A = L.pts[j - 1], Cn = L.pts[j], B = L.pts[j + 1];
+    const u1x = (Cn[0] - A[0]) / s0, u1z = (Cn[1] - A[1]) / s0, u2x = (B[0] - Cn[0]) / s1, u2z = (B[1] - Cn[1]) / s1;
+    const h1 = Math.atan2(u1x, u1z);
+    let del = Math.atan2(u2x, u2z) - h1;
+    while (del > Math.PI) del -= Math.PI * 2;
+    while (del < -Math.PI) del += Math.PI * 2;
+    if (Math.abs(del) < 0.02) continue;
+    const R = aj / Math.tan(Math.abs(del) / 2), sg = del > 0 ? 1 : -1, h = h1 + del * (s + aj) / (2 * aj);
+    px = Cn[0] - aj * u1x + R * sg * (Math.cos(h1) - Math.cos(h));
+    pz = Cn[1] - aj * u1z + R * sg * (Math.sin(h) - Math.sin(h1));
+    hx = Math.sin(h); hz = Math.cos(h);
+    break;
+  }
+  // near a corner the column closes up on the lane centre: the inside track would otherwise pivot on the spot
+  let near = 1e9;
+  for (let j = Math.max(1, i - 1); j <= Math.min(n - 2, i); j++) near = Math.min(near, Math.abs(d - L.cum[j]));
+  if (near < 3.5) { const u = 1 - near / 3.5; off *= 1 - 0.7 * u * u * (3 - 2 * u); }
+  out.x = px - hz * off; out.z = pz + hx * off; out.dx = hx; out.dz = hz; out.yaw = Math.atan2(hx, hz);
+  return out;
+}
 
 function fallbackModel(name: string): THREE.Object3D {
   const g = new THREE.Group();
@@ -70,7 +118,7 @@ export class View {
   private tv = new Map<number, TVis>();
   private pv = new Map<number, PVis>(); private ppool: Record<string, PVis[]> = {};
   private zv = new Map<number, ZVis>();
-  private heroes: { obj: THREE.Object3D; disc: THREE.Mesh }[] = [];
+  private heroes: HVis[] = [];
   private coreSpins: THREE.Object3D[] = [];
   private coreObj: THREE.Object3D | null = null;
   private dyn = new THREE.Group();
@@ -89,7 +137,9 @@ export class View {
   private core = { x: 0, z: 0 };
   private scenery = new THREE.Group();
   private mapDef: unknown = null;
-  private deckGeo: THREE.BufferGeometry[] | null = null;
+  private later: Later[] = [];
+  /** Skill zones whose visuals wait for the cast pose: [x, z, delay]. */
+  private zoneWait: number[][] = [];
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
@@ -169,14 +219,19 @@ export class View {
           // team / type colour becomes a muted coated-metal accent instead of flat toy paint
           const enemy = name.startsWith('enemy_');
           mat.color.setHSL(HSL.h, HSL.s * (enemy ? 0.8 : 0.62), Math.min(HSL.l, enemy ? 0.2 : 0.3) * (enemy ? 1 : 0.95));
-          mat.metalness = Math.max(mat.metalness, 0.55); mat.roughness = 0.42; mat.envMapIntensity = 1.15;
+          mat.metalness = Math.max(mat.metalness, 0.55); mat.roughness = enemy ? 0.6 : 0.42; mat.envMapIntensity = 1.15;
         } else if (mat.name === 'hull') {
           // near-black hulls vanish against the dark deck: lift them to gunmetal and let reflections do the work
           mat.color.setHSL(HSL.h, HSL.s * 0.5, Math.max(HSL.l, name.startsWith('enemy_') ? 0.07 : 0.1));
-          mat.metalness = 0.85; mat.roughness = 0.36; mat.envMapIntensity = 1.35;
+          mat.metalness = 0.85; mat.roughness = name.startsWith('enemy_') ? 0.58 : 0.36; mat.envMapIntensity = 1.35;
+          // the spire's platform floor fills the bottom of the third-person view: keep it matte or it mirrors the sky into the bloom
+          if (name === 'tower_spire') { mat.metalness = 0.6; mat.roughness = 0.7; mat.envMapIntensity = 0.55; }
         } else if (mat.name === 'trim') {
           mat.color.setHSL(HSL.h, HSL.s * 0.6, Math.min(0.5, Math.max(HSL.l, 0.3)));
-          mat.metalness = 0.95; mat.roughness = 0.24; mat.envMapIntensity = 1.5;
+          // enemy plates swing through the sun as they walk: a mirror finish there blooms to a white flash
+          const en = name.startsWith('enemy_');
+          mat.metalness = en ? 0.8 : 0.95; mat.roughness = en ? 0.55 : 0.24; mat.envMapIntensity = en ? 1.1 : 1.5;
+          if (name === 'tower_spire') { mat.roughness = 0.6; mat.envMapIntensity = 0.6; }
         } else {
           mat.envMapIntensity = 1.1;
         }
@@ -210,7 +265,8 @@ export class View {
     for (const [id, v] of this.tv) { this.dyn.remove(v.obj); this.tv.delete(id); }
     for (const [id, v] of this.pv) { v.mesh.visible = false; (this.ppool[v.kind] ||= []).push(v); this.pv.delete(id); }
     for (const [id, v] of this.zv) { this.dyn.remove(v.obj); this.zv.delete(id); }
-    for (const h of this.heroes) h.obj.visible = false;
+    for (const h of this.heroes) { h.obj.visible = false; h.out = false; h.shown = false; h.tele = 0; }
+    this.later.length = 0; this.zoneWait.length = 0;
     this.heroBlend = 0;
     this.setGhost(null); this.setSelected(null); this.setTele(null);
     this.hoverMark.visible = false;
@@ -316,24 +372,43 @@ export class View {
   }
 
   // ---------- events → effects ----------
+  /** Route a sim event to player p's hero rig. */
+  private heroAnim(p: unknown, ev: HeroEvent) {
+    const h = this.heroes[p as number];
+    if (h && h.rig) heroTrigger(h.rig, ev);
+  }
+
   handle(evs: Ev[]) {
     const fx = this.fx;
     for (const e of evs) {
       switch (e.k) {
-        case 'shot': fx.burst(e.x, e.y, e.z, 2, 3, TOWERS[e.t as TowerType]?.color ?? 0xffffff, 0.12, 0.24, 0); break;
+        case 'shot': { fx.burst(e.x, e.y, e.z, 2, 3, TOWERS[e.t as TowerType]?.color ?? 0xffffff, 0.12, 0.24, 0); const tv = this.tv.get(e.id); if (tv) towerShot(tv.rig, +e.d || 0); break; }
         case 'hit': fx.burst(e.x, e.y, e.z, 3, 4, e.c, 0.2, 0.22, 6); fx.burst(e.x, e.y, e.z, 2, 5, HEAT, 0.35, 0.16, 12); break;
-        case 'cryo':
+        case 'cryo': {
+          const tv = this.tv.get(e.id); if (tv) towerShot(tv.rig);
           fx.beam(e.x, e.y, e.z, e.tx, e.ty, e.tz, 0x9fd8ff, 0.16, 0.22);
           fx.ring(e.tx, 0.1, e.tz, e.r, 0x9fd8ff, 0.4);
           fx.burst(e.tx, e.ty, e.tz, 8, 3.5, 0xdff4ff, 0.5, 0.2, 1);
           fx.smoke(e.tx, 0.3, e.tz, 1, 1.1, e.r * 0.5, 0.25);
           break;
+        }
         case 'arc': if (Array.isArray(e.p)) fx.arc(e.p, e.c); break;
-        case 'rail':
-          fx.beam(e.x, e.y, e.z, e.tx, e.ty, e.tz, e.c, e.big ? 0.42 : 0.2, e.big ? 0.5 : 0.32);
-          fx.burst(e.tx, e.ty, e.tz, e.big ? 14 : 5, 6, HEAT, 0.45, 0.2, 10);
-          if (e.big) { this.shake = Math.max(this.shake, 0.35); for (let i = 0; i < 12; i++) { const u = Math.random(); fx.burst(e.x + (e.tx - e.x) * u, e.y + (e.ty - e.y) * u, e.z + (e.tz - e.z) * u, 2, 2.5, e.c, 0.45, 0.22, 0); } }
+        case 'rail': {
+          const hero = e.big && e.p !== undefined && this.heroes[+e.p] && this.heroes[+e.p].rig;
+          const fire = () => {
+            let x = e.x, y = e.y, z = e.z;
+            if (hero) { // leaves from the bow, not from the middle of her body
+              const dx = e.tx - x, dy = e.ty - y, dz = e.tz - z, L = Math.hypot(dx, dy, dz) || 1;
+              x += dx / L * 0.5; y += dy / L * 0.5 + 0.1; z += dz / L * 0.5;
+            }
+            fx.beam(x, y, z, e.tx, e.ty, e.tz, e.c, e.big ? (hero ? 0.3 : 0.42) : 0.2, e.big ? 0.5 : 0.32);
+            fx.burst(e.tx, e.ty, e.tz, e.big ? 14 : 5, 6, HEAT, 0.45, 0.2, 10);
+            if (e.big) { this.shake = Math.max(this.shake, 0.35); for (let i = 0; i < 12; i++) { const u = Math.random(); fx.burst(x + (e.tx - x) * u, y + (e.ty - y) * u, z + (e.tz - z) * u, 2, 2.5, e.c, 0.45, 0.22, 0); } }
+          };
+          // Rail Shot: the pose winds up first, the beam leaves on the release beat
+          if (hero) { this.heroAnim(e.p, 'rail'); this.later.push({ t: SKILL_CAST[0], fn: fire }); } else fire();
           break;
+        }
         case 'boom': fx.boom(e.x, e.y, e.z, e.r, e.c, !!e.s); if (!e.s) this.shake = Math.max(this.shake, 0.12); break;
         case 'die': {
           const big = e.t === 'boss', mid = e.t === 'brute' || e.t === 'shield';
@@ -348,10 +423,22 @@ export class View {
         case 'shieldbreak': fx.burst(e.x, e.y, e.z, 14, 7, 0x7fbcff, 0.5, 0.24, 3); fx.flash(e.x, e.y, e.z, 1.5, 0x59b8ff, 0.18); break;
         case 'build': fx.ring(e.x, 0.1, e.z, 2.2, e.c, 0.5); fx.burst(e.x, 0.3, e.z, 12, 4, e.c, 0.6, 0.24, -3, 1); fx.smoke(e.x, 0.2, e.z, 3, 1, 1.6, 0.35); break;
         case 'sell': fx.burst(e.x, 0.8, e.z, 12, 5, 0xffc860, 0.6, 0.24, 9); fx.smoke(e.x, 0.4, e.z, 3, 1.1, 1.2, 0.5); break;
-        case 'heroOn': fx.column(e.x, e.y, e.z, BOW_TIERS[this.sim ? this.sim.tier : 0].color); this.shake = Math.max(this.shake, 0.4); break;
-        case 'heroOff': fx.column(e.x, e.y, e.z, 0x9fd8ff, 18); break;
-        case 'tele': fx.column(e.fx, e.fy, e.fz, 0x9fd8ff, 12); fx.column(e.x, e.y, e.z, BOW_TIERS[this.sim ? this.sim.tier : 0].color, 22); break;
-        case 'skill': fx.ring(e.x, 0.15, e.z, 5, e.c, 0.5, 1.4); break;
+        case 'arrow': this.heroAnim(e.p, 'arrow'); break;
+        case 'heroOn': { const h = this.hero(+e.p); h.out = false; h.tele = 0; h.pos.set(e.x, e.y, e.z); this.heroAnim(e.p, 'on'); }
+          // a slim shaft of light: the wide column hid the whole materialise animation from the camera behind her
+          fx.beam(e.x, e.y, e.z, e.x, e.y + 30, e.z, BOW_TIERS[this.sim ? this.sim.tier : 0].color, 0.2, 0.45); this.shake = Math.max(this.shake, 0.4); break;
+        case 'heroOff': { const h = this.heroes[+e.p]; if (h && h.rig && h.shown) { h.out = true; h.tele = 0; h.pos.set(e.x, e.y, e.z); heroTrigger(h.rig, 'off'); } }
+          fx.beam(e.x, e.y, e.z, e.x, e.y + 18, e.z, 0x9fd8ff, 0.2, 0.5); break;
+        case 'tele': { const h = this.heroes[+e.p]; if (h && h.rig) { h.tele = 0.13; h.pos.set(e.fx, e.fy, e.fz); heroTrigger(h.rig, 'teleOut'); } }
+          fx.beam(e.fx, e.fy, e.fz, e.fx, e.fy + 12, e.fz, 0x9fd8ff, 0.2, 0.4); fx.beam(e.x, e.y, e.z, e.x, e.y + 22, e.z, BOW_TIERS[this.sim ? this.sim.tier : 0].color, 0.2, 0.45); break;
+        case 'skill': {
+          const rain = e.s === 1, wait = SKILL_CAST[rain ? 1 : 2];
+          this.heroAnim(e.p, rain ? 'rain' : 'sing');
+          this.zoneWait.push([e.x, e.z, wait]);
+          this.later.push({ t: wait, fn: () => fx.ring(e.x, 0.15, e.z, 5, e.c, 0.5, 1.4) });
+          if (rain) for (let i = 0; i < 3; i++) this.later.push({ t: wait + i * RAIN_GAP, fn: () => this.rainTracer(+e.p, e.c) });
+          break;
+        }
         case 'leak': fx.ring(this.core.x, 0.2, this.core.z, 6, 0xff3b3b, 0.7); fx.burst(this.core.x, 2, this.core.z, 24, 9, 0xff3b3b, 0.8, 0.3, 8); this.shake = Math.max(this.shake, 0.3); break;
         case 'lose': fx.column(this.core.x, 0, this.core.z, 0xff3b3b, 40); fx.boom(this.core.x, 2.5, this.core.z, 12, 0xff5a2a); this.shake = 1.2; break;
       }
@@ -364,8 +451,7 @@ export class View {
     if (pool && pool.length) { const v = pool.pop()!; v.obj.visible = true; v.fresh = true; return v; }
     const obj = this.models['enemy_' + type].clone();
     if (type === 'boss') obj.scale.setScalar(1.25);
-    const spins: THREE.Object3D[] = [];
-    obj.traverse((o) => { if (o.name.startsWith('spin')) spins.push(o); });
+    const rig = makeEnemyRig(obj, type);
     const d = ENEMIES[type];
     const bar = new THREE.Sprite(this.barMats[0]);
     bar.position.y = (type === 'drone' ? 0.8 : d.y * 2 + 0.7); bar.visible = false; bar.layers.set(FX_LAYER);
@@ -380,31 +466,50 @@ export class View {
       bubble.position.y = d.y; bubble.layers.set(FX_LAYER); obj.add(bubble);
     }
     this.dyn.add(obj);
-    return { obj, spins, bar, sbar, bubble, glow, type, phase: Math.random() * 6.28, seen: 0, fresh: true };
+    return { obj, rig, sx: 0, sz: 0, bar, sbar, bubble, glow, type, phase: Math.random() * 6.28, seen: 0, fresh: true };
   }
 
   private sync(dt: number) {
     const sim = this.sim;
     if (!sim) return;
     const f = ++this.frame, k = 1 - Math.exp(-dt * 18);
+    for (let i = 0; i < this.later.length; i++) { const l = this.later[i]; if ((l.t -= dt) <= 1e-6) { this.later.splice(i--, 1); l.fn(); } }
+    if (this.zoneWait.length > 8) this.zoneWait.shift();
     // enemies
     for (const e of sim.enemies) {
       let v = this.ev.get(e.id);
       if (!v) { v = this.enemyVis(e.type); this.ev.set(e.id, v); }
       v.seen = f;
-      const fly = e.type === 'drone';
-      const y = fly ? e.y + Math.sin(this.time * 3 + v.phase) * 0.25 : Math.abs(Math.sin(this.time * (e.type === 'runner' ? 14 : e.type === 'boss' ? 3 : 8) + v.phase)) * (e.type === 'boss' ? 0.12 : 0.1);
-      if (v.fresh) { v.obj.position.set(e.x, y, e.z); v.obj.rotation.y = e.yaw; v.fresh = false; }
-      else {
-        v.obj.position.x += (e.x - v.obj.position.x) * k; v.obj.position.z += (e.z - v.obj.position.z) * k; v.obj.position.y = y;
-        let d = e.yaw - v.obj.rotation.y;
-        while (d > Math.PI) d -= Math.PI * 2;
-        while (d < -Math.PI) d += Math.PI * 2;
-        v.obj.rotation.y += d * Math.min(1, dt * 8);
+      // visual pose: the sim walks hard-cornered lanes; the view rounds every corner into an arc and limits the turn rate
+      let d = e.dist, lane = e.lane, off = e.off;
+      if (sim.replica) { // replicas only know x / z: recover the lane position from them
+        if (v.fresh) { v.sx = e.x; v.sz = e.z; } else { v.sx += (e.x - v.sx) * k; v.sz += (e.z - v.sz) * k; }
+        let bd = 1e9;
+        for (let l = 0; l < sim.map.lanes.length; l++) {
+          const nd = sim.map.nearest(l, v.sx, v.sz);
+          sim.map.pos(l, nd, PO);
+          const dd = Math.hypot(PO.x - v.sx, PO.z - v.sz);
+          if (dd < bd - 1e-6) { bd = dd; d = nd; lane = l; off = -(v.sx - PO.x) * PO.dz + (v.sz - PO.z) * PO.dx; }
+        }
       }
-      v.obj.rotation.z = fly ? 0 : Math.sin(this.time * 8 + v.phase) * 0.05;
+      roundedPose(sim.map, lane, d, off, TURN_A[e.type], PO);
+      const y = e.type === 'drone' ? e.y : (PO.y || 0);
+      if (v.fresh) { v.obj.position.set(PO.x, y, PO.z); v.obj.rotation.y = PO.yaw; v.fresh = false; resetEnemy(v.rig); }
+      else {
+        v.obj.position.set(PO.x, y, PO.z);
+        let dy = PO.yaw - v.obj.rotation.y;
+        while (dy > Math.PI) dy -= Math.PI * 2;
+        while (dy < -Math.PI) dy += Math.PI * 2;
+        const lim = TURN_RATE[e.type] * dt;
+        v.obj.rotation.y += Math.max(-lim, Math.min(lim, dy));
+      }
+      let look = NaN;
+      if (e.type === 'boss') { // the colossus' turret head tracks the nearest tower
+        let bd = 400;
+        for (const t of sim.towers) { const d = (t.x - e.x) * (t.x - e.x) + (t.z - e.z) * (t.z - e.z); if (d < bd) { bd = d; look = Math.atan2(t.x - e.x, t.z - e.z); } }
+      }
+      updateEnemy(v.rig, dt, e.hp / e.maxHp, e.sing > 0, e.frz > 0 && e.type !== 'boss', look);
       v.glow.position.y = (0.05 - y) / v.obj.scale.y;
-      for (const s of v.spins) s.rotateY(dt * 22);
       const r = Math.max(0, e.hp / e.maxHp);
       v.bar.visible = r < 0.999;
       if (v.bar.visible) { v.bar.material = this.barMats[r > 0.6 ? 0 : r > 0.3 ? 1 : 2]; v.bar.scale.set(Math.max(0.05, r) * (0.9 + e.r), 0.11, 1); }
@@ -421,10 +526,8 @@ export class View {
       let v = this.tv.get(t.id);
       if (!v) {
         const obj = this.models['tower_' + t.type].clone();
-        const spins: THREE.Object3D[] = [];
-        obj.traverse((o) => { if (o.name.startsWith('spin')) spins.push(o); });
+        const rig = makeTowerRig(obj, t.type);
         const pips = new THREE.Group(); obj.add(pips);
-        const deck = this.makeDeck(t.h, TOWERS[t.type].color); obj.add(deck); obj.userData.deck = deck;
         // soft pool of the tower's own light on the deck: grounds it and keeps it readable from the bird view
         const pad = lightPool(2.3, TOWERS[t.type].color, 0.34); pad.layers.set(FX_LAYER);
         pad.position.y = 0.04; obj.add(pad);
@@ -432,12 +535,10 @@ export class View {
         buff.rotation.x = Math.PI / 2; buff.position.y = 0.06; buff.layers.set(FX_LAYER); obj.add(buff);
         obj.position.set(t.x, 0, t.z);
         this.dyn.add(obj);
-        v = { obj, turret: obj.getObjectByName('turret') || null, spins, pips, buff, type: t.type, lvl: 0, grow: 0, seen: f };
+        v = { obj, rig, pips, buff, type: t.type, lvl: 0, grow: 0, seen: f };
         this.tv.set(t.id, v);
       }
       v.seen = f;
-      // uplink decks deploy while someone is uplinked (they would hide the towers from the bird view)
-      (v.obj.userData.deck as THREE.Object3D).visible = this.heroBlend > 0.02 || sim.players.some((q) => q.heroActive && q.heroTower === t.id);
       if (v.grow < 1) { v.grow = Math.min(1, v.grow + dt * 3.5); const s = (1 - Math.pow(1 - v.grow, 3)) * TOWER_SCALE; v.obj.scale.set(s, s, s); }
       if (v.lvl !== t.lvl) {
         v.lvl = t.lvl; v.pips.clear();
@@ -445,8 +546,7 @@ export class View {
         for (let i = 0; i < t.lvl; i++) { const r = new THREE.Mesh(new THREE.TorusGeometry(0.93 - i * 0.02, 0.028, 5, 40), m); r.rotation.x = Math.PI / 2; r.position.y = 0.2 + i * 0.16; r.layers.set(FX_LAYER); v.pips.add(r); }
       }
       v.buff.visible = t.buff > 0;
-      if (v.turret && t.type !== 'beacon' && t.type !== 'arc') v.turret.rotation.y = t.yaw;
-      for (const s of v.spins) s.rotateY(dt * 2.5);
+      updateTower(v.rig, t.yaw, t.cd, t.type === 'beacon' ? 0 : sim.towerRate(t), dt);
     }
     for (const [id, v] of this.tv) if (v.seen !== f) { this.dyn.remove(v.obj); this.tv.delete(id); }
 
@@ -485,9 +585,13 @@ export class View {
         obj.position.set(z.x, 0.07, z.z);
         this.dyn.add(noAO(obj));
         v = { obj, kind: z.kind, seen: f, t: 0 };
+        // a zone thrown by the hero shows up when her pose releases it
+        for (let i = this.zoneWait.length - 1; i >= 0; i--) { const w = this.zoneWait[i]; if (Math.abs(w[0] - z.x) < 0.01 && Math.abs(w[1] - z.z) < 0.01) { v.t = -w[2]; this.zoneWait.splice(i, 1); break; } }
         this.zv.set(z.id, v);
       }
       v.seen = f; v.t += dt;
+      v.obj.visible = v.t >= 0;
+      if (v.t < 0) continue;
       const c = z.kind === 'rain' ? BOW_TIERS[sim.tier].color : 0xff2bd6;
       if (z.kind === 'rain') {
         for (let i = 0; i < 2; i++) {
@@ -509,53 +613,44 @@ export class View {
     const tier = BOW_TIERS[sim.tier];
     for (const m of this.bowMats) { m.color.setHex(tier.color); m.emissive.setHex(tier.color); }
     sim.players.forEach((p, i) => {
-      let h = this.heroes[i];
-      if (!h) {
-        const obj = this.models.hero.clone();
-        obj.scale.setScalar(HERO_SCALE);
-        const disc = lightPool(1.7, 0x35f0ff, 0.5); disc.position.y = -0.02; disc.layers.set(FX_LAYER); obj.add(disc);
-        this.dyn.add(obj);
-        h = this.heroes[i] = { obj, disc };
-      }
+      const h = this.hero(i);
       const t = p.heroActive ? sim.towerById(p.heroTower) : undefined;
-      h.obj.visible = !!t;
-      if (!t) return;
-      h.obj.position.set(t.x, t.h + DECK, t.z);
-      h.obj.rotation.y = i === this.me ? this.yaw : p.yaw;
+      if (t) h.out = false;
+      h.obj.visible = h.shown = !!t || h.out;
+      if (!h.shown) return;
+      const yaw = i === this.me ? this.yaw : p.yaw, pitch = i === this.me ? this.pitch : p.pitch;
+      if (h.tele > 0) { h.tele -= dt; if (h.tele <= 0 && h.rig) heroTrigger(h.rig, 'teleIn'); }
+      if (t && h.tele <= 0) h.pos.set(t.x, standY(t), t.z);
+      h.obj.position.copy(h.pos);
+      h.obj.rotation.y = yaw;
+      // the rig owns scale (squash / materialise) and the teleport flicker
+      if (h.rig) { if (!updateHero(h.rig, yaw, pitch, dt, HERO_SCALE)) { h.out = false; h.obj.visible = h.shown = false; } }
       (h.disc.material as THREE.MeshBasicMaterial).color.setHex(tier.color).multiplyScalar(0.5);
-      if (Math.random() < 0.5) this.fx.spark(t.x + (Math.random() - 0.5) * 1.0, t.h + DECK - 0.1, t.z + (Math.random() - 0.5) * 1.0, 0, -1.2, 0, 0.5, 0.1, tier.color, 0);
+      if (t && Math.random() < 0.5) this.fx.spark(t.x + (Math.random() - 0.5) * 1.0, standY(t) - 0.12, t.z + (Math.random() - 0.5) * 1.0, 0, -1.2, 0, 0.5, 0.1, tier.color, 0);
     });
   }
 
-  /** The hovering uplink deck above a tower: where Kestrel stands. Built in tower-local units. */
-  private makeDeck(h: number, color: number) {
-    if (!this.deckGeo) {
-      const post = new THREE.CylinderGeometry(0.014, 0.014, 0.3, 5); post.translate(0, 0.15, 0);
-      this.deckGeo = [
-        new THREE.CylinderGeometry(0.56, 0.46, 0.07, 28),
-        new THREE.TorusGeometry(0.55, 0.014, 5, 40).rotateX(Math.PI / 2),
-        post,
-        new THREE.TorusGeometry(0.4, 0.022, 5, 36).rotateX(Math.PI / 2),
-        new THREE.CylinderGeometry(0.2, 0.34, 0.12, 14),
-        new THREE.CylinderGeometry(0.01, 0.01, 1, 5).translate(0, -0.5, 0),
-      ];
+  private hero(i: number): HVis {
+    let h = this.heroes[i];
+    if (!h) {
+      const obj = this.models.hero.clone();
+      obj.scale.setScalar(HERO_SCALE); obj.visible = false;
+      const disc = lightPool(1.7, 0x35f0ff, 0.5); disc.position.y = -0.02; disc.layers.set(FX_LAYER); obj.add(disc);
+      this.dyn.add(obj);
+      h = this.heroes[i] = { obj, disc, rig: makeHeroRig(obj), pos: new THREE.Vector3(), tele: 0, out: false, shown: false };
     }
-    const [plate, rail, post, ring, thruster, tether] = this.deckGeo;
-    const g = new THREE.Group();
-    const metal = this.deckMat || (this.deckMat = new THREE.MeshStandardMaterial({ color: 0x1d2026, roughness: 0.62, metalness: 0.7 }));
-    const glow = new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(1.3) });
-    const add = (geo: THREE.BufferGeometry, mat: THREE.Material, y: number, shadow = true) => { const m = new THREE.Mesh(geo, mat); m.position.y = y; m.castShadow = shadow; g.add(m); return m; };
-    add(plate, metal, 0);
-    add(rail, metal, 0.33); add(rail, metal, 0.18);
-    for (let i = 0; i < 8; i++) { const m = add(post, metal, 0.03); m.position.x = Math.cos((i / 8) * 6.283) * 0.55; m.position.z = Math.sin((i / 8) * 6.283) * 0.55; }
-    add(thruster, metal, -0.09);
-    add(ring, glow, -0.05, false).layers.set(FX_LAYER);
-    const beam = add(tether, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false }), -0.14, false);
-    beam.scale.y = (DECK - 0.2) / TOWER_SCALE; beam.layers.set(FX_LAYER);
-    g.position.y = (h + DECK) / TOWER_SCALE - 0.035;
-    return g;
+    return h;
   }
-  private deckMat: THREE.MeshStandardMaterial | null = null;
+
+  /** One shaft of Arrow Rain leaving the bow for the sky (the sim only knows the zone it lands in). */
+  private rainTracer(pi: number, color: number) {
+    const sim = this.sim, p = sim && sim.players[pi], o = sim && p && p.heroActive ? sim.heroOrigin(pi) : null;
+    if (!o || !p) return;
+    const yaw = pi === this.me ? this.yaw : p.yaw, c = Math.cos(1.12), dx = Math.sin(yaw) * c, dy = Math.sin(1.12), dz = Math.cos(yaw) * c;
+    const j = (Math.random() - 0.5) * 0.5;
+    this.fx.beam(o.x + dx * 0.4, o.y + dy * 0.4 + 0.1, o.z + dz * 0.4, o.x + dx * 17 + j, o.y + dy * 17, o.z + dz * 17 - j, color, 0.05, 0.16);
+    this.fx.burst(o.x + dx * 0.45, o.y + dy * 0.45 + 0.1, o.z + dz * 0.45, 3, 2.5, color, 0.25, 0.16, 0);
+  }
 
   private updateCamera(dt: number) {
     const sim = this.sim, p = sim ? sim.players[this.me] : null;
@@ -567,7 +662,7 @@ export class View {
     else { const c = this.cam; this.topPos.set(c.x, c.dist * Math.sin(c.tilt), c.z + c.dist * Math.cos(c.tilt)); V.set(c.x, 0, c.z); }
     this.dummy.position.copy(this.topPos); this.dummy.lookAt(V); this.topQ.copy(this.dummy.quaternion);
     // third person
-    if (t) this.lastHeroAnchor.lerp(V.set(t.x, t.h + DECK, t.z), this.heroBlend < 0.05 ? 1 : 1 - Math.exp(-dt * 14));
+    if (t) this.lastHeroAnchor.lerp(V.set(t.x, standY(t), t.z), this.heroBlend < 0.05 ? 1 : 1 - Math.exp(-dt * 14));
     const cy = Math.cos(this.pitch), fx = Math.sin(this.yaw) * cy, fy = Math.sin(this.pitch), fz = Math.cos(this.yaw) * cy;
     const rx = -Math.cos(this.yaw), rz = Math.sin(this.yaw);
     this.heroPos.set(this.lastHeroAnchor.x - fx * 2.9 + rx * 0.68, this.lastHeroAnchor.y + 1.5 - fy * 1.9, this.lastHeroAnchor.z - fz * 2.9 + rz * 0.68);

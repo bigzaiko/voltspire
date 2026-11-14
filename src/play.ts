@@ -1,8 +1,13 @@
 // VOLTSPIRE — game controller: input, HUD, menus, multiplayer glue.
-import '@fontsource/orbitron/700.css';
-import '@fontsource/orbitron/900.css';
-import '@fontsource/rajdhani/500.css';
-import '@fontsource/rajdhani/600.css';
+import '@fontsource/saira-stencil-one/400.css';
+import '@fontsource/barlow-condensed/500.css';
+import '@fontsource/barlow-condensed/600.css';
+import '@fontsource/barlow-condensed/700.css';
+import '@fontsource/barlow/400.css';
+import '@fontsource/barlow/500.css';
+import '@fontsource/barlow/600.css';
+import '@fontsource/ibm-plex-mono/400.css';
+import '@fontsource/ibm-plex-mono/500.css';
 import './style.css';
 import * as THREE from 'three';
 import { GW, GH, TOWERS, TOWER_TYPES, ENEMIES, CARD_BY_ID, RARITY, BOW_TIERS, MAX_ENERGY, WIN_WAVE, SQUADS, worldToCell } from './game/data.ts';
@@ -171,7 +176,7 @@ function showCards() {
   p.pending[0].forEach((id, i) => {
     const c = CARD_BY_ID[id];
     const d = el('button', 'card');
-    d.style.setProperty('--rc', ['#19e3ff', '#a35bff', '#ffd23f'][c.rar]);
+    d.style.setProperty('--rc', ['#e3dc92', '#f68b56', '#6fe0c8'][c.rar]);
     d.append(el('kbd', '', String(i + 1)), el('div', 'ci', c.icon), el('div', 'rar', RARITY[c.rar]), el('h4', '', c.name), el('p', '', c.desc), el('div', 'kind', c.needs ? TOWERS[c.needs].name : c.kind === 'eco' ? 'economy' : c.kind === 'tower' ? 'all towers' : c.kind === 'hero' ? 'Kestrel' : c.kind));
     if (c.needs) d.style.setProperty('--tc', '#' + TOWERS[c.needs].color.toString(16).padStart(6, '0'));
     d.addEventListener('click', () => pickCard(i));

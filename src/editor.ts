@@ -35,7 +35,7 @@ type Tool = 'r0' | 'r1' | 'r2' | 'core' | 'block' | 'erase' | 'tower';
 const M = 3; // margin cells around the board (spawn zone) — matches the lane bounds sanitizeMap accepts (-3 … GW+2)
 const COLS = GW + M * 2, ROWS = GH + M * 2;
 const MAX_PTS = 48, MAX_BLOCKED = 240, MAX_TOWERS = 30, END_R = 2.6;
-const LANE_COL = ['#19e3ff', '#ffb347', '#ff2bd6'];
+const LANE_COL = ['#e3dc92', '#f68b56', '#7fb8ad'];
 const hex = (n: number) => '#' + n.toString(16).padStart(6, '0');
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 const inBoard = (cx: number, cz: number) => cx >= 0 && cx < GW && cz >= 0 && cz < GH;
@@ -295,10 +295,10 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     { id: 'r0', name: 'Road 1', key: '1', col: LANE_COL[0] },
     { id: 'r1', name: 'Road 2', key: '2', col: LANE_COL[1] },
     { id: 'r2', name: 'Road 3', key: '3', col: LANE_COL[2] },
-    { id: 'core', name: 'Core', key: 'C', col: '#35f0ff' },
-    { id: 'block', name: 'Block', key: 'B', col: '#7f8cab' },
-    { id: 'erase', name: 'Erase', key: 'E', col: '#ff4a3a' },
-    { id: 'tower', name: 'Start tower', key: 'T', col: '#5dff8f' },
+    { id: 'core', name: 'Core', key: 'C', col: '#efe9d6' },
+    { id: 'block', name: 'Block', key: 'B', col: '#8a7f70' },
+    { id: 'erase', name: 'Erase', key: 'E', col: '#ce6b44' },
+    { id: 'tower', name: 'Start tower', key: 'T', col: '#a9c46c' },
   ];
   const toolBtns = new Map<Tool, HTMLButtonElement>();
   const toolMeta = new Map<Tool, HTMLElement>();
@@ -584,39 +584,39 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     const L = (c: number) => (c + M) * s; // cell left/top edge
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.shadowBlur = 0; g.setLineDash([]); g.globalAlpha = 1;
-    g.fillStyle = '#050812'; g.fillRect(0, 0, COLS * s, ROWS * s);
+    g.fillStyle = '#0c0a09'; g.fillRect(0, 0, COLS * s, ROWS * s);
     // spawn margin: faint dots at cell centres
-    g.fillStyle = 'rgba(138,160,196,0.22)';
+    g.fillStyle = 'rgba(227,220,146,0.2)';
     for (let cz = -M; cz < GH + M; cz++) for (let cx = -M; cx < GW + M; cx++) if (!inBoard(cx, cz)) g.fillRect(X(cx) - 1, Z(cz) - 1, 2, 2);
     // board
     const bg = g.createLinearGradient(0, L(0), 0, L(GH));
-    bg.addColorStop(0, '#0e1830'); bg.addColorStop(1, '#0a1124');
+    bg.addColorStop(0, '#231d19'); bg.addColorStop(1, '#1c1714');
     g.fillStyle = bg; g.fillRect(L(0), L(0), GW * s, GH * s);
-    g.strokeStyle = 'rgba(25,227,255,0.075)'; g.lineWidth = 1;
+    g.strokeStyle = 'rgba(227,220,146,0.07)'; g.lineWidth = 1;
     g.beginPath();
     for (let x = 1; x < GW; x++) { g.moveTo(Math.round(L(x)) + 0.5, L(0)); g.lineTo(Math.round(L(x)) + 0.5, L(GH)); }
     for (let z = 1; z < GH; z++) { g.moveTo(L(0), Math.round(L(z)) + 0.5); g.lineTo(L(GW), Math.round(L(z)) + 0.5); }
     g.stroke();
     // road bed + core footprint
     const inCore = (cx: number, cz: number) => Math.abs(cx - d.core[0]) <= 1 && Math.abs(cz - d.core[1]) <= 1;
-    g.fillStyle = '#04060c';
+    g.fillStyle = '#0c0a09';
     for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) if (occ[idx(cx, cz)] && !inCore(cx, cz)) g.fillRect(L(cx), L(cz), s, s);
     // blocked scenery
     for (const k of d.blocked) {
       if (occ[k]) continue;
       const x = L(k % GW), z = L(Math.floor(k / GW));
-      g.fillStyle = '#273049'; g.fillRect(x + 1, z + 1, s - 2, s - 2);
-      g.fillStyle = '#3a4666'; g.fillRect(x + 1, z + 1, s - 2, Math.max(2, s * 0.16));
-      g.strokeStyle = 'rgba(5,8,18,0.7)'; g.lineWidth = 1;
+      g.fillStyle = '#3a3029'; g.fillRect(x + 1, z + 1, s - 2, s - 2);
+      g.fillStyle = '#4c4037'; g.fillRect(x + 1, z + 1, s - 2, Math.max(2, s * 0.16));
+      g.strokeStyle = 'rgba(16,14,12,0.7)'; g.lineWidth = 1;
       g.beginPath(); g.moveTo(x + s * 0.3, z + s * 0.42); g.lineTo(x + s * 0.7, z + s * 0.78); g.moveTo(x + s * 0.7, z + s * 0.42); g.lineTo(x + s * 0.3, z + s * 0.78); g.stroke();
     }
-    g.strokeStyle = 'rgba(25,227,255,0.5)'; g.lineWidth = 1.5; g.strokeRect(L(0), L(0), GW * s, GH * s);
+    g.strokeStyle = 'rgba(227,220,146,0.45)'; g.lineWidth = 1.5; g.strokeRect(L(0), L(0), GW * s, GH * s);
     // core
     const activeLane = laneOf(tool);
-    g.fillStyle = 'rgba(53,240,255,0.10)'; g.fillRect(L(d.core[0] - 1), L(d.core[1] - 1), s * 3, s * 3);
-    g.strokeStyle = 'rgba(53,240,255,0.8)'; g.lineWidth = 1.5; g.strokeRect(L(d.core[0] - 1) + 1, L(d.core[1] - 1) + 1, s * 3 - 2, s * 3 - 2);
+    g.fillStyle = 'rgba(239,233,214,0.08)'; g.fillRect(L(d.core[0] - 1), L(d.core[1] - 1), s * 3, s * 3);
+    g.strokeStyle = 'rgba(239,233,214,0.75)'; g.lineWidth = 1.5; g.strokeRect(L(d.core[0] - 1) + 1, L(d.core[1] - 1) + 1, s * 3 - 2, s * 3 - 2);
     if (activeLane >= 0) {
-      g.strokeStyle = 'rgba(53,240,255,0.35)'; g.lineWidth = 1; g.setLineDash([4, 5]);
+      g.strokeStyle = 'rgba(239,233,214,0.35)'; g.lineWidth = 1; g.setLineDash([4, 5]);
       g.beginPath(); g.arc(X(d.core[0]), Z(d.core[1]), END_R * s, 0, Math.PI * 2); g.stroke(); g.setLineDash([]);
     }
     // roads
@@ -627,12 +627,12 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
       g.globalAlpha = dim ? 0.55 : 1;
       if (l.length > 1) {
         g.strokeStyle = col; g.lineWidth = Math.max(2, s * 0.22);
-        g.shadowColor = col; g.shadowBlur = dim ? 0 : 8;
+        g.shadowColor = 'transparent'; g.shadowBlur = dim ? 0 : 8;
         g.beginPath(); g.moveTo(X(l[0][0]), Z(l[0][1]));
         for (const p of l.slice(1)) g.lineTo(X(p[0]), Z(p[1]));
         g.stroke(); g.shadowBlur = 0;
         // direction arrows
-        g.fillStyle = '#04060c';
+        g.fillStyle = '#0c0a09';
         for (let k = 1; k < l.length; k++) {
           const a = l[k - 1], b = l[k], len = Math.hypot(b[0] - a[0], b[1] - a[1]);
           if (len < 3) continue;
@@ -643,33 +643,33 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
       }
       // corner points
       for (let k = 1; k < l.length; k++) {
-        g.fillStyle = '#04060c'; g.strokeStyle = col; g.lineWidth = 1.5;
+        g.fillStyle = '#0c0a09'; g.strokeStyle = col; g.lineWidth = 1.5;
         g.beginPath(); g.arc(X(l[k][0]), Z(l[k][1]), s * 0.17, 0, Math.PI * 2); g.fill(); g.stroke();
       }
       // end marker: green when linked to the core
       if (l.length > 1) {
         const e = l[l.length - 1], linked = Math.hypot(e[0] - d.core[0], e[1] - d.core[1]) <= END_R;
-        g.strokeStyle = linked ? '#5dff8f' : '#ffd23f'; g.lineWidth = 2;
+        g.strokeStyle = linked ? '#a9c46c' : '#ce6b44'; g.lineWidth = 2;
         g.beginPath(); g.arc(X(e[0]), Z(e[1]), s * 0.34, 0, Math.PI * 2); g.stroke();
       }
       // spawn gate
-      g.fillStyle = '#ff4a3a'; g.shadowColor = '#ff4a3a'; g.shadowBlur = dim ? 0 : 10;
+      g.fillStyle = '#8fd0ff'; g.shadowColor = 'transparent'; g.shadowBlur = dim ? 0 : 10;
       g.beginPath(); g.arc(X(l[0][0]), Z(l[0][1]), s * 0.42, 0, Math.PI * 2); g.fill(); g.shadowBlur = 0;
-      g.fillStyle = '#12040a'; g.font = `700 ${Math.max(8, Math.round(s * 0.5))}px Orbitron, system-ui, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillStyle = '#0c1420'; g.font = `700 ${Math.max(8, Math.round(s * 0.5))}px 'Barlow Condensed', system-ui, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
       g.fillText(String(i + 1), X(l[0][0]), Z(l[0][1]) + 0.5);
       g.globalAlpha = 1;
     });
     // core emblem (above the road ends)
-    g.fillStyle = '#35f0ff'; g.shadowColor = '#35f0ff'; g.shadowBlur = 14;
+    g.fillStyle = '#efe9d6'; g.shadowColor = 'transparent'; g.shadowBlur = 14;
     g.beginPath(); g.arc(X(d.core[0]), Z(d.core[1]), s * 0.62, 0, Math.PI * 2); g.fill(); g.shadowBlur = 0;
-    g.fillStyle = '#04121a'; g.beginPath(); g.arc(X(d.core[0]), Z(d.core[1]), s * 0.26, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#100e0c'; g.beginPath(); g.arc(X(d.core[0]), Z(d.core[1]), s * 0.26, 0, Math.PI * 2); g.fill();
     // starting towers
     const tower = (cx: number, cz: number, t: TowerType, alpha: number) => {
       const c = hex(TOWERS[t].color);
       g.globalAlpha = alpha;
-      g.fillStyle = '#060a16'; g.strokeStyle = c; g.lineWidth = 1.5;
+      g.fillStyle = '#100e0c'; g.strokeStyle = c; g.lineWidth = 1.5;
       g.beginPath(); g.rect(L(cx) + 2, L(cz) + 2, s - 4, s - 4); g.fill(); g.stroke();
-      g.fillStyle = c; g.shadowColor = c; g.shadowBlur = 6;
+      g.fillStyle = c; g.shadowColor = 'transparent'; g.shadowBlur = 6;
       g.beginPath(); g.arc(X(cx), Z(cz), s * 0.22, 0, Math.PI * 2); g.fill();
       g.shadowBlur = 0; g.globalAlpha = 1;
     };
@@ -686,23 +686,23 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
           g.beginPath(); g.moveTo(X(prev[0]), Z(prev[1])); g.lineTo(X(p[0]), Z(p[1])); g.stroke();
           g.setLineDash([]); g.globalAlpha = 1;
           const linked = Math.hypot(p[0] - d.core[0], p[1] - d.core[1]) <= END_R;
-          g.strokeStyle = linked ? '#5dff8f' : col; g.lineWidth = 2;
+          g.strokeStyle = linked ? '#a9c46c' : col; g.lineWidth = 2;
           g.beginPath(); g.arc(X(p[0]), Z(p[1]), s * 0.36, 0, Math.PI * 2); g.stroke();
         } else {
           outline(hx, hz, 1, col);
-          g.fillStyle = col; g.font = `700 ${Math.max(8, Math.round(s * 0.42))}px Orbitron, system-ui, sans-serif`; g.textBaseline = 'middle';
+          g.fillStyle = col; g.font = `700 ${Math.max(8, Math.round(s * 0.42))}px 'Barlow Condensed', system-ui, sans-serif`; g.textBaseline = 'middle';
           const right = hx > GW / 2; g.textAlign = right ? 'right' : 'left';
           g.fillText('SPAWN', right ? L(hx) - 4 : L(hx + 1) + 4, Z(hz) + 0.5);
         }
       } else if (tool === 'core') {
-        outline(clamp(hx, 1, GW - 2) - 1, clamp(hz, 1, GH - 2) - 1, 3, '#35f0ff');
+        outline(clamp(hx, 1, GW - 2) - 1, clamp(hz, 1, GH - 2) - 1, 3, '#efe9d6');
       } else if (tool === 'erase') {
-        if (inBoard(hx, hz)) outline(hx, hz, 1, '#ff4a3a');
+        if (inBoard(hx, hz)) outline(hx, hz, 1, '#ce6b44');
       } else if (inBoard(hx, hz)) {
         const k = idx(hx, hz);
         const ok = free(hx, hz) && (tool === 'block' ? !d.towers.has(k) : !d.blocked.has(k));
         if (ok && tool === 'tower' && !d.towers.has(k)) tower(hx, hz, towerType, 0.6);
-        outline(hx, hz, 1, ok ? '#5dff8f' : '#ff4a3a');
+        outline(hx, hz, 1, ok ? '#a9c46c' : '#ce6b44');
       }
     }
   }
