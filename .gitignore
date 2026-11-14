@@ -4,3 +4,4 @@ dist
 *.blend1
 tools/trailer/frames
 __pycache__
+.claude/

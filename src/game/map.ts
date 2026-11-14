@@ -107,7 +107,7 @@ export function sanitizeMap(raw: unknown): MapDef | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const r = raw as Record<string, unknown>;
   const num = (v: unknown, lo: number, hi: number, d: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : d);
-  const text = (v: unknown, max: number, d: string) => (typeof v === 'string' ? v.replace(/[^\p{L}\p{N} .,'!?·:()\-]/gu, '').trim().slice(0, max) : '') || d;
+  const text = (v: unknown, max: number, d: string) => (typeof v === 'string' ? v.replace(/[^\p{L}\p{M}\p{N} .,'!?·:()\-]/gu, '').slice(0, max).trim() : '') || d;
   const pair = (v: unknown, lo: number, hiX: number, hiZ: number, step: number): [number, number] | null => {
     if (!Array.isArray(v) || v.length < 2 || typeof v[0] !== 'number' || typeof v[1] !== 'number' || !Number.isFinite(v[0]) || !Number.isFinite(v[1])) return null;
     const inv = Math.round(1 / step);
@@ -140,7 +140,14 @@ export function sanitizeMap(raw: unknown): MapDef | null {
     tier: Math.round(num(r.tier, 1, 3, 2)), lanes, core,
     gold: Math.round(num(r.gold, 50, 3000, 220)), lives: Math.round(num(r.lives, 1, 60, 20)), towers, blocked,
   };
-  return validateMap(def) ? null : def;
+  if (validateMap(def)) return null;
+  // drop towers the game could never build (on roads, the core, scenery, or stacked) and stray duplicates
+  const g = new GameMap(def).grid;
+  const seen = new Set<number>();
+  def.towers = def.towers.filter((t) => { const k = t.cz * GW + t.cx; if (g[k] !== 0 || seen.has(k)) return false; seen.add(k); return true; });
+  const seenB = new Set<number>();
+  def.blocked = def.blocked.filter(([cx, cz]) => { const k = cz * GW + cx; if (g[k] !== 3 || seenB.has(k)) return false; seenB.add(k); return true; });
+  return def;
 }
 
 export const DEFAULT_MAP: MapDef = {

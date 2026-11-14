@@ -54,6 +54,8 @@ let lobbyMode: 'coop' | 'versus' = 'coop';
 const choice: { map: MapDef; diff: string; survival: boolean } = { map: MAPS[0], diff: 'normal', survival: false };
 let setupFor: 'solo' | 'lobby' = 'solo';
 let rival = { l: 20, w: 0, k: 0 };
+let lastRx = 0, squadTokens = 3, squadT = 0, endTimer = 0;
+const menuOpen = () => ['pause', 'help', 'settings'].some((id) => !$(id).classList.contains('hidden'));
 const hover = { cx: -1, cz: -1 };
 const keys = new Set<string>();
 const aim = new THREE.Vector3(), gp = new THREE.Vector3();
@@ -206,12 +208,12 @@ function handleEvents(evs: Ev[]) {
       case 'shieldbreak': if (!quiet) sound.play('shield'); break;
       case 'build': if (!quiet) sound.play('build'); break;
       case 'sell': if (!quiet) sound.play('sell'); break;
-      case 'tele': if (!quiet) sound.play('tele'); if (e.p === me) flash(); break;
+      case 'tele': if (quiet) break; sound.play('tele'); if (e.p === me) flash(); break;
       case 'dmg': if (e.p === me && !quiet && heroOn()) dmgNumber(e); break;
       case 'heroOn':
         if (quiet) break;
         sound.play('heroOn');
-        if (e.p === me) { flash(); document.body.classList.add('hero'); show('herohud'); sound.intense = 1; buildType = null; selected = 0; view.setGhost(null); view.setSelected(null); faceEnemies(); }
+        if (e.p === me) { flash(); document.body.classList.add('hero'); show('herohud'); sound.intense = 1; buildType = null; selected = 0; view.setGhost(null); view.setSelected(null); view.setHover(0, 0, false); faceEnemies(); }
         else toast('Your partner uplinked!');
         break;
       case 'heroOff':
@@ -231,9 +233,9 @@ function handleEvents(evs: Ev[]) {
       case 'boss': if (!quiet) sound.play('boss'); break;
       case 'clear': if (!quiet) { sound.play('clear'); toast(`Wave ${e.n} cleared · +${e.g} credits`); } break;
       case 'levelup': if (!quiet) sound.play('levelup'); break;
-      case 'card': if (!quiet && e.p !== me && CARD_BY_ID[e.id]) toast('Partner took ' + CARD_BY_ID[e.id].name); break;
+      case 'card': if (!quiet && e.p !== me && typeof e.id === 'string' && Object.hasOwn(CARD_BY_ID, e.id)) toast('Partner took ' + CARD_BY_ID[e.id].name); break;
       case 'leak': if (!quiet) { sound.play('leak'); const s = $('lives').parentElement!; s.classList.add('hurt'); setTimeout(() => s.classList.remove('hurt'), 500); } break;
-      case 'incoming': if (!quiet) { sound.play('boss'); toast('Incoming from rival: ' + e.n + ' × ' + (ENEMIES[e.type as keyof typeof ENEMIES]?.name || 'enemies')); } break;
+      case 'incoming': if (!quiet) { sound.play('boss'); toast('Incoming from rival: ' + e.n + ' × ' + (typeof e.type === 'string' && Object.hasOwn(ENEMIES, e.type) ? ENEMIES[e.type as keyof typeof ENEMIES].name : 'enemies')); } break;
     }
   }
 }
@@ -253,7 +255,9 @@ function fastForward(seconds: number) {
 function resetUi() {
   for (const id of ['cards', 'menu', 'lobby', 'help', 'settings', 'pause', 'end', 'herohud', 'tower', 'vs', 'tip', 'setup', 'editor']) show(id, false);
   document.body.classList.remove('hero');
+  clearTimeout(endTimer);
   $('toasts').textContent = ''; $('dmg').textContent = '';
+  lastRx = performance.now(); squadTokens = 3;
   if (document.pointerLockElement) document.exitPointerLock();
   buildType = null; selected = 0; firing = false; paused = false; speed = 1; acc = 0; cardKey = ''; ended = false; readyShown = false; lastTier = 0;
   sound.intense = 0;
@@ -310,7 +314,8 @@ function endGame(win: boolean, title?: string, sub?: string) {
   if (mode === 'versus') row('Enemies sent', sim.sent);
   show('e-endless', win && mode === 'solo');
   setText('e-again', mode === 'solo' ? 'Play again' : 'Back to lobby');
-  setTimeout(() => show('end'), win ? 1200 : 1800);
+  for (const id of ['pause', 'help', 'settings']) show(id, false);
+  endTimer = window.setTimeout(() => show('end'), win ? 1200 : 1800);
 }
 
 // ---------- multiplayer ----------
@@ -325,7 +330,7 @@ function onNet(m: Msg) {
     startGame(m.m, { client: m.m === 'coop', seed: int(m.seed) >>> 0, map, diff: diffById(m.diff).id, survival: m.surv === true });
     return;
   }
-  if (mode === 'coop' && isClient && m.t === 'snap') { sim.applySnapshot(m.s); return; }
+  if (mode === 'coop' && isClient && m.t === 'snap') { lastRx = performance.now(); sim.applySnapshot(m.s); return; }
   if (mode === 'coop' && !isClient && m.t === 'in') {
     const p = sim.players[1];
     if (!p || typeof m.a !== 'string') return;
@@ -345,13 +350,19 @@ function onNet(m: Msg) {
     return;
   }
   if (mode === 'versus') {
-    if (m.t === 'vs' && fin(m.l) && fin(m.w) && fin(m.k)) rival = { l: int(m.l), w: int(m.w), k: int(m.k) };
-    else if (m.t === 'squad') { const s = SQUADS[int(m.i)]; if (s) sim.injectSquad(s.type, s.n); }
+    if (m.t === 'vs' && fin(m.l) && fin(m.w) && fin(m.k)) { lastRx = performance.now(); rival = { l: int(m.l), w: int(m.w), k: int(m.k) }; }
+    // squads are rate-limited on the receiving side too: the sender's own cost check cannot be trusted
+    else if (m.t === 'squad') { const s = SQUADS[int(m.i)]; if (s && squadTokens >= 1) { squadTokens -= 1; sim.injectSquad(s.type, s.n); } }
     else if (m.t === 'dead' && !sim.over) { sim.over = true; endGame(true, 'Victory', 'Your rival’s core has fallen.'); }
   }
 }
 function onNetClose(why: string) {
-  if (mode === 'attract') { lobbyStatus('l-host-status', why); lobbyStatus('l-join-status', why); return; }
+  if (mode === 'attract') {
+    lobbyStatus('l-host-status', why); lobbyStatus('l-join-status', why);
+    net?.close(); net = null; show('l-code', false);
+    ($('l-host') as HTMLButtonElement).disabled = false; ($('l-join') as HTMLButtonElement).disabled = false;
+    return;
+  }
   if (ended) return;
   if (mode === 'coop' && !isClient) { toast('Your partner disconnected — you fight on alone.'); net?.close(); net = null; return; }
   if (mode === 'versus') { sim.over = true; endGame(true, 'Victory', 'Your rival disconnected.'); return; }
@@ -379,15 +390,17 @@ $('l-host').addEventListener('click', async () => {
   lobbyStatus('l-host-status', 'Opening room…');
   const n = newNet(), m = lobbyMode;
   n.onOpen = () => {
+    if (net !== n || mode !== 'attract') return;
     const seed = (Math.random() * 2 ** 31) | 0;
     n.send({ t: 'start', v: 2, m, seed, map: choice.map, diff: choice.diff, surv: choice.survival });
     startGame(m, { seed });
   };
   try {
     const code = await n.host();
+    if (net !== n) return;
     $('l-code').textContent = code; show('l-code');
     lobbyStatus('l-host-status', 'Share this code. Waiting for the other player…');
-  } catch { lobbyStatus('l-host-status', 'Could not open a room. Check your connection and try again.'); ($('l-host') as HTMLButtonElement).disabled = false; }
+  } catch { if (net !== n) return; n.close(); net = null; lobbyStatus('l-host-status', 'Could not open a room. Check your connection and try again.'); ($('l-host') as HTMLButtonElement).disabled = false; }
 });
 $('l-join').addEventListener('click', async () => {
   sound.init(); sound.play('click');
@@ -395,8 +408,9 @@ $('l-join').addEventListener('click', async () => {
   if (code.length !== 6) { lobbyStatus('l-join-status', 'Enter the 6-character room code.'); return; }
   ($('l-join') as HTMLButtonElement).disabled = true;
   lobbyStatus('l-join-status', 'Connecting…');
-  try { await newNet().join(code); lobbyStatus('l-join-status', 'Connected — waiting for the host…'); }
-  catch { lobbyStatus('l-join-status', 'Room not found. Check the code.'); ($('l-join') as HTMLButtonElement).disabled = false; net?.close(); net = null; }
+  const n = newNet();
+  try { await n.join(code); if (net === n && mode === 'attract') lobbyStatus('l-join-status', 'Connected — waiting for the host…'); }
+  catch { if (net !== n) return; n.close(); net = null; lobbyStatus('l-join-status', 'Room not found. Check the code.'); ($('l-join') as HTMLButtonElement).disabled = false; }
 });
 $<HTMLInputElement>('l-input').addEventListener('input', (e) => { const i = e.target as HTMLInputElement; i.value = cleanCode(i.value); });
 $('l-back').addEventListener('click', () => { net?.close(); net = null; show('lobby', false); show('menu'); });
@@ -467,19 +481,21 @@ click('p-resume', () => togglePause(false));
 click('p-help', () => { helpFrom = 'pause'; show('pause', false); show('help'); });
 click('p-settings', () => { setFrom = 'pause'; show('pause', false); show('settings'); });
 click('p-quit', () => { sound.stopMusic(); startAttract(); });
-click('e-again', () => { if (mode === 'solo') startGame('solo'); else { const m = mode === 'versus' ? 'versus' : 'coop'; startAttract(); openLobby(m); } });
+click('e-again', () => { if (mode === 'solo') startGame('solo'); else { const m = mode === 'versus' ? 'versus' : 'coop'; sound.stopMusic(); startAttract(); openLobby(m); } });
 click('e-menu', () => { sound.stopMusic(); startAttract(); });
-click('e-endless', () => { sim.over = false; sim.won = false; sim.endless = true; sim.nextWaveIn = 5; ended = false; show('end', false); toast('Endless mode — how far can you go?'); });
+click('e-endless', () => { sim.exitHero(me); sim.over = false; sim.won = false; sim.endless = true; sim.nextWaveIn = 5; ended = false; show('end', false); toast('Endless mode — how far can you go?'); });
 click('btn-pause', () => togglePause());
 click('btn-speed', () => { speed = speed === 1 ? 2 : 1; setText('btn-speed', speed + '×'); });
 click('btn-wave', () => act.wave());
 click('t-up', () => { if (selected) act.upgrade(selected); });
 click('t-sell', () => { if (selected) { act.sell(selected); selected = 0; } });
-function togglePause(on = !$('pause').classList.contains('hidden') ? false : true) {
+function togglePause(on = !menuOpen()) {
   if (mode === 'attract' || ended) return;
   paused = on && mode === 'solo';
+  show('help', false); show('settings', false);
   show('pause', on);
   if (on && document.pointerLockElement) document.exitPointerLock();
+  if (!on && heroOn()) lockPointer();
 }
 const bind = (id: string, key: 'vol' | 'mus' | 'sens', fn: (v: number) => void) => {
   const i = $<HTMLInputElement>(id);
@@ -524,7 +540,7 @@ addEventListener('keydown', (e) => {
     return;
   }
   if (k === 'p') { togglePause(); return; }
-  if (paused) return;
+  if (paused || menuOpen()) return;
   if (k === ' ') { e.preventDefault(); tryUlt(); return; }
   if (heroOn()) {
     if (k === 'q' || k === 'e') { view.aimPoint(aim); act.skill(k === 'q' ? 1 : 2, aim); }
@@ -616,7 +632,7 @@ function updateHud() {
   }
   // selected tower panel
   const t = selected ? sim.towerById(selected) : undefined;
-  if (!t) { selected = 0; if (!buildType) view.setSelected(null); }
+  if (!t) { selected = 0; view.setSelected(null); }
   show('tower', !!t && !hero);
   if (t) {
     view.setSelected(t, sim.range(t));
@@ -674,15 +690,17 @@ function frame(dt: number) {
   if (!paused) {
     acc += dt * (mode === 'attract' ? 1.4 : speed);
     let n = 0;
-    while (acc >= STEP && n < 10) { bot?.step(STEP); if (!isClient) sim.step(STEP); acc -= STEP; n++; }
-    if (n === 10) acc = 0;
+    const cap = dt > 0.2 ? 70 : 10; // a hidden tab is stepped in big chunks so a multiplayer match keeps running
+    while (acc >= STEP && n < cap) { bot?.step(STEP); if (!isClient) sim.step(STEP); acc -= STEP; n++; }
+    if (n === cap) acc = 0;
+    squadT += dt; if (squadT > 1.5) { squadT = 0; squadTokens = Math.min(3, squadTokens + 1); }
     if (isClient) for (const p of sim.projs) { p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; }
   }
   const p = sim.players[me];
   if (bot) { view.yaw = p.yaw; view.pitch = p.pitch; }
   if (mode === 'attract' && sim.over) { sim = new Sim({ pauseOnCards: false }); bot = new Bot(sim, 0, 1); fastForward(150); view.setSim(sim, 0); }
 
-  if (playing() && !paused) {
+  if (playing() && !paused && !menuOpen()) {
     if (p.heroActive) {
       if (!isClient) { p.yaw = view.yaw; p.pitch = view.pitch; }
       if (firing) { view.aimPoint(aim); act.fire(aim); }
@@ -712,6 +730,12 @@ function frame(dt: number) {
   } else if (net && mode === 'versus') {
     vsT += dt;
     if (vsT > 0.5) { vsT = 0; net.send({ t: 'vs', l: sim.lives, w: sim.wave, k: sim.kills }); }
+  }
+
+  // a peer that goes silent (closed laptop, hidden tab, dropped link) must not stall the match forever
+  if (net && !ended && mode !== 'attract' && performance.now() - lastRx > 10000) {
+    if (mode === 'versus') { sim.over = true; endGame(true, 'Victory', 'Your rival stopped responding.'); }
+    else if (mode === 'coop' && isClient) { sim.over = true; endGame(false, 'Link lost', 'The host stopped responding.'); }
   }
 
   const evs = sim.events.splice(0);
@@ -768,5 +792,7 @@ function frame(dt: number) {
   if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__dbg = { get sim() { return sim; }, view, act, startGame };
   let last = performance.now();
   const loop = (now: number) => { const dt = Math.min(0.1, (now - last) / 1000); last = now; frame(dt); requestAnimationFrame(loop); };
+  // browsers stop animation frames in hidden tabs; keep a multiplayer match alive on a timer instead
+  setInterval(() => { if (!document.hidden || !net || mode === 'attract' || ended) return; const now = performance.now(), dt = Math.min(1.1, (now - last) / 1000); last = now; frame(dt); }, 250);
   requestAnimationFrame(loop);
 })();

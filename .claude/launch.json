@@ -1,7 +1,0 @@
-{
-  "version": "0.0.1",
-  "configurations": [
-    { "name": "voltspire", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev", "--prefix", "/mnt/Data/Git/voltspire"], "port": 5183 },
-    { "name": "voltspire-build", "runtimeExecutable": "npx", "runtimeArgs": ["--prefix", "/mnt/Data/Git/voltspire", "vite", "preview", "--outDir", "/tmp/claude-1000/volt-dist", "--port", "5184", "--strictPort"], "port": 5184 }
-  ]
-}

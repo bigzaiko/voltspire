@@ -60,7 +60,7 @@ function draftFrom(def: MapDef): Draft {
 }
 const hasContent = (d: Draft) => d.lanes.some((l) => l.length > 0) || d.blocked.size > 0 || d.towers.size > 0;
 // Same character set sanitizeMap keeps in names, so the name on screen is always the name that gets stored.
-const NAME_BAD = /[^\p{L}\p{N} .,'!?·:()\-]/gu;
+const NAME_BAD = /[^\p{L}\p{M}\p{N} .,'!?·:()\-]/gu;
 const filterName = (v: string) => v.replace(NAME_BAD, '').slice(0, 28);
 const sigOf = (m?: MapDef | null) => { try { return m ? encodeMap(m) : ''; } catch { return ''; } };
 function slug(name: string) {
