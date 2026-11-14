@@ -2,6 +2,11 @@
 import { GW, GH, TOWER_TYPES, cellX, cellZ } from './data.ts';
 import type { TowerType } from './data.ts';
 
+/** A road waypoint: cell x, cell z and an optional height level (0 = deck, up to 3; roads ramp between levels and can bridge over each other). */
+export type LanePoint = [number, number, number?];
+/** World height of one elevation level. */
+export const LEVEL_H = 1.6;
+
 export interface MapDef {
   id: string;
   name: string;
@@ -9,7 +14,7 @@ export interface MapDef {
   /** 1 = straightforward, 2 = tricky, 3 = complex */
   tier: number;
   /** One or more roads; each is a list of [cellX, cellZ] waypoints from the spawn gate to the core. */
-  lanes: [number, number][][];
+  lanes: LanePoint[][];
   core: [number, number];
   gold: number;
   lives: number;
@@ -17,16 +22,16 @@ export interface MapDef {
   blocked: [number, number][];
 }
 
-export interface Difficulty { id: string; name: string; desc: string; hp: number; count: number; gold: number; lives: number }
+export interface Difficulty { id: string; name: string; desc: string; hp: number; count: number; gold: number; lives: number; waves: number }
 export const DIFFS: Difficulty[] = [
-  { id: 'easy', name: 'Recruit', desc: 'Weaker machines, more credits, a sturdier core.', hp: 0.72, count: 0.9, gold: 1.15, lives: 1.25 },
-  { id: 'normal', name: 'Veteran', desc: 'The intended experience.', hp: 1, count: 1, gold: 1, lives: 1 },
-  { id: 'hard', name: 'Nightmare', desc: 'Tougher, more numerous machines and a fragile core.', hp: 1.3, count: 1.15, gold: 0.92, lives: 0.6 },
+  { id: 'easy', name: 'Recruit', desc: 'Weaker machines, more credits, a sturdier core.', hp: 0.72, count: 0.9, gold: 1.15, lives: 1.25, waves: 20 },
+  { id: 'normal', name: 'Veteran', desc: 'The intended experience.', hp: 1, count: 1, gold: 1, lives: 1, waves: 25 },
+  { id: 'hard', name: 'Nightmare', desc: 'Tougher, more numerous machines and a fragile core.', hp: 1.3, count: 1.15, gold: 0.92, lives: 0.6, waves: 30 },
 ];
 export const diffById = (id: unknown) => DIFFS.find((d) => d.id === id) || DIFFS[1];
 
-export interface Lane { pts: number[][]; cum: number[]; len: number }
-export interface PathOut { x: number; z: number; dx: number; dz: number }
+export interface Lane { pts: number[][]; ys: number[]; cum: number[]; len: number }
+export interface PathOut { x: number; z: number; dx: number; dz: number; y?: number }
 
 export class GameMap {
   def: MapDef;
@@ -42,7 +47,7 @@ export class GameMap {
       const pts = cells.map(([cx, cz]) => [cellX(cx), cellZ(cz)]);
       const cum = [0];
       for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
-      return { pts, cum, len: cum[cum.length - 1] };
+      return { pts, ys: cells.map((c) => (c[2] || 0) * LEVEL_H), cum, len: cum[cum.length - 1] };
     });
     const mark = (cx: number, cz: number, v: number) => { if (cx >= 0 && cx < GW && cz >= 0 && cz < GH) this.grid[cz * GW + cx] = v; };
     for (const [cx, cz] of def.blocked) mark(cx, cz, 3);
@@ -64,6 +69,7 @@ export class GameMap {
     const u = (d - L.cum[i - 1]) / seg;
     out.x = a[0] + (b[0] - a[0]) * u; out.z = a[1] + (b[1] - a[1]) * u;
     out.dx = (b[0] - a[0]) / seg; out.dz = (b[1] - a[1]) / seg;
+    out.y = L.ys[i - 1] + (L.ys[i] - L.ys[i - 1]) * u;
     return out;
   }
   /** Distance along a lane nearest to a world point. */
@@ -115,11 +121,17 @@ export function sanitizeMap(raw: unknown): MapDef | null {
     return [q(v[0], hiX), q(v[1], hiZ)];
   };
   if (!Array.isArray(r.lanes) || r.lanes.length < 1 || r.lanes.length > 3) return null;
-  const lanes: [number, number][][] = [];
+  const lanes: LanePoint[][] = [];
   for (const l of r.lanes) {
     if (!Array.isArray(l) || l.length < 2 || l.length > 48) return null;
-    const pts: [number, number][] = [];
-    for (const p of l) { const q = pair(p, -3, GW + 2, GH + 2, 0.1); if (!q) return null; pts.push(q); }
+    const pts: LanePoint[] = [];
+    for (const p of l) {
+      const q = pair(p, -3, GW + 2, GH + 2, 0.1);
+      if (!q) return null;
+      const h = Math.round(num((p as unknown[])[2], 0, 3, 0));
+      pts.push(h ? [q[0], q[1], h] : q);
+    }
+    pts[pts.length - 1].length = 2; // roads always arrive at the core on deck level
     lanes.push(pts);
   }
   const core = pair(r.core, 1, GW - 2, GH - 2, 1);

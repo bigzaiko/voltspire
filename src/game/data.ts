@@ -19,9 +19,11 @@ export const PATH_CELLS: [number, number][] = [
 ];
 export const CORE_CELL: [number, number] = [24, 8];
 
-export type TowerType = 'pulse' | 'cryo' | 'arc' | 'mortar' | 'rail' | 'beacon';
-export const TOWER_TYPES: TowerType[] = ['pulse', 'cryo', 'arc', 'mortar', 'rail', 'beacon'];
+export type TowerType = 'pulse' | 'cryo' | 'arc' | 'mortar' | 'rail' | 'beacon' | 'flame' | 'lance' | 'missile' | 'gravity' | 'spire';
+export const TOWER_TYPES: TowerType[] = ['pulse', 'cryo', 'arc', 'mortar', 'rail', 'beacon', 'flame', 'lance', 'missile', 'gravity', 'spire'];
 
+/** A tower's special: charged over `charge` seconds, fired by shooting the tower's power node during the Uplink, then the tower reboots for `down` seconds. */
+export interface TowerSpecial { name: string; desc: string; charge: number; down: number }
 export interface TowerDef {
   name: string;
   cost: number;
@@ -33,15 +35,22 @@ export interface TowerDef {
   color: number;
   desc: string;
   key: string;
+  special?: TowerSpecial;
 }
 
+// Colours follow the "Ember" palette: warm sand / apricot / rust for the defenders, cold blue-white for the Static.
 export const TOWERS: Record<TowerType, TowerDef> = {
-  pulse: { name: 'Pulse Turret', cost: 50, dmg: 7, rate: 3.2, range: 7.5, color: 0x19e3ff, desc: 'Rapid homing bolts. Cheap and reliable.', key: '1' },
-  cryo: { name: 'Cryo Emitter', cost: 70, dmg: 4, rate: 1.0, range: 6.5, aoe: 2.4, color: 0x9fd8ff, desc: 'Chills a group, slowing them.', key: '2' },
-  arc: { name: 'Arc Pylon', cost: 110, dmg: 15, rate: 1.15, range: 7, color: 0xa35bff, desc: 'Lightning that chains between enemies.', key: '3' },
-  mortar: { name: 'Plasma Mortar', cost: 140, dmg: 42, rate: 0.42, range: 12, minRange: 3, aoe: 2.8, color: 0xff8a1f, desc: 'Long-range blast. Cannot hit flyers.', key: '4' },
-  rail: { name: 'Railgun', cost: 190, dmg: 130, rate: 0.3, range: 17, color: 0xff2bd6, desc: 'Piercing beam. Targets the toughest.', key: '5' },
-  beacon: { name: 'Signal Beacon', cost: 120, dmg: 0, rate: 0, range: 5.5, color: 0x5dff8f, desc: 'Boosts damage and speed of nearby towers.', key: '6' },
+  pulse: { name: 'Pulse Turret', cost: 50, dmg: 7, rate: 3.2, range: 7.5, color: 0xe3dc92, desc: 'Rapid homing bolts. Cheap and reliable.', key: '1', special: { name: 'Bullet Storm', desc: 'Fires four times as fast for 4 seconds.', charge: 35, down: 9 } },
+  cryo: { name: 'Cryo Emitter', cost: 70, dmg: 4, rate: 1.0, range: 6.5, aoe: 2.4, color: 0xbfe3ea, desc: 'Chills a group, slowing them.', key: '2', special: { name: 'Flash Freeze', desc: 'Freezes everything in range solid for 3 seconds.', charge: 40, down: 10 } },
+  arc: { name: 'Arc Pylon', cost: 110, dmg: 15, rate: 1.15, range: 7, color: 0xb48cff, desc: 'Lightning that chains between enemies.', key: '3', special: { name: 'Thunderhead', desc: 'One massive bolt that chains through a dozen enemies.', charge: 40, down: 10 } },
+  mortar: { name: 'Plasma Mortar', cost: 140, dmg: 42, rate: 0.42, range: 12, minRange: 3, aoe: 2.8, color: 0xf68b56, desc: 'Long-range blast. Cannot hit flyers.', key: '4', special: { name: 'Barrage', desc: 'Drops eight shells along the road in range.', charge: 45, down: 12 } },
+  rail: { name: 'Railgun', cost: 190, dmg: 130, rate: 0.3, range: 17, color: 0xff5a3c, desc: 'Piercing beam. Targets the toughest.', key: '5', special: { name: 'Overcharge', desc: 'A map-long slug that pierces everything for five times the damage.', charge: 50, down: 14 } },
+  beacon: { name: 'Signal Beacon', cost: 120, dmg: 0, rate: 0, range: 5.5, color: 0x9ccf6a, desc: 'Boosts damage and speed of nearby towers.', key: '6', special: { name: 'Surge', desc: 'Doubles its boost for 8 seconds.', charge: 45, down: 12 } },
+  flame: { name: 'Flame Projector', cost: 90, dmg: 9, rate: 5, range: 4.6, color: 0xffb02e, desc: 'Short-range cone of fire that leaves enemies burning.', key: '7', special: { name: 'Inferno', desc: 'A ring of fire in every direction for 4 seconds.', charge: 40, down: 10 } },
+  lance: { name: 'Lance Emitter', cost: 160, dmg: 22, rate: 8, range: 9, color: 0xff8fa8, desc: 'A continuous beam that burns hotter the longer it holds a target.', key: '8', special: { name: 'Overload', desc: 'Instantly at full heat and piercing for 5 seconds.', charge: 45, down: 12 } },
+  missile: { name: 'Missile Battery', cost: 170, dmg: 26, rate: 0.55, range: 13, aoe: 1.5, color: 0xd9a05b, desc: 'Salvos of homing missiles. Prefers flyers.', key: '9', special: { name: 'Swarm', desc: 'Launches sixteen missiles at targets anywhere on the map.', charge: 50, down: 12 } },
+  gravity: { name: 'Graviton Well', cost: 150, dmg: 0, rate: 0.5, range: 5.5, color: 0x7a8cff, desc: 'Deals no damage. Drags enemies back and slows them.', key: '0', special: { name: 'Collapse', desc: 'Opens a singularity on the toughest enemy in range.', charge: 55, down: 14 } },
+  spire: { name: 'Uplink Spire', cost: 180, dmg: 0, rate: 0, range: 0, color: 0x6fe0c8, desc: 'A tall relay tower. Kestrel can only uplink to Spires, and teleports between them.', key: 't' },
 };
 
 export const LVL_DMG = [1, 1.65, 2.6];
