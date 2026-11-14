@@ -1,23 +1,9 @@
 // VOLTSPIRE — static game data: map, towers, enemies, cards.
 
-export const CELL = 2;
-export const GW = 26;
-export const GH = 18;
+// The board is a hex grid: all grid geometry lives in hex.ts.
+export { CELL, GW, GH, cellX, cellZ, worldToCell } from './hex.ts';
 export const MAX_ENERGY = 100;
 export const WIN_WAVE = 20;
-
-export const cellX = (cx: number) => (cx - GW / 2 + 0.5) * CELL;
-export const cellZ = (cz: number) => (cz - GH / 2 + 0.5) * CELL;
-export const worldToCell = (x: number, z: number): [number, number] => [
-  Math.floor(x / CELL + GW / 2),
-  Math.floor(z / CELL + GH / 2),
-];
-
-/** Path waypoints in cell coordinates (enemies enter on the left, core on the right). */
-export const PATH_CELLS: [number, number][] = [
-  [-2, 3], [5, 3], [5, 13], [11, 13], [11, 5], [17, 5], [17, 13], [21, 13], [21, 8], [22.4, 8],
-];
-export const CORE_CELL: [number, number] = [24, 8];
 
 export type TowerType = 'pulse' | 'cryo' | 'arc' | 'mortar' | 'rail' | 'beacon' | 'flame' | 'lance' | 'missile' | 'gravity' | 'spire';
 export const TOWER_TYPES: TowerType[] = ['pulse', 'cryo', 'arc', 'mortar', 'rail', 'beacon', 'flame', 'lance', 'missile', 'gravity', 'spire'];

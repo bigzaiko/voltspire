@@ -280,7 +280,7 @@ export class View {
       sim.map.def.blocked.forEach(([cx, cz], i) => {
         const k = (cx * 7 + cz * 13 + i) % 5;
         const o = this.models[k < 2 ? 'prop_crate' : 'prop_barrier'].clone();
-        o.position.set(cellX(cx) + ((k % 3) - 1) * 0.15, 0, cellZ(cz) + ((k % 2) - 0.5) * 0.2);
+        o.position.set(cellX(cx, cz) + ((k % 3) - 1) * 0.15, 0, cellZ(cz) + ((k % 2) - 0.5) * 0.2);
         o.rotation.y = k * 1.3 + cx; o.scale.setScalar(k < 2 ? 1.35 : 1.0);
         this.scenery.add(o);
         if (k === 0) { const o2 = this.models.prop_crate.clone(); o2.position.set(o.position.x + 0.1, 1.2, o.position.z - 0.1); o2.rotation.y = cz; o2.scale.setScalar(0.9); this.scenery.add(o2); }
@@ -347,7 +347,7 @@ export class View {
     this.ghost.visible = this.cellMark.visible = !!type;
     if (!type) { if (!this.selRing.visible) this.rangeRing.visible = false; return; }
     if (this.ghostType !== type) { this.ghost.clear(); this.ghost.add(this.models['tower_' + type].clone()); this.ghostType = type; }
-    const x = cellX(cx), z = cellZ(cz);
+    const x = cellX(cx, cz), z = cellZ(cz);
     this.ghost.position.set(x, 0, z);
     this.ghost.visible = ok;
     this.cellMark.position.set(x, 0.04, z);
@@ -364,7 +364,7 @@ export class View {
   }
   setHover(cx: number, cz: number, show: boolean) {
     this.hoverMark.visible = show;
-    if (show) { this.hoverMark.position.set(cellX(cx), 0.05, cellZ(cz)); this.hoverMark.scale.setScalar(CELL * 0.62); }
+    if (show) { this.hoverMark.position.set(cellX(cx, cz), 0.05, cellZ(cz)); this.hoverMark.scale.setScalar(CELL * 0.62); }
   }
   setTele(t: Tower | null) {
     this.teleMark.visible = !!t;

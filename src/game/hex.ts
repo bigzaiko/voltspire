@@ -85,3 +85,11 @@ export const HEX_CORNERS: [number, number][] = Array.from({ length: 6 }, (_, i) 
   const a = (Math.PI / 3) * i - Math.PI / 2;
   return [Math.cos(a) * HEX_SIZE, Math.sin(a) * HEX_SIZE] as [number, number];
 });
+
+/** Build a road from a start tile and a list of [direction, steps] moves; returns the corner tiles. */
+export function route(start: [number, number], moves: [number, number][]): [number, number][] {
+  const out: [number, number][] = [start];
+  let c = start;
+  for (const [dir, n] of moves) { for (let i = 0; i < n; i++) c = neighbor(c[0], c[1], dir); out.push(c); }
+  return out;
+}

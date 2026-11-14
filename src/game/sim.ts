@@ -147,7 +147,7 @@ export function mapEase(map: GameMap): number {
   const cover: number[] = [];
   for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) {
     if (map.grid[cz * GW + cx] !== 0) continue;
-    const x = cellX(cx), z = cellZ(cz);
+    const x = cellX(cx, cz), z = cellZ(cz);
     let s = 0;
     for (let l = 0; l < L; l++) for (let d = 0; d < map.lanes[l].len; d += 1) { map.pos(l, d, tmp); if (Math.hypot(tmp.x - x, tmp.z - z) <= 7.5) s += 1 / L; }
     cover.push(s);
@@ -160,7 +160,7 @@ export function mapEase(map: GameMap): number {
 }
 
 function newTower(id: number, type: TowerType, cx: number, cz: number, spent: number): Tower {
-  return { id, type, cx, cz, x: cellX(cx), z: cellZ(cz), lvl: 1, cd: 0.3, yaw: 0, buff: 0, spent, h: TOWER_H[type], charge: 0, spec: 0, down: 0, heat: 0, tgt: 0, aux: 0, fxT: 0 };
+  return { id, type, cx, cz, x: cellX(cx, cz), z: cellZ(cz), lvl: 1, cd: 0.3, yaw: 0, buff: 0, spent, h: TOWER_H[type], charge: 0, spec: 0, down: 0, heat: 0, tgt: 0, aux: 0, fxT: 0 };
 }
 
 export class Sim {
@@ -304,7 +304,7 @@ export class Sim {
       if (this.grid[cz * GW + cx] !== 0) continue;
       if (any < 0) any = cz * GW + cx;
       if (Math.max(Math.abs(cx - core[0]), Math.abs(cz - core[1])) <= 2) continue; // not adjacent to the core
-      const x = cellX(cx), z = cellZ(cz);
+      const x = cellX(cx, cz), z = cellZ(cz);
       let s = 0, near = 1e9;
       for (let l = 0; l < L; l++) {
         const len = this.map.lanes[l].len;

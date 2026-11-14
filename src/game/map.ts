@@ -1,5 +1,6 @@
 // Maps are data: lanes (roads) of cell waypoints, a core, blocked tiles and starting conditions.
 import { GW, GH, TOWER_TYPES, cellX, cellZ } from './data.ts';
+import { worldToCell, disc, hexDist, lineDir, route } from './hex.ts';
 import type { TowerType } from './data.ts';
 
 /** A road waypoint: cell x, cell z and an optional height level (0 = deck, up to 3; roads ramp between levels and can bridge over each other). */
@@ -42,21 +43,21 @@ export class GameMap {
 
   constructor(def: MapDef) {
     this.def = def;
-    this.core = { x: cellX(def.core[0]), z: cellZ(def.core[1]) };
+    this.core = { x: cellX(def.core[0], def.core[1]), z: cellZ(def.core[1]) };
     this.lanes = def.lanes.map((cells) => {
-      const pts = cells.map(([cx, cz]) => [cellX(cx), cellZ(cz)]);
+      const pts = cells.map(([cx, cz]) => [cellX(cx, cz), cellZ(cz)]);
       const cum = [0];
       for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
       return { pts, ys: cells.map((c) => (c[2] || 0) * LEVEL_H), cum, len: cum[cum.length - 1] };
     });
     const mark = (cx: number, cz: number, v: number) => { if (cx >= 0 && cx < GW && cz >= 0 && cz < GH) this.grid[cz * GW + cx] = v; };
     for (const [cx, cz] of def.blocked) mark(cx, cz, 3);
-    for (const cells of def.lanes) for (let i = 1; i < cells.length; i++) {
-      const [ax, az] = cells[i - 1], [bx, bz] = cells[i];
-      const n = Math.max(1, Math.ceil(Math.max(Math.abs(bx - ax), Math.abs(bz - az)) * 2));
-      for (let s = 0; s <= n; s++) mark(Math.round(ax + ((bx - ax) * s) / n), Math.round(az + ((bz - az) * s) / n), 1);
+    // every tile a road passes over (sampled in world space, so it holds for any segment)
+    for (const lane of this.lanes) for (let i = 1; i < lane.pts.length; i++) {
+      const a = lane.pts[i - 1], b = lane.pts[i], n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 0.5));
+      for (let s = 0; s <= n; s++) { const [cx, cz] = worldToCell(a[0] + ((b[0] - a[0]) * s) / n, a[1] + ((b[1] - a[1]) * s) / n); mark(cx, cz, 1); }
     }
-    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) mark(def.core[0] + dx, def.core[1] + dz, 1);
+    for (const [cx, cz] of disc(def.core[0], def.core[1], 1)) mark(cx, cz, 1);
   }
 
   /** Position and heading at distance d along a lane. */
@@ -94,12 +95,15 @@ export function validateMap(def: MapDef): string | null {
     const l = def.lanes[i], n = i + 1;
     if (l.length < 2) return `Road ${n} needs at least two points.`;
     let len = 0;
-    for (let k = 1; k < l.length; k++) len += Math.hypot(l[k][0] - l[k - 1][0], l[k][1] - l[k - 1][1]);
-    if (len < 12) return `Road ${n} is too short — make it at least 12 tiles long.`;
+    for (let k = 1; k < l.length; k++) {
+      if (lineDir(l[k - 1][0], l[k - 1][1], l[k][0], l[k][1]) < 0) return `Road ${n} has a stretch that does not follow the hex grid.`;
+      len += hexDist(l[k - 1][0], l[k - 1][1], l[k][0], l[k][1]);
+    }
+    if (len < 12) return `Road ${n} is too short - make it at least 12 tiles long.`;
     const end = l[l.length - 1];
-    if (Math.hypot(end[0] - def.core[0], end[1] - def.core[1]) > 2.6) return `Road ${n} must end next to the core.`;
+    if (hexDist(end[0], end[1], def.core[0], def.core[1]) > 2) return `Road ${n} must end next to the core.`;
     const s = l[0];
-    if (Math.hypot(s[0] - def.core[0], s[1] - def.core[1]) < 6) return `Road ${n} starts too close to the core.`;
+    if (hexDist(s[0], s[1], def.core[0], def.core[1]) < 6) return `Road ${n} starts too close to the core.`;
   }
   const m = new GameMap(def);
   let free = 0;
@@ -126,7 +130,7 @@ export function sanitizeMap(raw: unknown): MapDef | null {
     if (!Array.isArray(l) || l.length < 2 || l.length > 48) return null;
     const pts: LanePoint[] = [];
     for (const p of l) {
-      const q = pair(p, -3, GW + 2, GH + 2, 0.1);
+      const q = pair(p, -3, GW + 2, GH + 2, 1);
       if (!q) return null;
       const h = Math.round(num((p as unknown[])[2], 0, 3, 0));
       pts.push(h ? [q[0], q[1], h] : q);
@@ -162,10 +166,11 @@ export function sanitizeMap(raw: unknown): MapDef | null {
   return def;
 }
 
+// Directions for route(): 0 east, 1 south-east, 2 south-west, 3 west, 4 north-west, 5 north-east.
 export const DEFAULT_MAP: MapDef = {
   id: 'switchback', name: 'Switchback', desc: 'One long winding road. A clean place to learn the grid.', tier: 1,
-  lanes: [[[-2, 3], [5, 3], [5, 13], [11, 13], [11, 5], [17, 5], [17, 13], [21, 13], [21, 8], [22.4, 8]]],
-  core: [24, 8], gold: 220, lives: 20, towers: [], blocked: [],
+  lanes: [route([-2, 4], [[0, 7], [1, 6], [2, 5], [0, 7], [5, 5], [4, 6], [0, 7], [1, 6], [2, 5], [0, 3], [5, 3]])],
+  core: [24, 10], gold: 220, lives: 20, towers: [], blocked: [],
 };
 
 /** Compact share code for a map (plain data — always passed through sanitizeMap when read). */

@@ -12,7 +12,7 @@ function rankSpots(sim: Sim, range: number, spread = 4.5) {
   const out: { cx: number; cz: number; s: number }[] = [];
   for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) {
     if (sim.grid[cz * GW + cx] !== 0) continue;
-    const x = cellX(cx), z = cellZ(cz);
+    const x = cellX(cx, cz), z = cellZ(cz);
     let s = 0;
     for (let l = 0; l < sim.map.lanes.length; l++) { const len = sim.map.lanes[l].len; for (let d = Math.min(8, len * 0.2); d < len; d += 1.5) { sim.map.pos(l, d, P); if (Math.hypot(P.x - x, P.z - z) <= range) s += (1 + d / len) / sim.map.lanes.length; } }
     if (s > 0) { for (const t of sim.towers) if (Math.hypot(t.x - x, t.z - z) < spread) s -= 2.2; out.push({ cx, cz, s }); }
@@ -74,7 +74,7 @@ export class Bot {
       const r = TOWERS.beacon.range;
       for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) {
         if (s.grid[cz * GW + cx] !== 0) continue;
-        const x = cellX(cx), z = cellZ(cz);
+        const x = cellX(cx, cz), z = cellZ(cz);
         let n = 0;
         for (const t of s.towers) { if (t.type === 'spire') continue; const d = Math.hypot(t.x - x, t.z - z); if (d <= r) n += t.type === 'beacon' ? -3 : t.buff > 0 ? 0.2 : 1; }
         if (n > bs) { bs = n; best = cz * GW + cx; }
@@ -86,7 +86,7 @@ export class Bot {
       let best = -1, bs = -Infinity;
       for (const q of rankSpots(s, 15, 0)) {
         let near = 1e9;
-        for (const t of s.towers) if (t.type === 'spire') near = Math.min(near, Math.hypot(t.x - cellX(q.cx), t.z - cellZ(q.cz)));
+        for (const t of s.towers) if (t.type === 'spire') near = Math.min(near, Math.hypot(t.x - cellX(q.cx, q.cz), t.z - cellZ(q.cz)));
         if (near < 12) continue;
         const v = q.s + Math.min(30, near) * 0.25;
         if (v > bs) { bs = v; best = q.cz * GW + q.cx; }
