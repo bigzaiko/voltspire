@@ -1,4 +1,4 @@
-// Procedural animation for VOLTSPIRE's rigid-jointed models (no glTF clips, no skinning).
+// Procedural animation for BEATSPIRE's rigid-jointed models (no glTF clips, no skinning).
 //
 // ---- RIG NAMING (nodes in the GLB files) ----
 // All models are parent/child hierarchies of rigid meshes whose origins sit on the joints.

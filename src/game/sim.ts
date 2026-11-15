@@ -1,4 +1,4 @@
-// VOLTSPIRE game simulation (no rendering, no DOM). Runs in the browser and in Node.
+// BEATSPIRE game simulation (no rendering, no DOM). Runs in the browser and in Node.
 import {
   CELL, GW, GH, MAX_ENERGY, WIN_WAVE, cellX, cellZ,
   TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, ENEMY_SCALE, CARDS, CARD_BY_ID, BOW_TIERS, bowTier,

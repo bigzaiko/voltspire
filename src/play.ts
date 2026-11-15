@@ -1,13 +1,4 @@
-// VOLTSPIRE - game controller: input, HUD, menus, saved progress, multiplayer glue.
-import '@fontsource/saira-stencil-one/400.css';
-import '@fontsource/barlow-condensed/500.css';
-import '@fontsource/barlow-condensed/600.css';
-import '@fontsource/barlow-condensed/700.css';
-import '@fontsource/barlow/400.css';
-import '@fontsource/barlow/500.css';
-import '@fontsource/barlow/600.css';
-import '@fontsource/ibm-plex-mono/400.css';
-import '@fontsource/ibm-plex-mono/500.css';
+// BEATSPIRE - game controller: input, HUD, menus, saved progress, multiplayer glue.
 // style.css, editor.css, touch.css and music.css are linked from play.html, so the page never shows unstyled.
 import * as THREE from 'three';
 import { GW, GH, TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, CARD_BY_ID, RARITY, BOW_TIERS, MAX_ENERGY, SQUADS, worldToCell } from './game/data.ts';
@@ -56,7 +47,8 @@ function icon(d: string, cls = ''): SVGSVGElement {
 
 // ---------- saved progress (one versioned object in localStorage) ----------
 // Whatever comes back from storage is treated like any other outside input: every field is checked and clamped.
-const STORE_KEY = 'voltspire';
+const STORE_KEY = 'beatspire';
+const OLD_STORE_KEY = 'voltspire'; // the game's earlier name; read once so saved progress carries over
 type FxColor = 'auto' | 'sand' | 'apricot' | 'verdigris' | 'custom';
 interface Rec { wave: number; wins: number; time: number; surv: number }
 interface Store {
@@ -134,7 +126,7 @@ function readStore(raw: unknown): Store {
   return store;
 }
 let store: Store;
-try { store = readStore(JSON.parse(localStorage.getItem(STORE_KEY) || '{}')); } catch { store = readStore(null); }
+try { store = readStore(JSON.parse(localStorage.getItem(STORE_KEY) ?? localStorage.getItem(OLD_STORE_KEY) ?? '{}')); } catch { store = readStore(null); }
 const save = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch { /* storage unavailable */ } };
 const settings = store.settings;
 const recOf = (mapId: string, diff: string): Rec | undefined => (Object.hasOwn(store.records, `${mapId}|${diff}`) ? store.records[`${mapId}|${diff}`] : undefined);

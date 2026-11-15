@@ -1,4 +1,4 @@
-"""VOLTSPIRE towers: shared hexagonal armoured base, eleven designs, power nodes and upgrade add-ons.
+"""BEATSPIRE towers: shared hexagonal armoured base, eleven designs, power nodes and upgrade add-ons.
 
 Every tower has 'base' and 'turret' (the spire's turret is a small relay scanner), a 'node' (the power
 node the player shoots, centre on the axis at H + 0.48) and 'lvl2' / 'lvl3' (add-on parts the game shows

@@ -1,4 +1,4 @@
-// VOLTSPIRE: static game data: map, towers, enemies, cards.
+// BEATSPIRE: static game data: map, towers, enemies, cards.
 
 // The board is a hex grid: all grid geometry lives in hex.ts.
 export { CELL, GW, GH, cellX, cellZ, worldToCell } from './hex.ts';

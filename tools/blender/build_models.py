@@ -1,4 +1,4 @@
-"""VOLTSPIRE model builder.
+"""BEATSPIRE model builder.
 
     blender -b --python tools/blender/build_models.py [-- --only a,b,c] [--no-render] [--angles]
 

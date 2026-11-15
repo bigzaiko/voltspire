@@ -1,4 +1,4 @@
-"""VOLTSPIRE objective ("the Heart") and street props."""
+"""BEATSPIRE objective ("the Heart") and street props."""
 import math
 from vs_lib import *
 

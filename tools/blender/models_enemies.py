@@ -1,4 +1,4 @@
-"""VOLTSPIRE enemies - "the Static": cold machines. Dark slate hulls, gunmetal-violet plating, blue-white glows.
+"""BEATSPIRE enemies - "the Static": cold machines. Dark slate hulls, gunmetal-violet plating, blue-white glows.
 Brute and boss carry weak points: nodes weak_<n> with material glow_weak, placed where the game's hit test expects them."""
 import math
 from vs_lib import *
