@@ -11,7 +11,7 @@ import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 
 /** Final display-space pass: filmic grade (split tone, gentle S-curve, slight desaturation), vignette, grain. */
 const GradeShader = {
-  name: 'VoltGrade',
+  name: 'EmberGrade',
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
     time: { value: 0 },

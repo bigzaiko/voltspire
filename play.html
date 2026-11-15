@@ -291,6 +291,8 @@
           <label>Volume <input type="range" id="set-vol" min="0" max="100" /></label>
           <label>Built-in music <input type="range" id="set-mus" min="0" max="100" /></label>
           <label>Look sensitivity <input type="range" id="set-sens" min="20" max="200" /></label>
+          <label class="kbd-only" id="row-curve">Mouse response <select id="set-curve"><option value="even">Even slow aim</option><option value="linear">Fully linear</option><option value="system">As on the desktop</option></select></label>
+          <label class="kbd-only">Mouse aim <select id="set-aim"><option value="auto">Automatic</option><option value="lock">Capture the mouse</option><option value="free">Free cursor</option></select></label>
           <label class="touch-row">Touch aim friction <input type="checkbox" id="set-friction" /></label>
           <div class="set-row kbd-only"><span>Raw mouse input</span><span id="raw-state" class="muted"></span></div>
           <label>Graphics <select id="set-q"><option value="high">High (glow and shadows)</option><option value="low">Low (faster)</option></select></label>
@@ -339,7 +341,7 @@
       <header class="sheet-head">
         <span class="kicker">Deck radio</span>
         <h2>Music</h2>
-        <p>Pick a built-in track, or play your own playlist. The built-in score goes quiet while your own music plays.</p>
+        <p>Tick the built-in tracks that belong on your playlist, or play a single one. Below them you can add links of your own. The built-in score goes quiet while your own music plays.</p>
       </header>
       <div id="music-root"></div>
       <div class="menu-buttons row">

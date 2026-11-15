@@ -10,6 +10,8 @@
 .mu-meta { font-family: var(--mono); font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mu-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .mu-bpm { display: flex; align-items: center; gap: 6px; }
+.mu-tick { display: flex; align-items: center; gap: 7px; min-height: 36px; cursor: pointer; }
+.mu-tick input { width: 20px; height: 20px; margin: 0; accent-color: var(--apricot); cursor: pointer; }
 .mu-bpm input { width: 64px; height: 36px; padding: 0 6px; font-family: var(--mono); font-size: 14px; text-align: center; color: var(--bone); background: var(--soot-0); border: 1px solid var(--line-2); border-radius: var(--r); user-select: text; -webkit-user-select: text; }
 .mu-chip { cursor: pointer; }
 .mu-del { color: var(--muted); }

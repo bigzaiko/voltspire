@@ -97,6 +97,8 @@ const MINOR = [0, 2, 3, 5, 7, 8, 10];
 const hz = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
 /** One arrangement cycle after the 4 bar intro: A (groove), B (with the lead), a breakdown, C (lead and fills). */
 const CYCLE = 28;
+/** A track played through once: the intro and three rounds of the arrangement, a little over three minutes. */
+const SONG_STEPS = (4 + CYCLE * 3) * 16;
 interface MusicBus { all: GainNode; duck: GainNode; soft: GainNode; drums: GainNode }
 
 export class Sound {
@@ -118,6 +120,8 @@ export class Sound {
   private scoreMuted = false;
   /** the player's choice: a track id or 'shuffle' */
   private choice = 'shuffle';
+  /** the tracks the playlist goes through, in list order (all of them unless the player picked some) */
+  private list: Track[] = TRACK_DEFS;
   private tr: Track = TRACK_DEFS[0];
   private mb: MusicBus | null = null;
   private seed = 1;
@@ -445,24 +449,33 @@ export class Sound {
   /** The built-in track that plays, or the one that will. */
   get trackId(): string { return this.tr.id; }
   get trackChoice(): string { return this.choice; }
-  /** Choose a built-in track by id, or 'shuffle' for a different one every run. Switches at once while the score plays. */
+  /** Choose a built-in track by id, or 'shuffle' for the playlist. Switches at once while the score plays. */
   setTrack(id: string) {
     const t = TRACK_DEFS.find((x) => x.id === id);
     this.choice = t ? t.id : 'shuffle';
     if (t && t !== this.tr) { this.tr = t; if (this.playing) this.restart(); }
+    else if (!t && this.playing && !this.list.includes(this.tr)) { this.pick(); this.restart(); }
+  }
+  /** Which tracks the playlist goes through. Unknown ids are dropped; an empty list means all tracks. */
+  setPlaylist(ids: string[]) {
+    const l = TRACK_DEFS.filter((x) => ids.includes(x.id));
+    this.list = l.length ? l : TRACK_DEFS;
+    // a track that was taken off the playlist while it plays makes room for the next one
+    if (this.choice === 'shuffle' && this.playing && !this.list.includes(this.tr)) { this.pick(); this.restart(); }
   }
   private pick() {
     const t = TRACK_DEFS.find((x) => x.id === this.choice);
     if (t) { this.tr = t; return; }
-    // shuffle: any track the first time, afterwards any but the one that just played
-    const pool = this.picked ? TRACK_DEFS.filter((x) => x !== this.tr) : TRACK_DEFS;
-    this.picked = true;
-    this.tr = pool[Math.floor(Math.random() * pool.length)] || TRACK_DEFS[0];
+    // the playlist: any of its tracks the first time, afterwards the one that follows in the list
+    const l = this.list;
+    if (!this.picked) { this.picked = true; this.tr = l[Math.floor(Math.random() * l.length)] || TRACK_DEFS[0]; return; }
+    const from = TRACK_DEFS.indexOf(this.tr);
+    this.tr = l.find((x) => TRACK_DEFS.indexOf(x) > from) || l[0];
   }
   /** Start the score. `fresh` marks a new run: on shuffle it moves on to another track. */
   startMusic(fresh = false) {
     if (!this.ctx) return;
-    if (this.playing) { if (fresh && this.choice === 'shuffle') { this.pick(); this.restart(); } return; }
+    if (this.playing) { if (fresh && this.choice === 'shuffle' && this.list.length > 1) { this.pick(); this.restart(); } return; }
     if (fresh || !this.mb) this.pick();
     this.playing = true;
     this.restart();
@@ -503,9 +516,15 @@ export class Sound {
   private schedule() {
     const c = this.ctx!;
     if (c.state !== 'running' || !this.mb) return;
+    // the playlist: a track that has played through hands over to the next one once its last bar has sounded
+    const moveOn = this.choice === 'shuffle' && this.list.length > 1;
+    if (moveOn && this.step >= SONG_STEPS) {
+      if (c.currentTime < this.nextT - 0.03) return;
+      this.pick(); this.restart();
+    }
     if (this.nextT < c.currentTime + 0.02) this.nextT = c.currentTime + 0.06;
     // timers are slowed down in a hidden tab, so the horizon is longer there
-    this.scheduleUntil(c.currentTime + (document.hidden ? 1.6 : 0.4));
+    this.scheduleUntil(c.currentTime + (document.hidden ? 1.6 : 0.4), undefined, moveOn ? SONG_STEPS : Infinity);
   }
   /**
    * Render the score plus recorded cues to a buffer (used for the trailer soundtrack and the sound checks).
@@ -537,9 +556,9 @@ export class Sound {
     for (let t = CHUNK; t < seconds; t += CHUNK) void c.suspend(t).then(() => { fill(t + CHUNK + 0.5); void c.resume(); });
     return c.startRendering();
   }
-  private scheduleUntil(limit: number, hotAt?: (t: number) => boolean) {
+  private scheduleUntil(limit: number, hotAt?: (t: number) => boolean, lastStep = Infinity) {
     const spb = 15 / this.tr.bpm; // one sixteenth
-    while (this.nextT < limit) {
+    while (this.nextT < limit && this.step < lastStep) {
       this.scoreStep(this.step, this.nextT, hotAt ? hotAt(this.nextT) : this.intense > 0.5, !hotAt);
       this.nextT += spb; this.step++;
     }

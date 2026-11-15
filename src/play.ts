@@ -18,6 +18,8 @@ import { drawMap } from './game/mapdraw.ts';
 import { openEditor, loadCustomMaps } from './editor.ts';
 import { initTouch } from './touch.ts';
 import { initMusic } from './music.ts';
+import { CurveUndo } from './game/pointer.ts';
+import type { MouseCurve } from './game/pointer.ts';
 import type { Msg } from './game/net.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -50,11 +52,15 @@ function icon(d: string, cls = ''): SVGSVGElement {
 const STORE_KEY = 'beatspire';
 /** the game's earlier name: progress saved under it is read once and carried over */
 const OLD_STORE_KEY = 'voltspire';
+const UA = navigator.userAgent;
+/** a Linux desktop (not Android, not Chrome OS): the one place where a browser cannot hand out the raw mouse */
+const LINUX = /Linux|X11/.test(UA) && !/Android|CrOS/.test(UA);
+const FIREFOX = /Firefox\//.test(UA);
 type FxColor = 'auto' | 'sand' | 'apricot' | 'verdigris' | 'custom';
 interface Rec { wave: number; wins: number; time: number; surv: number }
 interface Store {
   v: 2;
-  settings: { vol: number; mus: number; sens: number; q: 'high' | 'low'; friction: boolean };
+  settings: { vol: number; mus: number; sens: number; q: 'high' | 'low'; friction: boolean; aim: 'auto' | 'lock' | 'free'; curve: MouseCurve };
   fx: { impact: boolean; beat: boolean; borders: boolean; env: boolean; towers: boolean; intensity: number; color: FxColor; custom: string };
   /** filter: which layouts the map picker shows (0 all, 1 to 3 one tier) */
   setup: { survival: boolean; source: 'premade' | 'generated'; map: string; mapName: string; seed: number; tier: number; tierAuto: boolean; diff: string; filter: number };
@@ -97,7 +103,8 @@ function readStore(raw: unknown): Store {
   const colors: FxColor[] = ['auto', 'sand', 'apricot', 'verdigris', 'custom'];
   const store: Store = {
     v: 2,
-    settings: { vol: int(s.vol, 0, 100, 70), mus: int(s.mus, 0, 100, 50), sens: int(s.sens, 20, 200, 100), q: s.q === 'low' ? 'low' : 'high', friction: bool(s.friction, true) },
+    settings: { vol: int(s.vol, 0, 100, 70), mus: int(s.mus, 0, 100, 50), sens: int(s.sens, 20, 200, 100), q: s.q === 'low' ? 'low' : 'high', friction: bool(s.friction, true),
+      aim: s.aim === 'lock' || s.aim === 'free' ? s.aim : 'auto', curve: s.curve === 'system' || s.curve === 'linear' ? s.curve : 'even' },
     fx: {
       impact: bool(f.impact, true), beat: bool(f.beat, true), borders: bool(f.borders, true), env: bool(f.env, false), towers: bool(f.towers, false),
       intensity: int(f.intensity, 0, 100, 30), color: colors.find((c) => c === f.color) || 'auto',
@@ -516,7 +523,7 @@ function handleEvents(evs: Ev[]) {
       case 'up': playAt('up', e); break;
       case 'heroOn':
         sound.play('heroOn');
-        if (e.p === me) { flash(); document.body.classList.add('hero'); show('herohud'); setText('btn-speed', '1x'); buildType = null; selected = 0; rotating = false; dragging = false; edgeArmed = false; heroSince = performance.now(); zoomS.on = false; keyV.x = keyV.y = keyV.r = 0; view.setGhost(null); view.setSelected(null); view.setHover(0, 0, false); faceEnemies(); }
+        if (e.p === me) { flash(); document.body.classList.add('hero'); show('herohud'); setText('btn-speed', '1x'); buildType = null; selected = 0; rotating = false; dragging = false; edgeArmed = false; heroSince = performance.now(); undo.reset(); owed.x = owed.y = 0; zoomS.on = false; keyV.x = keyV.y = keyV.r = 0; view.setGhost(null); view.setSelected(null); view.setHover(0, 0, false); faceEnemies(); }
         else toast('Your partner uplinked.');
         break;
       case 'heroOff':
@@ -1079,6 +1086,7 @@ const music = initMusic({
   tracks: TRACKS.map((t) => ({ id: t.id, name: t.name, meta: `${t.key} / ${t.bpm} BPM` })),
   // choosing a track outside a run plays it, so the list can be listened through from the menu
   setTrack: (id) => { sound.setTrack(id); if (sound.ctx && !sound.playing && id !== 'shuffle') sound.startMusic(); },
+  setPlaylist: (ids) => sound.setPlaylist(ids),
   nowPlaying: () => (sound.playing ? sound.trackId : ''),
   toast,
   click: () => { sound.init(); sound.play('click'); },
@@ -1163,6 +1171,15 @@ bind('set-sens', 'sens', () => {});
   box.checked = settings.friction;
   box.addEventListener('change', () => { settings.friction = box.checked; sound.play('click'); save(); });
 }
+{
+  const aimSel = $<HTMLSelectElement>('set-aim'), curveSel = $<HTMLSelectElement>('set-curve');
+  aimSel.value = settings.aim;
+  aimSel.addEventListener('change', () => { settings.aim = aimSel.value === 'lock' || aimSel.value === 'free' ? aimSel.value : 'auto'; if (freeAim()) unlockPointer(); save(); });
+  curveSel.value = settings.curve;
+  curveSel.addEventListener('change', () => { settings.curve = curveSel.value === 'system' || curveSel.value === 'linear' ? curveSel.value : 'even'; save(); });
+  // the pointer curve is a Linux matter: elsewhere the browser hands out the raw mouse, or the system has no such slow-down
+  if (!LINUX) $('row-curve').style.display = 'none';
+}
 const qsel = $<HTMLSelectElement>('set-q');
 qsel.value = settings.q;
 qsel.addEventListener('change', () => { settings.q = qsel.value === 'low' ? 'low' : 'high'; view.setQuality(settings.q); save(); });
@@ -1214,7 +1231,7 @@ click('s-reset-yes', () => {
 /** What the browser said when the mouse was asked for without pointer acceleration. */
 function rawLine() {
   setText('raw-state', rawMouse === 'granted' ? 'Granted by the browser.'
-    : rawMouse === 'refused' ? "Refused by the browser. The system's pointer acceleration applies to the look."
+    : rawMouse === 'refused' ? (LINUX ? 'Not offered by this browser. The game takes the desktop pointer curve back out itself (see Mouse response).' : "Refused by the browser. The system's pointer acceleration applies to the look.")
     : 'Not asked yet. It is asked for when the Uplink captures the mouse.');
 }
 function openSettings() { syncFxUi(); resetStep(false); rawLine(); show('settings'); }
@@ -1265,14 +1282,24 @@ for (const ev of ['mousedown', 'mouseup'] as const) addEventListener(ev, (e) => 
 // Mouse look. With the pointer captured the view turns by the raw mouse travel. Where capture is not available
 // (an embedded browser pane, a refused request) the mouse still turns the view from anywhere on the page, and
 // holding the cursor at a screen edge keeps it turning. The mouse gets no aim assistance of any kind.
-let selfUnlock = false, lockFailed = false, autoPauseAt = -1e9, mouseIn = false, edgeArmed = false, heroSince = 0, lockIdle = 0;
+//
+// On Linux a browser cannot hand out the raw mouse, so a captured mouse arrives with the desktop's pointer curve on it:
+// slow movement is damped to as little as 30 %, which is exactly the movement a crosshair needs. The look takes that
+// curve back out (src/game/pointer.ts). Firefox on Wayland goes further and drops slow movement of a captured mouse
+// altogether, so there the mouse is not captured by default: the cursor is hidden and the view follows where it goes.
+let selfUnlock = false, lockFailed = false, autoPauseAt = -1e9, mouseIn = false, edgeArmed = false, heroSince = 0, lockIdle = 0, cursorHidden = false;
+const freeAim = () => settings.aim === 'free' || (settings.aim === 'auto' && LINUX && FIREFOX);
+const undo = new CurveUndo();
+/** the share of a slow movement that the curve took away: handed back over the next moments, not in one jump */
+const owed = { x: 0, y: 0 };
+const curveMode = (): MouseCurve => (LINUX && rawMouse !== 'granted' ? settings.curve : 'system');
 /** Raw (unadjusted) mouse input: not asked for yet, granted, or refused by the browser. */
 let rawMouse: 'unasked' | 'granted' | 'refused' = 'unasked';
 /** when the pointer was last captured or the window last got its focus back (see the mouse look) */
 let lockAt = -1e9;
 function unlockPointer() { if (document.pointerLockElement) { selfUnlock = true; document.exitPointerLock(); } }
 function lockPointer() {
-  if (byTouch || document.pointerLockElement) return; // a finger aims by dragging, there is no pointer to lock
+  if (byTouch || document.pointerLockElement || freeAim()) return; // a finger aims by dragging, there is no pointer to lock
   const c = canvas as unknown as { requestPointerLock(o?: { unadjustedMovement: boolean }): unknown };
   const plain = () => { try { const r = c.requestPointerLock(); if (r instanceof Promise) r.catch(() => {}); } catch { /* not allowed */ } };
   try {
@@ -1532,7 +1559,11 @@ addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
 addEventListener('blur', () => { keys.clear(); mouseFire = false; dragging = false; rotating = false; mouseBtns = 0; });
 addEventListener('focus', () => { lockAt = performance.now(); });
 
-document.documentElement.addEventListener('mouseleave', () => { mouseIn = false; });
+document.documentElement.addEventListener('mouseleave', (e) => {
+  mouseIn = false;
+  // a free cursor that slides off the window (onto the next display) counts as resting on that edge: the view keeps turning
+  if (heroOn() && edgeArmed) { lastMouse.x = clamp(e.clientX, 0, innerWidth); lastMouse.y = clamp(e.clientY, 0, innerHeight); }
+});
 // Mouse movement is read from the whole page, not only the canvas: a HUD element under the cursor must never stop the view.
 document.addEventListener('mousemove', (e) => {
   const first = !mouseIn;
@@ -1553,7 +1584,11 @@ document.addEventListener('mousemove', (e) => {
     const big = Math.max(Math.abs(e.movementX), Math.abs(e.movementY));
     if (big > 5000 || (big > 300 && performance.now() - lockAt < 250)) { diag.dropped++; return; }
     diag.mx += e.movementX; diag.my += e.movementY; diag.mn++;
-    look(e.movementX, e.movementY);
+    // The movement itself turns the view at once. What the desktop's curve held back of a slow movement follows
+    // within a few frames (see the frame loop), so a single pixel of travel does not become one visible jump.
+    const g = undo.gain(e.movementX, e.movementY, e.timeStamp, curveMode());
+    if (g > 1) { owed.x += e.movementX * (g - 1); owed.y += e.movementY * (g - 1); look(e.movementX, e.movementY); }
+    else look(e.movementX * g, e.movementY * g);
     return;
   }
   if (rotating) rotateCam(-e.movementX * 0.006); // the near side of the board follows the mouse
@@ -1684,12 +1719,13 @@ function diagFrame(dt: number) {
       + `pointer ${document.pointerLockElement ? 'locked' : 'free'}   raw input ${rawMouse === 'unasked' ? 'not asked yet' : rawMouse}\n`
       + `dpr ${(window.devicePixelRatio || 1).toFixed(2)}   canvas ${c.width} x ${c.height}\n`
       + `quality ${view.quality}   ambient occlusion ${ao ? 'on' : 'off'}\n`
-      + `sensitivity ${settings.sens}%   dropped samples ${diag.dropped}`;
+      + `sensitivity ${settings.sens}%   dropped samples ${diag.dropped}\n`
+      + `mouse aim ${freeAim() ? 'free cursor' : 'captured'}   response ${curveMode()}`;
   }
   // the mouse: what arrived since the last frame, and the turn it produced
   const dy = (view.yaw - diag.yaw) * deg, dp = (view.pitch - diag.pitch) * deg;
   diag.yaw = view.yaw; diag.pitch = view.pitch;
-  const fast = `mouse dx ${diag.mx.toFixed(0).padStart(5)} dy ${diag.my.toFixed(0).padStart(5)}  (${diag.mn} events)\nlook  ${dy.toFixed(2).padStart(7)} deg ${dp.toFixed(2).padStart(7)} deg`;
+  const fast = `mouse dx ${diag.mx.toFixed(0).padStart(5)} dy ${diag.my.toFixed(0).padStart(5)}  (${diag.mn} events)\nlook  ${dy.toFixed(2).padStart(7)} deg ${dp.toFixed(2).padStart(7)} deg\npointer ${(undo.speed * 1000).toFixed(0).padStart(5)} px/s   curve undo x${undo.factor.toFixed(2)}`;
   diag.mx = diag.my = diag.mn = 0;
   if (fast !== diag.fast || diag.t === 0) { diag.fast = fast; $('diag').textContent = diag.slow + '\n' + fast; }
 }
@@ -2020,9 +2056,16 @@ function frame(dt: number) {
   // A captured pointer belongs to the Uplink. If none followed (a guest's request the host turned down), give it back.
   if (document.pointerLockElement && !p?.heroActive) { lockIdle += dt; if (lockIdle > 1) unlockPointer(); } else lockIdle = 0;
   if (mode === 'attract' && sim.over) { sim = new Sim({ pauseOnCards: false }); bot = new Bot(sim, 0, 1); fastForward(150); view.setSim(sim, 0); }
+  // free cursor aim: nothing captures the mouse, so the cursor is hidden for as long as it steers the view
+  const hide = !byTouch && !!p?.heroActive && active() && freeAim();
+  if (hide !== cursorHidden) { cursorHidden = hide; document.body.classList.toggle('aimfree', hide); }
 
   if (active()) {
     if (p.heroActive) {
+      if (owed.x || owed.y) {
+        const k = Math.abs(owed.x) + Math.abs(owed.y) < 0.02 ? 1 : 1 - Math.exp(-dt / 0.04);
+        look(owed.x * k, owed.y * k); owed.x *= 1 - k; owed.y *= 1 - k;
+      }
       edgeLook(dt);
       if (!isClient) { p.yaw = view.yaw; p.pitch = view.pitch; }
       view.aimPoint(aim);
@@ -2037,7 +2080,8 @@ function frame(dt: number) {
       setText('hero-hint', tp ? (byTouch ? 'TAP JUMP OR SHOOT THE BEACON' : 'F OR SHOOT THE BEACON TO JUMP') : '');
       // no captured pointer after the first moment: say how to get one, or how to turn without
       const free = !byTouch && !document.pointerLockElement && performance.now() - heroSince > 500;
-      setText('lock-hint', !free ? '' : lockFailed ? 'The mouse cannot be captured here. Hold the cursor at a screen edge to keep turning.' : 'Click to capture the mouse');
+      setText('lock-hint', !free ? '' : freeAim() ? (performance.now() - heroSince < 6000 ? 'Free cursor: hold it at a screen edge to keep turning' : '')
+        : lockFailed ? 'The mouse cannot be captured here. Hold the cursor at a screen edge to keep turning.' : 'Click to capture the mouse');
     } else {
       // The pan speed follows the zoom, so the board crosses the screen at the same pace at any distance.
       const c = bird(), sp = c.dist * 0.9 * dt;

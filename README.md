@@ -13,8 +13,8 @@
 - **Maps and modes** - 38 pre-made maps in three tiers (one to three roads, some with ramps and bridges) or a generated map from a seed. Three difficulties with 20, 25 or 30 waves, and a Survival mode with no last wave.
 - **Map editor** - draw roads on the hex grid, place the core, wreckage and starting towers, set credits and core integrity. Maps are saved locally and can be shared as a code.
 - **Multiplayer** - online co-op for two, or 1v1 where you pay to send squads at your rival. Join with a room code.
-- **Music** - five built-in synthwave tracks (92 to 108 BPM, a different one each run), or your own playlist of YouTube and Spotify links.
-- **Settings** - volume, look sensitivity, graphics quality, and the impact and beat pulse effects (on or off, where they show, intensity, colour). Records per map and difficulty are kept in the browser.
+- **Music** - five built-in synthwave tracks (92 to 108 BPM). Tick the ones you want and they play one after another as your playlist, or add YouTube and Spotify links of your own.
+- **Settings** - volume, look sensitivity, mouse response (on Linux the game takes the desktop's pointer curve back out, so slow aiming counts fully), graphics quality, and the impact and beat pulse effects (on or off, where they show, intensity, colour). Records per map and difficulty are kept in the browser.
 
 ## Safe by design
 

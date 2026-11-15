@@ -9,8 +9,10 @@ export interface MusicHost {
   setScoreMuted(muted: boolean): void;
   /** the built-in tracks: id, name and a short line about each (key and tempo) */
   tracks: { id: string; name: string; meta: string }[];
-  /** choose a built-in track by id, or 'shuffle' for a different one every run */
+  /** choose a built-in track by id, or 'shuffle' for the playlist of built-in tracks */
   setTrack(id: string): void;
+  /** which built-in tracks the playlist goes through */
+  setPlaylist(ids: string[]): void;
   /** id of the built-in track that plays right now, or '' while the soundtrack is not running */
   nowPlaying(): string;
   toast(text: string): void;
@@ -187,7 +189,8 @@ function button(cls: string, text: string, run: () => void): HTMLButtonElement {
 export function initMusic(host: MusicHost): MusicApi {
   let list: MusicEntry[] = [];
   let sel = -1; // index into list, -1 is the built-in soundtrack
-  let builtin = 'shuffle'; // a built-in track id, or 'shuffle'
+  let builtin = 'shuffle'; // a built-in track id, or 'shuffle' for the playlist
+  let mine: string[] = host.tracks.map((t) => t.id); // the built-in tracks on the player's playlist
   let vol = 70;
   let min = false; // remembered preference
   let folded = false; // what the dock shows right now
@@ -221,9 +224,11 @@ export function initMusic(host: MusicHost): MusicApi {
     min = own(data, 'min') === true;
     const b = own(data, 'builtin');
     if (typeof b === 'string' && host.tracks.some((t) => t.id === b)) builtin = b;
+    const m = own(data, 'mine');
+    if (Array.isArray(m)) { const keep = host.tracks.filter((t) => m.includes(t.id)).map((t) => t.id); if (keep.length) mine = keep; }
   }
   function save(): void {
-    try { localStorage.setItem(KEY, JSON.stringify({ v: 1, list, sel, vol, min, builtin })); } catch { /* storage full or blocked */ }
+    try { localStorage.setItem(KEY, JSON.stringify({ v: 1, list, sel, vol, min, builtin, mine })); } catch { /* storage full or blocked */ }
   }
 
   // ---------- YouTube control, postMessage only ----------
@@ -234,7 +239,7 @@ export function initMusic(host: MusicHost): MusicApi {
   function ytCmd(func: string, args: unknown[]): void { ytPost({ event: 'command', func, args }); }
   function ytHello(): void {
     if (ytReady || ++ytTries > 40) { clearInterval(ytTimer); ytTimer = 0; return; }
-    ytPost({ event: 'listening', id: 'volt-yt', channel: 'widget' });
+    ytPost({ event: 'listening', id: 'beat-yt', channel: 'widget' });
   }
   function ytStart(): void {
     // The frame has loaded the player page by now, so the target origin matches.
@@ -389,14 +394,31 @@ export function initMusic(host: MusicHost): MusicApi {
     setBpm(e, Math.max(BPM_MIN, Math.min(BPM_MAX, 60000 / avg)), input);
   }
 
-  /** A row for the built-in soundtrack: the shuffle entry (id 'shuffle') or one track. */
+  /** A row for the built-in soundtrack: the playlist entry (id 'shuffle') or one track. */
   function builtRow(id: string, name: string, meta: string): HTMLElement {
     const chosen = builtin === id, on = active === null && chosen, now = active === null ? host.nowPlaying() : '';
     const r = el('li', 'mu-row' + (on ? ' on' : now === id ? ' last' : ''));
     const main = el('div', 'mu-main');
     main.append(el('span', 'mu-name', name), el('span', 'mu-meta', meta + (now === id && !chosen ? ' / playing now' : '')));
     r.append(main);
-    const b = button('btn small' + (on ? '' : ' ghost'), on ? (id === 'shuffle' ? 'On' : 'Chosen') : id === 'shuffle' ? 'Shuffle' : 'Play', () => {
+    if (id !== 'shuffle') {
+      // on the playlist or not
+      const tick = el('label', 'mu-tick');
+      const box = el('input');
+      box.type = 'checkbox'; box.checked = mine.includes(id);
+      box.addEventListener('change', () => {
+        host.click();
+        const next = host.tracks.map((t) => t.id).filter((t) => (t === id ? box.checked : mine.includes(t)));
+        if (!next.length) { box.checked = true; host.toast('The playlist needs at least one track.'); return; }
+        mine = next;
+        save();
+        host.setPlaylist(mine);
+        renderList();
+      });
+      tick.append(box, el('span', 'lab', 'Playlist'));
+      r.append(tick);
+    }
+    const b = button('btn small' + (on ? '' : ' ghost'), on ? (id === 'shuffle' ? 'On' : 'Chosen') : 'Play', () => {
       host.click();
       builtin = id; sel = -1;
       save();
@@ -456,7 +478,8 @@ export function initMusic(host: MusicHost): MusicApi {
 
   function renderList(): void {
     if (!listEl) return;
-    const rows: HTMLElement[] = [builtRow('shuffle', 'BEATSPIRE soundtrack', 'Built in / a different track every run')];
+    const n = mine.length, all = host.tracks.length;
+    const rows: HTMLElement[] = [builtRow('shuffle', 'My playlist', n === 1 ? 'Built in / 1 track, on repeat' : `Built in / ${n === all ? 'all ' + all : n + ' of ' + all} tracks, one after another`)];
     for (const t of host.tracks) rows.push(builtRow(t.id, t.name, 'Built in / ' + t.meta));
     for (const e of list) rows.push(row(e));
     listEl.replaceChildren(...rows);
@@ -583,6 +606,7 @@ export function initMusic(host: MusicHost): MusicApi {
   }
 
   load();
+  host.setPlaylist(mine);
   host.setTrack(builtin);
   return {
     open,

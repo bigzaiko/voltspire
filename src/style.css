@@ -282,6 +282,7 @@ body.hero #tutor { bottom: 190px; }
 #draw.full #draw-arc { stroke: var(--apricot); }
 #lock-hint { position: absolute; left: 50%; top: calc(var(--top-h) + 18px); transform: translateX(-50%); max-width: 86vw; font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; text-align: center; color: var(--sand-dim); }
 #lock-hint:not(:empty) { padding: 4px 10px; background: rgba(16, 14, 12, 0.85); border: 1px solid var(--line); border-radius: var(--r); }
+body.aimfree, body.aimfree * { cursor: none !important; }
 #hero-time { position: absolute; left: 50%; bottom: 108px; width: min(480px, 56vw); transform: translateX(-50%); display: grid; gap: 6px; padding: 8px 12px 10px; background: var(--plate); border: 1px solid var(--line); border-radius: var(--r); }
 #hero-time .bar i { background: var(--verdigris); }
 #hero-label { font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: 0.16em; color: var(--verdigris); font-variant-numeric: tabular-nums; }
