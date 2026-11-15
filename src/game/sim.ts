@@ -1,4 +1,4 @@
-// VOLTSPIRE — pure game simulation (no rendering, no DOM). Runs in the browser and in Node.
+// VOLTSPIRE game simulation (no rendering, no DOM). Runs in the browser and in Node.
 import {
   CELL, GW, GH, MAX_ENERGY, WIN_WAVE, cellX, cellZ,
   TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, ENEMY_SCALE, CARDS, CARD_BY_ID, BOW_TIERS, bowTier,
@@ -58,7 +58,7 @@ export interface WavePreview { wave: number; lanes: { type: EnemyType; n: number
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type Ev = { k: string; [key: string]: any };
 
-/** World scale: combat towers are ~3–4.5 units tall, Uplink Spires ~7.5; Kestrel is ~0.9 and stands on top of a Spire. */
+/** World scale: combat towers are about 3 to 4.5 units tall, Uplink Spires ~7.5; Kestrel is ~0.9 and stands on top of a Spire. */
 export const TOWER_SCALE = 1.15;
 export const TOWER_H: Record<TowerType, number> = { pulse: 2.76, cryo: 2.78, arc: 3.7, mortar: 2.4, rail: 3.23, beacon: 3.92, flame: 2.6, lance: 3.6, missile: 3.0, gravity: 3.3, spire: 7.475 };
 /** @deprecated Kestrel now stands directly on a Spire (see standY); kept so older view code compiles. */
@@ -71,7 +71,7 @@ export const SKILL_CAST = [0.1, 0.26, 0.18];
 export const SKILL_LOCK = [0.62, 0.86, 0.62];
 /** Radius of a tower's power node (see nodePos). */
 export const NODE_R = 0.6;
-/** Extra radius an arrow gets against an enemy body — no aim assistance beyond this. */
+/** Extra radius an arrow gets against an enemy body. There is no other aim assistance. */
 export const ARROW_PAD = 0.3;
 /** Blasts and burning ground only reach enemies whose road is within this height of the blast (a bridge deck shields what is under or over it). */
 export const DECK_GAP = 1.2;
@@ -676,7 +676,7 @@ export class Sim {
   }
   /**
    * Fire a tower's special (normally by an arrow through its power node). Needs a full charge and an online tower,
-   * and something for the special to hit — otherwise nothing happens and false is returned (the charge is kept).
+   * and something for the special to hit. Otherwise nothing happens and false is returned (the charge is kept).
    */
   triggerSpecial(towerId: number, owner: number): boolean {
     const t = this.towerById(towerId);

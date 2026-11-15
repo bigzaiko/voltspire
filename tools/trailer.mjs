@@ -24,11 +24,13 @@ const browser = await puppeteer.launch({
   defaultViewport: { width: W, height: H, deviceScaleFactor: 1 },
 });
 const page = await browser.newPage();
+// the recorder injects a style tag and small scripts; a production build's CSP would block them
+await page.setBypassCSP(true);
 page.on('pageerror', (e) => console.error('[pageerror]', e.message));
 await page.goto(BASE + '/play.html?capture=1', { waitUntil: 'load' });
 await page.waitForFunction('window.__volt', { timeout: 60000 });
 await page.addStyleTag({ content: `
-  #tr-cap { position: fixed; left: 0; right: 0; bottom: 19%; z-index: 90; text-align: center; pointer-events: none; font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 84px; line-height: 1; letter-spacing: .12em; text-transform: uppercase; color: #efe9d6; text-shadow: 0 2px 0 #100e0c, 0 0 40px rgba(16,14,12,.95); opacity: 0; }
+  #tr-cap { position: fixed; left: 0; right: 0; bottom: 24%; z-index: 90; text-align: center; pointer-events: none; font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 84px; line-height: 1; letter-spacing: .12em; text-transform: uppercase; color: #efe9d6; text-shadow: 0 2px 0 #100e0c, 0 0 40px rgba(16,14,12,.95); opacity: 0; }
   #tr-cap small { display: block; margin-top: 16px; font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 500; letter-spacing: .3em; color: #f68b56; }
   #tr-cap.mid { bottom: 40%; font-size: 132px; font-family: 'Saira Stencil One', 'Barlow Condensed', sans-serif; font-weight: 400; color: #e3dc92; }
   #tr-fade { position: fixed; inset: 0; z-index: 95; background: #000; opacity: 0; pointer-events: none; }

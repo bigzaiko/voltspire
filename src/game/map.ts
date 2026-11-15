@@ -173,7 +173,7 @@ export const DEFAULT_MAP: MapDef = {
   core: [24, 10], gold: 220, lives: 20, towers: [], blocked: [],
 };
 
-/** Compact share code for a map (plain data — always passed through sanitizeMap when read). */
+/** Compact share code for a map (plain data, always passed through sanitizeMap when read). */
 export function encodeMap(def: MapDef): string {
   const json = JSON.stringify({ name: def.name, lanes: def.lanes, core: def.core, gold: def.gold, lives: def.lives, towers: def.towers, blocked: def.blocked, tier: def.tier });
   return btoa(unescape(encodeURIComponent(json))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
