@@ -1,4 +1,4 @@
-/* VOLTSPIRE landing page - "Ember": printed field manual for the last garrison.
+/* BEATSPIRE landing page - "Ember": printed field manual for the last garrison.
    Soot ground, sand ink, apricot for the one action, rust for hazard, verdigris for the Uplink,
    cold blue-white only where the enemy is named. Matte: no glow, no glass, no skew. */
 :root {
@@ -143,6 +143,10 @@ kbd { display: inline-block; min-width: 1.9em; padding: 1px 6px; border: 1px sol
 .unit-img { position: relative; aspect-ratio: 4 / 3; overflow: hidden; background: var(--soot-0); border-bottom: 1px solid var(--line); }
 .unit-img img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 58%; transition: transform 0.5s; }
 .unit:hover .unit-img img { transform: scale(1.04); }
+/* hover previews: the clip sits exactly over the still and fades in once it plays */
+.unit-img video.pv { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 50% 58%; opacity: 0; transition: opacity 0.25s; pointer-events: none; }
+.unit.playing .unit-img video.pv, .foe.playing video.pv { opacity: 1; }
+.unit, .foe { cursor: pointer; }
 .unit-txt { display: grid; gap: 8px; padding: 16px 22px 24px; }
 .unit-txt > p:last-child { color: var(--muted); }
 .unit-tag { display: flex; justify-content: space-between; gap: 12px; font-family: var(--mono); font-weight: 500; font-size: 0.68rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--c); }
@@ -161,6 +165,9 @@ kbd { display: inline-block; min-width: 1.9em; padding: 1px 6px; border: 1px sol
 .foes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .foe { display: grid; grid-template-columns: 132px 1fr; align-items: stretch; background: var(--soot-2); border: 1px solid var(--line); overflow: hidden; }
 .foe img { width: 132px; height: 100%; min-height: 132px; object-fit: cover; border-right: 1px solid var(--line); }
+.foe img, .foe video.pv { grid-column: 1; grid-row: 1; }
+.foe > div { grid-column: 2; grid-row: 1; }
+.foe video.pv { width: 132px; height: 100%; min-height: 132px; object-fit: cover; border-right: 1px solid var(--line); opacity: 0; transition: opacity 0.25s; pointer-events: none; }
 .foe > div { display: grid; align-content: center; gap: 4px; padding: 16px 20px 16px 18px; }
 .foe h3 { font-size: 1.55rem; color: var(--bone); }
 .foe p { color: var(--muted); font-size: 0.98rem; line-height: 1.4; }
@@ -256,7 +263,7 @@ kbd { display: inline-block; min-width: 1.9em; padding: 1px 6px; border: 1px sol
   .bow li { grid-template-columns: 24px 104px 1fr; }
   .keys dl > div { grid-template-columns: 1fr; gap: 6px; }
   .foe { grid-template-columns: 104px 1fr; }
-  .foe img { width: 104px; min-height: 104px; }
+  .foe img, .foe video.pv { width: 104px; min-height: 104px; }
   .safe { padding: 24px 20px 26px; }
   .corner { width: 14px; height: 14px; }
   .c-tl, .c-tr { top: -7px; } .c-bl, .c-br { bottom: -7px; }

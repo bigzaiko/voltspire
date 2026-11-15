@@ -1,8 +1,8 @@
-# VOLTSPIRE
+# BEATSPIRE
 
 **Build the grid. Become the storm.** A tower defense on a hex grid where your ultimate puts you on a tower as a third-person archer. Plays free in the browser, with mouse and keyboard or touch.
 
-**Play:** https://bigzaiko.github.io/voltspire/
+**Play:** https://bigzaiko.github.io/beatspire/
 
 - **Command view** - build and upgrade eleven tower types on the hexes beside the roads. Tags over the spawn gates show what the next wave sends down each road. A Colossus arrives every fifth wave.
 - **Uplink** - kills charge your ultimate. Press Space to stand on an Uplink Spire as Kestrel: arrows, Rail Shot, Arrow Rain, Singularity. She can only use Spires and teleports between them.

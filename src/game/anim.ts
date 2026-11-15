@@ -22,11 +22,13 @@
 //   arm_<l|r>_upper, arm_<l|r>_lower     joints (shoulder, elbow), grunt + brute.
 //   leg_<id>_upper > leg_<id>_lower [> leg_<id>_foot] > leg_<id>_toe
 //                            bones (hip, knee[, ankle]) + a toe joint that is kept level.
-//                            id = l | r (bipeds), fl | fr | hl | hr (runner), 1..3 (tripod), 1..6 (boss:
-//                            1-3 left front to rear, 4-6 right front to rear).
+//                            id = l | r (bipeds), fl | fr | hl | hr (runner), 1..3 (tripod), 1..4 (boss:
+//                            1 left front, 2 left rear, 3 right front, 4 right rear).
 //   leg_<id>                 radial legs only (tripod, boss): yaw root at the hip whose FRONT (+Z) points
 //                            away from the body; the leg chain below it flexes about local X like any other.
-//   spin_<n>                 free-spinning parts (rotors, projector ring, reactor ring): spin about local Y.
+//   spin_<n>                 free-spinning parts (rotors, projector ring, reactor ring, gyros): spin about local Y.
+//   rim                      Gyre only: the big wheel, pivot at its centre; it rolls about its local X (+ = forward).
+//                            Its hub is the body node (pivot at the wheel centre too), which stays upright.
 //
 // Towers  (root = tower_<type>)
 //   base, turret             turret yaws about Y (not arc / beacon).
@@ -157,7 +159,8 @@ interface Gait {
   meta: number;     // extra fold of the third segment while the foot is in the air (rad)
   roll: number;     // third segment rolls over the toe through the stance (rad at the ends of the stride)
   ph: number[];     // phase per leg
-  lat?: number;     // widest a toe may stand from the machine's centre line (model units): keeps the feet on the road
+  shape?: number;   // where the swing peaks: below 1 early (a quick snatch), above 1 late (a slow heave, then the foot comes down hard)
+  curve?: number;   // 0..1: in a bend the footfalls follow the curve of the road (EnemyRig.roadF / roadR) instead of the machine's own tangent
 }
 
 /** Per-update context shared by all legs of one rig. */
@@ -165,7 +168,10 @@ const C = { X: 0, Z: 0, cs: 1, sn: 0, sc: 1, psi: 0, vx: 0, vz: 0, om: 0, sp: 0,
 const QBI = new THREE.Quaternion(), QC = new THREE.Quaternion(), QD = new THREE.Quaternion(), EU = new THREE.Euler();
 
 function stepLeg(r: EnemyRig, L: Leg, G: Gait) {
-  const p = frac(r.cyc + L.ph), nx = L.fx, nz = L.fz;
+  const p = frac(r.cyc + L.ph), nz = L.fz;
+  // a long machine in a bend: the road ahead of it and behind it lies to the inside of where its nose points. Feet that
+  // reach that far are set down either side of the road itself (the view says where it runs), so they stay on it.
+  const nx = L.fx + (G.curve ? (nz > 0 ? r.roadF : r.roadR) * G.curve : 0);
   // velocity of this leg's neutral point over the ground (root space), which gives the spot for the next footfall
   const vnx = C.vx + C.om * nz, vnz = C.vz - C.om * nx, den = Math.max(C.sp, C.spMin);
   let ox = vnx * G.stride * 0.5 / den, oz = vnz * G.stride * 0.5 / den;
@@ -183,10 +189,8 @@ function stepLeg(r: EnemyRig, L: Leg, G: Gait) {
   let dx = (L.wx - C.X) / C.sc, dz = (L.wz - C.Z) / C.sc;
   let ax = dx * C.cs - dz * C.sn, az = dx * C.sn + dz * C.cs;
   const ex = ax - nx, ez = az - nz, ed = Math.hypot(ex, ez);
-  const lat = G.lat || 0;
-  if (ed > leash || (lat && Math.abs(ax) > lat)) { // out of reach (dragged, pushed) or off the road in a bend: give way, keep the foot under the machine
-    if (ed > leash) { ax = nx + ex * leash / ed; az = nz + ez * leash / ed; }
-    if (lat) ax = clamp(ax, -lat, lat);
+  if (ed > leash) { // out of reach (dragged, pushed): give way, keep the foot under the machine
+    ax = nx + ex * leash / ed; az = nz + ez * leash / ed;
     L.wx = C.X + (ax * C.cs + az * C.sn) * C.sc; L.wz = C.Z + (-ax * C.sn + az * C.cs) * C.sc;
   }
   if (p < G.duty) {
@@ -208,12 +212,11 @@ function stepLeg(r: EnemyRig, L: Leg, G: Gait) {
     // foot leaves and meets the ground without sliding
     const rem = (1 - u) * (1 - G.duty) * (G.stride / G.duty) / den;
     lx = ax + (nx + ox + vnx * rem - ax) * e; lz = az + (nz + oz + vnz * rem - az) * e;
-    lift = Math.sin(PI * Math.pow(u, 0.8)) * C.liftAmp;
+    lift = Math.sin(PI * Math.pow(u, G.shape || 0.8)) * C.liftAmp;
     toe = (1 - u) * (1 - u) * (0.35 + 0.65 * Math.sin(PI * u)) - 0.25 * Math.sin(PI * u) * u;
     yawF = clamp(wrap(L.wyaw - C.psi), -0.6, 0.6) * (1 - e);
     roll = 2 * e - 1;
   }
-  if (lat) lx = clamp(lx, -lat, lat);
   L.sx = lx; L.sz = lz; L.lift = lift;
   // foot target relative to the hip, in the body's own frame (exact for any body pitch / roll / yaw)
   const body = r.body;
@@ -241,21 +244,28 @@ function stepLeg(r: EnemyRig, L: Leg, G: Gait) {
 
 // ---------- enemies ----------
 /**
- * Where the Colossus plants its feet: [distance from its centre line, distance ahead of the hip] for the front, middle and
- * rear pair (model units). The road is one tile wide with towers on both sides, so the legs reach along it, not across it:
- * front pair ahead, rear pair behind, the middle pair tucked in under high knees.
+ * Where the Colossus plants its feet: [distance from its centre line, distance ahead of the hip] for the front and the rear
+ * pair (model units). The road is one tile wide with towers on both sides, so the legs reach along it, not across it:
+ * the feet land just inside the road's edge, a little outside the hips, front pair ahead and rear pair behind, knees high.
  */
-const BOSS_FEET = [[0.52, 1.2], [0.74, 0.42], [0.52, -1.15]];
+const BOSS_FEET = [[0.86, 1.22], [0.86, -1.18]];
+/** How far ahead of and behind its centre the Colossus sets its feet down (model units): where the view samples the road for EnemyRig.roadF / roadR. */
+export const BOSS_REACH = 2.0;
+/** Radius of the Gyre's wheel (model units): the rim turns by distance / WHEEL_R. */
+const WHEEL_R = 1.1;
 const GAITS: Record<EnemyType, Gait> = {
   grunt: { stride: 0.85, duty: 0.5, lift: 0.16, toe: 0.9, meta: 0.5, roll: 0.32, ph: [0, 0.5] },
   runner: { stride: 0.62, duty: 0.38, lift: 0.09, toe: 0.7, meta: 0, roll: 0, ph: [0.5, 0.0, 0.62, 0.1] },      // fl hl fr hr: bounding gallop
   brute: { stride: 1.0, duty: 0.62, lift: 0.2, toe: 0.4, meta: 0, roll: 0, ph: [0, 0.5] },
   shield: { stride: 0.8, duty: 0.67, lift: 0.2, toe: 0.3, meta: 0, roll: 0, ph: [0, 1 / 3, 2 / 3] },
-  boss: { stride: 1.2, duty: 0.72, lift: 0.42, toe: 0.3, meta: 0.25, roll: 0.1, ph: [2 / 3, 1 / 3, 0, 1 / 6, 5 / 6, 0.5], lat: 0.86 },   // metachronal wave, rear to front
+  // a walk, one foot at a time: left rear, left front, right rear, right front. Each is down for more than three quarters
+  // of the cycle, so the swings never overlap and all four feet carry the hull for a moment between them
+  boss: { stride: 1.15, duty: 0.78, lift: 0.46, toe: 0.3, meta: 0.25, roll: 0.1, ph: [0.75, 0, 0.25, 0.5], shape: 1.25, curve: 1 },
   drone: { stride: 1, duty: 0.5, lift: 0, toe: 0, meta: 0, roll: 0, ph: [] },
+  wheel: { stride: 1, duty: 0.5, lift: 0, toe: 0, meta: 0, roll: 0, ph: [] },
 };
 const LEG_IDS: Record<EnemyType, string[]> = {
-  grunt: ['l', 'r'], runner: ['fl', 'hl', 'fr', 'hr'], brute: ['l', 'r'], shield: ['1', '2', '3'], boss: ['1', '2', '3', '4', '5', '6'], drone: [],
+  grunt: ['l', 'r'], runner: ['fl', 'hl', 'fr', 'hr'], brute: ['l', 'r'], shield: ['1', '2', '3'], boss: ['1', '2', '3', '4'], drone: [], wheel: [],
 };
 
 export interface EnemyRig {
@@ -268,6 +278,11 @@ export interface EnemyRig {
   speed: number; mv: number; sing: number; lastYaw: number; bank: number; look: number;
   lastX: number; lastZ: number; vx: number; vz: number; om: number; init: boolean; walk: number;
   atk: number; atkT: number; hit: boolean;   // attacking the core: blend, clock, and "a blow landed this frame"
+  sag: number; sagV: number; downN: number;  // Colossus: the hull sags onto every footfall (a damped spring), feet planted last frame
+  /** Colossus: how far to its left the middle of the road lies where its front feet land (BOSS_REACH ahead) and where its rear feet land (as far behind), model units. Set by the view before each update; 0 on a straight. */
+  roadF: number; roadR: number;
+  /** Gyre: the rim, its roll angle, the hub's swing about the axle (a pendulum), the spin as it was last frame, and the stagger left from a stall */
+  rim: O3 | null; roll: number; pend: number; pendV: number; pvz: number; spin: number; stag: number;
 }
 
 export function makeEnemyRig(root: O3, type: EnemyType): EnemyRig {
@@ -276,7 +291,9 @@ export function makeEnemyRig(root: O3, type: EnemyType): EnemyRig {
   LEG_IDS[type].forEach((id, i) => { const l = makeLeg(root, id, g.ph[i], body); if (l) legs.push(l); });
   if (type === 'runner') legs.forEach((l) => { l.fz += l.fz > 0 ? 0.05 : -0.05; });          // fore and hind feet never bunch up
   if (type === 'shield') legs.forEach((l) => { l.fx = l.hx + (l.fx - l.hx) * 1.1; l.fz = l.hz + (l.fz - l.hz) * 1.1; });   // wider stance: room for the stride
-  if (type === 'boss') legs.forEach((l, i) => { const f = BOSS_FEET[i % 3]; l.fx = Math.sign(l.hx || 1) * f[0]; l.fz = l.hz + f[1]; l.sx = l.fx; l.sz = l.fz; });
+  if (type === 'boss') legs.forEach((l) => { const f = BOSS_FEET[l.hz > 0 ? 0 : 1]; l.fx = Math.sign(l.hx || 1) * f[0]; l.fz = l.hz + f[1]; l.sx = l.fx; l.sz = l.fz; });
+  const rim = type === 'wheel' ? find(root, 'rim') : null;
+  if (rim) { rim.rotation.order = 'ZYX'; if (body) body.rotation.order = 'ZYX'; }   // lean, then wobble, then the turn about the axle: the hub stays in the plane of its wheel
   const spins: O3[] = [];
   root.traverse((o) => { if (o.name.startsWith('spin')) spins.push(o); });
   let footR = 0;
@@ -287,16 +304,17 @@ export function makeEnemyRig(root: O3, type: EnemyType): EnemyRig {
     bx: body ? body.position.x : 0, by: body ? body.position.y : 0, bz: body ? body.position.z : 0, footR,
     cyc: 0, t: 0, seed: 0, age: 0, flinch: 0, hp: -1, speed: 0, mv: 0, sing: 0, lastYaw: 0, bank: 0, look: 0,
     lastX: 0, lastZ: 0, vx: 0, vz: 0, om: 0, init: true, walk: 1, atk: 0, atkT: 0, hit: false,
+    sag: 0, sagV: 0, downN: 0, roadF: 0, roadR: 0, rim, roll: 0, pend: 0, pendV: 0, pvz: 0, spin: 1, stag: 0,
   };
   resetEnemy(r);
   return r;
 }
 
 /** Seconds per blow while an enemy batters the core, and how far its body lunges (model units). */
-const STRIKE_T: Record<EnemyType, number> = { grunt: 0.38, runner: 0.3, drone: 0.34, shield: 0.5, brute: 0.62, boss: 0.8 };
-const STRIKE_REACH: Record<EnemyType, number> = { grunt: 0.3, runner: 0.4, drone: 0.5, shield: 0.34, brute: 0.34, boss: 0.5 };
+const STRIKE_T: Record<EnemyType, number> = { grunt: 0.38, runner: 0.3, drone: 0.34, shield: 0.5, brute: 0.62, boss: 0.8, wheel: 0.5 };
+const STRIKE_REACH: Record<EnemyType, number> = { grunt: 0.3, runner: 0.4, drone: 0.5, shield: 0.34, brute: 0.34, boss: 0.5, wheel: 0.04 };
 /** Nominal walking speed (model units / s) used to normalise the "how fast am I moving" blend. */
-const NOMINAL: Record<EnemyType, number> = { grunt: 3, runner: 5, drone: 3.8, shield: 2.5, brute: 1.9, boss: 1.37 };
+const NOMINAL: Record<EnemyType, number> = { grunt: 3, runner: 5, drone: 3.8, shield: 2.5, brute: 1.9, boss: 1.37, wheel: 4.4 };
 
 /** Call when a pooled visual is handed to a new enemy (after its root has been placed). */
 export function resetEnemy(r: EnemyRig) {
@@ -305,6 +323,7 @@ export function resetEnemy(r: EnemyRig) {
   // assume it walks in at its normal pace: the first frame is already a valid walking pose
   r.speed = NOMINAL[r.type]; r.mv = 1; r.vx = 0; r.vz = r.speed; r.om = 0; r.walk = 1;
   r.lastX = r.root.position.x; r.lastZ = r.root.position.z; r.init = true; r.atk = 0; r.atkT = 0; r.hit = false;
+  r.sag = 0; r.sagV = 0; r.downN = r.legs.length; r.roadF = 0; r.roadR = 0; r.roll = Math.random() * TAU; r.pend = 0; r.pendV = 0; r.pvz = r.speed; r.spin = 1; r.stag = 0;
 }
 
 /**
@@ -314,8 +333,9 @@ export function resetEnemy(r: EnemyRig) {
  * @param frozen true while frozen solid: the machine holds its pose, nothing moves
  * @param lookYaw world yaw the head should track (boss), or NaN
  * @param strike true while it stands at the core and batters it (r.hit is set on the frame a blow lands)
+ * @param spin   Gyre: how fast its rim turns, 0..1 (Enemy.spin). Below 0.25 the guard is down: it wobbles
  */
-export function updateEnemy(r: EnemyRig, dt: number, hpFrac: number, sing: boolean, frozen: boolean, lookYaw: number, strike = false) {
+export function updateEnemy(r: EnemyRig, dt: number, hpFrac: number, sing: boolean, frozen: boolean, lookYaw: number, strike = false, spin = 1) {
   r.hit = false;
   if (dt <= 0) return;
   const root = r.root, g = r.gait, sc = root.scale.x || 1, psi = root.rotation.y;
@@ -408,17 +428,45 @@ export function updateEnemy(r: EnemyRig, dt: number, hpFrac: number, sing: boole
       break;
     }
     case 'boss': {
-      // six-leg wave: the hull rises as each pair takes the weight and settles in between, with a slow sway
-      by = -0.12 + 0.07 * amp * Math.sin(3 * w + 0.4) + 0.03 * amp * Math.sin(w) - 0.5 * spawn - 0.05 * fl;
-      bx = 0.07 * amp * Math.sin(w + 0.9);
-      roll = 0.022 * amp * Math.sin(w + 0.9) + r.bank * 0.15 + shake * 0.015;
-      pitch = 0.02 * amp * Math.sin(3 * w + 1.9) + 0.015 - 0.04 * fl + shake2 * 0.015;
-      yaw = 0.03 * amp * Math.sin(w + 2.2);
+      // four-leg walk, one foot at a time: the hull moves its weight off the corner that lifts (away from that foot, and
+      // tipped a little toward the three that carry it), and sags onto every foot as it lands
+      let lx = 0, lz = 0;
+      for (const L of r.legs) { lx += (L.fx > 0 ? 1 : -1) * L.lift; lz += (L.fz > 0 ? 1 : -1) * L.lift; }
+      const h = Math.min(dt, 0.05);
+      r.sagV += (-70 * r.sag - 9 * r.sagV) * h; r.sag += r.sagV * h;
+      by = -0.12 + r.sag + 0.025 * amp * Math.sin(2 * w + 0.6) - 0.5 * spawn - 0.05 * fl;
+      bx = -0.085 * lx; bz = -0.05 * lz;
+      roll = 0.03 * lx + r.bank * 0.15 + shake * 0.015;
+      pitch = -0.024 * lz + 0.012 - 0.04 * fl + shake2 * 0.015;
+      yaw = 0.022 * amp * Math.sin(w + 2.2);
       if (r.head) {
         const want = lookYaw === lookYaw ? clamp(wrap(lookYaw - psi), -1.05, 1.05) : 0.3 * Math.sin(t * 0.4 + s);
         r.look += clamp(want - r.look, -dt * 1.1, dt * 1.1);
         r.head.rotation.set(-pitch + 0.03 * Math.sin(t * 0.9) - 0.06 * fl, r.look - yaw, 0);
       }
+      break;
+    }
+    case 'wheel': {
+      // the rim rolls by the ground it covers and never slides. The hub hangs from the axle: it swings back when the
+      // machine pulls away and forward when it brakes, scans with its eyes, and leans into a turn together with the rim.
+      // With the guard down (spin below 0.25) the rim runs out of true: it wobbles, and the stall itself staggers it.
+      r.roll += mz / WHEEL_R;
+      if (r.roll > 1e4) r.roll -= TAU * 1000;
+      if (r.spin >= 0.25 && spin < 0.25) r.stag = 1;
+      r.spin = spin;
+      r.stag *= Math.exp(-dt * 3.2);
+      const st = r.stag, loose = 1 - ease((spin - 0.2) / 0.25);
+      const h = Math.min(dt, 0.05), acc = clamp((r.vz - r.pvz) / dt, -12, 12);
+      r.pvz = r.vz;
+      r.pendV += ((clamp(acc * 0.035, -0.45, 0.45) + 0.05 * mv - 0.3 * fl - r.pend) * 34 - r.pendV * 4.5) * h; r.pend += r.pendV * h;
+      const wob = loose * (0.05 * Math.sin(r.roll + s) + 0.018 * Math.sin(t * 19 + s)) + st * 0.13 * Math.sin(t * 15 + s);
+      roll = -r.bank * 1.5 + wob + shake * 0.05;
+      pitch = r.pend + 0.22 * st * Math.sin(t * 11) - 0.2 * sg + shake2 * 0.06;
+      yaw = loose * 0.05 * Math.sin(r.roll * 0.5 + s) + 0.1 * st * Math.sin(t * 9 + 1);
+      // the whole wheel leans about the point where it meets the ground
+      bx = -WHEEL_R * Math.sin(roll); by = WHEEL_R * (Math.cos(roll) - 1) + 0.012 * Math.sin(t * 7 + s) * mv - 0.04 * st;
+      if (r.rim) { r.rim.position.set(bx, r.by + WHEEL_R * (Math.cos(roll) - 1), 0); r.rim.rotation.set(r.roll, yaw + loose * 0.035 * Math.sin(r.roll + s + 1.6), roll); }
+      if (r.head) r.head.rotation.set(-pitch * 0.9 + 0.04 * Math.sin(t * 1.7 + s), clamp(0.2 * Math.sin(t * 0.9 + s) * (1 - sg) + r.bank * 1.2 + 0.3 * shake, -0.26, 0.26), 0);
       break;
     }
     case 'drone': {
@@ -459,10 +507,13 @@ export function updateEnemy(r: EnemyRig, dt: number, hpFrac: number, sing: boole
   C.vx = r.vx; C.vz = r.vz; C.om = r.om; C.sp = r.speed + Math.abs(r.om) * r.footR; C.spMin = NOMINAL[r.type] * 0.2;
   C.liftAmp = r.walk * (sg > 0.05 ? 0.55 + 0.45 * mv : 1); C.pitch = pitch; C.yaw = yaw; C.init = r.init;
   const legs = r.legs;
-  for (let i = 0; i < legs.length; i++) stepLeg(r, legs[i], g);
+  let downN = 0;
+  for (let i = 0; i < legs.length; i++) { stepLeg(r, legs[i], g); if (legs[i].down) downN++; }
+  if (r.type === 'boss' && downN > r.downN && !r.init) r.sagV -= 0.55 * amp;   // a foot came down: the hull drops onto it
+  r.downN = downN;
   r.init = false;
-  const spin = dt * (r.type === 'drone' ? 38 : r.type === 'boss' ? 2.5 : 4.5);
-  for (let i = 0; i < r.spins.length; i++) r.spins[i].rotateY(i & 1 ? -spin : spin);
+  const sp = dt * (r.type === 'drone' ? 38 : r.type === 'boss' ? 2.5 : r.type === 'wheel' ? 6 + 16 * spin : 4.5);
+  for (let i = 0; i < r.spins.length; i++) r.spins[i].rotateY(i & 1 ? -sp : sp);
 }
 
 // ---------- towers ----------
@@ -618,8 +669,8 @@ function ik3(S: THREE.Vector3, Tg: THREE.Vector3, pole: THREE.Vector3, l1: numbe
 
 export type HeroEvent = 'arrow' | 'rail' | 'rain' | 'sing' | 'on' | 'off' | 'teleOut' | 'teleIn';
 const ACT_NONE = 0, ACT_RAIL = 1, ACT_RAIN = 2, ACT_SING = 3;
-/** Arrow Rain looses three shafts this far apart, the first one on SKILL_CAST[1]. */
-export const RAIN_GAP = 0.18;
+/** Arrow Rain: the volley leaves the string on SKILL_CAST[1]; the bow hangs in the sky until RAIN_HOLD and is back in the aim stance by SKILL_LOCK[1]. */
+const RAIN_HOLD = 0.5;
 /** Seconds the uplink materialise animation takes (crouch, rise, raise the bow). */
 const ON_LEN = 1.0;
 /** Stance (root space, model units): front (left) foot, rear (right) foot: x, z, yaw. */
@@ -637,6 +688,7 @@ export interface HeroRig {
   bowQi: THREE.Quaternion; hRq: THREE.Quaternion; nock0: THREE.Vector3;
   // state
   t: number; act: number; at: number; fireT: number; relPw: number; heldT: number; settle: number;
+  d0: number; h0: number;      // draw and string hand as they were when a skill took the bow over
   on: number; tin: number; tout: number; off: number;
   draw: number; hold: number; lastYaw: number; yawV: number; still: number; reset: boolean;
   // smoothed pose parameters
@@ -661,7 +713,7 @@ export function makeHeroRig(root: O3): HeroRig | null {
     pel0: pelvis.position.clone(), armL1: aLL.position.length(), armL2: hL.position.length(), legL1: lLL.position.length(), legL2: fL.position.length(),
     ankle: relPos(fL, root, new THREE.Vector3()).y,
     bowQi: bow.quaternion.clone().invert(), hRq: hR.quaternion.clone(), nock0: arrow.position.clone(),
-    t: 0, act: ACT_NONE, at: 9, fireT: 9, relPw: 1, heldT: 0, settle: 9, on: 9, tin: 9, tout: -1, off: -1,
+    t: 0, act: ACT_NONE, at: 9, fireT: 9, relPw: 1, heldT: 0, settle: 9, d0: 0, h0: 1, on: 9, tin: 9, tout: -1, off: -1,
     draw: 0, hold: 1, lastYaw: 0, yawV: 0, still: 0, reset: true,
     crouch: 0.04, twist: TW0, pelYaw: PY0, aim: 0, headAim: 0, bowUp: 1, lean: 0, pelLean: 0, slide: 0, cast: 0, thrust: 0, follow: 0, quiv: 0,
     px: new Float32Array(2), pz: new Float32Array(2), pyaw: new Float32Array(2),
@@ -687,7 +739,7 @@ export function heroTrigger(r: HeroRig, ev: HeroEvent, pw = 1) {
       if (r.on < ON_LEN) r.on = Math.max(r.on, ON_LEN - 0.08);        // shooting already: snap up out of the crouch
       break;
     case 'rail': r.act = ACT_RAIL; r.at = 0; r.skid = 0; break;
-    case 'rain': r.act = ACT_RAIN; r.at = 0; break;
+    case 'rain': r.act = ACT_RAIN; r.at = 0; r.d0 = r.draw; r.h0 = r.hold; break;
     case 'sing': r.act = ACT_SING; r.at = 0; break;
     case 'on': r.on = 0; r.off = -1; r.tout = -1; r.act = ACT_NONE; r.fireT = 9; r.bowUp = 0; r.crouch = 0.45; r.draw = 0; r.capeA.fill(0); r.capeV.fill(0); r.capeYaw = 0; r.reset = true; break;
     case 'off': r.off = 0; break;
@@ -763,25 +815,29 @@ export function updateHero(r: HeroRig, yaw: number, pitch: number, dt: number, b
       twist = TW0 - 0.14 + 0.5 * k2; tremble = 0.5 * Math.exp(-s * 3); dip = 0.1 * k2;
     }
   } else if (r.act === ACT_RAIN) {
-    // arrow rain: the head leads, hips forward and a backbend shared by pelvis and torso, three shafts loosed at the
-    // sky (quiver, nock, draw, loose each time), then back down
-    const R0 = SKILL_CAST[1], G = RAIN_GAP, end = R0 + 2 * G;
-    const w = ease(at / 0.2) * (1 - ease((at - end - 0.06) / 0.16));
-    rate = 26; aim = pitch + (1.12 - pitch) * w; headAim = pitch + (1.25 - pitch) * ease(at / 0.12) * (1 - ease((at - end - 0.02) / 0.14));
-    lean = -0.1 * w; pelLean = -0.24 * w; slide = 0.07 * w; crouch = 0.04 + 0.08 * w; twist = TW0 - 0.08 * w;
-    const i = at < R0 ? -1 : Math.min(2, Math.floor((at - R0) / G)), s = at - R0 - i * G;
-    if (i < 0) { draw = 0.3 + 0.75 * ease((at - 0.03) / 0.19); hold = 1; }
-    else {
-      const k1 = Math.exp(-s * 14);
-      kick = k1 * 1.7; vib = Math.sin(s * 100) * Math.exp(-s * 16);
-      lean += 0.06 * k1; dip = 0.07 * k1; bowRoll = 0.25 * k1; twist += 0.14 * k1;
-      if (i < 2) {
-        draw = s < 0.025 ? 1 - 0.85 * (s / 0.025) : 0.15 + 0.85 * ease((s - 0.1) / 0.07);
-        hold = sat((s - 0.085) / 0.02); arrowOn = s > 0.095; quiv = Math.sin(PI * sat(s / 0.095));
-      } else {
-        draw = s < 0.025 ? 1 - 0.85 * (s / 0.025) : 0.15 + 0.85 * ease((s - 0.17) / 0.07);
-        hold = sat((s - 0.15) / 0.03); arrowOn = s > 0.17; follow = ease(s / 0.05) * (1 - ease((s - 0.08) / 0.08));
-      }
+    // arrow rain, one move with no cut in it: she sinks a little and swings the bow up through the draw (the head leads),
+    // the volley leaves near the top of the swing, the bow hangs there while she watches it climb, then it comes back
+    // down through the quiver and a fresh nock into the aim stance. Every target below is a smooth curve of the clock
+    // that starts from the pose she was in, so nothing jumps on the way in or out.
+    const R0 = SKILL_CAST[1], END = SKILL_LOCK[1], s = at - R0;
+    const up = ease(at / (R0 + 0.06)), down = ease((at - RAIN_HOLD) / (END - RAIN_HOLD - 0.02)), w = up * (1 - down);
+    const look = ease(at / (R0 - 0.04)) * (1 - ease((at - RAIN_HOLD - 0.04) / (END - RAIN_HOLD - 0.08)));
+    rate = 20; aim = pitch + (1.08 - pitch) * w; headAim = pitch + (1.2 - pitch) * look;
+    const dipIn = Math.sin(PI * sat(at / R0));                              // the knees give as the swing starts
+    lean = -0.1 * w; pelLean = -0.22 * w; slide = 0.07 * w; crouch = 0.04 + 0.06 * w + 0.035 * dipIn; twist = TW0 - 0.08 * w;
+    if (s < 0) {
+      draw = r.d0 + (1.04 - r.d0) * ease(at / (R0 - 0.03)); hold = Math.max(r.h0, ease(at / 0.08)); arrowOn = at > 0.05 || r.h0 > 0.9;
+      tremble = 0.5 * ease(at / R0);
+    } else {
+      const k1 = Math.exp(-s * 11);
+      kick = k1 * 2.1; vib = Math.sin(s * 95) * Math.exp(-s * 12) * 1.6;
+      lean += 0.07 * k1; dip = 0.08 * k1; bowRoll = 0.3 * k1; twist += 0.16 * k1; crouch += 0.02 * k1;
+      // the string hand flies back off the release, goes over the shoulder for a shaft on the way down and nocks it
+      const q0 = RAIN_HOLD - 0.06, q1 = END - 0.14;
+      draw = s < 0.03 ? 1.04 - 0.98 * (s / 0.03) : 0.06;
+      follow = ease(s / 0.05) * (1 - ease((at - q0) / 0.12));
+      quiv = ease((at - q0) / 0.12) * (1 - ease((at - q1 + 0.1) / 0.1));
+      hold = ease((at - q1) / 0.08); arrowOn = at > q1 - 0.03;
     }
   } else {
     // singularity: drop the bow to the side, square up, gather the free hand at the hip, thrust it at the target on

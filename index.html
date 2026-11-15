@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="referrer" content="no-referrer" />
   <meta name="theme-color" content="#100e0c" />
-  <title>VOLTSPIRE - Build the grid. Become the storm.</title>
-  <meta name="description" content="VOLTSPIRE is a free tower defense on a hex grid for your browser. Build from above, then stand on an Uplink Spire as Kestrel, a third-person archer. Solo, online co-op and 1v1. No account, no ads, no tracking." />
+  <title>BEATSPIRE - Build the grid. Become the storm.</title>
+  <meta name="description" content="BEATSPIRE is a free tower defense on a hex grid for your browser. Build from above, then stand on an Uplink Spire as Kestrel, a third-person archer. Solo, online co-op and 1v1. No account, no ads, no tracking." />
   <meta property="og:type" content="website" />
-  <meta property="og:site_name" content="VOLTSPIRE" />
-  <meta property="og:title" content="VOLTSPIRE - Build the grid. Become the storm." />
+  <meta property="og:site_name" content="BEATSPIRE" />
+  <meta property="og:title" content="BEATSPIRE - Build the grid. Become the storm." />
   <meta property="og:description" content="Tower defense on a hex grid where your ultimate puts you on an Uplink Spire as a third-person archer. Free in your browser, solo or online." />
   <meta property="og:image" content="./media/poster.jpg" />
   <meta property="og:image:width" content="1920" />
@@ -17,13 +17,20 @@
   <meta property="og:image:alt" content="Kestrel the archer firing from a tower into a column of machines." />
   <meta name="twitter:card" content="summary_large_image" />
   <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <link rel="preload" href="./fonts/saira-stencil-one-400.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="./fonts/barlow-condensed-600.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="./fonts/barlow-condensed-700.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="./fonts/barlow-400.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="./fonts/barlow-500.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="./fonts/ibm-plex-mono-500.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="./fonts/fonts.css" />
   <link rel="stylesheet" href="./src/landing.css" />
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
 
   <header class="nav" id="nav">
-    <a class="brand" href="#top" aria-label="VOLTSPIRE, back to top"><span>VOLT</span><span class="brand-b">SPIRE</span></a>
+    <a class="brand" href="#top" aria-label="BEATSPIRE, back to top"><span>VOLT</span><span class="brand-b">SPIRE</span></a>
     <nav class="nav-links" aria-label="Sections">
       <a href="#trailer">Trailer</a>
       <a href="#game">The game</a>
@@ -67,7 +74,7 @@
           <h2 id="h-trailer">See the storm</h2>
         </header>
         <div class="frame" id="trailer-frame">
-          <video id="trailer-video" controls preload="metadata" playsinline poster="./media/poster.jpg" aria-label="VOLTSPIRE gameplay trailer">
+          <video id="trailer-video" controls preload="metadata" playsinline poster="./media/poster.jpg" aria-label="BEATSPIRE gameplay trailer">
             <source src="./media/trailer.mp4" type="video/mp4" />
           </video>
           <div class="frame-fallback" id="trailer-fallback" hidden>
@@ -88,7 +95,7 @@
         <header class="head">
           <p class="kicker">The game</p>
           <h2 id="h-game">Two games, one battlefield</h2>
-          <p class="lede">VOLTSPIRE moves between a commander's map and an archer's sightline. The cards you draw decide how both of them grow.</p>
+          <p class="lede">BEATSPIRE moves between a commander's map and an archer's sightline. The cards you draw decide how both of them grow.</p>
         </header>
 
         <article class="beat">
@@ -123,7 +130,7 @@
         </article>
 
         <article class="beat">
-          <figure class="beat-img"><img src="./media/shot-cards.jpg" width="1920" height="1080" loading="lazy" alt="VOLTSPIRE title screen over the night skyline of Nyx-9." /></figure>
+          <figure class="beat-img"><img src="./media/shot-cards.jpg" width="1920" height="1080" loading="lazy" alt="BEATSPIRE title screen over the night skyline of Nyx-9." /></figure>
           <div class="beat-txt">
             <span class="num" aria-hidden="true">03</span>
             <h3>Cards</h3>
@@ -219,6 +226,7 @@
           <li class="foe"><img src="./media/enemy_drone.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Drone</h3><p class="foe-tag">From wave 4 / Flying</p><p>Flies over the lane, out of reach of mortars.</p></div></li>
           <li class="foe"><img src="./media/enemy_shield.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Aegis</h3><p class="foe-tag">From wave 6 / Shielded</p><p>Carries an energy shield you must break before the hull.</p></div></li>
           <li class="foe"><img src="./media/enemy_brute.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Brute</h3><p class="foe-tag">From wave 8 / Armored</p><p>Slow, plated, and costs three core integrity if it gets through. Has a weak point on its back.</p></div></li>
+          <li class="foe"><img src="./media/enemy_wheel.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Gyre</h3><p class="foe-tag">Mini-boss / Spin guard</p><p>A machine riding inside one armoured wheel. While the rim spins fast it shrugs off most hits; slow it, freeze it or focus your fire and the guard drops.</p></div></li>
           <li class="foe foe-boss"><img src="./media/enemy_boss.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Colossus</h3><p class="foe-tag">Every 5th wave / Boss</p><p>A walking siege engine. Let one reach the Heart and it takes half your core with it. Aim for its exposed core.</p></div></li>
         </ul>
       </div>
@@ -349,9 +357,9 @@
 
   <footer class="foot">
     <div class="wrap foot-inner">
-      <a class="brand" href="#top" aria-label="VOLTSPIRE, back to top"><span>VOLT</span><span class="brand-b">SPIRE</span></a>
+      <a class="brand" href="#top" aria-label="BEATSPIRE, back to top"><span>VOLT</span><span class="brand-b">SPIRE</span></a>
       <p>Made with Three.js and Blender.</p>
-      <p><a href="https://github.com/bigzaiko/voltspire" rel="noopener noreferrer">Open source on GitHub</a></p>
+      <p><a href="https://github.com/bigzaiko/beatspire" rel="noopener noreferrer">Open source on GitHub</a></p>
     </div>
   </footer>
 

@@ -2,6 +2,7 @@
 import { DEFAULT_MAP } from './map.ts';
 import type { MapDef, LanePoint } from './map.ts';
 import { route } from './hex.ts';
+import { generateMap } from './mapgen.ts';
 
 // Directions: east, south-east, south-west, west, north-west, north-east.
 const E = 0, SE = 1, SW = 2, W = 3, NW = 4, NE = 5;
@@ -69,4 +70,18 @@ export const MAPS: MapDef[] = [
     core: [21, 13], gold: 360, lives: 20, towers: [spire(8, 9), spire(18, 9)], blocked: B(1, 7, 2, 7, 2, 8, 23, 3, 24, 3, 24, 4, 9, 17, 10, 17),
   },
 ];
+
+/**
+ * Thirty more maps picked from the generator for variety, ten per tier (tools/curate.ts chose the seeds:
+ * road count, bridges, length and core position are spread out). Each entry is [tier, seed].
+ */
+const PICKS: [number, number][] = [
+  [1, 101], [1, 449], [1, 457], [1, 125], [1, 491], [1, 186], [1, 202], [1, 294], [1, 183], [1, 203],
+  [2, 101], [2, 355], [2, 255], [2, 408], [2, 313], [2, 282], [2, 333], [2, 435], [2, 235], [2, 230],
+  [3, 101], [3, 500], [3, 466], [3, 284], [3, 327], [3, 467], [3, 460], [3, 474], [3, 113], [3, 185],
+];
+/** How many of MAPS are hand-made; the rest are the picked generated ones. */
+export const HANDMADE = MAPS.length;
+for (const [tier, seed] of PICKS) MAPS.push(generateMap(seed, tier));
+
 export const mapById = (id: unknown) => MAPS.find((m) => m.id === id);

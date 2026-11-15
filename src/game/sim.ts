@@ -5,6 +5,7 @@ import {
   LVL_DMG, LVL_RANGE, LVL_RATE, upgradeCost, waveHpMul, waveBudget, baseMods, baseHero, TUNE,
   TWIN_BOLT, PULSE_CRIT, RAIL_CAP, LANCE_FOCUS, BREACH_TIME, BREACH_TIME_BOSS, BREACH_SHARE, coopScale,
   FIRST_WAVE_IN, NEXT_WAVE_IN, DRAW_TIME, MIN_DRAW, NOCK_TIME, FULL_DRAW_MUL, HERO_DUR, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR,
+  WHEEL_GUARD, WHEEL_CRAWL, WHEEL_BLEED, WHEEL_DRAG, WHEEL_SINK, WHEEL_REST, WHEEL_SPINUP, WHEEL_PIERCE, WHEEL_ESCORT, WHEEL_ESCORTS,
 } from './data.ts';
 import type { TowerType, EnemyType, Mods, HeroStats, Card } from './data.ts';
 import { GameMap, DEFAULT_MAP, diffById } from './map.ts';
@@ -30,6 +31,8 @@ export interface Enemy {
   breach: number;
   /** Colossus plating: seconds left cracked open (towers deal full damage while it is > 0, see TUNE.plate) */
   crackT: number;
+  /** Gyre: rim spin 0..1 (0 for every other type), seconds until it may spin back up, whether it has stalled (between the 'spindown' and 'spinup' events), and the time of its next 'deflect' event */
+  spin: number; spinCd: number; stalled: boolean; deflAt: number;
 }
 export interface Tower {
   id: number; type: TowerType; cx: number; cz: number; x: number; z: number;
@@ -45,6 +48,8 @@ export interface Proj {
   id: number; kind: ProjKind; x: number; y: number; z: number; vx: number; vy: number; vz: number;
   dmg: number; owner: number; target: number; life: number; pierce: number; hit: number[];
   tier: number; aoe: number; chain: number; sx: number; sz: number; tx: number; ty: number; tz: number; t: number; T: number;
+  /** share of a Gyre's guard the direct hit ignores (full-draw arrows) */
+  cut?: number;
 }
 export type ZoneKind = 'burn' | 'rain' | 'sing';
 const ZONE_KINDS: ZoneKind[] = ['burn', 'rain', 'sing'];
@@ -149,6 +154,8 @@ export function weakPos<T extends P3>(e: Enemy, i: number, out: T): T | null {
   return out;
 }
 /** Distance along a unit ray to where it enters a sphere (0 if it starts inside), or -1 if it misses. */
+/** An enemy's own pace before slows. A Gyre rolls at WHEEL_CRAWL of its speed with the rim stopped, and at all of it at full spin. */
+export function paceOf(e: Enemy): number { return e.type === 'wheel' ? e.speed * (WHEEL_CRAWL + (1 - WHEEL_CRAWL) * e.spin) : e.speed; }
 export function raySphere(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, cx: number, cy: number, cz: number, r: number) {
   const mx = cx - ox, my = cy - oy, mz = cz - oz;
   const c = mx * mx + my * my + mz * mz - r * r;
@@ -179,7 +186,7 @@ export type Mode = 'solo' | 'coop' | 'versus';
 export interface SimOpts { mode: Mode; players: number; seed: number; pauseOnCards: boolean; map: MapDef; diff: string; survival: boolean }
 
 const xpNeed = (lvl: number) => Math.round(12 + lvl * 7 + lvl * lvl * 0.55);
-const GAPS: Record<EnemyType, number> = { grunt: 0.55, runner: 0.33, drone: 0.5, shield: 0.95, brute: 1.3, boss: 3 };
+const GAPS: Record<EnemyType, number> = { grunt: 0.55, runner: 0.33, drone: 0.5, shield: 0.95, brute: 1.3, boss: 3, wheel: 1.1 };
 const tmp: PathOut = { x: 0, z: 0, dx: 0, dz: 0, y: 0 };
 const W3 = { x: 0, y: 0, z: 0 };
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -424,8 +431,13 @@ export class Sim {
     const gapMul = Math.max(0.35, 0.8 - w * 0.02);
     if (w % 5 === 0) {
       const n = 1 + Math.floor(w / 15);
-      for (let i = 0; i < n; i++) items.push({ t: t + 3 + i * 14, type: 'boss', lane: lane() });
       budget *= 0.55;
+      for (let i = 0; i < n; i++) {
+        const at = t + 3 + i * 14, ln = lane();
+        items.push({ t: at, type: 'boss', lane: ln });
+        // from wave WHEEL_ESCORT on, Gyres roll in with each Colossus (paid for out of the wave's budget)
+        if (w >= WHEEL_ESCORT) for (let k = 0; k < WHEEL_ESCORTS; k++) { items.push({ t: at + 1.5 + k * GAPS.wheel, type: 'wheel', lane: ln }); budget -= ENEMIES.wheel.cost; }
+      }
     }
     const avail = ENEMY_TYPES.filter((e) => e !== 'boss' && ENEMIES[e].from <= w);
     while (budget > 0.5 && items.length < 500) {
@@ -492,6 +504,7 @@ export class Sim {
       hp, maxHp: hp, shield: d.shield * mul * this.mapMul, maxShield: d.shield * mul * this.mapMul, shieldCd: 0,
       speed: d.speed * (0.94 + this.rand() * 0.12), slowT: 0, slowF: 0, sing: 0, alive: true, r: d.r, armor: d.armor * (1 + this.wave * 0.04),
       gy: 0, frz: 0, burnT: 0, burnD: 0, burnAcc: 0, vulnT: 0, pull: 0, pullCd: 0, burn2T: 0, burn2D: 0, breach: 0, crackT: 0,
+      spin: type === 'wheel' ? 1 : 0, spinCd: 0, stalled: false, deflAt: 0,
     };
     this.place(e);
     this.enemies.push(e);
@@ -505,8 +518,8 @@ export class Sim {
   }
 
   // ---------- damage ----------
-  /** Returns the damage that got through to the hull. */
-  damage(e: Enemy, amt: number, owner: number, raw = false): number {
+  /** Returns the damage that got through to the hull. `cut` is the share of a Gyre's guard the hit ignores. */
+  damage(e: Enemy, amt: number, owner: number, raw = false, cut = 0): number {
     if (!e.alive) return 0;
     if ((e.slowT > 0 || e.frz > 0) && this.mods.shatter) amt *= 1 + this.mods.shatter;
     if (e.vulnT > 0) amt *= 1 + this.mods.gravVuln;
@@ -515,6 +528,7 @@ export class Sim {
       const armor = e.burnT > 0 && this.mods.flameMelt ? e.armor * Math.max(0.2, 1 - 0.4 * this.mods.flameMelt) : e.armor;
       amt = Math.max(amt * 0.35, amt - armor);
     }
+    if (e.type === 'wheel') amt = this.deflect(e, amt, cut);
     if (e.maxShield > 0) e.shieldCd = 3; // every hit delays the regeneration
     let dealt = amt;
     if (e.shield > 0) {
@@ -526,6 +540,26 @@ export class Sim {
     if (owner >= 0 && amt > 0) this.events.push({ k: 'dmg', x: e.x, y: e.y + e.r, z: e.z, n: Math.round(amt), p: owner, id: e.id });
     if (e.hp <= 0) { dealt += e.hp; this.kill(e, owner); }
     return Math.max(0, dealt);
+  }
+  /**
+   * A Gyre's spinning rim turns part of a hit aside, and the hit bleeds spin off as it lands: the guard follows the spin down
+   * through the hit, so one heavy hit and the same damage in small hits strip the rim and get through alike. Returns what gets through.
+   */
+  private deflect(e: Enemy, amt: number, cut: number): number {
+    if (!(amt > 0)) return amt;
+    const s0 = e.spin, part = Math.min(amt, (s0 * e.maxHp) / WHEEL_BLEED); // `part` is the share of the hit that meets a moving rim
+    const s1 = s0 - (part * WHEEL_BLEED) / e.maxHp;
+    const through = amt - part * WHEEL_GUARD * (1 - clamp(cut, 0, 1)) * (s0 + s1) * 0.5;
+    e.spinCd = WHEEL_REST;
+    this.setSpin(e, s1);
+    if (through < amt * 0.5 && this.time >= e.deflAt) { e.deflAt = this.time + 0.25; this.events.push({ k: 'deflect', x: e.x, y: e.y, z: e.z }); }
+    return through;
+  }
+  /** Set a Gyre's spin and report when the rim stalls (below 0.25) and when it is back up to speed (above 0.6). */
+  private setSpin(e: Enemy, v: number) {
+    e.spin = clamp(v, 0, 1);
+    if (!e.stalled && e.spin < 0.25) { e.stalled = true; this.events.push({ k: 'spindown', id: e.id, x: e.x, y: e.y, z: e.z }); }
+    else if (e.stalled && e.spin > 0.6) { e.stalled = false; this.events.push({ k: 'spinup', id: e.id, x: e.x, y: e.y, z: e.z }); }
   }
   /** A weak-point hit cracks a Colossus's plating open for TUNE.crack seconds. */
   private crack(e: Enemy, x: number, y: number, z: number) {
@@ -713,6 +747,7 @@ export class Sim {
         vx: Math.sin(a) * hl * SP, vy: dy * SP, vz: Math.cos(a) * hl * SP,
         dmg, owner: pi, target: 0, life: 1.6, pierce: s.pierce + (tier >= 1 ? 1 : 0) + (pw >= FULL_DRAW ? 1 : 0), hit: [], tier,
         aoe: s.explode * 1.5 + (tier >= 3 ? 1.6 : 0), chain: s.chain + (tier >= 4 ? 2 : 0), sx: 0, sz: 0, tx: 0, ty: 0, tz: 0, t: 0, T: 0,
+        cut: pw >= FULL_DRAW ? WHEEL_PIERCE : 0,
       });
     }
     p.fireCd = NOCK_TIME;
@@ -764,7 +799,7 @@ export class Sim {
           const n = this.damage(e, dmg * 8 * mul * p.stats.weak, pi);
           this.events.push({ k: 'crit', x: cx, y: cy, z: cz, n: Math.round(n) });
           this.crack(e, cx, cy, cz);
-        } else this.damage(e, dmg * 8, pi);
+        } else this.damage(e, dmg * 8, pi, false, WHEEL_PIERCE);
       }
       // charged power nodes on the ray fire their specials
       for (const t of this.towers) {
@@ -843,6 +878,7 @@ export class Sim {
         for (const e of this.enemies) {
           if (!e.alive || Math.hypot(e.x - t.x, e.z - t.z) > range + e.r) continue;
           e.frz = Math.max(e.frz, 3);
+          if (e.type === 'wheel') this.setSpin(e, 0); // frozen solid: the rim stops dead before the cold bites
           this.damage(e, dmg * 4 * pow, -1);
         }
         dur = 3;
@@ -871,7 +907,7 @@ export class Sim {
         for (const o of this.enemies) {
           if (!o.alive) continue;
           const ex = o.x - t.x, ez = o.z - t.z, u = ex * dx + ez * dz;
-          if (u >= 0 && u <= R && Math.abs(ex * dz - ez * dx) < o.r + 0.8) this.damage(o, dmg * 8 * pow * (1 + RAIL_CAP * this.mods.railCap), -1, true);
+          if (u >= 0 && u <= R && Math.abs(ex * dz - ez * dx) < o.r + 0.8) this.damage(o, dmg * 8 * pow * (1 + RAIL_CAP * this.mods.railCap), -1, true, WHEEL_PIERCE);
         }
         this.events.push({ k: 'rail', x: t.x + dx, y: t.h * 0.8, z: t.z + dz, tx: t.x + dx * R, ty: 0.8, tz: t.z + dz * R, c, big: 1 });
         break;
@@ -975,12 +1011,21 @@ export class Sim {
       if (e.sing > 0) { e.sing -= dt; slow = Math.max(slow, e.type === 'boss' ? 0.4 : 0.9); }
       if (e.frz > 0) { e.frz -= dt; slow = Math.max(slow, e.type === 'boss' ? 0.6 : 1); }
       v *= 1 - slow;
+      if (e.type === 'wheel') {
+        // the rim: a freeze stops it dead, a well or a singularity drags it down fast, a slow steadily; left alone it spins back up
+        if (e.spinCd > 0) e.spinCd -= dt;
+        if (e.frz > 0) this.setSpin(e, 0);
+        else if (e.sing > 0 || e.pullCd > 0) this.setSpin(e, e.spin - WHEEL_SINK * dt);
+        else if (slow > 0) this.setSpin(e, e.spin - WHEEL_DRAG * dt);
+        else if (e.spinCd <= 0 && e.spin < 1) this.setSpin(e, e.spin + WHEEL_SPINUP * dt);
+        v *= WHEEL_CRAWL + (1 - WHEEL_CRAWL) * e.spin;
+      }
       if (e.vulnT > 0) e.vulnT -= dt;
       if (e.crackT > 0) e.crackT -= dt;
       if (e.pullCd > 0) e.pullCd -= dt;
       if (e.burnT > 0) {
         e.burnT -= dt; e.burnAcc += dt;
-        if (e.burnAcc >= 0.5) { e.burnAcc -= 0.5; this.damage(e, e.burnD * 0.5, -1, true); if (!e.alive) continue; }
+        if (e.burnAcc >= 0.5) { e.burnAcc -= 0.5; const cd = e.spinCd; this.damage(e, e.burnD * 0.5, -1, true); e.spinCd = cd; if (!e.alive) continue; } // a burn is not a hit: it does not keep a Gyre from spinning back up
         if (e.burn2T > 0) e.burn2T -= dt;
         if (e.burnT <= 0) {
           if (e.burn2T > 0) { e.burnD = e.burn2D; e.burnT = e.burn2T; } else { e.burnD = 0; e.burnAcc = 0; }
@@ -1189,7 +1234,7 @@ export class Sim {
       if (ff >= e.slowF || e.slowT <= 0) { e.slowF = ff; e.slowT = Math.max(e.slowT, 1.6); }
       if (e.pullCd <= 0) {
         const slow = Math.max(e.slowT > 0 ? e.slowF : 0, e.sing > 0 ? (boss ? 0.4 : 0.9) : 0, e.frz > 0 ? (boss ? 0.6 : 1) : 0);
-        e.pull += e.speed * (1 - slow) * 1.8 * k * (boss ? 0.3 : 1); e.pullCd = 1.8;
+        e.pull += paceOf(e) * (1 - slow) * 1.8 * k * (boss ? 0.3 : 1); e.pullCd = 1.8;
       }
       if (this.mods.gravVuln) e.vulnT = 2.4;
     }
@@ -1221,7 +1266,7 @@ export class Sim {
     const T = 0.85;
     if (list.length) {
       const e = list[(t.aux * 3) % list.length];
-      this.map.pos(e.lane, e.dist + e.speed * (e.slowT > 0 ? 1 - e.slowF : 1) * (e.frz > 0 ? 0 : 1) * T, tmp);
+      this.map.pos(e.lane, e.dist + paceOf(e) * (e.slowT > 0 ? 1 - e.slowF : 1) * (e.frz > 0 ? 0 : 1) * T, tmp);
     } else {
       let ok = false;
       for (let i = 0; i < 8 && !ok; i++) {
@@ -1284,7 +1329,7 @@ export class Sim {
       }
       case 'mortar': {
         const T = 0.9 + Math.hypot(e.x - t.x, e.z - t.z) * 0.03;
-        const sp = e.speed * (e.slowT > 0 ? 1 - e.slowF : 1);
+        const sp = paceOf(e) * (e.slowT > 0 ? 1 - e.slowF : 1);
         this.map.pos(e.lane, e.dist + sp * T, tmp);
         this.shell(t, tmp.x, tmp.y || 0, tmp.z, dmg, T);
         break;
@@ -1304,7 +1349,7 @@ export class Sim {
         list.sort((a, b) => a.u - b.u);
         const max = cap ? 999 : 3 + t.lvl;
         const brk = this.mods.railBreak;
-        for (let i = 0; i < list.length && i < max; i++) { const o = list[i].e, heavy = o.type === 'brute' || o.type === 'boss'; this.damage(o, dmg * (1 + RAIL_CAP * cap) * (heavy ? 1 + 0.3 * brk : 1), -1, brk > 0); }
+        for (let i = 0; i < list.length && i < max; i++) { const o = list[i].e, heavy = o.type === 'brute' || o.type === 'boss'; this.damage(o, dmg * (1 + RAIL_CAP * cap) * (heavy ? 1 + 0.3 * brk : 1), -1, brk > 0, WHEEL_PIERCE); }
         this.events.push({ k: 'rail', x: t.x + dx, y, z: t.z + dz, tx: t.x + dx * (range + 2), ty: 0.8, tz: t.z + dz * (range + 2), c });
         this.events.push({ k: 'shot', t: 'rail', id: t.id, x: t.x, y, z: t.z });
         break;
@@ -1441,7 +1486,7 @@ export class Sim {
         const n = this.damage(e, p.dmg * mul * (pl ? pl.stats.weak : 1), p.owner);
         this.events.push({ k: 'crit', x, y, z, n: Math.round(n) });
         this.crack(e, x, y, z);
-      } else this.damage(e, p.dmg, p.owner);
+      } else this.damage(e, p.dmg, p.owner, false, p.cut);
     }
     if (p.aoe > 0) {
       const gy = e ? e.gy : 0; // the blast stays on its own deck
@@ -1472,7 +1517,7 @@ export class Sim {
     return {
       a: [r(this.time), this.wave, this.lives, Math.floor(this.gold), this.level, Math.floor(this.xp), this.xpNext, this.waveActive ? 1 : 0, r(this.queue.length ? -1 : this.nextWaveIn), this.over ? 1 : 0, this.won ? 1 : 0, this.kills, this.mods.cheap, this.winWave, this.endless ? 1 : 0, this.maxLives],
       u: [...this.unlocked].map((t) => TOWER_TYPES.indexOf(t)),
-      e: this.enemies.map((e) => [e.id, ENEMY_TYPES.indexOf(e.type), r(e.x), r(e.z), r(e.yaw), Math.ceil(e.hp), Math.ceil(e.maxHp), Math.ceil(e.shield), e.slowT > 0 ? 1 : 0, r(e.gy), (e.burnT > 0 ? 1 : 0) | (e.frz > 0 ? 2 : 0) | (e.vulnT > 0 ? 4 : 0) | (e.crackT > 0 ? 16 : 0), r(e.breach)]),
+      e: this.enemies.map((e) => [e.id, ENEMY_TYPES.indexOf(e.type), r(e.x), r(e.z), r(e.yaw), Math.ceil(e.hp), Math.ceil(e.maxHp), Math.ceil(e.shield), e.slowT > 0 ? 1 : 0, r(e.gy), (e.burnT > 0 ? 1 : 0) | (e.frz > 0 ? 2 : 0) | (e.vulnT > 0 ? 4 : 0) | (e.crackT > 0 ? 16 : 0), r(e.breach), r(e.spin)]),
       t: this.towers.map((t) => [t.id, TOWER_TYPES.indexOf(t.type), t.cx, t.cz, t.lvl, r(t.yaw), r(t.buff), t.spent, r(t.charge), r(t.down), r(t.spec), r(t.heat)]),
       p: this.projs.map((p) => [p.id, PROJ_KINDS.indexOf(p.kind), r(p.x), r(p.y), r(p.z), r(p.vx), r(p.vy), r(p.vz), p.tier]),
       z: this.zones.map((z) => [z.id, ZONE_KINDS.indexOf(z.kind), r(z.x), r(z.z), r(z.r), r(z.life), r(z.y)]),
@@ -1511,12 +1556,13 @@ export class Sim {
       seen.add(num(v[0]));
       const d = ENEMIES[type];
       let e = em.get(v[0]);
-      if (!e || e.type !== type) e = { id: num(v[0]), type, x: 0, z: 0, y: d.y, yaw: 0, dist: 0, lane: 0, off: 0, hp: 1, maxHp: 1, shield: 0, maxShield: d.shield ? 1 : 0, shieldCd: 0, speed: d.speed, slowT: 0, slowF: 0, sing: 0, alive: true, r: d.r, armor: 0, gy: 0, frz: 0, burnT: 0, burnD: 0, burnAcc: 0, vulnT: 0, pull: 0, pullCd: 0, burn2T: 0, burn2D: 0, breach: 0, crackT: 0 };
+      if (!e || e.type !== type) e = { id: num(v[0]), type, x: 0, z: 0, y: d.y, yaw: 0, dist: 0, lane: 0, off: 0, hp: 1, maxHp: 1, shield: 0, maxShield: d.shield ? 1 : 0, shieldCd: 0, speed: d.speed, slowT: 0, slowF: 0, sing: 0, alive: true, r: d.r, armor: 0, gy: 0, frz: 0, burnT: 0, burnD: 0, burnAcc: 0, vulnT: 0, pull: 0, pullCd: 0, burn2T: 0, burn2D: 0, breach: 0, crackT: 0, spin: 0, spinCd: 0, stalled: false, deflAt: 0 };
       e.x = clamp(num(v[2]), -200, 200); e.z = clamp(num(v[3]), -200, 200); e.yaw = num(v[4]); e.hp = num(v[5]); e.maxHp = num(v[6], 1) || 1; e.shield = num(v[7]); e.slowT = v[8] ? 1 : 0;
       e.gy = clamp(num(v[9]), 0, 20); e.y = e.gy + d.y;
       const fl = num(v[10]) | 0;
       e.burnT = fl & 1 ? 1 : 0; e.frz = fl & 2 ? 1 : 0; e.vulnT = fl & 4 ? 1 : 0; e.crackT = fl & 16 ? 1 : 0;
       e.breach = clamp(num(v[11]), 0, 10);
+      e.spin = type === 'wheel' ? clamp(num(v[12], 1), 0, 1) : 0; // a host that does not send it yet: full spin
       this.enemies.push(e);
     }
     const tm = new Map(this.towers.map((t) => [t.id, t]));

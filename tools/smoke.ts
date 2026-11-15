@@ -1,8 +1,8 @@
 // Quick headless checks: node tools/smoke.ts
-import { Sim, standY, nodePos, weakPos, raySphere, spireTarget, computeWalls, drawPower, arrowSpeed, NODE_R, SPIRE_R, ARROW_PAD, ARROW_SPEED, FULL_DRAW, TOWER_H, DECK_GAP, MUST_EVENTS, SNAP_EVENTS_MAX, CORE_STAND } from '../src/game/sim.ts';
+import { Sim, standY, nodePos, weakPos, raySphere, spireTarget, computeWalls, drawPower, arrowSpeed, paceOf, NODE_R, SPIRE_R, ARROW_PAD, ARROW_SPEED, FULL_DRAW, TOWER_H, DECK_GAP, MUST_EVENTS, SNAP_EVENTS_MAX, CORE_STAND } from '../src/game/sim.ts';
 import type { Ev, Enemy } from '../src/game/sim.ts';
 import {
-  ENEMIES, ENEMY_SCALE, TOWERS, TOWER_TYPES, MAX_ENERGY, CARDS, CARD_BY_ID, GW, GH, TWIN_BOLT, TUNE, COOP_HP, coopScale, BOW_TIERS,
+  ENEMIES, ENEMY_SCALE, ENEMY_TYPES, WHEEL_GUARD, WHEEL_CRAWL, WHEEL_BLEED, WHEEL_DRAG, WHEEL_SINK, WHEEL_REST, WHEEL_SPINUP, WHEEL_PIERCE, WHEEL_ESCORT, WHEEL_ESCORTS, TOWERS, TOWER_TYPES, MAX_ENERGY, CARDS, CARD_BY_ID, GW, GH, TWIN_BOLT, TUNE, COOP_HP, coopScale, BOW_TIERS,
   BREACH_TIME, BREACH_TIME_BOSS, BREACH_SHARE, FIRST_WAVE_IN, NEXT_WAVE_IN, DRAW_TIME, MIN_DRAW, NOCK_TIME, FULL_DRAW_MUL, HERO_DUR, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR,
 } from '../src/game/data.ts';
 import { hexDist } from '../src/game/hex.ts';
@@ -576,6 +576,145 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
     base.ev = Array(399).fill({ k: 'arc', p: Array(96).fill(1) });
     c.events.length = 0; c.applySnapshot(base);
     ok(c.towers.length === 2 && c.towers.filter((x) => x.cx === fc(0)[0] && x.cz === fc(0)[1]).length === 1 && c.enemies.length === 1 && c.events.length <= SNAP_EVENTS_MAX, `hostile snapshot is bounded (${c.towers.length} towers, ${c.enemies.length} enemies, ${c.events.length} events)`);
+  }
+  {
+    // ---------- the Gyre: a spinning rim that deflects hits ----------
+    ok(ENEMY_TYPES.join() === 'grunt,runner,drone,shield,brute,boss,wheel', 'the Gyre is appended to the enemy types: ' + ENEMY_TYPES.join());
+    const d = ENEMIES.wheel;
+    ok(d.name === 'Gyre' && !d.fly && d.from === 9 && d.leak === 2 && Math.abs(d.r - 1.05) < 0.1 && Math.abs(d.y - 1.1) < 0.1 && ENEMY_SCALE.wheel === 1 && WHEEL_GUARD === 0.8, 'Gyre data follows the contract');
+    const near = (a: number, b: number, eps = 1e-9) => Math.abs(a - b) < eps;
+    const gyre = (sim: Sim, dist = 10, hp = 1000, speed = 0) => { const e = put(sim, 'wheel', dist, 0, speed); e.hp = e.maxHp = hp; return e; };
+    const count = (evs: Ev[], k: string, id?: number) => evs.filter((e) => e.k === k && (id === undefined || e.id === id)).length;
+    {
+      // the guard, the throttled 'deflect' event, the half guard
+      const s = mk(), g = gyre(s), other = put(s, 'grunt', 6);
+      ok(g.spin === 1 && other.spin === 0 && paceOf(other) === other.speed, 'a Gyre starts at full spin, other types have none');
+      const a = s.damage(g, 10, -1), evs = s.events.splice(0);
+      ok(near(a, 10 * (1 - WHEEL_GUARD * 0.99)) && near(g.spin, 1 - (WHEEL_BLEED * 10) / 1000), `at full spin a hit is mostly deflected and bleeds spin (${a.toFixed(3)} of 10 through, spin ${g.spin})`);
+      ok(count(evs, 'deflect') === 1 && evs.filter((e) => e.k === 'deflect').every((e) => near(e.x, g.x) && near(e.y, g.y) && near(e.z, g.z)), 'a deflected hit reports where');
+      s.damage(g, 10, -1); s.damage(g, 10, -1);
+      ok(count(s.events.splice(0), 'deflect') === 0, 'deflect events are throttled');
+      ok(s.damage(other, 10, -1) === 10, 'other types are not guarded');
+      const s2 = mk(), g2 = gyre(s2), b = s2.damage(g2, 10, -1, false, WHEEL_PIERCE);
+      ok(near(b, 10 * (1 - WHEEL_GUARD * (1 - WHEEL_PIERCE) * 0.99)) && count(s2.events, 'deflect') === 0 && b > a * 2, `a piercing hit ignores half of the guard (${b.toFixed(3)} of 10)`);
+    }
+    {
+      // spin loss follows the damage, not the number of hits; a hit larger than what stops the rim lands the rest in full
+      const s3 = mk(), g3 = gyre(s3), s4 = mk(), g4 = gyre(s4);
+      const big = s3.damage(g3, 300, -1); let small = 0; for (let i = 0; i < 30; i++) small += s4.damage(g4, 10, -1);
+      ok(near(big, small, 1e-6) && near(g3.spin, g4.spin) && near(g3.spin, 1 - WHEEL_BLEED * 0.3), `one heavy hit and thirty light ones strip the same spin (${big.toFixed(1)} / ${small.toFixed(1)} through, spin ${g3.spin.toFixed(2)})`);
+      const s5 = mk(), g5 = gyre(s5), stop = 1000 / WHEEL_BLEED, huge = s5.damage(g5, stop + 300, -1), evs = s5.events.splice(0);
+      ok(near(huge, stop * (1 - WHEEL_GUARD * 0.5) + 300) && g5.spin === 0, `a hit that stops the rim lands the rest in full (${huge})`);
+      ok(count(evs, 'spindown', g5.id) === 1 && count(evs, 'spinup') === 0, 'spindown is reported once when the spin falls below 0.25');
+      ok(near(s5.damage(g5, 50, -1), 50), 'a stopped rim deflects nothing');
+      // recovery: nothing for WHEEL_REST seconds after a hit, then WHEEL_SPINUP per second, 'spinup' above 0.6
+      let up = 0, down = 0; const tally = (e: Ev[]) => { up += count(e, 'spinup', g5.id); down += count(e, 'spindown', g5.id); };
+      run(s5, WHEEL_REST - 0.1, tally);
+      ok(g5.spin === 0, 'no recovery right after a hit');
+      run(s5, 0.1 + 1, tally);
+      ok(near(g5.spin, WHEEL_SPINUP, 0.02) && up === 0, `left alone it spins back up (${g5.spin.toFixed(3)} after a second)`);
+      run(s5, 1.5, tally);
+      ok(up === 1 && down === 0 && g5.spin > 0.6, 'spinup is reported once when it recovers above 0.6');
+      run(s5, 2, tally);
+      ok(g5.spin === 1 && up === 1, 'and it reaches full spin again');
+      // chip damage: half a percent of its health twice a second barely scratches the spin
+      for (let i = 0; i < 20; i++) { s5.damage(g5, 5, -1); run(s5, 0.5); }
+      ok(g5.spin > 0.75 && g5.hp > 1000 - 50 - 300 - stop * 0.6 - 30, `chip damage does not strip the rim (spin ${g5.spin.toFixed(2)})`);
+      // a burn is not a hit: it does not stop the recovery
+      const s6 = mk(), g6 = gyre(s6, 10, 1e6); g6.spin = 0.3; g6.burnT = 5; g6.burnD = 10;
+      run(s6, 2);
+      ok(g6.spin > 0.3 + WHEEL_SPINUP * 1.5 && g6.hp < 1e6, `a burning Gyre still spins back up (${g6.spin.toFixed(2)})`);
+    }
+    {
+      // pace follows the spin; slows, wells, singularities and freezes take the spin away
+      const s = mk(), g = gyre(s, 10, 1000, 4.4);
+      ok(near(paceOf(g), 4.4), 'full pace at full spin');
+      g.spin = 0; g.spinCd = 1e9;
+      ok(near(paceOf(g), 4.4 * WHEEL_CRAWL), 'crawl pace with the rim stopped');
+      const d0 = g.dist; run(s, 1);
+      ok(near(g.dist - d0, 4.4 * WHEEL_CRAWL, 0.01), `a stopped Gyre covers ${(g.dist - d0).toFixed(2)} a second`);
+      const slow = gyre(s, 20); slow.slowT = 5; slow.slowF = 0.4;
+      run(s, 1);
+      ok(near(slow.spin, 1 - WHEEL_DRAG, 0.02), `a slow bleeds spin steadily (${slow.spin.toFixed(2)})`);
+      const held = gyre(s, 30); s.zones.push({ id: 9e6, kind: 'sing', x: held.x, z: held.z, r: 3, life: 0.5, tick: 1e9, dmg: 0, owner: -1, pd: 0, y: 0 });
+      run(s, 0.5);
+      ok(near(held.spin, 1 - WHEEL_SINK * 0.5, 0.05), `a singularity drags it down fast (${held.spin.toFixed(2)})`);
+      const ice = gyre(s, 40); ice.frz = 0.5; s.events.length = 0;
+      let down = 0; run(s, 1 / 60, (e) => { down += count(e, 'spindown', ice.id); });
+      ok(ice.spin === 0 && down === 1, 'a freeze stops the rim dead');
+      // Flash Freeze: the rim stops before the cold bites, so the whole hit lands
+      const sc = mk(), cryo = sc.build('cryo', 3, 5)!; cryo.cd = 1e9; cryo.charge = 1;
+      const gc = gyre(sc, 10, 1e6);
+      ok(sc.triggerSpecial(cryo.id, 0) && gc.spin === 0 && near(1e6 - gc.hp, sc.towerDmg(cryo) * 4, 1e-6), `Flash Freeze lands in full on a Gyre (${(1e6 - gc.hp).toFixed(1)})`);
+      // Graviton Well: no damage, but its grip stops the rim
+      const sg = mk(), well = sg.build('gravity', 3, 5)!; const gg = gyre(sg, 10, 1e6);
+      run(sg, 1.6);
+      ok(!!well && gg.spin === 0 && gg.hp === 1e6, `a Graviton Well drags the rim to a stop (${gg.spin.toFixed(2)})`);
+    }
+    {
+      // Rail shots and full-draw arrows cut through half of the guard; everything else meets all of it
+      const through = (type: 'rail' | 'pulse') => {
+        const s = mk(), t = s.build(type, 3, 5)!, g = gyre(s, 10, 1e9);
+        let hit = false;
+        for (let i = 0; i < 600 && !hit; i++) { s.step(1 / 60); s.events.length = 0; hit = g.hp < 1e9; }
+        return (1e9 - g.hp) / s.towerDmg(t);
+      };
+      const rail = through('rail'), pulse = through('pulse');
+      ok(near(rail, 1 - WHEEL_GUARD * (1 - WHEEL_PIERCE), 1e-3) && near(pulse, 1 - WHEEL_GUARD, 1e-3), `a Railgun lands ${rail.toFixed(2)} of its damage on a spinning Gyre, a Pulse Turret ${pulse.toFixed(2)}`);
+      const s = mk(), p = s.players[0], g = gyre(s, 10, 1e9);
+      p.energy = MAX_ENERGY; s.activateHero(0, 0); p.heroTime = p.heroDur = 600; p.fireCd = 0;
+      s.heroFire(0, g.x, g.y, g.z);
+      ok(s.projs.length === 1 && s.projs[0].cut === WHEEL_PIERCE, 'a full-draw arrow carries the guard cut');
+      const want = s.arrowDmg(p) * FULL_DRAW_MUL * (1 - WHEEL_GUARD * (1 - WHEEL_PIERCE));
+      let got = 0; run(s, 1.5, (evs) => { for (const e of evs) if (e.k === 'dmg' && e.id === g.id) got += e.n; });
+      ok(Math.abs(got - want) <= 0.6, `a full-draw arrow lands ${got} on a spinning Gyre (expected ${want.toFixed(1)})`);
+      // a half-drawn arrow meets the whole guard
+      s.projs.length = 0;
+      for (let i = 0; i < 200 && p.draw < 0.5; i++) { s.heroAim(0, true, g.x, g.y, g.z); s.step(1 / 60); }
+      s.heroAim(0, false, g.x, g.y, g.z);
+      ok(s.projs.length === 1 && !s.projs[0].cut && p.draw === 0, 'a half-drawn arrow does not');
+      // Rail Shot (Kestrel's skill) cuts through as well
+      s.events.length = 0; const hp0 = g.hp; p.cds[0] = 0; s.heroSkill(0, 0, g.x, g.y, g.z);
+      ok(near(hp0 - g.hp, s.arrowDmg(p) * 8 * (1 - WHEEL_GUARD * (1 - WHEEL_PIERCE)), 0.01), 'Rail Shot ignores half of the guard');
+    }
+    {
+      // waves: in the pool from its first wave, escorting each Colossus from wave WHEEL_ESCORT, listed in the wave preview
+      let early = 0, late = 0, escorted = true, listed = true, plain = 0;
+      for (let seed = 1; seed <= 6; seed++) {
+        const s = mk({ seed, map: MAPS[2] });
+        for (let w = 1; w <= 30; w++) {
+          priv(s).planWave(w);
+          const items: { t: number; type: string; lane: number }[] = priv(s).next.items;
+          const n = items.filter((q) => q.type === 'wheel').length;
+          if (w < d.from) early += n; else if (n) late++;
+          if (w % 5 === 0) for (const b of items.filter((q) => q.type === 'boss')) {
+            const esc = items.filter((q) => q.type === 'wheel' && q.lane === b.lane && q.t > b.t && q.t < b.t + 5).length;
+            if (w >= WHEEL_ESCORT) { if (esc < WHEEL_ESCORTS) escorted = false; } else plain++;
+          }
+          if (n && s.preview.lanes.reduce((a, l) => a + (l.find((o) => o.type === 'wheel')?.n || 0), 0) !== n) listed = false;
+        }
+      }
+      ok(early === 0 && late >= 6 * (30 - d.from + 1) * 0.6, `Gyres join the waves from wave ${d.from} on (${late} of ${6 * (30 - d.from + 1)} later waves, ${early} before)`);
+      ok(escorted && plain > 0 && WHEEL_ESCORT === 15, 'Gyres escort every Colossus from wave 15');
+      ok(listed, 'the wave preview counts the Gyres');
+    }
+    {
+      // co-op: the type index and the spin round-trip, hostile values are clamped
+      const h = mk({ mode: 'coop', players: 2 }), c = mk({ mode: 'coop', players: 2 }); c.replica = true;
+      const g = gyre(h, 10, 500), gr = put(h, 'grunt', 6); g.spin = 0.37;
+      h.preview = { wave: 9, lanes: [[{ type: 'wheel', n: 3 }, { type: 'grunt', n: 2 }]] };
+      const snap = JSON.parse(JSON.stringify(h.snapshot([{ k: 'deflect', x: 1, y: 2, z: 3 }, { k: 'spindown', id: g.id, x: 1, y: 2, z: 3 }, { k: 'spinup', id: g.id, x: 1, y: 2, z: 3 }])));
+      c.applySnapshot(snap);
+      const cg = c.enemies.find((e) => e.id === g.id), cr = c.enemies.find((e) => e.id === gr.id);
+      ok(!!cg && cg.type === 'wheel' && near(cg.spin, 0.37) && near(cg.y, g.y) && !!cr && cr.type === 'grunt' && cr.spin === 0, 'the Gyre and its spin reach the guest');
+      ok(c.preview.lanes[0].length === 2 && c.preview.lanes[0][0].type === 'wheel' && c.preview.lanes[0][0].n === 3, 'the guest sees Gyres in the wave preview');
+      ok(['deflect', 'spindown', 'spinup'].every((k) => c.events.some((e) => e.k === k && e.x === 1 && e.z === 3)) && c.events.some((e) => e.k === 'spindown' && e.id === g.id), 'the Gyre events reach the guest');
+      const wi = ENEMY_TYPES.indexOf('wheel');
+      const bad = (v: unknown) => { const o = JSON.parse(JSON.stringify(snap)); o.e = [[1, wi, 0, 0, 0, 5, 5, 0, 0, 0, 0, 0, v], [2, 0, 0, 0, 0, 5, 5, 0, 0, 0, 0, 0, v]]; c.applySnapshot(o); return c.enemies.map((e) => e.spin); };
+      ok(bad(99).join() === '1,0' && bad(-5).join() === '0,0' && bad(NaN).join() === '1,0' && bad('x').join() === '1,0' && bad({}).join() === '1,0', 'a hostile spin is clamped, and only a Gyre has one');
+      const old = JSON.parse(JSON.stringify(snap)); old.e = [[1, wi, 0, 0, 0, 5, 5, 0, 0, 0, 0, 0]]; c.applySnapshot(old);
+      ok(c.enemies.length === 1 && c.enemies[0].spin === 1, 'a row without the spin field reads as full spin');
+    }
   }
 }
 

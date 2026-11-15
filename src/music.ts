@@ -25,7 +25,8 @@ export interface MusicApi {
 export type SpType = 'track' | 'album' | 'playlist' | 'episode' | 'show';
 export interface MusicEntry { kind: 'yt' | 'ytlist' | 'sp'; spType?: SpType; id: string; label?: string; bpm?: number }
 
-const KEY = 'voltspire-music';
+const KEY = 'beatspire-music';
+const OLD_KEY = 'voltspire-music'; // the game's earlier name; still read so saved playlists carry over
 const MAX_ENTRIES = 100;
 const MAX_LABEL = 60;
 const MAX_LINK = 2048;
@@ -201,7 +202,7 @@ export function initMusic(host: MusicHost): MusicApi {
 
   function load(): void {
     let text: string | null = null;
-    try { text = localStorage.getItem(KEY); } catch { return; }
+    try { text = localStorage.getItem(KEY) ?? localStorage.getItem(OLD_KEY); } catch { return; }
     if (typeof text !== 'string' || text.length > MAX_JSON) return;
     let data: unknown;
     try { data = JSON.parse(text); } catch { return; }
@@ -384,7 +385,7 @@ export function initMusic(host: MusicHost): MusicApi {
     const r = el('li', 'mu-row' + (on ? ' on' : '') + (e && sel === list.indexOf(e) && !on ? ' last' : ''));
     const main = el('div', 'mu-main');
     if (!e) {
-      main.append(el('span', 'mu-name', 'VOLTSPIRE soundtrack'), el('span', 'mu-meta', 'Built in'));
+      main.append(el('span', 'mu-name', 'BEATSPIRE soundtrack'), el('span', 'mu-meta', 'Built in'));
       r.append(main);
       const b = button('btn small' + (on ? '' : ' ghost'), on ? 'Playing' : 'Play', () => { host.click(); sel = -1; save(); stop(); });
       b.disabled = on;
@@ -531,7 +532,7 @@ export function initMusic(host: MusicHost): MusicApi {
       const area = el('textarea', 'mu-area');
       area.readOnly = true; area.rows = 6; area.spellcheck = false;
       area.setAttribute('aria-label', 'Playlist as JSON');
-      area.value = JSON.stringify({ 'voltspire-music': 1, list }, null, 1);
+      area.value = JSON.stringify({ 'beatspire-music': 1, list }, null, 1);
       const copy = button('btn small', 'Copy', () => { host.click(); copyText(area); });
       const acts = el('div', 'btn-pair');
       acts.append(copy);

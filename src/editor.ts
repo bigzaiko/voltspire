@@ -13,12 +13,13 @@ import { drawMap, drawRoads, hexPath, outlinePath, boardCells } from './game/map
 import type { Proj } from './game/mapdraw.ts';
 
 export interface EditorHost { play(def: MapDef): void; close(): void; sound(name: string): void }
-const KEY = 'voltspire-maps';
+const KEY = 'beatspire-maps';
+const OLD_KEY = 'voltspire-maps'; // the game's earlier name; still read so saved maps carry over
 const MAX_SAVED = 24;
 
 export function loadCustomMaps(): MapDef[] {
   try {
-    const raw: unknown = JSON.parse(localStorage.getItem(KEY) || '[]');
+    const raw: unknown = JSON.parse(localStorage.getItem(KEY) ?? localStorage.getItem(OLD_KEY) ?? '[]');
     return Array.isArray(raw) ? raw.slice(0, MAX_SAVED).map(sanitizeMap).filter((m): m is MapDef => !!m) : [];
   } catch { return []; }
 }
@@ -88,7 +89,7 @@ function slug(name: string) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 17).replace(/-+$/, '') || 'map';
 }
 // The draft being worked on is also written to storage, so a reload or a closed tab does not throw it away.
-const DRAFT_KEY = 'voltspire-draft';
+const DRAFT_KEY = 'beatspire-draft';
 let draftTimer = 0;
 function storeDraft(d: Draft): void {
   clearTimeout(draftTimer); draftTimer = 0;
@@ -723,7 +724,7 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     const text = inTa.value.trim();
     if (!text) { sfx('error'); setShareMsg('Paste a share code first.', true); return; }
     const def = decodeMap(text);
-    if (!def) { sfx('error'); setShareMsg('That code is not a valid VOLTSPIRE map.', true); return; }
+    if (!def) { sfx('error'); setShareMsg('That code is not a valid BEATSPIRE map.', true); return; }
     inTa.value = ''; outTa.classList.add('hidden');
     sfx('card'); setDraft(draftFrom(def), `Imported "${def.name}".`);
     setShareMsg(`Imported "${def.name}".`, false);

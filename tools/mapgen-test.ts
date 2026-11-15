@@ -5,7 +5,7 @@ import { GW, GH, CELL, cellX, cellZ, hexDist, lineDir, neighbor, neighbors, disc
 import { GameMap, validateMap, sanitizeMap, encodeMap, decodeMap } from '../src/game/map.ts';
 import type { MapDef, LanePoint } from '../src/game/map.ts';
 import { generateMap, generateMapEx, fallbackMap, mapStats, MIN_FREE } from '../src/game/mapgen.ts';
-import { MAPS, mapById } from '../src/game/maps.ts';
+import { MAPS, mapById, HANDMADE } from '../src/game/maps.ts';
 
 const SEEDS = +(process.argv[2] || 400) || 400;
 const NOPLAY = process.argv.includes('--noplay');
@@ -261,7 +261,7 @@ for (const [seed, tier] of [[NaN, 1], [-5, 2], [1e15, 3], [3.7, 0], [7, 99], [In
   try { const d = generateMap(seed, tier); if (validateMap(d) || !sanitizeMap(JSON.parse(JSON.stringify(d)))) report(`odd input ${seed},${tier} gave an invalid map`); } catch (e) { report(`odd input ${seed},${tier} threw ${e}`); }
 }
 // the hand-made maps: valid, on the hex grid, a spire on a free tile, bridges where roads meet, and they survive sanitizing
-if (MAPS.length !== 8 || new Set(MAPS.map((m) => m.id)).size !== 8) report('expected eight hand-made maps with distinct ids');
+if (HANDMADE !== 8 || MAPS.length !== 38 || new Set(MAPS.map((m) => m.id)).size !== MAPS.length) report('expected eight hand-made maps plus thirty picked ones, all with distinct ids');
 for (const id of ['switchback', 'spiral', 'crossfire', 'gauntlet', 'pincer', 'trident', 'overpass', 'highline']) if (mapById(id)?.id !== id) report(`mapById(${id})`);
 for (const m of MAPS) {
   const v = validateMap(m);

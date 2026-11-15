@@ -25,7 +25,7 @@ for mod in (vs_lib, models_towers, models_enemies, models_hero, models_misc):
 BUILDERS = models_towers.TOWERS + models_enemies.ENEMIES + models_hero.HERO + models_misc.MISC
 
 BUDGET = {'enemy_grunt': 2500, 'enemy_runner': 2500, 'enemy_drone': 2500, 'enemy_brute': 4000, 'enemy_shield': 4000,
-          'enemy_boss': 10000, 'hero': 9000, 'core': 12000, 'tower_spire': 9000}
+          'enemy_boss': 10000, 'enemy_wheel': 6500, 'hero': 9000, 'core': 12000, 'tower_spire': 9000}
 
 
 def budget(name):

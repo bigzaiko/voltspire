@@ -11,7 +11,7 @@ import { Fx, makeBeam, placeBeam, fireMat, reticleMat, FIRE_CLOCK } from './fx.t
 import { buildWorld, noAO, FX_LAYER } from './world.ts';
 import { Post } from './post.ts';
 import { lightPool, glowTexture, POOL_GEO } from './tex.ts';
-import { makeEnemyRig, resetEnemy, updateEnemy, makeTowerRig, updateTower, towerShot, makeHeroRig, updateHero, heroTrigger, resetHero, RAIN_GAP } from './anim.ts';
+import { makeEnemyRig, resetEnemy, updateEnemy, makeTowerRig, updateTower, towerShot, makeHeroRig, updateHero, heroTrigger, resetHero, BOSS_REACH } from './anim.ts';
 import type { EnemyRig, TowerRig, TowerState, HeroRig, HeroEvent } from './anim.ts';
 
 const MODEL_NAMES = [...TOWER_TYPES.map((t) => 'tower_' + t), ...ENEMY_TYPES.map((t) => 'enemy_' + t), 'hero', 'core', 'prop_barrier', 'prop_lamp', 'prop_crate'];
@@ -22,7 +22,10 @@ const STATIC = 0x8fd0ff, VIOLET = 0x8a7dff, FROST = 0xdff0ff;
 const HEAT = 0xffa24a; // hot metal sparks
 const SINGC = 0xa99cff; // a singularity is cold violet and white, whoever throws it
 const HSL = { h: 0, s: 0, l: 0 };
+const DUST = 0x8f866c; // sand that has been kicked up
+const TRAIL = 0x596066; // what an Arrow Rain shaft leaves in the air: cold white, kept dim so nine of them do not burn out the picture
 const V = new THREE.Vector3(), V2 = new THREE.Vector3(), RO = new THREE.Vector3(), RD = new THREE.Vector3();
+const V3 = new THREE.Vector3(), ZA = new THREE.Vector3(0, 0, 1), M4 = new THREE.Matrix4();
 const C1 = new THREE.Color(), C2 = new THREE.Color(), Q1 = new THREE.Quaternion();
 const W3 = { x: 0, y: 0, z: 0 };
 const ST: TowerState = { down: false, spec: false, power: 1, heat: 0 };
@@ -109,6 +112,35 @@ const M_ADD_TRIM = new THREE.MeshStandardMaterial({ color: 0x70675c, roughness: 
 const M_ICE = new THREE.MeshStandardMaterial({ color: 0xcfeaf2, roughness: 0.25, metalness: 0.1, transparent: true, opacity: 0.42, flatShading: true, emissive: 0x3a6a80, emissiveIntensity: 0.4, depthWrite: false });
 const M_BUFF = new THREE.MeshBasicMaterial({ color: new THREE.Color(TOWERS.beacon.color).multiplyScalar(0.9), transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
 
+// Gyre guard, in the plane of its wheel (the rim node's local YZ): the light strips blurred into a ring, and a shimmer over the face
+const G_GUARD_RING = new THREE.RingGeometry(0.79, 0.855, 56).rotateY(Math.PI / 2);
+const G_GUARD_DISC = new THREE.RingGeometry(0.12, 1.07, 56, 1).rotateY(Math.PI / 2);
+const guardMat = () => new THREE.ShaderMaterial({
+  uniforms: { time: FIRE_CLOCK, color: { value: new THREE.Color(STATIC) }, gain: { value: 0 }, seed: { value: Math.random() * 40 } },
+  vertexShader: 'varying vec2 vP; void main(){ vP = position.zy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: `uniform float time, gain, seed; uniform vec3 color; varying vec2 vP;
+    void main(){ float r = length(vP), a = atan(vP.y, vP.x);
+      float k = smoothstep(0.12, 1.0, r);
+      float s1 = 0.5 + 0.5 * sin(a * 5.0 - time * 23.0 + seed), s2 = 0.5 + 0.5 * sin(a * 13.0 + time * 9.0 + r * 7.0 + seed);
+      float v = k * k * (0.3 + 0.7 * s1 * s2) * (1.0 - smoothstep(0.99, 1.07, r));
+      gl_FragColor = vec4(color * v * gain, 1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
+  blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, side: THREE.DoubleSide,
+});
+
+// Arrow Rain: the volley climbs for RAIN_CLIMB seconds after the release, hangs for RAIN_HANG and comes down in RAIN_DIVE
+const RAIN_CLIMB = 0.3, RAIN_HANG = 0.1, RAIN_DIVE = 0.17, RAIN_N = 9;
+/** Seconds from the cast to the first shafts landing: the ground marker fills over this time. */
+const RAIN_LAND = SKILL_CAST[1] + RAIN_CLIMB + RAIN_HANG + RAIN_DIVE;
+const SHAFTS = 96;
+/** One shaft of Arrow Rain. mode 0 free, 1 climbing with the volley, 2 hanging at the top, 3 coming down, 4 stuck in the deck. */
+interface Shaft {
+  mode: number; t: number; T: number; pow: number; tr: number; gy: number;
+  p0: THREE.Vector3; p1: THREE.Vector3; p2: THREE.Vector3; to: THREE.Vector3; pos: THREE.Vector3; dir: THREE.Vector3; d0: THREE.Vector3; last: THREE.Vector3;
+}
+
 // accretion disc of a singularity: streaks that wind inward, white at the inner edge
 const accMat = () => new THREE.ShaderMaterial({
   uniforms: { time: FIRE_CLOCK, color: { value: new THREE.Color(SINGC) }, gain: { value: 1 } },
@@ -142,11 +174,14 @@ const lensMat = () => new THREE.ShaderMaterial({
 
 interface Glow { m: THREE.MeshStandardMaterial; i0: number }
 interface WeakVis { core: THREE.Mesh; ring: THREE.Mesh; mat: THREE.MeshBasicMaterial; rmat: THREE.ShaderMaterial }
+/** Gyre guard: its own strip lights, the blur rings and shimmer discs on both faces, the smoothed spin, and a short flare */
+interface GuardVis { strips: Glow[]; rmat: THREE.MeshBasicMaterial; dmat: THREE.ShaderMaterial; parts: THREE.Mesh[]; lvl: number; surge: number; em: number }
 interface EVis {
   obj: THREE.Object3D; rig: EnemyRig; sx: number; sz: number; glow: THREE.Mesh; back: THREE.Sprite; bar: THREE.Sprite; sbar: THREE.Sprite | null; bubble: THREE.Mesh | null;
   ice: THREE.Mesh | null; weak: WeakVis[]; wglow: Glow[]; type: EnemyType; phase: number; seen: number; fresh: boolean; lx: number; lz: number; lgy: number; tilt: number; em: number;
   /** hit flash: the meshes and their own materials, and the seconds the flash still has to run */
   meshes: THREE.Mesh[]; mats: (THREE.Material | THREE.Material[])[]; hitT: number;
+  guard: GuardVis | null;
 }
 interface TVis {
   obj: THREE.Object3D; rig: TowerRig; type: TowerType; lvl: number; grow: number; s: number; seen: number;
@@ -164,7 +199,11 @@ interface TVis {
 interface PVis { mesh: THREE.Mesh; kind: string; seen: number; fresh: boolean; em: number }
 /** tele > 0: still dissolving at the spire she is leaving; out: playing the uplink-end animation at `pos` */
 interface HVis { obj: THREE.Object3D; rig: HeroRig | null; pos: THREE.Vector3; tele: number; out: boolean; shown: boolean; tiers: { n: number; o: THREE.Object3D }[] }
-interface ZVis { obj: THREE.Group; kind: string; seen: number; t: number; mats: THREE.Material[]; halo: THREE.Object3D | null; c: number; tick: number; x: number; y: number; z: number; r: number; core: THREE.Object3D | null; lens: THREE.Mesh | null; life: number }
+interface ZVis {
+  obj: THREE.Group; kind: string; seen: number; t: number; mats: THREE.Material[]; halo: THREE.Object3D | null; c: number; tick: number; x: number; y: number; z: number; r: number; core: THREE.Object3D | null; lens: THREE.Mesh | null; life: number;
+  /** Arrow Rain: the soft fill that grows while the volley is in the air, and the side the shower comes in from */
+  fill: THREE.Mesh | null; ax: number; az: number;
+}
 /** A wall of fire between two Firewall Pylons (sim.walls). */
 interface WallLike { a: number; b: number; ax: number; az: number; bx: number; bz: number; on: boolean; hot: boolean }
 interface WVis { obj: THREE.Group; sheet: THREE.Mesh; mat: THREE.ShaderMaterial; glow: THREE.Mesh; gmat: THREE.MeshBasicMaterial; seen: number; on: number; heat: number; em: number; len: number }
@@ -174,9 +213,9 @@ interface BVis { obj: THREE.Group; ret: THREE.Mesh; mat: THREE.ShaderMaterial; d
 interface Later { t: number; fn: () => void }
 
 /** Half-length of road (before and after a corner) over which each type swings through its turn, and the hardest it can turn (rad/s). */
-const TURN_A: Record<EnemyType, number> = { grunt: 0.8, runner: 1.0, drone: 1.3, shield: 1.0, brute: 1.0, boss: 1.6 };
-const TURN_RATE: Record<EnemyType, number> = { grunt: 5, runner: 7, drone: 6, shield: 3.2, brute: 2.6, boss: 1.1 };
-const PO = { x: 0, z: 0, dx: 0, dz: 0, y: 0, yaw: 0 };
+const TURN_A: Record<EnemyType, number> = { grunt: 0.8, runner: 1.0, drone: 1.3, shield: 1.0, brute: 1.0, boss: 1.6, wheel: 1.3 };
+const TURN_RATE: Record<EnemyType, number> = { grunt: 5, runner: 7, drone: 6, shield: 3.2, brute: 2.6, boss: 1.1, wheel: 3.4 };
+const PO = { x: 0, z: 0, dx: 0, dz: 0, y: 0, yaw: 0 }, PO2 = { x: 0, z: 0, dx: 0, dz: 0, y: 0, yaw: 0 };
 /**
  * Where an enemy at distance d (lateral offset off) along a lane is drawn: like GameMap.pos, but every corner is
  * replaced by a circular arc that starts `a` before it and ends `a` after it, so heading and position are continuous.
@@ -294,7 +333,21 @@ function fallbackModel(name: string): THREE.Object3D {
     }
   } else if (name.startsWith('enemy_')) {
     const t = name.slice(6) as EnemyType, d = ENEMIES[t];
-    const b = part(g, new THREE.CapsuleGeometry(d.r * 0.7, d.r, 4, 10), new THREE.MeshStandardMaterial({ color: 0x1c2230, roughness: 0.5, metalness: 0.5, name: 'hull' }), 0, t === 'drone' ? 0 : d.r * 1.2, 0);
+    const dark = new THREE.MeshStandardMaterial({ color: 0x1c2230, roughness: 0.5, metalness: 0.5, name: 'hull' });
+    if (t === 'wheel') {
+      // Gyre: a ring wheel (rim, pivot at its centre, axle = local X) with a hub (body) and a sensor (head) inside it
+      const rim = group(g, 'rim', 0, 1.1, 0);
+      part(rim, new THREE.TorusGeometry(0.95, 0.15, 8, 28).rotateY(Math.PI / 2), dark);
+      for (let i = 0; i < 8; i++) { const a = (i * TAU) / 8; part(rim, new THREE.BoxGeometry(0.5, 0.06, 0.3), trim, 0, Math.sin(a) * 1.07, Math.cos(a) * 1.07).rotation.x = -a; }
+      for (const sd of [-1, 1]) part(rim, new THREE.TorusGeometry(0.8, 0.02, 4, 28).rotateY(Math.PI / 2), glow(STATIC, 'glow_guard'), sd * 0.17, 0, 0);
+      const body = group(g, 'body', 0, 1.1, 0);
+      part(body, new THREE.BoxGeometry(0.36, 0.42, 0.6), dark, 0, -0.22, 0);
+      part(body, alongZ(new THREE.CylinderGeometry(0.09, 0.09, 0.8, 8)).rotateY(Math.PI / 2), trim);
+      const head = group(body, 'head', 0, 0.1, 0.2);
+      for (const sd of [-1, 1]) part(head, new THREE.SphereGeometry(0.08, 8, 6), glow(STATIC), sd * 0.42, 0.12, 0.3);
+      return g;
+    }
+    const b = part(g, new THREE.CapsuleGeometry(d.r * 0.7, d.r, 4, 10), dark, 0, t === 'drone' ? 0 : d.r * 1.2, 0);
     part(g, new THREE.SphereGeometry(d.r * 0.3, 8, 6), glow(STATIC), 0, b.position.y + d.r * 0.3, d.r * 0.6);
   } else if (name === 'hero') {
     part(g, new THREE.CapsuleGeometry(0.3, 1.1, 4, 10), new THREE.MeshStandardMaterial({ color: 0xd8cfb4 }), 0, 0.9, 0);
@@ -380,6 +433,8 @@ export class View {
   private zoneWait: number[][] = [];
   /** Seconds left in which arcs are drawn as a Thunderhead and missile blasts as a Swarm. */
   private thunder = 0; private swarm = 0;
+  /** Arrow Rain: the shafts in the air or stuck in the deck (one instanced mesh), and the seconds since this player's own cast (the camera eases back a little for it). */
+  private shafts: Shaft[] = []; private shaftMesh: THREE.InstancedMesh; private shaftN = 0; private rainT = 9;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
@@ -407,6 +462,10 @@ export class View {
       missile: new THREE.MeshBasicMaterial({ color: new THREE.Color(TOWERS.missile.color).multiplyScalar(0.7) }),
     };
     BOW_TIERS.forEach((b, i) => { this.projMat['arrow' + i] = new THREE.MeshBasicMaterial({ color: new THREE.Color(b.color).lerp(new THREE.Color(0xffffff), 0.25).multiplyScalar(2.3) }); });
+    // Arrow Rain shafts: slim cold-white arrows, all in one draw call
+    this.shaftMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.022, 0.03, 2.2, 5).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ color: new THREE.Color(FROST).multiplyScalar(1.35), fog: false }), SHAFTS);
+    this.shaftMesh.count = 0; this.shaftMesh.frustumCulled = false; this.shaftMesh.layers.set(FX_LAYER); this.scene.add(this.shaftMesh);
+    for (let i = 0; i < SHAFTS; i++) this.shafts.push({ mode: 0, t: 0, T: 1, pow: 1, tr: 0, gy: 0, p0: new THREE.Vector3(), p1: new THREE.Vector3(), p2: new THREE.Vector3(), to: new THREE.Vector3(), pos: new THREE.Vector3(), dir: new THREE.Vector3(), d0: new THREE.Vector3(), last: new THREE.Vector3() });
 
     const flat = (geo: THREE.BufferGeometry, color: number, opacity = 1) => {
       const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, side: THREE.DoubleSide }));
@@ -530,6 +589,8 @@ export class View {
     this.coreHit = this.coreZap = 9;
     for (const h of this.heroes) { h.obj.visible = false; h.out = false; h.shown = false; h.tele = 0; if (h.rig) resetHero(h.rig); }
     this.later.length = 0; this.zoneWait.length = 0;
+    for (const sh of this.shafts) sh.mode = 0;
+    this.shaftMesh.count = 0; this.rainT = 9;
     this.heroBlend = 0; this.thunder = 0; this.swarm = 0;
     this.setGhost(null); this.setSelected(null); this.setTele(null);
     this.hoverMark.visible = false;
@@ -880,7 +941,7 @@ export class View {
           break;
         }
         case 'die': {
-          const big = e.t === 'boss', mid = e.t === 'brute' || e.t === 'shield', gy = this.deckY(e.x, e.z);
+          const big = e.t === 'boss', mid = e.t === 'brute' || e.t === 'shield' || e.t === 'wheel', gy = this.deckY(e.x, e.z);
           fx.burst(e.x, e.y, e.z, big ? 70 : mid ? 14 : 6, big ? 15 : 6, STATIC, big ? 1.1 : 0.45, big ? 0.5 : 0.28, 10);
           fx.burst(e.x, e.y, e.z, big ? 40 : mid ? 8 : 4, big ? 11 : 5, HEAT, big ? 1.3 : 0.7, 0.2, 14);
           fx.flash(e.x, e.y, e.z, big ? 5 : mid ? 1.5 : 0.9, STATIC, big ? 0.45 : 0.16);
@@ -893,6 +954,25 @@ export class View {
         case 'crack': fx.star(e.x, e.y, e.z, 2.6, VIOLET, 9, 0.35); fx.burst(e.x, e.y, e.z, 26, 8, VIOLET, 0.8, 0.3, 9); fx.smoke(e.x, e.y, e.z, 3, 1.2, 1); break;
 
         case 'shieldbreak': fx.burst(e.x, e.y, e.z, 14, 7, STATIC, 0.5, 0.24, 3); fx.flash(e.x, e.y, e.z, 1.5, STATIC, 0.18); break;
+        case 'deflect': this.deflectFx(e.x, e.y, e.z); break;
+        case 'spindown': {
+          // the rim stalls: the guard goes out in a burst, hot metal off the tread (the rig staggers on its own)
+          const gy = this.deckY(e.x, e.z);
+          fx.flash(e.x, e.y, e.z, 1.5, STATIC, 0.16);
+          fx.burst(e.x, e.y, e.z, 20, 7, STATIC, 0.5, 0.26, 5); fx.burst(e.x, gy + 0.2, e.z, 12, 6, HEAT, 0.6, 0.2, 12);
+          fx.ring(e.x, gy + 0.1, e.z, 2.4, STATIC, 0.4); fx.smoke(e.x, gy + 0.5, e.z, 2, 0.8, 0.7, 0.6);
+          break;
+        }
+        case 'spinup': {
+          // back up to speed: light climbs the rim and the guard flares as it closes again
+          const v = this.ev.get(e.id), gy = this.deckY(e.x, e.z);
+          if (v && v.guard) v.guard.surge = 1.4;
+          const yaw = v ? v.obj.rotation.y : 0, sn = Math.sin(yaw), cs = Math.cos(yaw);
+          fx.ring(e.x, gy + 0.1, e.z, 0.4, STATIC, 0.55, 6.5, 0.8);
+          for (let i = 0; i < 16; i++) { const a = Math.random() * TAU, c = Math.cos(a) * 1.02, h = Math.sin(a) * 1.02; fx.spark(e.x + sn * c, e.y + h, e.z + cs * c, sn * c * 0.6, 2.2 + Math.random() * 2.2, cs * c * 0.6, 0.45 + Math.random() * 0.3, 0.2, STATIC, -1.5); }
+          fx.flash(e.x, e.y, e.z, 1.9, STATIC, 0.34);
+          break;
+        }
         case 'build': if (this.reveal(e.x, e.z) < 0.5) break; // placed before its tile has arrived (a bot at second zero)
           fx.ring(e.x, 0.1, e.z, 2.0, e.c, 0.5); fx.burst(e.x, 0.3, e.z, 12, 4, e.c, 0.6, 0.24, -3, 1); fx.smoke(e.x, 0.2, e.z, 3, 1, 1.6, 0.35); this.pulse(e.x, e.z, e.c, 3.5, 0.6); break;
         case 'sell': fx.burst(e.x, 0.8, e.z, 12, 5, SAND, 0.6, 0.24, 9); fx.smoke(e.x, 0.4, e.z, 3, 1.1, 1.2, 0.5); break;
@@ -910,11 +990,17 @@ export class View {
         case 'tele': { const h = this.heroes[+e.p]; if (h && h.rig) { h.tele = 0.13; h.pos.set(e.fx, e.fy, e.fz); heroTrigger(h.rig, 'teleOut'); } }
           fx.beam(e.fx, e.fy, e.fz, e.fx, e.fy + 12, e.fz, UPLINK, 0.2, 0.4); fx.beam(e.x, e.y, e.z, e.x, e.y + 22, e.z, UPLINK, 0.2, 0.45); this.pulse(e.x, e.z, UPLINK, 6, 0.7); break;
         case 'skill': {
-          const rain = e.s === 1, wait = SKILL_CAST[rain ? 1 : 2], sc = rain ? e.c : UPLINK;
+          const rain = e.s === 1, wait = SKILL_CAST[rain ? 1 : 2];
           this.heroAnim(e.p, rain ? 'rain' : 'sing');
+          if (rain) {
+            // the marker is on the ground at once and fills while the volley is up; the volley leaves on the release beat
+            if (+e.p === this.me) this.rainT = 0;
+            this.later.push({ t: wait, fn: () => this.rainVolley(+e.p, e.x, typeof e.y === 'number' ? e.y : this.deckY(e.x, e.z), e.z) });
+            this.later.push({ t: RAIN_LAND, fn: () => this.pulse(e.x, e.z, SAND, 8, 1) });
+            break;
+          }
           this.zoneWait.push([e.x, e.z, wait]);
-          this.later.push({ t: wait, fn: () => { fx.ring(e.x, this.deckY(e.x, e.z) + 0.15, e.z, 5, sc, 0.5, 1.4, 0.6); this.pulse(e.x, e.z, sc, rain ? 8 : -10, 1); } });
-          if (rain) for (let i = 0; i < 3; i++) this.later.push({ t: wait + i * RAIN_GAP, fn: () => this.rainTracer(+e.p, e.c) });
+          this.later.push({ t: wait, fn: () => { fx.ring(e.x, this.deckY(e.x, e.z) + 0.15, e.z, 5, UPLINK, 0.5, 1.4, 0.6); this.pulse(e.x, e.z, UPLINK, -10, 1); } });
           break;
         }
         case 'lance': {
@@ -967,7 +1053,7 @@ export class View {
         }
         case 'breach': {
           // the core answers: a discharge from its heart into the machine that struck it, and nothing is left standing there
-          const v = this.ev.get(e.id), big = e.t === 'boss', mid = e.t === 'brute' || e.t === 'shield';
+          const v = this.ev.get(e.id), big = e.t === 'boss', mid = e.t === 'brute' || e.t === 'shield' || e.t === 'wheel';
           const x = v ? v.obj.position.x : e.x, z = v ? v.obj.position.z : e.z, y = typeof e.y === 'number' ? e.y : 1, gy = this.deckY(x, z);
           const cx = this.core.x, cz = this.core.z, cy = 2.7;
           this.coreZap = 0;
@@ -1415,6 +1501,7 @@ export class View {
       if (!under || !m.material.name.startsWith('glow')) return;
       const c = (m.material as THREE.MeshStandardMaterial).clone(); m.material = c; wglow.push({ m: c, i0: c.emissiveIntensity });
     });
+    const guard = type === 'wheel' ? this.makeGuard(obj) : null;
     const rig = makeEnemyRig(obj, type);
     const d = ENEMIES[type];
     const by = (type === 'drone' ? 0.85 : d.y * 2 + 0.55) / sc;
@@ -1445,7 +1532,45 @@ export class View {
     this.dyn.add(obj);
     // the hp bars, glow and bubble were added after the traverse: only the model's own meshes flash
     return { obj, rig, sx: 0, sz: 0, back, bar, sbar, bubble, glow, ice: null, weak, wglow, type, phase: Math.random() * 6.28, seen: 0, fresh: true, lx: 0, lz: 0, lgy: 0, tilt: 0, em: 0,
-      meshes, mats: meshes.map((m) => m.material), hitT: 0 };
+      meshes, mats: meshes.map((m) => m.material), hitT: 0, guard };
+  }
+  /**
+   * The Gyre's guard. The rim's light strips get their own material so each wheel can dim alone; on both faces of the rim
+   * sit a ring (the strips, blurred by the spin) and a faint shimmer disc. They ride on the rim node, so they lean with it.
+   */
+  private makeGuard(obj: THREE.Object3D): GuardVis {
+    const rim = obj.getObjectByName('rim') || obj, strips: Glow[] = [], own = new Map<string, THREE.MeshStandardMaterial>();
+    const swap = (mat: THREE.Material) => {
+      if (mat.name !== 'glow_guard') return mat;
+      let c = own.get(mat.uuid);
+      if (!c) { c = (mat as THREE.MeshStandardMaterial).clone(); own.set(mat.uuid, c); strips.push({ m: c, i0: c.emissiveIntensity }); }
+      return c;
+    };
+    rim.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.material = Array.isArray(m.material) ? m.material.map(swap) : swap(m.material); });
+    const rmat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, side: THREE.DoubleSide });
+    const dmat = guardMat(), parts: THREE.Mesh[] = [];
+    for (const sd of [-1, 1]) {
+      const ring = new THREE.Mesh(G_GUARD_RING, rmat), disc = new THREE.Mesh(G_GUARD_DISC, dmat);
+      ring.position.x = sd * 0.236; disc.position.x = sd * 0.25;
+      for (const m of [ring, disc]) { m.layers.set(FX_LAYER); m.visible = false; rim.add(m); parts.push(m); }
+    }
+    return { strips, rmat, dmat, parts, lvl: 1, surge: 0, em: 0 };
+  }
+  /** A hit glances off a Gyre's spinning rim at (x, y, z) = its centre: a ricochet spark off the tread, and the guard flares. */
+  private deflectFx(x: number, y: number, z: number) {
+    const fx = this.fx;
+    let v: EVis | undefined, bd = 4;
+    for (const o of this.ev.values()) { if (o.type !== 'wheel') continue; const d = (o.obj.position.x - x) * (o.obj.position.x - x) + (o.obj.position.z - z) * (o.obj.position.z - z); if (d < bd) { bd = d; v = o; } }
+    if (v && v.guard) v.guard.surge = Math.max(v.guard.surge, 0.7);
+    // a point on the top or the back of the tread, thrown off the way the rim is moving there (forward over the top, up at the back)
+    const yaw = v ? v.obj.rotation.y : Math.random() * TAU, sn = Math.sin(yaw), cs = Math.cos(yaw);
+    const a = 0.9 + Math.random() * 2.1, c = Math.cos(a), h = Math.sin(a), sd = (Math.random() - 0.5) * 0.4;
+    const px = x + sn * c * 1.1 + cs * sd, py = y + h * 1.1, pz = z + cs * c * 1.1 - sn * sd;
+    const dx = sn * (c * 0.5 + h * 0.9) + cs * sd * 2, dy = h * 0.5 - c * 0.9 + 0.3, dz = cs * (c * 0.5 + h * 0.9) - sn * sd * 2, l = Math.hypot(dx, dy, dz) || 1;
+    fx.flash(px, py, pz, 0.6, FROST, 0.09);
+    fx.beam(px, py, pz, px + (dx / l) * 1.9, py + (dy / l) * 1.9, pz + (dz / l) * 1.9, FROST, 0.06, 0.11);
+    fx.spray(px, py, pz, dx / l, dy / l, dz / l, 8, 12, STATIC, 0.32, 0.2, 0.3);
+    fx.spray(px, py, pz, dx / l, dy / l, dz / l, 3, 7, HEAT, 0.4, 0.14, 0.5);
   }
   private poolEnemy(v: EVis) {
     if (v.hitT > 0) { v.hitT = 0; for (let i = 0; i < v.meshes.length; i++) v.meshes[i].material = v.mats[i]; }
@@ -1458,6 +1583,7 @@ export class View {
     const sim = this.sim!, d = ENEMIES[e.type], sc = ENEMY_SCALE[e.type];
     // visual pose: the sim walks hard-cornered lanes; the view rounds every corner into an arc and limits the turn rate
     let dist = e.dist, lane = e.lane, off = e.off;
+    const fresh = v.fresh;
     if (v.hitT > 0 && (v.hitT -= dt) <= 0) for (let i = 0; i < v.meshes.length; i++) v.meshes[i].material = v.mats[i];
     if (sim.replica) { // replicas only know x / z: recover the lane position from them
       if (v.fresh) { v.sx = e.x; v.sz = e.z; } else { v.sx += (e.x - v.sx) * k; v.sz += (e.z - v.sz) * k; }
@@ -1489,12 +1615,24 @@ export class View {
       v.lx = PO.x; v.lz = PO.z; v.lgy = gy;
     }
     let look = NaN;
+    if (e.type === 'boss') {
+      // where the road runs under its front and its rear feet, seen from the machine: in a bend it sets them down on the
+      // road, not out to the side where its nose and tail point (that is where the towers stand)
+      const cs = Math.cos(v.obj.rotation.y), sn = Math.sin(v.obj.rotation.y), reach = BOSS_REACH * sc;
+      for (const sg of [1, -1]) {
+        roundedPose(sim.map, lane, dist + sg * reach, off, TURN_A.boss, PO2);
+        const lat = Math.max(-1.2, Math.min(1.2, ((PO2.x - PO.x) * cs - (PO2.z - PO.z) * sn) / sc));
+        if (sg > 0) v.rig.roadF = lat; else v.rig.roadR = lat;
+      }
+    }
     if (e.type === 'boss') { // the colossus' turret head tracks the nearest tower
       let bd = 400;
       for (const t of sim.towers) { const dd = (t.x - e.x) * (t.x - e.x) + (t.z - e.z) * (t.z - e.z); if (dd < bd) { bd = dd; look = Math.atan2(t.x - e.x, t.z - e.z); } }
     }
     const frozen = e.frz > 0, strike = atCore || (e.breach || 0) > 0;
-    updateEnemy(v.rig, dt, e.hp / e.maxHp, e.sing > 0, frozen && e.type !== 'boss', look, strike);
+    const spin = e.type === 'wheel' ? (typeof e.spin === 'number' ? e.spin : 1) : 0;
+    updateEnemy(v.rig, dt, e.hp / e.maxHp, e.sing > 0, frozen && e.type !== 'boss', look, strike, spin);
+    if (v.guard) this.syncGuard(e, v, v.guard, spin, frozen, dt, fresh);
     if (v.rig.hit) {
       // a blow lands on the core: sparks where the machine meets it
       const l = Math.hypot(this.core.x - PO.x, this.core.z - PO.z) || 1, reach = Math.min(l, e.r + 0.5), hx = PO.x + ((this.core.x - PO.x) / l) * reach, hz = PO.z + ((this.core.z - PO.z) / l) * reach;
@@ -1563,6 +1701,36 @@ export class View {
         ru.spin.value = w.ring.userData.s = (w.ring.userData.s || v.phase) + dt * 1.4 * (1 - near);
       }
       for (const g of v.wglow) g.m.emissiveIntensity = g.i0 * (0.7 + 0.4 * beat + 0.8 * hot * b);
+    }
+  }
+
+  /**
+   * The Gyre's rim reads as a shield in proportion to its spin: at full speed the light strips blur into bright rings and a
+   * faint disc shimmers over both faces; it all dims as the spin drops, and below 0.25 the guard is down: the strips are dark
+   * and stutter, and the tread throws sparks where it drags on the road.
+   */
+  private syncGuard(e: Enemy, v: EVis, g: GuardVis, spin: number, frozen: boolean, dt: number, fresh: boolean) {
+    if (fresh) { g.lvl = spin; g.surge = 0; g.em = 0; }
+    g.lvl = damp(g.lvl, spin, 9, dt);
+    g.surge *= Math.exp(-dt * 3.2);
+    const lvl = g.lvl, up = ease((lvl - 0.25) / 0.6), down = spin < 0.25, su = g.surge;
+    const stutter = down && !frozen && Math.sin(this.time * 47 + v.phase * 9) > 0.86 ? 0.5 : 0;
+    for (const s of g.strips) s.m.emissiveIntensity = s.i0 * (0.03 + 1.45 * up * Math.sqrt(lvl) + stutter + 0.8 * su);
+    const blur = ease((lvl - 0.35) / 0.5), on = blur > 0.01 || su > 0.02;
+    for (const m of g.parts) m.visible = on;
+    if (on) {
+      const fl = 1 + 0.07 * Math.sin(this.time * 38 + v.phase);
+      g.rmat.color.setHex(STATIC).multiplyScalar((0.6 * blur + 0.7 * su) * fl);
+      g.dmat.uniforms.gain.value = (0.2 * blur * blur + 0.45 * su) * fl;
+    }
+    if (!down || frozen) return;
+    g.em += dt * (5 + 16 * v.rig.mv);
+    while (g.em >= 1) {
+      g.em -= 1;
+      const yaw = v.obj.rotation.y, sn = Math.sin(yaw), cs = Math.cos(yaw), gy = e.gy || 0;
+      // hot metal from under the tread, and now and then a cold crackle from a strip that tries to light
+      this.fx.spark(e.x - sn * 0.25, gy + 0.08, e.z - cs * 0.25, -sn * (2 + Math.random() * 3) + (Math.random() - 0.5) * 2.5, 1.5 + Math.random() * 2.5, -cs * (2 + Math.random() * 3) + (Math.random() - 0.5) * 2.5, 0.4 + Math.random() * 0.3, 0.16, HEAT, 11);
+      if (Math.random() < 0.35) { const a = Math.random() * TAU; this.fx.burst(e.x + sn * Math.cos(a) * 0.82, gy + 1.1 + Math.sin(a) * 0.82, e.z + cs * Math.cos(a) * 0.82, 2, 2.5, STATIC, 0.25, 0.16, 4); }
     }
   }
 
@@ -1664,9 +1832,9 @@ export class View {
       const zy = z.y || 0;
       if (!v) {
         const obj = new THREE.Group();
-        const c = z.kind === 'burn' ? APRICOT : z.kind === 'rain' ? BOW_TIERS[sim.tier].color : SINGC;
+        const c = z.kind === 'burn' ? APRICOT : z.kind === 'rain' ? SAND : SINGC;
         const mats: THREE.Material[] = [];
-        let halo: THREE.Object3D | null = null, core: THREE.Object3D | null = null, lens: THREE.Mesh | null = null;
+        let halo: THREE.Object3D | null = null, core: THREE.Object3D | null = null, lens: THREE.Mesh | null = null, fill: THREE.Mesh | null = null, ax = 0.88, az = 0.47;
         const rim = new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(z.kind === 'sing' ? 0.5 : 0.7), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
         const ring = new THREE.Mesh(G_RING, rim); ring.scale.setScalar(z.r); obj.add(ring);
         mats.push(rim);
@@ -1682,14 +1850,25 @@ export class View {
           lens = new THREE.Mesh(G_QUAD, m5); lens.scale.setScalar(1.6); lens.renderOrder = 2; core.add(lens);
           obj.add(core);
           mats.push(shade, m3, m4, m5);
+        } else if (z.kind === 'rain') {
+          // a soft pool of light that grows from the middle while the volley is in the air
+          const m1 = new THREE.MeshBasicMaterial({ map: glowTexture(), color: 0x000000, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
+          fill = new THREE.Mesh(POOL_GEO, m1); fill.position.y = -0.01; obj.add(fill);
+          mats.push(m1);
+          rim.color.setHex(0x000000);
+          // the shower comes in from the side the volley was loosed from
+          const o = z.owner >= 0 ? sim.heroOrigin(z.owner) : null, l = o ? Math.hypot(o.x - z.x, o.z - z.z) : 0;
+          if (o && l > 0.5) { ax = (o.x - z.x) / l; az = (o.z - z.z) / l; }
         } else {
-          const m1 = new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: z.kind === 'burn' ? 0.1 : 0.06, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
+          const m1 = new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: 0.1, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
           const disc = new THREE.Mesh(G_DISC, m1); disc.scale.setScalar(z.r); obj.add(disc);
           mats.push(m1);
         }
         obj.position.set(z.x, zy + 0.07, z.z);
         this.dyn.add(noAO(obj));
-        v = { obj, kind: z.kind, seen: f, t: 0, mats, halo, c, tick: 0, x: z.x, y: zy, z: z.z, r: z.r, core, lens, life: z.life };
+        v = { obj, kind: z.kind, seen: f, t: 0, mats, halo, c, tick: 0, x: z.x, y: zy, z: z.z, r: z.r, core, lens, life: z.life, fill, ax, az };
+        // a rain zone that is already old (a guest joined late, a snapshot) has its shower running
+        if (z.kind === 'rain' && z.life < 3.5 - RAIN_LAND) v.t = RAIN_LAND;
         // a zone thrown by the hero shows up when her pose releases it
         for (let i = this.zoneWait.length - 1; i >= 0; i--) { const w = this.zoneWait[i]; if (Math.abs(w[0] - z.x) < 0.01 && Math.abs(w[1] - z.z) < 0.01) { v.t = -w[2]; this.zoneWait.splice(i, 1); break; } }
         if (z.kind === 'sing' && z.owner < 0) {
@@ -1706,10 +1885,23 @@ export class View {
       v.obj.visible = v.t >= 0;
       if (v.t < 0) continue;
       if (z.kind === 'rain') {
-        for (let i = 0; i < 2; i++) {
-          const a = Math.random() * 6.28, r = Math.sqrt(Math.random()) * z.r, x = z.x + Math.cos(a) * r, zz = z.z + Math.sin(a) * r;
-          fx.beam(x + 1.5, zy + 14, zz + 0.8, x, zy, zz, v.c, 0.035, 0.12);
-          fx.burst(x, zy + 0.1, zz, 2, 3, v.c, 0.25, 0.25, 6);
+        // marker: the rim fades in, the pool fills until the first shafts land, then both sit low under the shower and fade with it
+        const k = ease(v.t / RAIN_LAND), end = Math.min(1, z.life / 0.5), landed = ease((v.t - RAIN_LAND) / 0.4);
+        (v.mats[0] as THREE.MeshBasicMaterial).color.setHex(SAND).multiplyScalar(ease(v.t / 0.25) * (0.75 - 0.3 * landed) * end);
+        if (v.fill) {
+          v.fill.scale.setScalar(z.r * (0.2 + 1.05 * k));
+          (v.fill.material as THREE.MeshBasicMaterial).color.setHex(SAND).multiplyScalar((0.1 + 0.5 * k * (1 - 0.7 * landed)) * end);
+        }
+        // the shower: shafts come down all over the zone, a few at a time, for as long as it lasts
+        if (v.t >= RAIN_LAND - 0.12 && z.life > 0.2) {
+          v.tick += dt * 24;
+          while (v.tick >= 1) {
+            v.tick -= 1;
+            const a = Math.random() * TAU, r = Math.sqrt(Math.random()) * z.r * 0.96, x = z.x + Math.cos(a) * r, zz = z.z + Math.sin(a) * r, sh = this.shaft();
+            sh.mode = 3; sh.t = 0; sh.T = 0.19 + Math.random() * 0.04; sh.pow = 1; sh.gy = zy; sh.tr = 0;
+            sh.to.set(x, zy, zz); sh.p0.set(x + v.ax * 3.6 + (Math.random() - 0.5) * 1.2, zy + 13, zz + v.az * 3.6 + (Math.random() - 0.5) * 1.2);
+            sh.pos.copy(sh.p0); sh.last.copy(sh.p0); sh.dir.subVectors(sh.to, sh.p0).normalize();
+          }
         }
       } else if (z.kind === 'sing' && v.core) {
         // it opens fast, feeds for as long as it lives and shrinks to a point just before it goes
@@ -1734,6 +1926,8 @@ export class View {
       }
     }
     for (const [id, v] of this.zv) if (v.seen !== f) { this.dropZone(v, v.life < 0.3); this.zv.delete(id); }
+
+    this.syncShafts(dt);
 
     // jump targets above the other Spires
     this.syncBeacons(dt, aim);
@@ -1829,14 +2023,92 @@ export class View {
     return this.keyTex;
   }
 
-  /** One shaft of Arrow Rain leaving the bow for the sky (the sim only knows the zone it lands in). */
-  private rainTracer(pi: number, color: number) {
+  /** A free Arrow Rain shaft (the oldest one in use when all are taken). */
+  private shaft(): Shaft {
+    for (const s of this.shafts) if (!s.mode) return s;
+    return this.shafts[this.shaftN++ % SHAFTS];
+  }
+  /**
+   * The Arrow Rain volley leaves the bow (the sim only knows the zone it lands in): a tight fan of shafts that climbs fast,
+   * slows into its top above the road between her and the zone, tips over there and comes down spread across the zone.
+   */
+  private rainVolley(pi: number, zx: number, zy: number, zz: number) {
     const sim = this.sim, p = sim && sim.players[pi], o = sim && p && p.heroActive ? sim.heroOrigin(pi) : null;
-    if (!o || !p) return;
-    const yaw = pi === this.me ? this.yaw : p.yaw, c = Math.cos(1.12), dx = Math.sin(yaw) * c, dy = Math.sin(1.12), dz = Math.cos(yaw) * c;
-    const j = (Math.random() - 0.5) * 0.5;
-    this.fx.beam(o.x + dx * 0.4, o.y + dy * 0.4 + 0.1, o.z + dz * 0.4, o.x + dx * 17 + j, o.y + dy * 17, o.z + dz * 17 - j, color, 0.05, 0.16);
-    this.fx.burst(o.x + dx * 0.45, o.y + dy * 0.45 + 0.1, o.z + dz * 0.45, 3, 2.5, color, 0.25, 0.16, 0);
+    if (!o || !sim) return;
+    let r = 4.5;
+    for (const z of sim.zones) if (z.kind === 'rain' && Math.abs(z.x - zx) < 0.01 && Math.abs(z.z - zz) < 0.01) r = z.r;
+    const d = Math.hypot(zx - o.x, zz - o.z), yaw = d > 0.5 ? Math.atan2(zx - o.x, zz - o.z) : pi === this.me ? this.yaw : p!.yaw;
+    const hx = Math.sin(yaw), hz = Math.cos(yaw);
+    // the top of the climb: part of the way to the zone, well above the bow. For the player who loosed it the top stays
+    // inside the picture: looking steeply down at a near zone, the volley goes out in a low arc instead of leaving the screen
+    const run = Math.min(d * 0.5, 9);
+    let rise = Math.max(5, Math.min(10, 4.5 + 0.2 * d));
+    if (pi === this.me && this.heroBlend > 0.5) rise = Math.max(1.3, Math.min(rise, this.camera.position.y - o.y + Math.tan(Math.min(1.2, this.pitch + 0.4)) * (run + CAM_BACK)));
+    const reach = Math.hypot(run, rise) * 0.6;
+    // the shafts leave along the bow, which points high; a low arc bends over sooner
+    const el = Math.min(1.08, Math.atan2(rise, run) + 0.45), cu = Math.cos(el), su = Math.sin(el);
+    const bx = o.x + hx * cu * 0.5, by = o.y + su * 0.5 + 0.1, bz = o.z + hz * cu * 0.5;
+    for (let i = 0; i < RAIN_N; i++) {
+      const k = i - (RAIN_N - 1) / 2, ak = Math.abs(k), s = this.shaft();
+      const a = Math.random() * TAU, rr = Math.sqrt(Math.random()) * r * 0.9;
+      s.mode = 1; s.t = 0; s.T = RAIN_CLIMB * (1 + 0.03 * ak); s.pow = 2; s.gy = zy; s.tr = 0;
+      s.p0.set(bx + hz * k * 0.03, by, bz - hx * k * 0.03);
+      s.p1.set(bx + hx * cu * reach + hz * k * 0.3, by + su * reach, bz + hz * cu * reach - hx * k * 0.3);
+      s.p2.set(o.x + hx * (run - ak * 0.22) + hz * k * 0.6, o.y + rise - ak * 0.14 + Math.random() * 0.3, o.z + hz * (run - ak * 0.22) - hx * k * 0.6);
+      s.to.set(zx + Math.cos(a) * rr, zy, zz + Math.sin(a) * rr);
+      s.pos.copy(s.p0); s.last.copy(s.p0); s.dir.set(hx * cu, su, hz * cu);
+    }
+    this.fx.burst(bx, by, bz, 4, 2.5, FROST, 0.22, 0.14, 0);
+  }
+  /** Move the Arrow Rain shafts: climb, hang, fall, strike (sparks, a dust ring), then stand in the deck a moment and sink. */
+  private syncShafts(dt: number) {
+    const fx = this.fx, mesh = this.shaftMesh;
+    let n = 0;
+    for (const s of this.shafts) {
+      if (!s.mode) continue;
+      s.t += dt;
+      let len = 1;
+      if (s.mode === 1) {
+        // fast off the string, slowing all the way up
+        const u = Math.min(1, s.t / s.T), e = 1 - Math.pow(1 - u, 2.3), q = 1 - e;
+        s.pos.set(q * q * s.p0.x + 2 * e * q * s.p1.x + e * e * s.p2.x, q * q * s.p0.y + 2 * e * q * s.p1.y + e * e * s.p2.y, q * q * s.p0.z + 2 * e * q * s.p1.z + e * e * s.p2.z);
+        s.dir.set(q * (s.p1.x - s.p0.x) + e * (s.p2.x - s.p1.x), q * (s.p1.y - s.p0.y) + e * (s.p2.y - s.p1.y), q * (s.p1.z - s.p0.z) + e * (s.p2.z - s.p1.z)).normalize();
+        len = 1 + 0.5 * q;
+        if (u >= 1) { s.mode = 2; s.t = 0; s.d0.copy(s.dir); }
+      } else if (s.mode === 2) {
+        // the beat at the top: the shaft drifts on a little and tips its head toward the zone
+        const u = Math.min(1, s.t / RAIN_HANG), e = ease(u);
+        s.pos.copy(s.p2).addScaledVector(s.d0, 0.3 * Math.sin(u * Math.PI * 0.5)); s.pos.y -= 0.25 * u * u;
+        s.dir.subVectors(s.to, s.pos).normalize().multiplyScalar(e).addScaledVector(s.d0, 1 - e).normalize();
+        if (u >= 1) { s.mode = 3; s.t = 0; s.T = RAIN_DIVE * (0.85 + 0.5 * Math.random()); s.p0.copy(s.pos); }
+      } else if (s.mode === 3) {
+        const u = Math.min(1, s.t / s.T), e = s.pow === 1 ? u : u * u;
+        s.pos.lerpVectors(s.p0, s.to, e);
+        s.dir.subVectors(s.to, s.p0).normalize();
+        len = 1.45;
+        if (u >= 1) {
+          const x = s.to.x, z = s.to.z, gy = s.gy;
+          s.mode = 4; s.t = 0; s.T = 0.4 + Math.random() * 0.35;
+          fx.burst(x, gy + 0.08, z, 3, 3.2, SAND, 0.28, 0.2, 7);
+          fx.spark(x, gy + 0.12, z, 0, 0.4, 0, 0.12, 0.5, FROST);
+          if (this.shaftN++ & 1) fx.ring(x, gy + 0.06, z, 0.5 + Math.random() * 0.3, DUST, 0.3, 0.25, 0.8);
+          else if (Math.random() < 0.5) fx.puff(x, gy + 0.12, z, 0.34, 0.5, 0.4);
+        }
+      }
+      if (s.mode === 4) {
+        // stuck: a third of it in the deck, then it sinks away
+        const k = Math.min(1, (s.T - s.t) / 0.15);
+        len = 0.7;
+        s.pos.copy(s.to).addScaledVector(s.dir, 0.3 - 0.77 * k);
+        if (s.t >= s.T) { s.mode = 0; continue; }
+      } else {
+        // a thin trail: one short segment every few hundredths of a second
+        s.tr += dt;
+        if (s.tr >= 0.035) { s.tr = 0; fx.beam(s.last.x, s.last.y, s.last.z, s.pos.x, s.pos.y, s.pos.z, s.mode === 3 ? FROST : TRAIL, 0.034, s.mode === 3 ? 0.13 : 0.3); s.last.copy(s.pos); }
+      }
+      mesh.setMatrixAt(n++, M4.compose(s.pos, Q1.setFromUnitVectors(ZA, s.dir), V3.set(1, 1, len)));
+    }
+    if (n || mesh.count) { mesh.count = n; mesh.instanceMatrix.needsUpdate = true; }
   }
 
   private updateCamera(dt: number) {
@@ -1856,7 +2128,12 @@ export class View {
     this.camera.position.lerpVectors(this.topPos, this.heroPos, s);
     this.camera.position.y += Math.sin(s * Math.PI) * 6;
     this.camera.quaternion.slerpQuaternions(this.topQ, this.heroQ, s);
-    const fov = (this.orbit ? 50 : 42) + (66 - 42) * s;
+    // Arrow Rain: the camera eases straight back a little and opens up, then returns. It moves along the line of sight
+    // only, so the crosshair and the aim stay exactly where the mouse has them.
+    this.rainT += dt;
+    const nudge = this.rainT < 1.3 ? ease(this.rainT / 0.3) * (1 - ease((this.rainT - 0.5) / 0.8)) * s : 0;
+    if (nudge > 0) this.camera.position.addScaledVector(V2, -0.5 * nudge);
+    const fov = (this.orbit ? 50 : 42) + (66 - 42) * s + 2.5 * nudge;
     if (Math.abs(fov - this.camera.fov) > 0.01) { this.camera.fov = fov; this.camera.updateProjectionMatrix(); }
     if (this.shake > 0.001) {
       // a nudge of the camera position only: the view direction, and with it the aim, never moves

@@ -22,7 +22,7 @@ const CSP = [
 ].join('; ');
 
 const csp = (): Plugin => ({
-  name: 'voltspire-csp',
+  name: 'beatspire-csp',
   apply: 'build',
   // A tag descriptor, not a text replace: it still lands in the head when the head tag is written differently.
   transformIndexHtml: () => [{ tag: 'meta', attrs: { 'http-equiv': 'Content-Security-Policy', content: CSP }, injectTo: 'head-prepend' }],

@@ -1,4 +1,4 @@
-// Records the VOLTSPIRE trailer from the real game, frame by frame, with headless Chromium.
+// Records the BEATSPIRE trailer from the real game, frame by frame, with headless Chromium.
 //   node tools/trailer.mjs            (needs the dev server on http://localhost:5183 and ffmpeg)
 // Output: public/media/trailer.mp4, poster.jpg and the landing-page screenshots.
 import puppeteer from 'puppeteer-core';
@@ -122,7 +122,7 @@ await shot('sectors', 5.5, {
   each: `V.view.cam.x = 6 - u * 12; V.view.cam.dist = 58 - u * 14;`,
 });
 await shot('logo', 6, {
-  clean: true, fadeOut: 1.8, caption: ['Voltspire', 'Play free in your browser. Solo, co-op or 1 v 1.', true], still: ['poster', 0.4],
+  clean: true, fadeOut: 1.8, caption: ['Beatspire', 'Play free in your browser. Solo, co-op or 1 v 1.', true], still: ['poster', 0.4],
   setup: () => { window.__volt.attract(); },
 });
 

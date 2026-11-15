@@ -395,8 +395,10 @@ def enemy_shield():
 
 # ------------------------------------------------------------------ 12. boss
 def enemy_boss():
-    """Colossus: six-legged siege crawler. Rig: body > head (tracks), body > spin_1,
-    body > leg_1..6 > _upper > _lower > _foot > _toe (1-3 = left front..rear, 4-6 = right front..rear)."""
+    """Colossus: four-legged siege walker. Rig: body > head (tracks), body > spin_1,
+    body > leg_1..4 > _upper > _lower > _foot > _toe (1-2 = left front, rear; 3-4 = right front, rear).
+    The legs reach along the road, not across it: the hips sit on the hull's corners and each leg plane points
+    fore or aft with a slight splay, knees high."""
     m = enemy_model('enemy_boss')
     b = m.joint('body', (0, 0, 1.70))
     # main hull (elongated front-back)
@@ -420,8 +422,10 @@ def enemy_boss():
         b.cyl(0.035, 0.03, 'trim', segs=5, rot=RIGHT, at=(0.155, 0, 1.76))
     # legs: armoured femur up to a high knee, long splayed tibia, short tarsus, clawed foot
     Hh, K, M, F = (1.30, 0, 1.70), (1.70, 0, 2.40), (2.22, 0, 1.04), (2.34, 0, 0.28)
-    for i, ang in enumerate((-48, 0, 48, 228, 180, 132)):
-        Fm = rotz(ang) @ T(at=(-0.20, 0, 0))
+    for i, (hip, ang) in enumerate(((-48, -78), (48, 78), (228, 258), (132, 102))):
+        # hip on the hull corner (radius 1.10 at `hip` degrees), leg plane turned to `ang`
+        hx, hy = 1.10 * math.cos(math.radians(hip)), 1.10 * math.sin(math.radians(hip))
+        Fm = T(at=(hx, hy, 0)) @ rotz(ang) @ T(at=(-1.30, 0, 0))
         root, up, lo, ft, toe = radial_leg(m, str(i + 1), b, Fm, (Hh, K, M, F))
         with b.frames(Fm):
             b.sphere(0.25, 'trim', segs=8, rings=5, at=Hh)
@@ -470,7 +474,7 @@ def enemy_boss():
             s.box((0.03, 0.12, 0.08), 'glow_main', bevel=0, at=(0.945, 0, 0))
             s.prism([(0.0, 0.08), (0.10, 0.08), (0.02, 0.34)], 0.05, 'trim', bevel=0.008, plane='xz', at=(0.78, 0, 0))
     # side armour + rear abdomen
-    with b.frames([rotz(a) for a in (-24, 24, 156, 204)]):
+    with b.frames([rotz(a) for a in (-25, 0, 25, 155, 180, 205)]):
         b.box((0.12, 0.50, 0.36), 'paint', bevel=0.04, at=(1.17, 0, 1.76), rot=(0, -6, 0))
         b.lathe([(0.07, 0.0), (0.0, 0.22)], 'trim', segs=6, rot=RIGHT, at=(1.2, 0, 1.80))
     b.sphere(1.0, 'hull', segs=12, rings=7, at=(0, 1.35, 1.72), scale=(0.66, 0.62, 0.50))
@@ -532,4 +536,96 @@ def enemy_boss():
     return m
 
 
-ENEMIES = [enemy_grunt, enemy_runner, enemy_drone, enemy_brute, enemy_shield, enemy_boss]
+# ------------------------------------------------------------------ 13. gyre
+def enemy_wheel():
+    """Gyre: a hub machine riding inside one heavy armoured ring wheel. Origin = where the wheel meets the ground.
+    Rig: rim (pivot = wheel centre; it rolls about its axle, the node's local X), body (the hub, pivot = wheel
+    centre, stays upright) > head (sensor bar with an eye either side of the rim), body > spin_1, spin_2 (gyros).
+    The light strips on the rim use glow_guard: the view dims them as the rim loses its spin."""
+    m = Model('enemy_wheel', {'hull': ('#171a22', 0.6, 0.45), 'paint': ('#3d3958', 0.35, 0.55), 'trim': ('#5d6470', 0.65, 0.42),
+                              'glow_main': '#8fd0ff', 'glow_guard': '#8fd0ff'})
+    C = (0, 0, 1.10)
+    AX = T(at=C, rot=RIGHT)         # primitives built round local Z end up round the axle
+    # ---- rim: outer radius 1.10, a channel section that opens inward, 0.46 wide
+    rim = m.joint('rim', C)
+    with rim.frames(AX):
+        rim.add(revolve([(0.80, -0.21), (0.98, -0.23), (1.03, -0.23), (1.06, -0.19), (1.06, 0.19), (1.03, 0.23),
+                         (0.98, 0.23), (0.80, 0.21), (0.80, 0.15), (0.88, 0.13), (0.88, -0.13), (0.80, -0.15)],
+                        segs=28), 'hull', sharp=35)
+        rim.ring(0.868, 0.02, 0.12, 'trim', segs=28)                                           # drive rail in the channel
+        # tread: sixteen plates with a cleat each, every fourth one plated pale (the eye can follow the roll)
+        for i, F in enumerate(radial(16)):
+            with rim.frames(F):
+                mark = i % 4 == 0
+                rim.box((0.05, 0.335, 0.52 if mark else 0.48), 'paint' if mark else 'hull', bevel=0.014, at=(1.063, 0, 0))
+                rim.box((0.024, 0.07, 0.40), 'trim', bevel=0.006, at=(1.092, 0, 0))
+        # side armour: eight segments a side, bolted at the gaps
+        for s in (-1, 1):
+            for k in range(8):
+                rim.ring(0.925, 0.15, 0.03, 'trim' if k % 4 == 0 else 'paint', segs=3, arc=37, phase=k * 45 + 4,
+                         at=(0, 0, s * 0.238))
+            with rim.frames(radial(8)):
+                rim.cyl(0.026, 0.03, 'trim', segs=5, o='c', at=(0.925, 0, s * 0.243))
+            # light strips: on the inner lip (seen through the wheel) and on the edge of the side face
+            for k in range(6):
+                rim.ring(0.797, 0.02, 0.05, 'glow_guard', segs=4, arc=44, phase=k * 60 + 8, at=(0, 0, s * 0.18))
+                rim.ring(0.835, 0.04, 0.016, 'glow_guard', segs=4, arc=44, phase=k * 60 + 8, at=(0, 0, s * 0.224))
+    # ---- hub: hangs from the axle, heavy at the bottom
+    b = m.joint('body', C)
+    b.box((0.34, 0.58, 0.40), 'hull', bevel=0.05, at=(0, 0.04, 0.86))                            # engine block
+    b.box((0.30, 0.44, 0.09), 'paint', bevel=0.02, at=(0, 0.02, 1.10))                           # cowl
+    b.prism([(-0.30, 0.74), (0.34, 0.74), (0.26, 0.56), (-0.20, 0.56)], 0.22, 'trim', bevel=0.02, plane='yz')   # sump
+    b.box((0.26, 0.03, 0.20), 'glow_main', bevel=0, at=(0, 0.335, 0.88))                         # exhaust grille
+    for z in (0.80, 0.88, 0.96):
+        b.box((0.30, 0.05, 0.022), 'hull', bevel=0, at=(0, 0.345, z))
+    b.cyl(0.095, 0.80, 'trim', segs=10, o='c', rot=RIGHT, at=C)                                  # axle
+    # bogies riding the rail: two below, one tensioner on a mast above
+    for ang in (-34, 34):
+        a = math.radians(ang)
+        P = (0, 0.775 * math.sin(a), 1.10 - 0.775 * math.cos(a))
+        b.rod((0, 0.42 * math.sin(a), 1.10 - 0.42 * math.cos(a)), P, 0.05, 'trim', segs=6)
+        b.cyl(0.075, 0.20, 'hull', segs=8, o='c', rot=RIGHT, at=P)
+        b.cyl(0.04, 0.23, 'trim', segs=6, o='c', rot=RIGHT, at=P)
+    b.box((0.09, 0.12, 0.62), 'hull', bevel=0.02, at=(0, 0.04, 1.47))
+    b.box((0.05, 0.14, 0.34), 'paint', bevel=0.012, at=(0, 0.04, 1.50))
+    b.cyl(0.075, 0.20, 'hull', segs=8, o='c', rot=RIGHT, at=(0, 0.04, 1.875))
+    b.cyl(0.04, 0.23, 'trim', segs=6, o='c', rot=RIGHT, at=(0, 0.04, 1.875))
+    with b.sym():
+        # hub caps outside the rim, each with a shield-shaped skirt that hangs below the axle
+        b.cyl(0.29, 0.07, 'hull', segs=12, bevel=0.02, o='c', rot=RIGHT, at=(0.325, 0, 1.10))
+        b.ring(0.20, 0.07, 0.03, 'paint', segs=12, rot=RIGHT, at=(0.365, 0, 1.10))
+        b.cyl(0.085, 0.03, 'glow_main', segs=8, o='c', rot=RIGHT, at=(0.37, 0, 1.10))
+        b.prism([(-0.25, 1.02), (0.27, 1.02), (0.33, 0.66), (0.12, 0.42), (-0.12, 0.42), (-0.30, 0.66)], 0.06, 'hull',
+                bevel=0.02, plane='yz', at=(0.335, 0, 0))
+        b.prism([(-0.20, 0.90), (0.21, 0.90), (0.25, 0.68), (0.09, 0.50), (-0.10, 0.50), (-0.24, 0.68)], 0.03, 'paint',
+                bevel=0.01, plane='yz', at=(0.375, 0, 0))
+        b.box((0.02, 0.26, 0.03), 'glow_main', bevel=0, at=(0.392, 0, 0.78))
+        # stabiliser arms: a vane up and behind, a gyro pod low in front
+        b.tube([(0.36, 0.08, 1.16), (0.46, 0.30, 1.36), (0.54, 0.46, 1.50)], [0.05, 0.04, 0.035], 'trim', segs=6)
+        b.prism([(0.30, 1.40), (0.62, 1.52), (0.70, 1.74), (0.58, 1.72), (0.36, 1.56)], 0.035, 'paint', bevel=0.01,
+                plane='yz', at=(0.55, 0, 0))
+        b.box((0.03, 0.10, 0.03), 'glow_main', bevel=0, at=(0.55, 0.655, 1.70))
+        b.tube([(0.36, -0.06, 1.02), (0.46, -0.24, 0.84), (0.52, -0.36, 0.72)], [0.05, 0.045, 0.04], 'trim', segs=6)
+        b.cyl(0.125, 0.11, 'hull', segs=10, bevel=0.02, o='c', rot=RIGHT, at=(0.53, -0.38, 0.70))
+        b.ring(0.125, 0.02, 0.03, 'paint', segs=10, rot=RIGHT, at=(0.53, -0.38, 0.70))
+    for i, s in enumerate((1, -1)):
+        P = (s * 0.60, -0.38, 0.70)
+        g = m.joint(f'spin_{i + 1}', mat=T(at=P, rot=RIGHT), parent=b)
+        with g.frames(T(at=P, rot=RIGHT)):
+            g.cyl(0.10, 0.035, 'trim', segs=10, bevel=0.01, o='c')
+            with g.frames(radial(3)):
+                g.box((0.08, 0.035, 0.04), 'glow_main', bevel=0, at=(0.06, 0, 0))
+    # ---- head: a sensor bar through the wheel, one eye either side of the rim
+    h = m.joint('head', (0, -0.20, 1.20), parent=b)
+    h.cyl(0.07, 0.12, 'trim', segs=8, bevel=0.015, at=(0, -0.20, 1.14))
+    h.box((0.20, 0.24, 0.12), 'hull', bevel=0.03, at=(0, -0.26, 1.30))
+    h.cyl(0.04, 0.86, 'trim', segs=6, o='c', rot=RIGHT, at=(0, -0.36, 1.33))
+    with h.sym():
+        h.box((0.15, 0.26, 0.15), 'hull', bevel=0.03, at=(0.42, -0.40, 1.33))
+        h.box((0.17, 0.16, 0.04), 'paint', bevel=0.012, at=(0.42, -0.38, 1.415))
+        h.sphere(0.058, 'glow_main', segs=8, rings=5, at=(0.42, -0.525, 1.33), scale=(1.0, 0.6, 1.0))
+        h.rod((0.44, -0.30, 1.40), (0.47, -0.22, 1.62), 0.008, 'trim', segs=4, r2=0.004)
+    return m
+
+
+ENEMIES = [enemy_grunt, enemy_runner, enemy_drone, enemy_brute, enemy_shield, enemy_boss, enemy_wheel]

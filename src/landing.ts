@@ -1,13 +1,4 @@
 // Landing page behaviour. Progressive enhancement only: the page is complete without it.
-import '@fontsource/saira-stencil-one/400.css';
-import '@fontsource/barlow-condensed/500.css';
-import '@fontsource/barlow-condensed/600.css';
-import '@fontsource/barlow-condensed/700.css';
-import '@fontsource/barlow/400.css';
-import '@fontsource/barlow/500.css';
-import '@fontsource/barlow/600.css';
-import '@fontsource/ibm-plex-mono/400.css';
-import '@fontsource/ibm-plex-mono/500.css';
 
 const root = document.documentElement;
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
@@ -65,4 +56,40 @@ if (!reduced.matches && 'IntersectionObserver' in window) {
     io.observe(t);
   });
   root.classList.add('js');
+}
+
+// --- hover previews: a short clip of the tower or machine in action, loaded only when asked for
+{
+  const clipOf = (img: HTMLImageElement) => /media\/((?:tower|enemy)_[a-z]+)\.jpg$/.exec(img.getAttribute('src') || '')?.[1];
+  document.querySelectorAll<HTMLElement>('.unit, .foe').forEach((card) => {
+    const img = card.querySelector('img');
+    const name = img && clipOf(img);
+    if (!img || !name) return;
+    let video: HTMLVideoElement | null = null, dead = false, wanted = false;
+    const start = () => {
+      if (dead) return;
+      wanted = true;
+      if (!video) {
+        const v = document.createElement('video');
+        v.className = 'pv';
+        v.muted = true; v.loop = true; v.playsInline = true; v.preload = 'auto';
+        v.setAttribute('aria-hidden', 'true'); v.tabIndex = -1;
+        v.addEventListener('playing', () => { if (wanted) card.classList.add('playing'); });
+        v.addEventListener('error', () => { dead = true; card.classList.remove('playing'); v.remove(); video = null; });
+        v.src = './media/prev/' + name + '.mp4';
+        img.after(v);
+        video = v;
+      }
+      void video.play().catch(() => { /* not allowed or not loaded yet */ });
+    };
+    const stop = () => {
+      wanted = false;
+      card.classList.remove('playing');
+      if (video) { video.pause(); try { video.currentTime = 0; } catch { /* not seekable yet */ } }
+    };
+    // mouse: play while the pointer is over the card. Touch and reduced motion: a tap toggles it.
+    card.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse' && !reduced.matches) start(); });
+    card.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') stop(); });
+    card.addEventListener('click', () => { if (card.classList.contains('playing')) stop(); else start(); });
+  });
 }

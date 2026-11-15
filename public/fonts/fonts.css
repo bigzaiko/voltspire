@@ -1,0 +1,11 @@
+/* Fonts shipped with the page (latin subset). font-display: block keeps the fallback font from flashing first;
+   the most used files are also preloaded from the HTML head. All four families are under the SIL Open Font License. */
+@font-face { font-family: 'Saira Stencil One'; font-style: normal; font-weight: 400; font-display: block; src: url('./saira-stencil-one-400.woff2') format('woff2'); }
+@font-face { font-family: 'Barlow Condensed'; font-style: normal; font-weight: 500; font-display: block; src: url('./barlow-condensed-500.woff2') format('woff2'); }
+@font-face { font-family: 'Barlow Condensed'; font-style: normal; font-weight: 600; font-display: block; src: url('./barlow-condensed-600.woff2') format('woff2'); }
+@font-face { font-family: 'Barlow Condensed'; font-style: normal; font-weight: 700; font-display: block; src: url('./barlow-condensed-700.woff2') format('woff2'); }
+@font-face { font-family: 'Barlow'; font-style: normal; font-weight: 400; font-display: block; src: url('./barlow-400.woff2') format('woff2'); }
+@font-face { font-family: 'Barlow'; font-style: normal; font-weight: 500; font-display: block; src: url('./barlow-500.woff2') format('woff2'); }
+@font-face { font-family: 'Barlow'; font-style: normal; font-weight: 600; font-display: block; src: url('./barlow-600.woff2') format('woff2'); }
+@font-face { font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 400; font-display: block; src: url('./ibm-plex-mono-400.woff2') format('woff2'); }
+@font-face { font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 500; font-display: block; src: url('./ibm-plex-mono-500.woff2') format('woff2'); }

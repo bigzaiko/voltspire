@@ -45,8 +45,9 @@ export const LVL_RANGE = [1, 1.08, 1.16];
 export const LVL_RATE = [1, 1.1, 1.25];
 export const upgradeCost = (t: TowerType, lvl: number) => Math.round(TOWERS[t].cost * (lvl === 1 ? 0.9 : 1.6));
 
-export type EnemyType = 'grunt' | 'runner' | 'drone' | 'shield' | 'brute' | 'boss';
-export const ENEMY_TYPES: EnemyType[] = ['grunt', 'runner', 'drone', 'shield', 'brute', 'boss'];
+export type EnemyType = 'grunt' | 'runner' | 'drone' | 'shield' | 'brute' | 'boss' | 'wheel';
+// New types go at the end: co-op snapshots send the index.
+export const ENEMY_TYPES: EnemyType[] = ['grunt', 'runner', 'drone', 'shield', 'brute', 'boss', 'wheel'];
 
 export interface EnemyDef {
   name: string;
@@ -69,7 +70,7 @@ export interface EnemyDef {
 }
 
 /** Model scale per enemy type (weak points and the view use it). */
-export const ENEMY_SCALE: Record<EnemyType, number> = { grunt: 1, runner: 1, drone: 1, shield: 1, brute: 1, boss: 0.95 };
+export const ENEMY_SCALE: Record<EnemyType, number> = { grunt: 1, runner: 1, drone: 1, shield: 1, brute: 1, boss: 0.95, wheel: 1 };
 
 export const ENEMIES: Record<EnemyType, EnemyDef> = {
   grunt: { name: 'Grunt', hp: 28, speed: 3.0, bounty: 5, xp: 2, energy: 1.5, r: 0.55, y: 0.6, armor: 0, shield: 0, leak: 1, cost: 1, from: 1, scale: 1 },
@@ -78,7 +79,29 @@ export const ENEMIES: Record<EnemyType, EnemyDef> = {
   shield: { name: 'Aegis', hp: 55, speed: 2.5, bounty: 9, xp: 5, energy: 3, r: 0.7, y: 0.8, armor: 0, shield: 55, leak: 2, cost: 3, from: 6, scale: 1 },
   brute: { name: 'Brute', hp: 175, speed: 1.9, bounty: 13, xp: 8, energy: 5, r: 0.95, y: 1.1, armor: 3, shield: 0, leak: 3, cost: 5, from: 8, scale: 1, weak: [{ x: 0, y: 1.3, z: -0.55, r: 0.4, mul: 2.5 }] },
   boss: { name: 'Colossus', hp: 1200, speed: 1.3, bounty: 160, xp: 50, energy: 30, r: 1.6, y: 1.4, armor: 4, shield: 0, leak: 6, cost: 30, from: 5, scale: 1, weak: [{ x: 0, y: 2.1, z: -1.6, r: 0.6, mul: 3 }, { x: 0, y: 2.9, z: 1.5, r: 0.45, mul: 2.5 }] },
+  // Gyre: a machine riding inside one large armoured wheel. `speed` is its pace at full spin (see WHEEL_GUARD below).
+  wheel: { name: 'Gyre', hp: 130, speed: 4.4, bounty: 11, xp: 6, energy: 3.5, r: 1.05, y: 1.1, armor: 0, shield: 0, leak: 2, cost: 4, from: 9, scale: 1 },
 };
+
+/**
+ * The Gyre's rim. Enemy.spin runs from 0 (stopped) to 1 (full speed). While it spins, only 1 - WHEEL_GUARD * spin of a hit gets
+ * through, and the Gyre rolls at WHEEL_CRAWL of its speed with the rim stopped, rising to all of it at full spin.
+ * WHEEL_BLEED: spin a hit takes off, per share of the Gyre's full health the hit would have dealt without the guard.
+ * WHEEL_DRAG: spin lost per second while slowed. WHEEL_SINK: per second while a Graviton Well or a Singularity holds it. A freeze stops it dead.
+ * WHEEL_REST: seconds without a hit before it spins back up, at WHEEL_SPINUP per second.
+ * WHEEL_PIERCE: share of the guard that Rail shots and Kestrel's full-draw arrows ignore.
+ * WHEEL_ESCORT: first wave on which Gyres roll in with each Colossus, WHEEL_ESCORTS of them per Colossus.
+ */
+export const WHEEL_GUARD = 0.8;
+export const WHEEL_CRAWL = 0.45;
+export const WHEEL_BLEED = 2;
+export const WHEEL_DRAG = 0.4;
+export const WHEEL_SINK = 1.2;
+export const WHEEL_REST = 1.2;
+export const WHEEL_SPINUP = 0.3;
+export const WHEEL_PIERCE = 0.5;
+export const WHEEL_ESCORT = 15;
+export const WHEEL_ESCORTS = 2;
 
 /** Global balance knobs (tools/balance.ts can override them from the TUNE environment variable to sweep values). */
 /** Strength of each extra Twin Barrels bolt, and the damage multiplier of an Overpressure crit. */

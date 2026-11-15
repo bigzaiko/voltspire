@@ -20,7 +20,7 @@ PREVIEWS = os.path.join(ROOT, 'docs', 'previews')
 
 ORDER = ['tower_pulse', 'tower_cryo', 'tower_arc', 'tower_mortar', 'tower_rail', 'tower_beacon',
          'tower_flame', 'tower_lance', 'tower_missile', 'tower_gravity', 'tower_spire',
-         'enemy_grunt', 'enemy_runner', 'enemy_drone', 'enemy_brute', 'enemy_shield', 'enemy_boss',
+         'enemy_grunt', 'enemy_runner', 'enemy_drone', 'enemy_brute', 'enemy_shield', 'enemy_boss', 'enemy_wheel',
          'hero', 'core', 'prop_barrier', 'prop_lamp', 'prop_crate']
 
 

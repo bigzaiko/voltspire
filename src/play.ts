@@ -307,7 +307,7 @@ function dmgNumber(e: Ev, crit = false): number {
 }
 
 // ---------- enemy icons (wave intel) ----------
-// Six silhouettes on a 16 x 16 grid: walker, dart, flyer, shield, heavy, and the Colossus as a plated hexagon.
+// Seven silhouettes on a 16 x 16 grid: walker, dart, flyer, shield, heavy, the Colossus as a plated hexagon, and the Gyre as a ring wheel with its hub.
 const ENEMY_ICON: Record<EnemyType, string> = {
   grunt: 'M8 1.5a2 2 0 1 1 0 4a2 2 0 0 1 0-4zM4.5 6.5h7l-1 4.5 1 3.5H9.3L8 11.5 6.7 14.5H4.5l1-3.5z',
   runner: 'M1.5 3.5l6 4.5-6 4.5zM8 3.5l6.5 4.5L8 12.5z',
@@ -315,6 +315,7 @@ const ENEMY_ICON: Record<EnemyType, string> = {
   shield: 'M8 1.5l5.5 2V8c0 3.3-2.4 5.6-5.5 6.5C4.9 13.6 2.5 11.3 2.5 8V3.5z',
   brute: 'M1.5 5h4V2.5h5V5h4v6.5H12v3H9.2v-3H6.8v3H4v-3H1.5z',
   boss: 'M8 0.8l6.2 3.6v7.2L8 15.2l-6.2-3.6V4.4zM8 5.4a2.6 2.6 0 1 0 0 5.2a2.6 2.6 0 0 0 0-5.2z',
+  wheel: 'M8 1a7 7 0 1 0 0 14a7 7 0 0 0 0-14zM8 3.4a4.6 4.6 0 1 1 0 9.2a4.6 4.6 0 0 1 0-9.2zM8 6a2 2 0 1 0 0 4a2 2 0 0 0 0-4z',
 };
 type Group = { type: EnemyType; n: number };
 /** Fill a box with icon + count chips, Colossus first. Anything that is not a known enemy type is dropped. */

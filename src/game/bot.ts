@@ -1,7 +1,7 @@
 // Autoplayer: drives the menu attract mode, the trailer, and headless balance tests.
 import { GW, GH, TOWERS, ENEMIES, ENEMY_SCALE, MAX_ENERGY, CARD_BY_ID, LINK_RANGE, WALL_HALF, FIRE_RING, cellX, cellZ } from './data.ts';
 import type { TowerType } from './data.ts';
-import { Sim, nodePos, weakPos, raySphere, linkRange, segDist, ARROW_PAD, ARROW_SPEED } from './sim.ts';
+import { Sim, nodePos, weakPos, raySphere, linkRange, segDist, paceOf, ARROW_PAD, ARROW_SPEED } from './sim.ts';
 import type { Enemy, Tower } from './sim.ts';
 import { hexDist } from './hex.ts';
 
@@ -201,7 +201,8 @@ export class Bot {
       if (!all && Math.hypot(e.x - t.x, e.z - t.z) > r) continue;
       if (t.type === 'mortar' && ENEMIES[e.type].fly) continue;
       n++;
-      if (e.type === 'boss' || e.type === 'brute') heavy = true;
+      // a Gyre still spinning is worth a Flash Freeze or a Collapse on its own: both stop its rim
+      if (e.type === 'boss' || e.type === 'brute' || (e.type === 'wheel' && e.spin > 0.5 && (t.type === 'cryo' || t.type === 'gravity'))) heavy = true;
     }
     return all ? n >= 8 || (heavy && n >= 1) : n >= 4 || heavy;
   }
@@ -275,12 +276,12 @@ export class Bot {
     // 2. otherwise the most dangerous enemy in reach
     let bd = 1e9;
     for (const e of s.enemies) {
-      const d = Math.hypot(e.x - o.x, e.z - o.z) + this.progress(e) * -0.15 - (e.type === 'boss' ? 10 : e.type === 'brute' ? 3 : 0);
+      const d = Math.hypot(e.x - o.x, e.z - o.z) + this.progress(e) * -0.15 - (e.type === 'boss' ? 10 : e.type === 'brute' || e.type === 'wheel' ? 3 : 0); // full-draw arrows cut through half of a Gyre's guard
       if (d < bd) { bd = d; tgt = e; }
     }
     if (!want && tgt) {
       const dist = Math.hypot(tgt.x - o.x, tgt.y - o.y, tgt.z - o.z), T = dist / ARROW_SPEED;
-      const v = tgt.speed * (tgt.slowT > 0 ? 1 - tgt.slowF : 1) * (tgt.frz > 0 || tgt.sing > 0 ? 0 : 1) * T;
+      const v = paceOf(tgt) * (tgt.slowT > 0 ? 1 - tgt.slowF : 1) * (tgt.frz > 0 || tgt.sing > 0 ? 0 : 1) * T;
       const lx = Math.sin(tgt.yaw) * v, lz = Math.cos(tgt.yaw) * v;
       want = { x: tgt.x + lx, y: tgt.y, z: tgt.z + lz };
       // a weak point, when one can be reached before the hull is in the way

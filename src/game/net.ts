@@ -2,7 +2,7 @@
 // Everything received is untrusted and must be validated by the caller.
 import type { Peer, DataConnection } from 'peerjs';
 
-const PREFIX = 'voltspire-v1-';
+const PREFIX = 'beatspire-v1-';
 const ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 export const cleanCode = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
 

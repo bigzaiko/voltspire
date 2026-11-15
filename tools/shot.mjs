@@ -1,4 +1,4 @@
-// Capture three 1920x1080 screenshots of VOLTSPIRE with headless Chromium.
+// Capture three 1920x1080 screenshots of BEATSPIRE with headless Chromium.
 //   node tools/shot.mjs <outDir> [baseUrl] [quality]
 // Needs the Vite dev server (default http://localhost:5183) to be running.
 // Uses the deterministic capture mode (play.html?capture=1 -> window.__volt).

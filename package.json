@@ -1,7 +1,7 @@
 {
-  "name": "voltspire",
+  "name": "beatspire",
   "version": "1.0.0",
-  "description": "VOLTSPIRE - cyberpunk tower defense with a third-person archer ultimate",
+  "description": "BEATSPIRE - cyberpunk tower defense with a third-person archer ultimate",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
