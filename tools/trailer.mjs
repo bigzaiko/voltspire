@@ -121,7 +121,8 @@ await shot('titan', 11, {
   setup: () => {
     const V = window.__volt; V.demo(7, 560);
     // run on to the pause before the Titan's wave, then call that wave so the leap starts with the shot
-    for (let i = 0; i < 900 && !(V.sim.titan && V.sim.wave >= V.sim.titan.wave - 1 && !V.sim.waveActive); i++) V.skip(1);
+    // (waves overlap, so wait for the moment the wave before it has finished spawning, not for an empty field)
+    for (let i = 0; i < 1500 && !(V.sim.titan.phase === 'warn' && V.sim.wave === V.sim.titan.wave - 1 && V.sim.queue.length === 0); i++) V.skip(0.5);
     V.resync(); V.sim.startWave();
     V.view.cam.x = -6; V.view.cam.z = 2; V.view.cam.dist = 52;
   },

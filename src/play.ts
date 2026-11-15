@@ -964,7 +964,10 @@ function openSetup(target: 'solo' | 'lobby') {
     const cv = document.createElement('canvas'); cv.width = 208; cv.height = 144;
     drawMap(cv, m);
     const rec = el('span', 'rec');
-    b.append(cv, el('b', '', m.name), el('span', '', `${TIER_NAME[m.tier] || 'Custom'} / ${m.lanes.length} ${m.lanes.length > 1 ? 'roads' : 'road'}`), rec);
+    // generated maps are called "Sector K-17 Ashfall": the place name is the title, the sector code goes to the small line
+    const sec = /^Sector ([A-Z]-\d+) (.+)$/.exec(m.name);
+    b.title = m.name;
+    b.append(cv, el('b', '', sec ? sec[2] : m.name), el('span', '', `${sec ? sec[1] + ' / ' : ''}${TIER_NAME[m.tier] || 'Custom'} / ${m.lanes.length} ${m.lanes.length > 1 ? 'roads' : 'road'}`), rec);
     b.addEventListener('click', () => { premade = m; choice.map = m; choice.source = 'premade'; sound.play('click'); refreshSetup(); });
     row.appendChild(b);
     mapCards.push({ def: m, btn: b, rec });
