@@ -564,6 +564,7 @@ function handleEvents(evs: Ev[]) {
       case 'titanSmash': sound.play('titanSmash', 0.55); break;
       case 'titanLand':
         sound.play('titanLand');
+        titanEntrance(e.x, e.z);
         announce(`Wave ${sim.wave}: ${TITAN_NAME()}`, 'It lands at the gate and stuns every tower');
         break;
       case 'titanImpact':
@@ -1299,6 +1300,49 @@ const playing = () => mode !== 'attract' && !ended && !bot;
 const active = () => playing() && !paused && !menuOpen() && !shown('cards');
 const spires = () => sim.towers.filter((t) => t.type === 'spire');
 
+// ---------- the Titan's entrance ----------
+// When it leaps, the bird camera swings to the gate, time slows around the impact, and once it is on the road
+// the player is put on the Spire with the best view of it. Any key or click hands the camera back early.
+type TitanState = { phase: string; t: number } | undefined;
+const titanState = () => (sim as unknown as { titan?: TitanState }).titan;
+let cine: { t: number; x: number; z: number; fx: number; fz: number; fd: number } | null = null;
+let autoLink = false;
+const TITAN_LAND_S = 2.5; // seconds from the leap to the impact (TITAN_LAND in the rules)
+function titanEntrance(x: number, z: number) {
+  if (mode === 'attract' || !Number.isFinite(x) || !Number.isFinite(z)) return;
+  autoLink = !bot;
+  if (!heroOn()) { const c = bird(); cine = { t: 0, x, z, fx: c.x, fz: c.z, fd: c.dist }; }
+}
+/** Slow motion around the impact. Only where the rules run (the host in co-op), so both players see the same. */
+function titanSlow() {
+  const t = titanState();
+  if (!t || isClient || mode === 'attract') return 1;
+  if (t.phase === 'landing' && t.t > TITAN_LAND_S - 0.7) return 0.35;
+  if (t.phase === 'walk' && t.t < 0.5) return 0.35;
+  return 1;
+}
+function titanCamera(dt: number) {
+  const t = titanState();
+  if (cine) {
+    cine.t += dt;
+    const c = bird(), u = Math.min(1, cine.t / 1.1), k = u * u * (3 - 2 * u);
+    // aim between the gate and the middle of the deck, so the leap and the road it lands on are both in frame
+    c.x = cine.fx + (cine.x * 0.55 - cine.fx) * k; c.z = cine.fz + (cine.z * 0.55 - cine.fz) * k; c.dist = cine.fd + (52 - cine.fd) * k;
+    if (heroOn() || sim.over || cine.t > 12 || !t || (t.phase !== 'landing' && t.phase !== 'walk')) cine = null;
+  }
+  if (autoLink && t && t.phase === 'walk' && t.t > 1.1) {
+    autoLink = false; cine = null;
+    if (active() && !heroOn()) {
+      // the Spire with the best view: not right under it, not across the map
+      const titan = sim.enemies.find((e) => e.type === 'titan');
+      let id = 0, best = Infinity;
+      for (const sp of spires()) { const d = titan ? Math.abs(Math.hypot(sp.x - titan.x, sp.z - titan.z) - 14) : 0; if (d < best) { best = d; id = sp.id; } }
+      if (id) { act.hero(id); lockPointer(); }
+    }
+  }
+  if (t && (t.phase === 'dead' || t.phase === 'none')) autoLink = false;
+}
+
 /** Space, the Uplink bar or the touch button: uplink to the Spire nearest the selection or the cursor, or leave. */
 function tryUlt() {
   if (!active()) return;
@@ -1446,6 +1490,7 @@ function boardTap(clientX: number, clientY: number, keep: boolean) {
 function skipIntro() { if (vx.introActive?.()) { vx.skipIntro?.(); return true; } return false; }
 
 addEventListener('keydown', (e) => {
+  if (cine) cine = null; // any key or click hands the camera back during the Titan's entrance
   // Typing into a field is not a hotkey. A focused slider or checkbox does not type, so Escape and P still work there.
   const typing = e.target instanceof HTMLInputElement ? !['range', 'checkbox', 'color'].includes(e.target.type) : e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement;
   if (typing) return;
@@ -1532,6 +1577,7 @@ document.addEventListener('mousedown', (e) => {
   heroMouse(e);
 });
 canvas.addEventListener('mousedown', (e) => {
+  if (cine) cine = null; // any key or click hands the camera back during the Titan's entrance
   sound.init();
   if (!active() || heroOn()) return;
   if (skipIntro()) return;
@@ -1958,9 +2004,10 @@ function beatLevel(): number {
 function frame(dt: number) {
   if (CAPTURE) sound.clock += dt;
   diagFrame(dt);
+  if (!paused) titanCamera(dt);
   if (overlinkCue > 0 && !paused) { overlinkCue -= dt; if (overlinkCue <= 0) overlinkSay(); }
   if (!paused) {
-    acc += dt * (mode === 'attract' ? 1.4 : sim.players[me]?.heroActive ? 1 : speed);
+    acc += dt * (mode === 'attract' ? 1.4 : sim.players[me]?.heroActive ? 1 : speed) * titanSlow();
     let n = 0;
     const cap = dt > 0.2 ? 70 : 10; // a hidden tab is stepped in big chunks so a multiplayer match keeps running
     while (acc >= STEP && n < cap) { bot?.step(STEP); if (!isClient) sim.step(STEP); acc -= STEP; n++; }
