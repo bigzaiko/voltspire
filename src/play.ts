@@ -1478,7 +1478,10 @@ function frame(dt: number) {
     (window as unknown as Record<string, unknown>).__volt = {
       frame, view, announce, toast, tutor, touch: touchApi,
       get sim() { return sim; },
-      demo(seed: number, ff: number, mapId?: string) { startGame('solo', { demo: true, seed, map: mapById(mapId) || MAPS[0], diff: 'normal', survival: false }); sound.stopMusic(); fastForward(ff); view.setSim(sim, 0); },
+      demo(seed: number, ff: number, mapId?: string) {
+        // mapId may be a pre-made id or 'gen-<tier>-<seed>' for a generated map
+        const g = /^gen-([1-3])-(\d{1,9})$/.exec(mapId || '');
+        startGame('solo', { demo: true, seed, map: g ? generateMap(+g[2], +g[1]) : mapById(mapId) || MAPS[0], diff: 'normal', survival: false }); sound.stopMusic(); fastForward(ff); sim.exitHero(0); sim.events.length = 0; view.setSim(sim, 0); },
       attract() { startAttract(); show('menu', false); },
       menu() { startAttract(); },
       energy(v: number) { sim.players[0].energy = v; },

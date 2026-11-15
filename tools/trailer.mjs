@@ -28,12 +28,12 @@ page.on('pageerror', (e) => console.error('[pageerror]', e.message));
 await page.goto(BASE + '/play.html?capture=1', { waitUntil: 'load' });
 await page.waitForFunction('window.__volt', { timeout: 60000 });
 await page.addStyleTag({ content: `
-  #tr-cap { position: fixed; left: 0; right: 0; bottom: 20%; z-index: 90; text-align: center; pointer-events: none; font-family: Orbitron, sans-serif; font-weight: 900; font-size: 64px; letter-spacing: .2em; text-transform: uppercase; color: #fff; text-shadow: 0 0 30px rgba(0,0,0,.9), 0 0 22px #19e3ff; opacity: 0; }
-  #tr-cap small { display: block; margin-top: 14px; font-size: 24px; letter-spacing: .38em; color: #ffc46b; font-weight: 700; }
-  #tr-cap.mid { bottom: 42%; font-size: 92px; }
+  #tr-cap { position: fixed; left: 0; right: 0; bottom: 19%; z-index: 90; text-align: center; pointer-events: none; font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 84px; line-height: 1; letter-spacing: .12em; text-transform: uppercase; color: #efe9d6; text-shadow: 0 2px 0 #100e0c, 0 0 40px rgba(16,14,12,.95); opacity: 0; }
+  #tr-cap small { display: block; margin-top: 16px; font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 500; letter-spacing: .3em; color: #f68b56; }
+  #tr-cap.mid { bottom: 40%; font-size: 132px; font-family: 'Saira Stencil One', 'Barlow Condensed', sans-serif; font-weight: 400; color: #e3dc92; }
   #tr-fade { position: fixed; inset: 0; z-index: 95; background: #000; opacity: 0; pointer-events: none; }
   body.tr-clean #hud, body.tr-clean #vignette { display: none !important; }
-  #toasts, #tip, #btn-pause, #btn-speed, #bottom, #marks { display: none !important; }
+  #toasts, #tip, #tutor, #btn-pause, #btn-speed, #btn-full, #bottom, #marks, #touch { display: none !important; }
 ` });
 await page.evaluate(() => {
   for (const id of ['tr-cap', 'tr-fade', 'tr-bars']) { const d = document.createElement('div'); d.id = id; document.body.appendChild(d); }
@@ -75,7 +75,7 @@ async function shot(name, seconds, opts) {
   clock += seconds;
 }
 
-// make the bot's ultimate last for the whole shot and start it right away
+// start the bot's uplink at frame `at` and keep it alive until `tail` frames before the end
 const UPLINK = `
   const p = V.sim.players[0];
   if (i === args.at) p.energy = 100;
@@ -83,44 +83,44 @@ const UPLINK = `
 `;
 
 await shot('intro', 5, {
-  clean: true, fadeIn: 1.6, caption: ['Nyx-9 · 2187', 'The Static is coming', true],
+  clean: true, fadeIn: 1.6, caption: ['Nyx-9, 2187', 'The Static is coming', true],
   setup: () => { window.__volt.attract(); },
 });
-await shot('build', 6, {
-  caption: ['Build the grid', 'Six towers. One road. No second chances.'],
-  setup: () => { const V = window.__volt; V.demo(11, 26); V.view.cam.x = -14; V.view.cam.z = -3; V.view.cam.dist = 30; },
-  each: `V.view.cam.x = -14 + ${'u'} * 9; V.view.cam.dist = 30 + u * 6;`,
+await shot('deploy', 6, {
+  caption: ['Raise the grid', 'Eleven towers. Every tile counts.'],
+  setup: () => { const V = window.__volt; V.demo(11, 0, 'crossfire'); V.sim.gold = 900; V.view.cam.x = 0; V.view.cam.z = 2; V.view.cam.dist = 56; },
+  each: `V.view.cam.dist = 56 - u * 12;`,
 });
 await shot('battle', 6.5, {
   caption: ['Hold the line', 'A Colossus marches every fifth wave'], still: ['shot-bird', 0.55],
-  setup: () => { const V = window.__volt; V.demo(7, 352); V.view.cam.x = 6; V.view.cam.z = 2; V.view.cam.dist = 44; },
-  each: `V.view.cam.x = 6 - u * 8; V.view.cam.dist = 44 - u * 8;`,
+  setup: () => { const V = window.__volt; V.demo(7, 352, 'overpass'); V.view.cam.x = 4; V.view.cam.z = 1; V.view.cam.dist = 46; },
+  each: `V.view.cam.x = 4 - u * 7; V.view.cam.dist = 46 - u * 9;`,
 });
 await shot('cards', 4, {
-  caption: ['Draft your power', 'Tower blueprints · upgrades · hero skills'], still: ['shot-cards', 0.6],
+  caption: ['Draft your power', 'Blueprints, tower upgrades, hero skills'], still: ['shot-cards', 0.6],
   setup: () => {
     const V = window.__volt; V.demo(7, 300); V.takeover();
     for (const t of ['arc', 'mortar', 'rail', 'beacon']) V.sim.unlocked.add(t);
-    V.sim.players[0].pending = [['p_crit', 'arcarrow', 'napalm']];
+    V.sim.players[0].pending = [['p_crit', 'arcarrow', 'capbank']];
   },
 });
 await shot('uplink', 13, {
-  caption: ['Become the storm', 'Uplink: fight from the towers yourself'], hot: [1.2, 13], still: ['shot-hero', 0.5],
+  caption: ['Take the Spire', 'Uplink and fight it yourself'], hot: [1.2, 13], still: ['shot-hero', 0.5],
   setup: () => { const V = window.__volt; V.demo(7, 372); V.view.cam.x = -4; V.view.cam.z = 2; V.view.cam.dist = 40; },
   each: UPLINK, args: { at: 12, tail: 30 },
 });
-await shot('evolve', 8, {
-  caption: ['The bow evolves', 'Pierce · split · detonate · chain'], hot: [0.8, 8],
-  setup: () => { const V = window.__volt; V.demo(21, 640); V.view.cam.x = 0; V.view.cam.z = 2; V.view.cam.dist = 42; },
+await shot('specials', 9, {
+  caption: ['Shoot the node', 'Every tower hides a special'], hot: [0.8, 9],
+  setup: () => { const V = window.__volt; V.demo(21, 640, 'highline'); for (const t of V.sim.towers) if (t.type !== 'spire') t.charge = 1; V.view.cam.x = 0; V.view.cam.z = 2; V.view.cam.dist = 42; },
   each: UPLINK, args: { at: 6, tail: 20 },
 });
-await shot('together', 5, {
-  caption: ['Online co-op · 1 v 1', 'One room code. No account.'],
-  setup: () => { const V = window.__volt; V.demo(5, 560); V.view.cam.x = 8; V.view.cam.z = 3; V.view.cam.dist = 50; },
-  each: `V.view.cam.x = 8 - u * 14; V.view.cam.dist = 50 - u * 12;`,
+await shot('sectors', 5.5, {
+  caption: ['No two sectors alike', 'Generated maps, bridges, three difficulties'],
+  setup: () => { const V = window.__volt; V.demo(5, 420, 'gen-3-4242'); V.view.cam.x = 6; V.view.cam.z = 2; V.view.cam.dist = 58; },
+  each: `V.view.cam.x = 6 - u * 12; V.view.cam.dist = 58 - u * 14;`,
 });
 await shot('logo', 6, {
-  clean: true, fadeOut: 1.8, caption: ['Voltspire', 'Play free in your browser', true], still: ['poster', 0.4],
+  clean: true, fadeOut: 1.8, caption: ['Voltspire', 'Play free in your browser. Solo, co-op or 1 v 1.', true], still: ['poster', 0.4],
   setup: () => { window.__volt.attract(); },
 });
 
