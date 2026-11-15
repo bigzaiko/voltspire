@@ -37,7 +37,7 @@ h3 { font-family: var(--display); font-weight: 600; font-size: 1.5rem; line-heig
 .kicker::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 12px; background: var(--apricot); }
 .kicker-hot { color: var(--static); }
 .kicker-hot::before { background: var(--static); }
-.kicker i, .eyebrow i { display: inline-block; width: 14px; height: 1px; margin: 0 10px; vertical-align: middle; background: var(--line-2); }
+.kicker i, .eyebrow i { display: inline-block; width: 4px; height: 4px; margin: 0 10px; vertical-align: middle; background: var(--apricot); }
 .lede { max-width: 60ch; color: var(--text); font-size: 1.2rem; line-height: 1.5; }
 .head { position: relative; display: grid; gap: 16px; margin-bottom: clamp(32px, 5vw, 56px); padding-bottom: 22px; border-bottom: 1px solid var(--line-2); }
 .head::after { content: ''; position: absolute; right: 0; bottom: 0; width: 120px; height: 7px; background: var(--ticks); }
@@ -242,7 +242,7 @@ kbd { display: inline-block; min-width: 1.9em; padding: 1px 6px; border: 1px sol
   .wrap { width: min(100% - 36px, var(--wrap)); }
   .hero { padding-top: 92px; }
   .eyebrow { font-size: 0.62rem; letter-spacing: 0.14em; line-height: 1.9; }
-  .eyebrow i { width: 8px; margin: 0 6px; }
+  .eyebrow i { width: 3px; height: 3px; margin: 0 6px; }
   .wordmark { font-size: clamp(3rem, 17.5vw, 5rem); }
   .unit-img { aspect-ratio: 3 / 2; }
   .cta { width: 100%; }
