@@ -118,6 +118,25 @@ const f = (v) => v.toFixed(3);
   await wait(300);
   const diag = await p.evaluate(() => (document.getElementById('diag').classList.contains('hidden') ? '' : document.getElementById('diag').textContent));
   ok(/fps \d+/.test(diag) && /raw input/.test(diag) && /canvas \d+ x \d+/.test(diag) && /ambient occlusion (on|off)/.test(diag), 'keys: F3 shows the diagnostics: ' + diag.split('\n').slice(1, 3).join(' | '));
+
+  // Uplink with the mouse: the view turns by exactly the mouse travel times the sensitivity, slow or fast, with nothing left over
+  await p.evaluate(() => { const s = window.__dbg.sim; s.players[0].energy = 100; window.__dbg.act.hero(s.towers.find((x) => x.type === 'spire').id); });
+  await wait(1200);
+  await p.mouse.move(600, 450);
+  await wait(100);
+  const turn = async (steps, px, pause) => {
+    const a = await look(p);
+    for (let i = 1; i <= steps; i++) { await p.mouse.move(600 + i * px, 450 + i * px * 0.25); if (pause) await wait(pause); }
+    const b = await look(p);
+    await wait(300);
+    const c = await look(p);
+    await p.mouse.move(600, 450);
+    await wait(100);
+    return { yaw: Math.abs(b.yaw - a.yaw), pitch: Math.abs(b.pitch - a.pitch), late: Math.abs(c.yaw - b.yaw) + Math.abs(c.pitch - b.pitch) };
+  };
+  const slowTurn = await turn(40, 5, 16), fastTurn = await turn(4, 50, 0);
+  ok(Math.abs(slowTurn.yaw - 0.44) < 0.002 && Math.abs(fastTurn.yaw - 0.44) < 0.002 && Math.abs(slowTurn.pitch - 0.11) < 0.002 && slowTurn.late < 1e-9 && fastTurn.late < 1e-9,
+    `mouse look: 200 px turns ${f(slowTurn.yaw)} rad slowly and ${f(fastTurn.yaw)} rad fast (0.440 expected), and the view does not move afterwards`);
   await p.close();
 }
 
@@ -210,18 +229,24 @@ const f = (v) => v.toFixed(3);
   await wait(1200);
   ok(await p.evaluate(() => window.__dbg.sim.players[0].heroActive), 'touch: the Uplink is active');
 
-  // slow drag: fine aim
+  // The look gain depends on how fast the finger moves, so these two drags carry their own event times: a move
+  // sent through the test driver takes about 80 ms to arrive, which would make every swipe look slow.
+  const cdp = await p.createCDPSession();
+  const drag = async (steps, px, ms) => {
+    const t0 = Date.now() / 1000, pt = (x) => [{ x, y: 200, id: 7 }];
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: pt(300), timestamp: t0 });
+    for (let i = 1; i <= steps; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: pt(300 + i * px), timestamp: t0 + (i * ms) / 1000 });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [], timestamp: t0 + ((steps + 1) * ms) / 1000 });
+    await wait(120);
+  };
+  // slow drag: fine aim (100 px in a second)
   let l0 = await look(p);
-  t = await T.touchStart(300, 200);
-  for (let i = 1; i <= 25; i++) { await t.move(300 + i * 4, 200); await wait(40); }
-  await t.end();
+  await drag(25, 4, 40);
   let l1 = await look(p);
   const fine = Math.abs(l1.yaw - l0.yaw);
-  // quick swipe over the same 100 px
+  // quick swipe over the same 100 px (in 64 ms)
   l0 = await look(p);
-  t = await T.touchStart(300, 200);
-  for (let i = 1; i <= 4; i++) await t.move(300 + i * 25, 200);
-  await t.end();
+  await drag(4, 25, 16);
   l1 = await look(p);
   const swipe = Math.abs(l1.yaw - l0.yaw);
   ok(fine > 0.2 && fine < 0.6 && swipe > fine * 1.8, `touch: 100 px slowly turns ${f(fine)} rad (${(fine * 57.3).toFixed(0)} deg), the same 100 px as a quick swipe turns ${f(swipe)} rad (${(swipe * 57.3).toFixed(0)} deg)`);

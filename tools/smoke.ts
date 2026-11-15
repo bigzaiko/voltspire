@@ -6,7 +6,7 @@ import {
   TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY, TITAN_STRIKE, TITAN_SLOW, TITAN_GOLD, TITAN_SURVIVAL, TITAN_AGAIN, TITAN_TOUGHER, TITAN_SMASH, TITAN_LEAD, WHEEL_GUARD, WHEEL_CRAWL, WHEEL_BLEED, WHEEL_DRAG, WHEEL_SINK, WHEEL_REST, WHEEL_SPINUP, WHEEL_PIERCE, TOWERS, TOWER_TYPES, MAX_ENERGY, CARDS, CARD_BY_ID, GW, GH, TWIN_BOLT, TUNE, COOP_HP, coopScale, BOW_TIERS,
   BREACH_TIME, BREACH_TIME_BOSS, BREACH_SHARE, FIRST_WAVE_IN, NEXT_WAVE_IN, DRAW_TIME, MIN_DRAW, NOCK_TIME, FULL_DRAW_MUL, HERO_DUR, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR,
 } from '../src/game/data.ts';
-import { bowTier as bowTierOf } from '../src/game/data.ts';
+import { bowTier as bowTierOf, waveHpMul } from '../src/game/data.ts';
 import { hexDist } from '../src/game/hex.ts';
 import type { MapDef } from '../src/game/map.ts';
 import { Bot } from '../src/game/bot.ts';
@@ -1169,6 +1169,10 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
     const now = share(), rare = TUNE.rare, epic = TUNE.epic;
     TUNE.rare = 5; TUNE.epic = 2; const was = share(); TUNE.rare = rare; TUNE.epic = epic;
     ok(now / was > 0.8 && now / was < 0.94, `rare and epic cards are offered less often (${(100 * was).toFixed(1)}% of the offers before, ${(100 * now).toFixed(1)}% now)`);
+    // the nudge after measuring: a little more health on the early waves, the same from wave 20 on
+    const before = (w: number) => 1 + 0.2 * (w - 1) + 0.055 * (w - 1) ** 2 + 0.0033 * (w - 1) ** 3, up = (w: number) => waveHpMul(w) / before(w);
+    ok(up(1) === 1 && up(5) > 1.02 && up(5) < 1.04 && up(10) > 1.01 && up(10) < 1.025 && Math.abs(up(20) - 1) < 0.005 && Math.abs(up(25) - 1) < 0.005 && Math.abs(up(30) - 1) < 0.01,
+      `early waves are a little tougher, late ones as before (wave 5 ${up(5).toFixed(3)}, 10 ${up(10).toFixed(3)}, 20 ${up(20).toFixed(3)}, 25 ${up(25).toFixed(3)})`);
   }
 }
 

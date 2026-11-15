@@ -1612,17 +1612,18 @@ function aimBow(drawing: boolean, dt: number) {
 // ---------- diagnostics (F3) ----------
 // A small readout for hunting down a sluggish view: frame times, whether the mouse is captured and raw, what the
 // mouse sent in the last frame and how far the view turned for it. It costs nothing while it is off.
-const diag = { on: false, t: 0, n: 0, sum: 0, worst: 0, fps: 0, avg: 0, max: 0, mx: 0, my: 0, mn: 0, yaw: 0, pitch: 0, dropped: 0, slow: '', fast: '' };
+const diag = { on: false, last: 0, t: 0, n: 0, sum: 0, worst: 0, fps: 0, avg: 0, max: 0, mx: 0, my: 0, mn: 0, yaw: 0, pitch: 0, dropped: 0, slow: '', fast: '' };
 function toggleDiag() {
   diag.on = !diag.on;
-  diag.t = 0; diag.n = 0; diag.sum = 0; diag.worst = 0; diag.slow = ''; diag.fast = '';
+  diag.last = 0; diag.t = 0; diag.n = 0; diag.sum = 0; diag.worst = 0; diag.slow = ''; diag.fast = '';
   diag.yaw = view.yaw; diag.pitch = view.pitch;
   show('diag', diag.on);
 }
-/** Called once a frame with the real frame time in seconds. */
+/** Called once a frame. The game caps its own step at 100 ms, so the time is read from the clock here: a long stall shows at its real length. */
 function diagFrame(dt: number) {
   if (!diag.on) { diag.mx = diag.my = diag.mn = 0; return; }
-  const ms = dt * 1000, deg = 180 / Math.PI;
+  const now = performance.now(), ms = diag.last ? now - diag.last : dt * 1000, deg = 180 / Math.PI;
+  diag.last = now;
   diag.n++; diag.sum += ms; diag.t += ms; if (ms > diag.worst) diag.worst = ms;
   // frame times: the average and the worst frame of the last second
   if (diag.t >= 1000 || !diag.slow) {
@@ -2081,6 +2082,9 @@ function frame(dt: number) {
       sound,
       /** hand control from the bot to the "player" so the card picker can be shown */
       takeover() { bot = null; sim.opts.pauseOnCards = true; },
+      /** run the bot-played match forward without drawing; the view is reset afterwards like in demo() */
+      skip(seconds: number) { fastForward(seconds); },
+      resync() { sim.exitHero(0); sim.events.length = 0; view.setSim(sim, 0); },
       async renderAudio(seconds: number, hot: [number, number][]) {
         const cues = sound.cueLog || [];
         sound.cueLog = null;

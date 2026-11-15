@@ -214,10 +214,11 @@ const MITES = 96, MITE_DRAW = 1.25;
 /**
  * The Titan before it is an enemy. It walks the district's lattice from cell to cell (c, r is the cell it is heading for, at
  * tx, tz), wrecks a tower now and then, and comes in close as its danger fills. leap >= 0: seconds into its jump onto the gate.
+ * owe: it was due to wreck a tower with none in reach, and takes the next one it comes past.
  */
 interface Roam {
   v: EVis | null; c: number; r: number; tx: number; tz: number; x: number; y: number; z: number; yaw: number; ang: number; stop: boolean; wait: number; face: number; faceT: number;
-  leap: number; x0: number; y0: number; z0: number; x1: number; y1: number; z1: number; yaw1: number; off: boolean;
+  leap: number; x0: number; y0: number; z0: number; x1: number; y1: number; z1: number; yaw1: number; off: boolean; owe: boolean;
 }
 /** The Titan's wreck: its visual, seconds since it died, the clock of its secondary explosions, where it fell. */
 interface Wreck { v: EVis; t: number; tick: number; x: number; z: number; gy: number; down: boolean }
@@ -485,7 +486,7 @@ export class View {
   /** Mites: their state by enemy id, and the instanced meshes they are drawn with (built from the model on first use). */
   private mites = new Map<number, MVis>(); private miteParts: { mesh: THREE.InstancedMesh; swing: number; pivot: THREE.Vector3 }[] = [];
   /** The Titan while it roams and leaps, and its wreck after it has died. */
-  private roam: Roam = { v: null, c: 0, r: 0, tx: 0, tz: 0, x: 0, y: 0, z: 0, yaw: 0, ang: -1.57, stop: false, wait: 0, face: 0, faceT: 0, leap: -1, x0: 0, y0: 0, z0: 0, x1: 0, y1: 0, z1: 0, yaw1: 0, off: false };
+  private roam: Roam = { v: null, c: 0, r: 0, tx: 0, tz: 0, x: 0, y: 0, z: 0, yaw: 0, ang: -1.57, stop: false, wait: 0, face: 0, faceT: 0, leap: -1, x0: 0, y0: 0, z0: 0, x1: 0, y1: 0, z1: 0, yaw1: 0, off: false, owe: false };
   private wreck: Wreck | null = null;
   private groundAt = (x: number, z: number) => (Math.abs(x) < BOARD_W / 2 + 3 && Math.abs(z) < BOARD_D / 2 + 3 ? this.deckY(x, z) : this.world.groundY ? this.world.groundY(x, z) : 0);
   /** Where a Titan foot may come down: the middle of the tile under the spot if that is free deck or road, else of the nearest tile round it that is. */
@@ -657,7 +658,7 @@ export class View {
     this.mites.clear(); for (const m of this.miteParts) m.mesh.count = 0;
     if (this.roam.v) { this.poolEnemy(this.roam.v); this.roam.v = null; }
     if (this.wreck) { this.poolEnemy(this.wreck.v); this.wreck = null; }
-    this.roam.leap = -1; this.roam.off = false;
+    this.roam.leap = -1; this.roam.off = false; this.roam.owe = false;
     this.world.cityRestore?.();
     this.coreHit = this.coreZap = 9;
     for (const h of this.heroes) { h.obj.visible = false; h.out = false; h.shown = false; h.tele = 0; if (h.rig) resetHero(h.rig); }
@@ -937,6 +938,9 @@ export class View {
     }
   }
   private flashEnemy(v: EVis, crit: boolean) {
+    // the Titan is hit almost without pause and fills the screen: a whole-model flash would leave it a white cut-out.
+    // Its hits show as sparks and bursts at the point instead.
+    if (v.type === 'titan') return;
     const m = crit ? this.critMat : this.hitMat;
     if (v.hitT <= 0) for (const o of v.meshes) o.material = m;
     else if (crit) for (const o of v.meshes) o.material = m;
@@ -2040,7 +2044,7 @@ export class View {
       const d = Math.hypot(PT.x - gx, PT.z - gz);
       if (d < bd) { bd = d; R.c = c; R.r = r; R.x = PT.x; R.z = PT.z; }
     }
-    R.tx = R.x; R.tz = R.z; R.y = this.groundAt(R.x, R.z); R.yaw = Math.atan2(-R.x, -R.z); R.stop = false; R.wait = 0; R.faceT = 0; R.leap = -1;
+    R.tx = R.x; R.tz = R.z; R.y = this.groundAt(R.x, R.z); R.yaw = Math.atan2(-R.x, -R.z); R.stop = false; R.wait = 0; R.faceT = 0; R.leap = -1; R.owe = false;
   }
   /** Next cell on the way to its goal: a search over the open cells for the one nearest the goal, then the first step toward it. False if it is already as near as it can get. */
   private roamNext(T: TitanState) {
@@ -2118,6 +2122,7 @@ export class View {
         R.stop = !this.roamNext(T);
         if (R.stop && ph === 'warn' && this.roamGoal(T, PT) && far > 4 && far < 34) { R.tx = PT.x; R.tz = PT.z; R.stop = false; }   // the last stretch is open ground
         R.wait = R.stop ? 1.5 : 0;
+        if (R.owe) this.titanSmash();
       }
       if (!R.stop && d >= 1) {
         const err = wrapA(Math.atan2(dx, dz) - R.yaw), w = sp * 0.3 * dt, go = sp * Math.max(0.12, Math.cos(err));
@@ -2158,6 +2163,7 @@ export class View {
     cand.sort((a, b) => a[0] - b[0]);
     let b: { x: number; z: number; h: number } | null = null;
     for (const c of cand) if ((b = W.citySmash(c[1], c[2]))) break;
+    R.owe = !b;   // nothing in reach: the next tower it comes past
     if (!b) return;
     const fx = this.fx, hit = b, h = Math.min(hit.h, 40), gy = -3;
     v.rig.lunge = 1; R.face = Math.atan2(hit.x - R.x, hit.z - R.z); R.faceT = 2.4; R.wait = Math.min(R.wait, 0.4);

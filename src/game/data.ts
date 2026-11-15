@@ -191,8 +191,9 @@ export const COOP_HP = 2.5;
 export const COOP_COUNT = 1.2;
 
 export const TUNE = {
-  /** enemy health per wave: 1 + hp1·(w-1) + hp2·(w-1)² + hp3·(w-1)³ (the square term carries the middle of a run, the cube term the waves past 20) */
-  hp1: 0.2, hp2: 0.055, hp3: 0.0033,
+  /** enemy health per wave: 1 + hp1·(w-1) + hp2·(w-1)² + hp3·(w-1)³ (the square term carries the middle of a run, the cube term the waves past 20).
+   *  The balance pass moved a little health from the late waves to the early ones (hp1 0.2 to 0.22, hp3 0.0033 to 0.00325): about 3% more on wave 5, 1.5% on wave 10, the same from wave 20 on. */
+  hp1: 0.22, hp2: 0.055, hp3: 0.00325,
   /** wave budget: bud0 + bud1·w + w^budP */
   bud0: 8, bud1: 5, budP: 1.5,
   /** base arrow damage, credits per kill, wave-clear bonus (base + perWave·w), kill energy */
@@ -200,7 +201,7 @@ export const TUNE = {
   /** tower damage and xp from kills (the knobs of the balance pass), and how often rare and epic cards are offered next to common ones (weight 10) */
   tdmg: 0.92, xp: 0.92, rare: 4.25, epic: 1.7,
   /** Titan: health per point of bow strength at the wave it arrives on (see titanHp() in sim.ts), and how much harder tower specials hit it */
-  titan: 5200, titanSpec: 1,
+  titan: 11500, titanSpec: 1,
   /** enemy health scales with (mean road length / mapLen)^mapPow · (road in reach of the best tiles / mapCov)^mapCovPow, see mapEase() in sim.ts.
    *  starter: extra factor for the first map (Switchback), which new players learn on and which plays harder than its shape suggests */
   mapLen: 105, mapPow: 0.2, mapCov: 39.8, mapCovPow: 0.64, starter: 0.78,

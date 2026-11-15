@@ -116,8 +116,18 @@ await shot('specials', 9, {
   setup: () => { const V = window.__volt; V.demo(21, 640, 'highline'); for (const t of V.sim.towers) if (t.type !== 'spire') t.charge = 1; V.view.cam.x = 0; V.view.cam.z = 2; V.view.cam.dist = 42; },
   each: UPLINK, args: { at: 6, tail: 20 },
 });
+await shot('titan', 11, {
+  caption: ['The Titan lands', 'Towers only slow it. The rest is you.'], hot: [0, 11],
+  setup: () => {
+    const V = window.__volt; V.demo(7, 560);
+    // run on to the pause before the Titan's wave, then call that wave so the leap starts with the shot
+    for (let i = 0; i < 900 && !(V.sim.titan && V.sim.wave >= V.sim.titan.wave - 1 && !V.sim.waveActive); i++) V.skip(1);
+    V.resync(); V.sim.startWave();
+    V.view.cam.x = -6; V.view.cam.z = 2; V.view.cam.dist = 52;
+  },
+});
 await shot('sectors', 5.5, {
-  caption: ['No two sectors alike', 'Generated maps, bridges, three difficulties'],
+  caption: ['38 maps and a generator', 'Bridges, three roads, three difficulties'],
   setup: () => { const V = window.__volt; V.demo(5, 420, 'gen-3-4242'); V.view.cam.x = 6; V.view.cam.z = 2; V.view.cam.dist = 58; },
   each: `V.view.cam.x = 6 - u * 12; V.view.cam.dist = 58 - u * 14;`,
 });
