@@ -60,6 +60,8 @@ interface WorldApi {
 
 // Third-person camera: an orbit round a point above and to the right of Kestrel's head.
 const CAM_BACK = 3.0, CAM_SIDE = 0.85, CAM_UP = 1.5;
+// Uplink mode, building: how far the camera rises and pulls back for a look at the ground (see View.buildView).
+const LIFT_UP = 1.4, LIFT_BACK = 2.6;
 /** Enemies are drawn no closer to the core's centre than this plus 0.6 of their radius: its plinth is in the way. */
 const CORE_STAND = 1.6;
 /** How far the aim ray reaches when it hits nothing. */
@@ -427,6 +429,9 @@ export class View {
   orbit = false;
   yaw = 0; pitch = -0.25;
   heroBlend = 0;
+  /** Uplink mode: build mode is open. The third-person camera eases up and back while it is (lift 0..1). */
+  buildView = false;
+  private lift = 0;
   shake = 0;
   time = 0;
   quality: 'high' | 'low' = 'high';
@@ -665,7 +670,7 @@ export class View {
     this.later.length = 0; this.zoneWait.length = 0;
     for (const sh of this.shafts) sh.mode = 0;
     this.shaftMesh.count = 0; this.rainT = 9;
-    this.heroBlend = 0; this.thunder = 0; this.swarm = 0;
+    this.heroBlend = 0; this.thunder = 0; this.swarm = 0; this.buildView = false; this.lift = 0;
     this.setGhost(null); this.setSelected(null); this.setTele(null);
     this.hoverMark.visible = false;
     if (!sim) return;
@@ -797,9 +802,44 @@ export class View {
   private camPose(pos: THREE.Vector3, dir: THREE.Vector3) {
     const cp = Math.cos(this.pitch), fx = Math.sin(this.yaw) * cp, fy = Math.sin(this.pitch), fz = Math.cos(this.yaw) * cp;
     const rx = -Math.cos(this.yaw), rz = Math.sin(this.yaw), a = this.lastHeroAnchor;
+    const back = CAM_BACK + LIFT_BACK * this.lift;
     // looking up swings the camera down: stop above the platform floor
-    pos.set(a.x - fx * CAM_BACK + rx * CAM_SIDE, Math.max(a.y + 0.6, a.y + CAM_UP - fy * CAM_BACK), a.z - fz * CAM_BACK + rz * CAM_SIDE);
+    pos.set(a.x - fx * back + rx * CAM_SIDE, Math.max(a.y + 0.6, a.y + CAM_UP + LIFT_UP * this.lift - fy * back), a.z - fz * back + rz * CAM_SIDE);
     dir.set(fx, fy, fz);
+  }
+  /**
+   * Uplink mode, building: what the crosshair looks at. The deck point is written to `out` (raised roads and bridges
+   * included) and the result is the id of the tower whose body the ray meets first, 0 for bare deck, or -1 when the ray
+   * meets nothing at all. Enemies and power nodes are looked through: they never stand on a hex. The player's own Spire
+   * is left out, or a steep look down past her feet would always land on it.
+   */
+  buildPick(out = new THREE.Vector3()): number {
+    this.camPose(RO, RD);
+    const o = RO, d = RD, sim = this.sim;
+    const deck = this.rayDeck(o, d, AIM_FAR);
+    let best = Math.min(AIM_FAR, deck), id = deck <= AIM_FAR ? 0 : -1;
+    const own = sim?.players[this.me]?.heroTower ?? -1, R = HEX_SIZE * 0.72;
+    if (sim) for (const t of sim.towers) {
+      if (t.id === own) continue;
+      // the tower as an upright column on its hex: its side, or its top when the ray comes down onto it
+      const wx = o.x - t.x, wz = o.z - t.z, a = d.x * d.x + d.z * d.z, b = wx * d.x + wz * d.z, c = wx * wx + wz * wz - R * R;
+      let u = 0;
+      if (c > 0) {
+        const disc = b * b - a * c;
+        if (a < 1e-9 || disc < 0) continue;
+        u = (-b - Math.sqrt(disc)) / a;
+        if (u < 0) continue;
+      }
+      if (o.y + d.y * u > t.h) {
+        if (d.y > -1e-6) continue;
+        u = (t.h - o.y) / d.y;
+        const px = wx + d.x * u, pz = wz + d.z * u;
+        if (px * px + pz * pz > R * R) continue;
+      }
+      if (u > 0 && u < best) { best = u; id = t.id; }
+    }
+    out.copy(o).addScaledVector(d, best);
+    return id;
   }
   /**
    * The point under the crosshair. A plain ray cast with no help: enemy bodies at their true radius, weak points,
@@ -809,10 +849,11 @@ export class View {
     this.camPose(RO, RD);
     const o = RO, d = RD, sim = this.sim;
     let best = Math.min(AIM_FAR, this.rayDeck(o, d, AIM_FAR));
+    const near = (CAM_BACK + LIFT_BACK * this.lift) * 0.8;
     const hit = (x: number, y: number, z: number, r: number) => {
       const u = raySphere(o.x, o.y, o.z, d.x, d.y, d.z, x, y, z, r);
       // anything nearer than Kestrel herself is behind the bow
-      if (u > CAM_BACK * 0.8 && u < best) best = u;
+      if (u > near && u < best) best = u;
     };
     if (sim) {
       for (const e of sim.enemies) {
@@ -2610,6 +2651,9 @@ export class View {
     if (this.orbit) { const a = this.time * 0.06; this.topPos.set(Math.sin(a) * 46, 30 + Math.sin(a * 1.7) * 4, Math.cos(a) * 40 + 4); V.set(2, 0, 0); }
     else { const c = this.cam, tl = this.tiltOf(c.dist), h = c.dist * Math.cos(tl); this.topPos.set(c.x + Math.sin(c.rot) * h, c.dist * Math.sin(tl), c.z + Math.cos(c.rot) * h); V.set(c.x, 0, c.z); }
     this.dummy.position.copy(this.topPos); this.dummy.lookAt(V); this.topQ.copy(this.dummy.quaternion);
+    // build mode lifts the camera for a look at the ground: eased both ways, never a cut
+    this.lift += ((this.buildView && t ? 1 : 0) - this.lift) * (1 - Math.exp(-dt * 8));
+    if (this.lift < 1e-3) this.lift = 0;
     // third person: the anchor glides only when she changes spire; the look angles are used as they are, unsmoothed
     if (t) this.lastHeroAnchor.lerp(V.set(t.x, standY(t), t.z), this.heroBlend < 0.05 ? 1 : 1 - Math.exp(-dt * 14));
     this.camPose(this.heroPos, V2);

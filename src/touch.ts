@@ -1,7 +1,8 @@
 // Touch controls. Bird view: tap, drag with one finger to pan, hold then drag to move the build ghost. Two fingers
 // either pinch (zoom) or twist (turn): whichever passes its threshold first, and it stays that until a finger lifts.
 // Uplink: drag to aim (slow drags aim finely, quick swipes turn far), hold Draw and let go to loose, and the thumb
-// that holds Draw can keep aiming. Round buttons for the skills.
+// that holds Draw can keep aiming. Round buttons for the skills. In Uplink mode Build opens build mode: the tower bar
+// can be tapped, Draw becomes Place, and Sell shows while the crosshair is on a tower.
 // Mouse and keyboard handlers in play.ts stay active; everything here only reacts to touch pointers,
 // except the on-screen buttons, which also take a mouse press or a keyboard activation.
 // The styles (touch.css) are linked from play.html.
@@ -16,6 +17,10 @@ export interface TouchApi {
   teleport(): void;
   ult(): void;
   exitHero(): void;
+  /** Uplink mode: open or close build mode (while it is open, fire() places the tower instead of drawing) */
+  build(): void;
+  /** Uplink mode, build mode: sell the tower under the crosshair */
+  sell(): void;
   /** bird view: a tap at client coordinates (build / select) */
   tap(clientX: number, clientY: number): void;
   /** bird view: finger moved over the board without lifting (hover / ghost preview) */
@@ -278,6 +283,8 @@ export function initTouch(api: TouchApi): void {
   press(byId('t-s2'), () => { if (api.isHero()) api.skill(2); });
   press(byId('t-tp'), () => { if (api.isHero()) api.teleport(); });
   press(byId('t-exit'), () => { if (api.isHero()) api.exitHero(); });
+  press(byId('t-build'), () => { if (api.isHero()) api.build(); });
+  press(byId('t-bsell'), () => { if (api.isHero()) api.sell(); });
   press(byId('t-ult'), () => { if (!api.isHero()) api.ult(); });
   // Pause and speed act on press as well, so a second finger reaches them while the first holds Draw or aims.
   press(byId('btn-pause'), () => api.pause());

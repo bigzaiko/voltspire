@@ -176,7 +176,8 @@ export class Bot {
     if (c.kind === 'blueprint') return 10;
     if (!this.useHero && (c.kind === 'hero' || id === 'capbank' || id === 'reboot' || id === 'aftershock' || id === 'b_feed')) return 0.1;
     if (id === 'repair') return s.lives < 12 ? 7 : 0.3;
-    let v = c.rar * 2 + (c.kind === 'tower' ? 2 : c.kind === 'hero' ? 1.6 : 0.8);
+    // in Uplink mode Kestrel shoots all run long, so what makes her stronger is worth as much as a tower card
+    let v = c.rar * 2 + (c.kind === 'tower' ? 2 : c.kind === 'hero' ? (s.opts.uplink ? 2.2 : 1.6) : 0.8);
     if (c.needs) { const n = this.count(c.needs); v = n ? v + Math.min(2, n * 0.5) : 0.6; }
     return v;
   }
@@ -218,16 +219,19 @@ export class Bot {
       s.pickCard(this.pi, best);
     }
     this.think -= dt; this.teleCd -= dt;
+    // Uplink mode: the sim keeps Kestrel on a Spire from the first step to the last, so nothing here waits for a charge or for the Uplink to end
+    const uplink = s.opts.uplink;
     if (this.think <= 0) {
       this.think = 0.5 / this.skill;
       const combat = s.towers.length - s.spires;
-      // a second Spire mid-game (a third on the big multi-lane maps), so Kestrel can follow the fight
-      const wantSpires = s.wave >= 18 && s.map.lanes.length > 1 ? 3 : s.wave >= (s.map.lanes.length > 1 ? 6 : 9) ? 2 : 1;
+      // a second Spire mid-game (a third on the big multi-lane maps), so Kestrel can follow the fight (in Uplink mode she always can, so sooner)
+      const wantSpires = s.wave >= (uplink ? 12 : 18) && s.map.lanes.length > 1 ? 3 : s.wave >= (s.map.lanes.length > 1 ? 6 : 9) - (uplink ? 3 : 0) ? 2 : 1;
       if (this.useHero && (!this.mix || this.mixHero) && s.spires < wantSpires && combat >= 6 && s.unlocked.has('spire') && s.gold >= s.cost('spire') + 60) this.place('spire');
       else {
-        // upgrade or build
+        // upgrade or build (in Uplink mode the Spire she stands on early, for its stronger arrows)
         const type = this.wanted();
-        const up = s.towers.filter((t) => t.lvl < 3 && t.type !== 'beacon' && (t.type !== 'spire' || (this.useHero && s.wave >= 14))).sort((a, b) => s.upCost(a) - s.upCost(b))[0];
+        const spireUp = (t: Tower) => this.useHero && (s.wave >= 14 || (uplink && s.wave >= 5 && t.id === p.heroTower));
+        const up = s.towers.filter((t) => t.lvl < 3 && t.type !== 'beacon' && (t.type !== 'spire' || spireUp(t))).sort((a, b) => s.upCost(a) - s.upCost(b))[0];
         if (up && combat >= 6 && s.gold >= s.upCost(up) && (s.upCost(up) < s.cost(type) * 1.4 || combat > 26)) s.upgrade(up.id);
         else if (s.gold >= s.cost(type) && combat < 40) this.place(type);
       }
@@ -239,7 +243,7 @@ export class Bot {
       for (const e of s.enemies) if (e.type !== 'mite') field++;
       // while the Titan walks the Uplink is held open for everyone: always take it, also in the runs that otherwise play without the hero
       const titan = s.overlink && !p.heroActive && s.spires > 0;
-      if (titan || (this.useHero && (!this.mix || this.mixHero) && !p.heroActive && p.energy >= MAX_ENERGY && s.spires > 0 && !bossSoon && (field > 5 || bossNow))) {
+      if (!uplink && (titan || (this.useHero && (!this.mix || this.mixHero) && !p.heroActive && p.energy >= MAX_ENERGY && s.spires > 0 && !bossSoon && (field > 5 || bossNow)))) {
         const sp = this.bestSpire();
         if (sp && s.activateHero(this.pi, sp.id)) { const o = s.heroOrigin(this.pi); if (o) { this.aim.x = o.x; this.aim.y = 1; this.aim.z = o.z + 6; } }
       }
@@ -253,15 +257,22 @@ export class Bot {
   private bestSpire(): Tower | null {
     const s = this.sim;
     if (!s.enemies.length) return s.towers.find((t) => t.type === 'spire') || null;
-    const lead = s.enemies.reduce((a, b) => (this.progress(b) > this.progress(a) ? b : a));
+    const lead = this.lead();
     let best: Tower | null = null, bd = Infinity;
     for (const t of s.towers) {
       if (t.type !== 'spire') continue;
-      let d = Math.hypot(t.x - lead.x, t.z - lead.z);
-      for (const e of s.enemies) if (Math.hypot(e.x - t.x, e.z - t.z) < 22) d -= 0.4;
+      const d = this.stand(t, lead);
       if (d < bd) { bd = d; best = t; }
     }
     return best;
+  }
+  /** The enemy furthest along its road. */
+  private lead(): Enemy { return this.sim.enemies.reduce((a, b) => (this.progress(b) > this.progress(a) ? b : a)); }
+  /** How badly a Spire stands for the fight (see bestSpire): the distance to the lead enemy, less a little for every enemy in reach. */
+  private stand(t: Tower, lead: Enemy) {
+    let d = Math.hypot(t.x - lead.x, t.z - lead.z);
+    for (const e of this.sim.enemies) if (Math.hypot(e.x - t.x, e.z - t.z) < 22) d -= 0.4;
+    return d;
   }
 
   /** The Titan's weak point worth the most that an arrow from `o` reaches before it meets the hull (the same test the sim applies), or -1. */
@@ -318,6 +329,16 @@ export class Bot {
         if (v > bv) { bv = v; best = t; }
       }
       this.teleCd = 1.5;
+      if (best && s.heroTeleport(this.pi, best.id)) return;
+    }
+    // Uplink mode: she never leaves, so she moves with the attack instead, to a Spire that stands clearly better for it (see stand)
+    // and that no other player is on, so co-op archers spread out
+    if (s.opts.uplink && !titan && !node && this.teleCd <= 0 && s.spires > 1 && s.enemies.length) {
+      const here = s.towerById(p.heroTower), lead = this.lead();
+      const taken = new Set(s.players.filter((q, i) => i !== this.pi && q.heroActive).map((q) => q.heroTower));
+      let best: Tower | null = null, bd = here ? this.stand(here, lead) - 8 : Infinity;
+      for (const t of s.towers) if (t.type === 'spire' && t !== here && !taken.has(t.id)) { const d = this.stand(t, lead); if (d < bd) { bd = d; best = t; } }
+      this.teleCd = 3;
       if (best && s.heroTeleport(this.pi, best.id)) return;
     }
     if (!want && mite && !heavy) { want = { x: mite.x, y: mite.y, z: mite.z }; tgt = mite; tol = 0.006; }

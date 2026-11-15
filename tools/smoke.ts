@@ -1143,6 +1143,152 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
     }
   }
   {
+    // ---------- Uplink mode: the whole run is played from a Spire ----------
+    const near = (a: number, b: number, eps = 1e-9) => Math.abs(a - b) < eps;
+    const up = (o: Partial<ConstructorParameters<typeof Sim>[0]> = {}) => new Sim({ seed: 21, map: bare, pauseOnCards: false, uplink: true, ...o });
+    const watch = (k: string) => { let n = 0; const f = (evs: Ev[]) => { for (const e of evs) if (e.k === k) n++; }; return { f, get n() { return n; } }; };
+    /** The road within 18 of a point (the reach a starting Spire is judged by): its share of all the road, and how much of that lies on the core half. */
+    const view = (s: Sim, t: { x: number; z: number }) => {
+      const P = { x: 0, z: 0, dx: 0, dz: 0, y: 0 };
+      let n = 0, all = 0, core = 0;
+      for (let l = 0; l < s.map.lanes.length; l++) { const len = s.map.lanes[l].len; for (let d = 0; d < len; d++) { s.map.pos(l, d, P); all++; if (Math.hypot(P.x - t.x, P.z - t.z) <= 18) { n++; if (d > len / 2) core++; } } }
+      return { road: n / all, core: n ? core / n : 0 };
+    };
+    {
+      // the starting Spire, the first step, exitHero, selling
+      const s = up(), h = s.uplinkHome(0)!, again = up({ seed: 5 }).uplinkHome(0)!;
+      ok(s.opts.uplink && !!h && h.type === 'spire' && !!again && h.cx === again.cx && h.cz === again.cz, `Uplink mode brings the player's Spire, on the same tile for any seed (${h?.cx},${h?.cz})`);
+      ok(Math.max(Math.abs(h.cx - bare.core[0]), Math.abs(h.cz - bare.core[1])) > 2, 'it is not right beside the core');
+      const c = new Sim({ seed: 21, map: bare });
+      ok(!c.opts.uplink && c.uplinkHome(0) === undefined && c.spires === 1 && c.towers.length === 1, 'the campaign keeps its one free Spire');
+      ok(s.sellBlock(h) === 'hero' && !s.sell(h.id), 'before the first step the Spire is already the player\'s: it cannot be sold');
+      for (const m of MAPS.filter((q) => !q.id.startsWith('gen-'))) {
+        const q = up({ map: m }), hq = q.uplinkHome(0)!, v = view(q, hq);
+        ok(!!hq && v.road >= 0.5 && v.core >= 0.5, `${m.id}: the Spire overlooks ${Math.round(100 * v.road)}% of the road, ${Math.round(100 * v.core)}% of that on the core half`);
+        const q2 = up({ map: m, mode: 'coop', players: 2 }), a = q2.uplinkHome(0)!, b = q2.uplinkHome(1)!;
+        q2.step(1 / 60);
+        ok(!!a && !!b && a !== b && a.type === 'spire' && b.type === 'spire' && Math.hypot(a.x - b.x, a.z - b.z) >= 10 && q2.players.every((p, i) => p.heroActive && p.heroTower === [a, b][i].id), `${m.id}: two players, two Spires of their own (${Math.hypot(a.x - b.x, a.z - b.z).toFixed(1)} apart), each on theirs from the first step`);
+      }
+      s.step(1 / 60);
+      const p = s.players[0], on = s.events.splice(0).find((e) => e.k === 'heroOn');
+      ok(p.heroActive && p.heroTower === h.id && !!on && on.p === 0 && on.x === h.x && on.z === h.z, 'the first step puts the player on it (heroOn)');
+      ok(p.energy === 0 && p.heroTime === p.heroDur, 'no charge to fill and no Uplink timer running down');
+      const flips = watch('heroOff');
+      s.exitHero(0); run(s, 1, flips.f);
+      ok(p.heroActive && p.heroTower === h.id && flips.n === 0 && !s.activateHero(0, h.id), 'exitHero is ignored, and there is nothing to activate');
+      const free = (): [number, number] => { for (let i = 0; i < GW * GH; i++) if (s.grid[i] === 0 && hexDist(i % GW, Math.floor(i / GW), h.cx, h.cz) >= 6) return [i % GW, Math.floor(i / GW)]; return [0, 0]; };
+      s.gold = 1e6;
+      const sp2 = s.build('spire', ...free())!, sp3 = s.build('spire', ...free())!;
+      ok(!!sp2 && !!sp3 && s.sellBlock(h) === 'hero' && !s.sell(h.id), 'the Spire the player stands on cannot be sold');
+      ok(s.heroTeleport(0, sp2.id) && p.heroTower === sp2.id && s.sellBlock(sp2) === 'hero' && s.sell(h.id) && !s.towerById(h.id), 'after a jump the old Spire can be sold, the new one cannot');
+      // a Spire gone from under the player (a co-op guest's snapshot can show that): back onto one that stands
+      s.towers.splice(s.towers.indexOf(sp2), 1); s.recomputeBuffs();
+      const back = watch('heroOn'); run(s, 0.1, back.f);
+      ok(p.heroActive && p.heroTower === sp3.id && back.n === 1, 'a player whose Spire is gone is put on another one');
+      s.over = true; s.exitHero(0);
+      ok(!p.heroActive && p.energy === 0, 'once the run is over the player may step down, and no charge shows up');
+      s.over = false; run(s, 0.1);
+      ok(p.heroActive && p.heroTower === sp3.id, 'and is back on a Spire when the run goes on (endless after a win)');
+    }
+    {
+      // cards that only feed the Uplink meter are never offered
+      ok(CARDS.filter((c) => c.meter).map((c) => c.id).sort().join() === 'b_feed,charge,relayup,uplink', 'the meter cards are flagged: Extended Uplink, Fast Charge, Relay Uplink, Uplink Feed');
+      const q = up({ mode: 'coop', players: 2 }), c = new Sim({ seed: 21, map: bare, pauseOnCards: false, mode: 'coop', players: 2 });
+      for (const t of TOWER_TYPES) { q.unlocked.add(t); c.unlocked.add(t); }
+      let dead = 0, short = 0, inCampaign = 0;
+      for (let i = 0; i < 3000; i++) {
+        q.level = c.level = 2 + (i % 30);
+        const a = q.rollCards(0), b = q.rollCards(1, true);
+        if (a.length < 3 || b.length < 3) short++;
+        for (const id of [...a, ...b]) if (CARD_BY_ID[id].meter) dead++;
+        for (const id of [...c.rollCards(0), ...c.rollCards(1, true)]) if (CARD_BY_ID[id].meter) inCampaign++;
+      }
+      ok(dead === 0 && short === 0 && inCampaign > 0, `Uplink mode offers no meter card and still three cards an offer (${dead} meter cards, ${short} short offers; the campaign offered ${inCampaign})`);
+    }
+    {
+      // the balance knobs: tougher machines and a tougher Titan, only in Uplink mode
+      const a = up(), b = new Sim({ seed: 21, map: bare, pauseOnCards: false });
+      const ea = put(a, 'shield', 10), eb = put(b, 'shield', 10), ba = put(a, 'boss', 10), bb = put(b, 'boss', 10), ga = put(a, 'wheel', 10), gb = put(b, 'wheel', 10);
+      ok(near(ea.maxHp / eb.maxHp, TUNE.upHp, 1e-9) && near(ea.maxShield / eb.maxShield, TUNE.upHp, 1e-9) && near(ba.maxHp / bb.maxHp, TUNE.upBoss, 1e-9) && near(ga.maxHp / gb.maxHp, TUNE.upBoss, 1e-9) && near(a.titanHp() / b.titanHp(), TUNE.upTitan, 1e-9),
+        `Uplink mode: the machines have ${TUNE.upHp} times the health and shield, the Colossus and the Gyre ${TUNE.upBoss} times, the Titan ${TUNE.upTitan} times`);
+      const ca = up({ mode: 'coop', players: 2 }), cb = new Sim({ seed: 21, map: bare, pauseOnCards: false, mode: 'coop', players: 2 });
+      ok(near(put(ca, 'grunt', 10).maxHp / put(cb, 'grunt', 10).maxHp, TUNE.upHp * TUNE.upCoop, 1e-9) && near(ca.titanHp() / cb.titanHp(), TUNE.upTitan, 1e-9), `and in co-op another ${TUNE.upCoop} times on top, for the second archer`);
+    }
+    {
+      // a whole run with the bot: the archer at every step, through the Titan; it builds, upgrades and jumps between Spires
+      const s = new Sim({ seed: 7, map: MAPS[0], diff: 'easy', pauseOnCards: false, uplink: true }), bot = new Bot(s, 0), p = s.players[0];
+      let off = 0, steps = 0, offers = 0, dead = 0, downs = 0, tele = 0, walk = 0, landed = false, killed = false;
+      for (let i = 0; i < 60 * 60 * 40 && !s.over; i++) {
+        for (const o of p.pending) { offers++; for (const id of o) if (CARD_BY_ID[id].meter) dead++; }
+        bot.step(1 / 60); s.step(1 / 60); steps++;
+        if (!s.over && (!p.heroActive || p.energy !== 0 || p.heroTime !== p.heroDur || s.towerById(p.heroTower)?.type !== 'spire')) off++;
+        if (s.titan.phase === 'walk') walk++;
+        for (const e of s.events.splice(0)) { if (e.k === 'heroOff') downs++; else if (e.k === 'tele') tele++; else if (e.k === 'titanImpact') landed = true; else if (e.k === 'titanDie') killed = true; }
+      }
+      ok(off === 0 && downs === 0 && steps > 60 * 60 * 5, `the player is the archer at every one of ${steps} steps (${off} off, ${downs} heroOff)`);
+      ok(landed && killed && walk > 60 * 10 && s.won, `also for the ${(walk / 60).toFixed(0)} s the Titan walked; the run was ${s.won ? 'won' : 'lost'}`);
+      ok(offers >= 15 && dead === 0, `no meter card in any of the ${offers} offers`);
+      ok(s.towers.length - s.spires >= 15 && s.towers.some((t) => t.lvl === 3), `the bot built ${s.towers.length - s.spires} towers and upgraded them (and jumped between Spires ${tele} times)`);
+    }
+    {
+      // the bot moves with the attack: machines far up the road from its Spire, next to another one, draw it over there
+      const s = up(), bot = new Bot(s, 0), p = s.players[0], h = s.uplinkHome(0)!, P = { x: 0, z: 0, dx: 0, dz: 0, y: 0 };
+      s.gold = 1e6; s.step(1 / 60);
+      let at = 0, far = 0;
+      for (let d = 0; d < s.map.lanes[0].len; d += 1) { s.map.pos(0, d, P); const f = Math.hypot(P.x - h.x, P.z - h.z); if (f > far) { far = f; at = d; } }
+      s.map.pos(0, at, P);
+      let cell = -1, cd = Infinity;
+      for (let i = 0; i < GW * GH; i++) { if (s.grid[i] !== 0) continue; const t = s.build('spire', i % GW, Math.floor(i / GW)); if (!t) continue; const d = Math.hypot(t.x - P.x, t.z - P.z); s.sell(t.id); if (d < cd) { cd = d; cell = i; } }
+      const other = s.build('spire', cell % GW, Math.floor(cell / GW))!;
+      for (let k = 0; k < 6; k++) put(s, 'grunt', at + k * 0.8);
+      let jumped = 0;
+      for (let i = 0; i < 60 * 6; i++) { bot.step(1 / 60); s.step(1 / 60); for (const e of s.events.splice(0)) if (e.k === 'tele') jumped++; p.pending.length = 0; }
+      ok(!!other && p.heroTower === other.id && jumped >= 1, `in Uplink mode the bot jumps to the Spire by the fight (${far.toFixed(0)} from its own, ${jumped} jumps)`);
+    }
+    {
+      // co-op: two archers on Spires of their own; the guest's copy keeps the archer state and learns the mode from the snapshot
+      const h = up({ map: MAPS[2], mode: 'coop', players: 2, seed: 3 }), c = new Sim({ map: MAPS[2], mode: 'coop', players: 2, seed: 3, pauseOnCards: false }); c.replica = true;
+      const bots = [new Bot(h, 0), new Bot(h, 1)];
+      let off = 0, same = true, apart = false;
+      for (let i = 0; i < 60 * 240; i++) {
+        for (const b of bots) b.step(1 / 60);
+        h.step(1 / 60);
+        if (h.players.some((p) => !p.heroActive || p.energy !== 0 || p.heroTime !== p.heroDur)) off++;
+        if (i === 0) apart = h.players[0].heroTower !== h.players[1].heroTower && h.players.every((p, k) => p.heroTower === h.uplinkHome(k)!.id);
+        if (i % 5 === 0) {
+          c.applySnapshot(JSON.parse(JSON.stringify(h.snapshot(h.events.splice(0))))); c.events.length = 0;
+          if (!c.opts.uplink || c.players.some((p, k) => { const o = h.players[k]; return p.heroActive !== o.heroActive || p.heroTower !== o.heroTower || p.energy !== 0 || Math.abs(p.heroTime - o.heroTime) > 0.011 || Math.abs(p.heroDur - o.heroDur) > 0.011; })) same = false;
+        }
+      }
+      ok(off === 0 && apart && h.wave >= 5, `co-op Uplink mode: both players start on their own Spire and stay archers (wave ${h.wave})`);
+      ok(same && c.players.every((p) => p.heroActive), 'the guest\'s copy keeps every archer state and takes Uplink mode from the snapshot');
+      const snap = JSON.parse(JSON.stringify(h.snapshot([])));
+      for (const bad of ['x', 5, null, -1, {}]) { snap.a[17] = bad; c.applySnapshot(snap); ok(c.opts.uplink === false, 'a hostile mode flag reads as off: ' + JSON.stringify(bad)); }
+    }
+    {
+      // versus ignores the option, also from a snapshot
+      const v = new Sim({ seed: 3, map: bare, mode: 'versus', players: 1, uplink: true, pauseOnCards: false });
+      v.step(1 / 60);
+      ok(!v.opts.uplink && !v.players[0].heroActive && v.uplinkHome(0) === undefined && v.spires === 1, 'versus ignores the option');
+      v.players[0].energy = MAX_ENERGY; v.activateHero(0, 0); v.exitHero(0);
+      ok(!v.players[0].heroActive, 'and the Uplink is left as usual there');
+      const g = new Sim({ seed: 3, map: bare, mode: 'versus', players: 1 }); g.replica = true;
+      const snap = JSON.parse(JSON.stringify(v.snapshot([]))); snap.a[17] = 1; g.applySnapshot(snap);
+      ok(!g.opts.uplink, 'a versus copy never takes the flag from a snapshot');
+    }
+    {
+      // Uplink mode in Survival: no last wave, the Titan on wave 22, the player on a Spire throughout
+      const s = new Sim({ seed: 9, map: MAPS[0], diff: 'easy', pauseOnCards: false, uplink: true, survival: true }), bot = new Bot(s, 0), p = s.players[0];
+      let off = 0, landed = 0, killed = 0;
+      for (let i = 0; i < 60 * 60 * 40 && !s.over && s.wave < TITAN_SURVIVAL + 2; i++) {
+        bot.step(1 / 60); s.step(1 / 60);
+        if (!s.over && (!p.heroActive || p.energy !== 0)) off++;
+        for (const e of s.events.splice(0)) { if (e.k === 'titanImpact') landed++; else if (e.k === 'titanDie') killed++; }
+      }
+      ok(off === 0 && landed === 1 && killed === 1 && !s.won && s.endless && s.wave === TITAN_SURVIVAL + 2, `Uplink mode with Survival: past the Titan on wave ${TITAN_SURVIVAL} to wave ${s.wave}, an archer throughout (${off} steps off)`);
+    }
+  }
+  {
     // ---------- Arrow Rain: the volley is in the air for RAIN_DELAY seconds ----------
     const s = mk(), p = s.players[0], e = put(s, 'grunt', 10);
     p.energy = MAX_ENERGY; s.activateHero(0, 0); p.heroTime = p.heroDur = 600;

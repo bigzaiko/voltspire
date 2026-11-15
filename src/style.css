@@ -298,6 +298,43 @@ body.aimfree, body.aimfree * { cursor: none !important; }
 body.hero #bottom, body.hero #tower, body.hero #tip { display: none !important; }
 body.hero #vignette { background: radial-gradient(ellipse at center, transparent 48%, rgba(12, 9, 7, 0.78) 100%); }
 
+/* ---------- Uplink mode: the whole run from the Spire ---------- */
+/* the Uplink neither charges nor ends here: no meter, no timer, no way down */
+body.uplink #ult, body.uplink #hero-time, body.uplink #t-exit { display: none !important; }
+body.uplink #btn-wave { margin-left: auto; }
+#sk-build, #bkeys, #reticle, #build-line { display: none; }
+body.uplink #sk-build { display: grid; }
+.skill em { display: flex; align-items: center; gap: 3px; font-style: normal; font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; }
+.skill em kbd { margin: 0; }
+#sk-build, #bkeys .skill { width: auto; min-width: 92px; padding: 0 12px; }
+#sk-build { border-color: var(--line-2); }
+/* before wave 1: above the skill row (the bar with the wave button only shows in build mode) */
+body.uplink #prep { bottom: 100px; }
+body.uplink #prep:not(.hidden) ~ #tutor { bottom: 188px; }
+/* build mode: the tower bar comes back, and the build keys stand above it in place of the skills */
+body.hero.building #bottom { display: flex !important; }
+body.hero.building #tip:not(.hidden) { display: block !important; }
+body.building #skills { display: none; }
+body.building #bkeys { display: flex; }
+#bkeys { position: absolute; left: 50%; bottom: calc(var(--console-h) + 12px); transform: translateX(-50%); gap: 4px; }
+/* a free cursor is hidden and aims with the crosshair: it must not click the bar by accident */
+body.aimfree #bottom, body.aimfree #bottom * { pointer-events: none !important; }
+/* the crosshair becomes a hex: sand where the tower can go, rust where it cannot, apricot on a tower */
+body.building #cross i, body.building #draw { display: none; }
+body.building #reticle { display: block; position: absolute; left: 50%; top: 50%; width: 40px; height: 40px; margin: -20px 0 0 -20px; }
+#reticle polygon { fill: rgba(227, 220, 146, 0.08); stroke: var(--sand); stroke-width: 1.6; stroke-linejoin: round; }
+#hud.bbad #reticle polygon { fill: rgba(206, 107, 68, 0.12); stroke: var(--rust); }
+#hud.bsel #reticle polygon { fill: none; stroke: var(--apricot); }
+#build-line { position: absolute; left: 50%; top: calc(50% + 28px); transform: translateX(-50%); gap: 10px; padding: 3px 9px; font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; white-space: nowrap; background: rgba(16, 14, 12, 0.85); border: 1px solid var(--line-2); border-radius: var(--r); }
+body.building #build-line { display: flex; }
+#bl-name { font-weight: 500; color: var(--sand); }
+#bl-why { color: var(--sand-dim); }
+#bl-why:empty { display: none; }
+#hud.bbad #build-line { border-color: var(--rust-deep); }
+#hud.bbad #bl-why { color: var(--rust); }
+#hud.bsel #bl-name { color: var(--apricot); }
+body.building #hero-hint { top: calc(50% + 62px); }
+
 /* ---------- touch controls (inside #hud; a touch controller removes .hidden) ---------- */
 #touch { position: absolute; inset: 0; }
 /* the look pad is only a picture: the canvas underneath takes the finger, and nothing lies between the mouse and the view */
@@ -327,7 +364,22 @@ body:not(.hero) #touch > :not(#t-ult) { display: none; }
 /* the Uplink button only takes up room on the board while there is something to press */
 #hud:not(:has(#ult.ready)) #t-ult { display: none; }
 body.hero #t-ult { display: none; }
-#touch:not(.hidden) ~ #herohud #skills { display: none; }
+#touch:not(.hidden) ~ #herohud #skills, #touch:not(.hidden) ~ #herohud #bkeys { display: none !important; }
+/* Uplink mode: Build sits where Exit would be. In build mode Draw becomes Place (dimmed where the tower cannot go),
+   Sell shows above the buttons while the crosshair is on a tower, and the tower bar leaves the buttons their corner. */
+#t-build, #t-bsell { width: auto; height: 44px; min-width: 72px; padding: 0 14px; border-radius: var(--r); }
+#t-build b, #t-bsell b { font-size: 14px; }
+#t-build { right: calc(12px + var(--safe-r)); top: calc(var(--top-h) + 6px); }
+body:not(.uplink) #t-build, #t-bsell { display: none; }
+body.building #t-build { color: var(--ink); background: var(--sand); border-color: var(--sand); }
+body.building #hud.bsel #t-bsell { display: grid; }
+#t-bsell { right: calc(44px + var(--safe-r)); bottom: calc(214px + var(--safe-b)); color: var(--apricot); border-color: var(--rust); }
+#t-fire .place, body.building #t-fire .draw { display: none; }
+body.building #t-fire .place { display: inline; }
+#hud.bbad #t-fire, #hud.bsel #t-fire { color: var(--muted); background: var(--soot-3); box-shadow: inset 0 0 0 1.5px var(--line-2), 0 0 0 4px rgba(16, 14, 12, 0.6); }
+body.touch.building #bottom { right: calc(262px + var(--safe-r)); }
+body.building #t-look { display: none; }
+body.touch.uplink #prep { bottom: calc(12px + var(--safe-b)); max-width: min(420px, 50vw); }
 #touch:not(.hidden) ~ #herohud #hero-time { bottom: calc(12px + var(--safe-b)); width: min(250px, 30vw); padding: 6px 10px 8px; }
 
 /* ---------- overlays ---------- */
@@ -562,7 +614,7 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
   #tip i { display: none; }
   #tutor { bottom: calc(var(--console-h) + 14px); padding-block: 6px 7px; }
   #tutor b { font-size: 17px; }
-  body.hero #tutor { bottom: auto; top: calc(var(--top-h) + 10px); }
+  body.hero #tutor, body.uplink #prep:not(.hidden) ~ #tutor { bottom: auto; top: calc(var(--top-h) + 10px); }
   .set-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
   .settings > label, .set-row { min-height: 42px; font-size: 14px; }
   .settings input[type='range'] { width: 130px; }

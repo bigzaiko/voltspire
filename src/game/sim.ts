@@ -215,7 +215,11 @@ function mulberry(seed: number) {
 }
 
 export type Mode = 'solo' | 'coop' | 'versus';
-export interface SimOpts { mode: Mode; players: number; seed: number; pauseOnCards: boolean; map: MapDef; diff: string; survival: boolean }
+export interface SimOpts {
+  mode: Mode; players: number; seed: number; pauseOnCards: boolean; map: MapDef; diff: string; survival: boolean;
+  /** Uplink mode: every player stands on a Spire for the whole run and builds from there. Not in versus. */
+  uplink: boolean;
+}
 
 const xpNeed = (lvl: number) => Math.round(12 + lvl * 7 + lvl * lvl * 0.55);
 const GAPS: Record<EnemyType, number> = { grunt: 0.55, runner: 0.33, drone: 0.5, shield: 0.95, brute: 1.3, boss: 3, wheel: 8, brood: 1.7, mite: 0.1, titan: 5 };
@@ -231,6 +235,13 @@ const INFERNO = 2.5;
 const INFERNO_WIDE = 1.8;
 const BURN_SHARE = 0.4;
 const RING_SHARE = 0.5;
+/**
+ * Uplink mode, the Spire a player starts on: UPLINK_VIEW is the reach its view is judged by (a comfortable bow shot), UPLINK_APART
+ * how far two players' Spires stand apart at least. A Spire of the map is taken when its view is at least UPLINK_KEEP of the best free tile.
+ */
+const UPLINK_VIEW = 18;
+const UPLINK_APART = 10;
+const UPLINK_KEEP = 0.85;
 
 /**
  * How forgiving a map's layout is, as an enemy health multiplier: long roads and tiles that overlook a lot of road give
@@ -306,10 +317,13 @@ export class Sim {
   private snapN = 0; private modsSig = '';
   private wallTw: [Tower, Tower][] = [];
   private nospecAt = new Map<number, number>();
+  /** Uplink mode: the id of the Spire each player starts on (see uplinkHomes). */
+  private home: number[] = [];
   private rand: () => number;
 
   constructor(opts: Partial<SimOpts> = {}) {
-    this.opts = { mode: 'solo', players: 1, seed: (Math.random() * 1e9) | 0, pauseOnCards: true, map: DEFAULT_MAP, diff: 'normal', survival: false, ...opts };
+    this.opts = { mode: 'solo', players: 1, seed: (Math.random() * 1e9) | 0, pauseOnCards: true, map: DEFAULT_MAP, diff: 'normal', survival: false, uplink: false, ...opts };
+    this.opts.uplink = this.opts.uplink === true && this.opts.mode !== 'versus';
     if (this.opts.seed === undefined) this.opts.seed = (Math.random() * 1e9) | 0;
     this.rand = mulberry(this.opts.seed);
     this.map = new GameMap(this.opts.map || DEFAULT_MAP);
@@ -337,6 +351,7 @@ export class Sim {
       this.unlocked.add(t.t);
       this.towers.push(newTower(this.nid++, t.t, t.cx, t.cz, 0));
     }
+    if (this.opts.uplink) this.uplinkHomes();
     this.ensureSpire();
     this.recomputeBuffs();
     for (let i = 0; i < this.opts.players; i++) {
@@ -376,7 +391,7 @@ export class Sim {
   get titanBusy() { return this.titan.phase === 'landing' || this.titan.phase === 'walk'; }
   /** The Titan's health when it lands: sized by the strength of the bow on its wave (only weak-point hits and tower specials hurt it), the difficulty and the number of players. */
   titanHp() {
-    return TUNE.titan * BOW_TIERS[bowTier(this.titan.wave)].mul * Math.sqrt(this.diff.hp) * (1 + 0.75 * (this.players.length - 1)) * Math.pow(TITAN_TOUGHER, this.titanN);
+    return TUNE.titan * BOW_TIERS[bowTier(this.titan.wave)].mul * Math.sqrt(this.diff.hp) * (1 + 0.75 * (this.players.length - 1)) * Math.pow(TITAN_TOUGHER, this.titanN) * (this.opts.uplink ? TUNE.upTitan : 1);
   }
 
   // ---------- building ----------
@@ -408,6 +423,8 @@ export class Sim {
   /** Why a tower cannot be sold right now ('' if it can). */
   sellBlock(t: Tower): '' | 'hero' | 'last' {
     if (this.players.some((p) => p.heroActive && p.heroTower === t.id)) return 'hero';
+    // Uplink mode, before the first step: a player's Spire is theirs although they are not on it yet
+    if (this.opts.uplink && this.players.some((p, i) => !p.heroActive && this.home[i] === t.id)) return 'hero';
     if (t.type === 'spire' && this.spires <= 1) return 'last';
     return '';
   }
@@ -473,6 +490,69 @@ export class Sim {
     this.grid[best] = 2;
     this.towers.push(newTower(this.nid++, 'spire', best % GW, Math.floor(best / GW), 0));
   }
+  /**
+   * Uplink mode: how good a tile is to live on. It counts the road within UPLINK_VIEW, the stretch toward the core up to ten times
+   * as much as the gate end, and on a map with several roads the road it sees least of counts again. Road in `seen` (what an
+   * earlier player's Spire overlooks) counts for a third, so the next player gets a view of their own. With `mark` it only adds
+   * the road this tile overlooks to `seen`.
+   */
+  private uplinkView(cx: number, cz: number, seen: Set<number>, mark = false): number {
+    const x = cellX(cx, cz), z = cellZ(cz), L = this.map.lanes.length;
+    let sum = 0, least = Infinity, near = Infinity;
+    for (let l = 0; l < L; l++) {
+      const len = this.map.lanes[l].len;
+      let ls = 0;
+      for (let d = 0, k = l * 4096; d < len; d += 2, k++) {
+        this.map.pos(l, d, tmp);
+        const dd = Math.hypot(tmp.x - x, tmp.z - z);
+        if (dd < near) near = dd;
+        if (dd > UPLINK_VIEW) continue;
+        if (mark) seen.add(k);
+        else ls += (0.2 + 1.8 * (d / len)) * (dd < 5 ? 0.7 : 1) * (seen.has(k) ? 0.35 : 1); // (straight down from the Spire is an awkward shot)
+      }
+      sum += ls / L;
+      if (ls < least) least = ls;
+    }
+    let s = sum + (L > 1 ? 0.5 * least : 0);
+    if (near < 3) s *= 0.8; // leave the tiles right beside the road for turrets
+    if (cx === 0 || cz === 0 || cx === GW - 1 || cz === GH - 1) s *= 0.9;
+    return s;
+  }
+  /**
+   * Uplink mode: every player lives on a Spire, so where it stands decides the run. Each player gets the tile with the best view
+   * (see uplinkView), at least UPLINK_APART from the other players'. A Spire the map brings is used when it is about as good,
+   * otherwise a free one is placed; the map's other Spires stay where they are. The same for a given map and number of players.
+   */
+  private uplinkHomes() {
+    const core = this.map.def.core, seen = new Set<number>();
+    for (let pi = 0; pi < this.opts.players; pi++) {
+      const apart = (x: number, z: number) => this.home.every((id) => { const h = this.towerById(id)!; return Math.hypot(h.x - x, h.z - z) >= UPLINK_APART; });
+      let best = -1, bs = 0;
+      for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) {
+        if (this.grid[cz * GW + cx] !== 0 || Math.max(Math.abs(cx - core[0]), Math.abs(cz - core[1])) <= 2 || !apart(cellX(cx, cz), cellZ(cz))) continue;
+        const s = this.uplinkView(cx, cz, seen);
+        if (s > bs) { bs = s; best = cz * GW + cx; }
+      }
+      let own: Tower | undefined, os = -1;
+      for (const t of this.towers) {
+        if (t.type !== 'spire' || this.home.includes(t.id) || !apart(t.x, t.z)) continue;
+        const s = this.uplinkView(t.cx, t.cz, seen);
+        if (s > os) { os = s; own = t; }
+      }
+      let t = own && os >= bs * UPLINK_KEEP ? own : undefined;
+      if (!t && best >= 0) {
+        this.grid[best] = 2;
+        t = newTower(this.nid++, 'spire', best % GW, Math.floor(best / GW), 0);
+        this.towers.push(t);
+      }
+      if (!t) t = own; // no free tile left: a Spire of the map will do
+      if (!t) break; // (holdUplink then shares what Spires there are)
+      this.home.push(t.id);
+      this.uplinkView(t.cx, t.cz, seen, true);
+    }
+  }
+  /** Uplink mode: the Spire a player starts the run on (they stand on it from the first step). */
+  uplinkHome(pi: number): Tower | undefined { return this.opts.uplink ? this.towerById(this.home[pi]) : undefined; }
   /** The Spire nearest to a tower (or to the middle of the map when the id is unknown). */
   nearestSpire(towerId: number): Tower | undefined {
     const t = this.towerById(towerId);
@@ -589,9 +669,11 @@ export class Sim {
       e.hp = e.maxHp = this.titanHp();
       e.speed = clamp(this.map.lanes[lane].len / TITAN_WALK, TITAN_PACE[0], TITAN_PACE[1]);
     } else {
-      const hp = d.hp * mul * this.diff.hp * this.mapMul * (this.opts.mode === 'coop' ? coopScale(TUNE.coopHp, Math.max(1, this.wave)) : 1) * (type === 'boss' ? TUNE.boss : 1);
+      // Uplink mode: the archer shoots for the whole run instead of a few seconds now and then, so the machines are tougher
+      const up = !this.opts.uplink ? 1 : (type === 'boss' || type === 'wheel' ? TUNE.upBoss : TUNE.upHp) * (this.opts.mode === 'coop' ? TUNE.upCoop : 1);
+      const hp = d.hp * mul * this.diff.hp * this.mapMul * (this.opts.mode === 'coop' ? coopScale(TUNE.coopHp, Math.max(1, this.wave)) : 1) * (type === 'boss' ? TUNE.boss : 1) * up;
       e.off = type === 'boss' ? 0 : (this.rand() - 0.5) * 1.3;
-      e.hp = e.maxHp = hp; e.shield = e.maxShield = d.shield * mul * this.mapMul;
+      e.hp = e.maxHp = hp; e.shield = e.maxShield = d.shield * mul * this.mapMul * up;
       e.speed = d.speed * (0.94 + this.rand() * 0.12); e.armor = d.armor * (1 + this.wave * 0.04);
       if (type === 'wheel') e.spin = 1;
       if (type === 'brood') e.ttl = BROOD_FIRST;
@@ -799,6 +881,7 @@ export class Sim {
   private cardOk(pi: number, c: Card) {
     const p = this.players[pi];
     const stack = (c.kind === 'hero' ? p.stacks[c.id] : this.stacks[c.id]) || 0;
+    if (c.meter && this.opts.uplink) return false; // nothing to charge and nothing to prolong: the Uplink never ends
     return stack < c.max && (!c.needs || this.unlocked.has(c.needs)) && !(c.kind === 'blueprint' && this.unlocked.has(c.id.slice(3) as TowerType));
   }
   /** Roll an offer of up to three cards. `heroOnly` restricts it to that player's own hero cards (co-op, see kill()); it may then be empty. */
@@ -849,10 +932,10 @@ export class Sim {
   /** Uplink. Kestrel can only stand on an Uplink Spire: any other tower id resolves to the Spire nearest to it. */
   activateHero(pi: number, towerId: number) {
     const p = this.players[pi];
-    if (!p || p.heroActive || (p.energy < MAX_ENERGY && !this.overlink) || this.over) return false;
+    if (!p || p.heroActive || (p.energy < MAX_ENERGY && !this.overlink && !this.opts.uplink) || this.over) return false;
     const t = this.nearestSpire(towerId);
     if (!t) return false;
-    p.heroActive = true; p.heroTower = t.id; p.energy = this.overlink ? MAX_ENERGY : 0;
+    p.heroActive = true; p.heroTower = t.id; p.energy = this.overlink && !this.opts.uplink ? MAX_ENERGY : 0;
     p.heroDur = HERO_DUR + p.stats.dur + p.stats.relay * Math.min(3, this.spires); p.heroTime = p.heroDur; p.fireCd = 0.4;
     p.draw = 0; p.drawing = false;
     this.events.push({ k: 'heroOn', p: pi, x: t.x, y: standY(t), z: t.z });
@@ -861,11 +944,21 @@ export class Sim {
   exitHero(pi: number) {
     const p = this.players[pi];
     if (!p || !p.heroActive) return;
+    if (this.opts.uplink && !this.over && this.towerById(p.heroTower)) return; // Uplink mode: nobody steps down
     p.heroActive = false; p.draw = 0; p.drawing = false;
-    p.energy = this.overlink ? MAX_ENERGY : Math.max(0, Math.min(80, (p.heroTime / p.heroDur) * 80)); // free to come back while the Titan walks
+    // free to come back while the Titan walks; Uplink mode has no charge at all (stepping down is only possible once the run is over)
+    p.energy = this.opts.uplink ? 0 : this.overlink ? MAX_ENERGY : Math.max(0, Math.min(80, (p.heroTime / p.heroDur) * 80));
     p.heroTime = 0;
     const t = this.towerById(p.heroTower);
     this.events.push({ k: 'heroOff', p: pi, x: t ? t.x : 0, y: t ? standY(t) : 0, z: t ? t.z : 0 });
+  }
+  /** Uplink mode: put a player on a Spire (again). Each player starts on their own (see uplinkHomes); when that one is gone, on one of those that are left. */
+  private holdUplink(pi: number) {
+    const p = this.players[pi];
+    const sp = this.towers.filter((t) => t.type === 'spire');
+    if (!sp.length) return;
+    if (p.heroActive) { p.heroActive = false; p.draw = 0; p.drawing = false; }
+    this.activateHero(pi, (this.towerById(this.home[pi]) || sp[pi % sp.length]).id);
   }
   heroOrigin(pi: number) {
     const p = this.players[pi], t = p ? this.towerById(p.heroTower) : undefined;
@@ -1271,7 +1364,11 @@ export class Sim {
       if (!p.heroActive || !p.drawing) p.draw = 0;
       else if (p.fireCd <= 0) p.draw = Math.min(1, p.draw + (dt * Math.max(0.2, p.stats.rate)) / DRAW_TIME);
       for (let s = 0; s < 3; s++) if (p.cds[s] > 0) p.cds[s] -= dt;
-      if (this.overlink) { // the Titan walks: the Uplink is held open
+      if (this.opts.uplink) { // Uplink mode: the player is on a Spire from the first moment to the last
+        p.energy = 0;
+        if (!this.over && (!p.heroActive || !this.towerById(p.heroTower))) this.holdUplink(i);
+        p.heroTime = p.heroDur;
+      } else if (this.overlink) { // the Titan walks: the Uplink is held open
         p.energy = MAX_ENERGY;
         if (p.heroActive && !this.towerById(p.heroTower)) this.exitHero(i);
       } else if (p.heroActive) {
@@ -1786,7 +1883,7 @@ export class Sim {
     const sendMods = sig !== this.modsSig || this.snapN % 20 === 0;
     this.modsSig = sig; this.snapN++;
     return {
-      a: [r(this.time), this.wave, this.lives, Math.floor(this.gold), this.level, Math.floor(this.xp), this.xpNext, this.waveActive ? 1 : 0, r(this.queue.length ? -1 : this.nextWaveIn), this.over ? 1 : 0, this.won ? 1 : 0, this.kills, this.mods.cheap, this.winWave, this.endless ? 1 : 0, this.maxLives, this.overlink ? 1 : 0],
+      a: [r(this.time), this.wave, this.lives, Math.floor(this.gold), this.level, Math.floor(this.xp), this.xpNext, this.waveActive ? 1 : 0, r(this.queue.length ? -1 : this.nextWaveIn), this.over ? 1 : 0, this.won ? 1 : 0, this.kills, this.mods.cheap, this.winWave, this.endless ? 1 : 0, this.maxLives, this.overlink ? 1 : 0, this.opts.uplink ? 1 : 0],
       ti: [TITAN_PHASES.indexOf(this.titan.phase), r(this.titan.danger), this.titan.wave, r(this.titan.t), this.titan.lane],
       u: [...this.unlocked].map((t) => TOWER_TYPES.indexOf(t)),
       e: this.enemies.map((e) => [e.id, ENEMY_TYPES.indexOf(e.type), r(e.x), r(e.z), r(e.yaw), Math.ceil(e.hp), Math.ceil(e.maxHp), Math.ceil(e.shield), e.slowT > 0 ? 1 : 0, r(e.gy), (e.burnT > 0 ? 1 : 0) | (e.frz > 0 ? 2 : 0) | (e.vulnT > 0 ? 4 : 0) | (e.crackT > 0 ? 16 : 0) | (e.latched ? 32 : 0), r(e.breach), r(e.spin), e.prey]),
@@ -1811,6 +1908,8 @@ export class Sim {
     if (a.length > 13) { this.winWave = clamp(num(a[13], this.winWave) | 0, 1, 1000); this.endless = !!a[14]; }
     if (a.length > 15) this.maxLives = clamp(num(a[15], this.maxLives) | 0, 1, 1000);
     this.overlink = a[16] === 1;
+    // Uplink mode is the host's to decide: the guest's HUD and its sell checks follow it (never in versus)
+    if (a.length > 17 && this.opts.mode !== 'versus') this.opts.uplink = a[17] === 1;
     if (Array.isArray(s.ti)) {
       const T = this.titan, ph = TITAN_PHASES[num(s.ti[0], -1) | 0];
       if (ph) T.phase = ph;

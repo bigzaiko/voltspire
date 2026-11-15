@@ -6,6 +6,7 @@
 
 - **Command view** - build and upgrade eleven tower types on the hexes beside the roads. Tags over the spawn gates show what the next wave sends down each road. A Colossus arrives every fifth wave, a Gyre mini-boss in between.
 - **Uplink** - kills charge your ultimate. Press Space to stand on an Uplink Spire as Kestrel: arrows, Rail Shot, Arrow Rain, Singularity. She can only use Spires and teleports between them.
+- **Uplink mode** - the whole campaign from the Spire. Press B to build: the crosshair marks a hex and a click puts the tower down. Build a second Spire and jump to it to reach the rest of the grid.
 - **Tower specials** - every combat tower charges a special. During the Uplink, shoot the power node on top of a charged tower to fire it. The tower then reboots for a few seconds.
 - **Weak points** - Brutes and the Colossus have exposed spots that take extra arrow damage.
 - **Machines** - ten kinds, among them the Gyre (a wheel whose spinning rim deflects hits until you slow or freeze it), the Broodcarrier (its mites climb a tower and jam it until you shoot them off) and the Titan: one finale per campaign that lands on the gate, wipes the road and stuns every tower. Towers only slow it; your weak-point shots and tower specials bring it down, and the Uplink stays open while it stands.

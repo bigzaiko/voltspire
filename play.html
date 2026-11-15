@@ -77,15 +77,21 @@
       <div id="t-look"><span>Drag to aim</span></div>
       <button id="t-ult" class="tb" type="button" aria-label="Uplink"><b>Uplink</b></button>
       <button id="t-exit" class="tb" type="button" aria-label="Exit uplink"><b>Exit</b></button>
+      <!-- Uplink mode: build mode, and selling the tower it has marked -->
+      <button id="t-build" class="tb" type="button" aria-label="Build mode"><b>Build</b></button>
+      <button id="t-bsell" class="tb" type="button" aria-label="Sell the marked tower"><b>Sell</b></button>
       <button id="t-tp" class="tb" type="button" aria-label="Teleport"><b>Jump</b></button>
       <button id="t-s0" class="tb" type="button" aria-label="Rail Shot"><b>Rail</b><i></i></button>
       <button id="t-s1" class="tb" type="button" aria-label="Arrow Rain"><b>Rain</b><i></i></button>
       <button id="t-s2" class="tb" type="button" aria-label="Singularity"><b>Well</b><i></i></button>
-      <button id="t-fire" class="tb" type="button" aria-label="Draw the bow. Hold, then let go to loose."><b>Draw</b></button>
+      <button id="t-fire" class="tb" type="button" aria-label="Draw the bow. Hold, then let go to loose."><b class="draw">Draw</b><b class="place">Place</b></button>
     </div>
 
     <div id="herohud" class="hidden">
       <div id="cross"><i></i><i></i><i></i><i></i></div>
+      <!-- build mode: the crosshair becomes a hex, with the tower and the reason it cannot go there underneath -->
+      <svg id="reticle" viewBox="0 0 40 40" aria-hidden="true"><polygon points="20,4 33.9,12 33.9,28 20,36 6.1,28 6.1,12" /></svg>
+      <div id="build-line"><b id="bl-name"></b><span id="bl-why"></span></div>
       <svg id="draw" viewBox="0 0 64 64" aria-hidden="true"><circle class="trk" cx="32" cy="32" r="27" /><circle id="draw-arc" cx="32" cy="32" r="27" pathLength="100" /></svg>
       <div id="lock-hint"></div>
       <div id="hero-time"><span id="hero-label">UPLINK ACTIVE</span><div class="bar big"><i id="herobar"></i></div></div>
@@ -95,6 +101,14 @@
         <div class="skill" id="sk-1"><kbd>Q</kbd><span>Arrow Rain</span><i></i></div>
         <div class="skill" id="sk-2"><kbd>E</kbd><span>Singularity</span><i></i></div>
         <div class="skill" id="sk-tp"><kbd>F</kbd><span>Spire jump</span></div>
+        <div class="skill" id="sk-build"><em><kbd>B</kbd> or <kbd>1</kbd>-<kbd>0</kbd></em><span>Build</span></div>
+      </div>
+      <div id="bkeys">
+        <div class="skill"><kbd>LMB</kbd><span>Place</span></div>
+        <div class="skill"><em><kbd>Wheel</kbd> <kbd>1</kbd>-<kbd>0</kbd></em><span>Tower</span></div>
+        <div class="skill"><kbd>X</kbd><span>Sell</span></div>
+        <div class="skill"><kbd>U</kbd><span>Upgrade</span></div>
+        <div class="skill"><em><kbd>RMB</kbd> <kbd>B</kbd></em><span>Close</span></div>
       </div>
       <div id="hero-hint"></div>
     </div>
@@ -187,6 +201,7 @@
         <div class="seg" id="setup-mode">
           <button class="chip" data-v="campaign">Campaign</button>
           <button class="chip" data-v="survival">Survival</button>
+          <button class="chip" data-v="uplink">Uplink</button>
         </div>
       </div>
       <div class="field">
@@ -264,6 +279,8 @@
           <p class="kbd-only">Aim at another Spire and press <kbd>F</kbd>, or shoot its beacon, to jump there. <kbd>Space</kbd> ends early and refunds charge.</p>
           <p class="tap-only">Drag anywhere to aim. Hold Draw to pull the bow and let go to loose: a full draw hits hardest. The round buttons are your skills. Shoot the beacon of another Spire, or tap Jump, to move there.</p>
           <p>Towers charge a special. Shoot the glowing node on top of a charged tower to fire it. The tower then reboots for a few seconds. Brutes and the Colossus have weak points that take extra arrow damage.</p>
+          <p class="kbd-only">Uplink mode plays the whole run from the Spire. <kbd>B</kbd> or a tower key opens build mode: the crosshair marks a hex, <kbd>LMB</kbd> builds there, the wheel picks the tower, <kbd>X</kbd> sells and <kbd>U</kbd> upgrades the tower it marks, <kbd>RMB</kbd> or <kbd>B</kbd> closes it. A solo game slows down while it is open. Build a second Spire and jump to it to reach the rest of the grid.</p>
+          <p class="tap-only">Uplink mode plays the whole run from the Spire. Tap Build, pick a tower in the bar, aim at a hex and tap Place. Sell takes down the tower you aim at. Build a second Spire and jump to it to reach the rest of the grid.</p>
         </div>
         <div class="panel"><h3>Cards and the bow</h3>
           <p>Every level you pick one of three cards: tower blueprints, tower upgrades, hero powers or economy.</p>

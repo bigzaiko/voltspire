@@ -1,4 +1,5 @@
-// Headless balance run: node tools/balance.ts [runs] [skill] [nohero|hero|mono:<mix>|focus:<mix>] [mapId|all] [easy|normal|hard] [quiet|survival] [solo|coop]
+// Headless balance run: node tools/balance.ts [runs] [skill] [nohero|hero|uplink|mono:<mix>|focus:<mix>] [mapId|all] [easy|normal|hard] [quiet|survival] [solo|coop]
+// uplink plays Uplink mode: the bot stands on a Spire for the whole run and builds from there.
 // focus:<mix> is the same focused build with the Uplink (e.g. focus:rail).
 // mono:<mix> is a focused build without the Uplink: one tower family plus its cards, e.g. mono:pulse (= pulse:0.8,cryo:0.2), mono:lance, mono:arc:0.7,cryo:0.3
 // coop runs two bots on one co-op simulation.
@@ -8,9 +9,11 @@
 // The whole grid at once, one process per cell, as a table:
 //   node tools/balance.ts matrix [runs] [maps] [diffs] [styles] [survival]
 //   e.g. node tools/balance.ts matrix 6 all,gen easy,normal,hard hero,nohero
+//   or, campaign and Uplink mode side by side: node tools/balance.ts matrix 6 all,gen easy,normal,hard hero,uplink
 // Each cell reads: wins/runs, average wave reached (lowest wave), core integrity left in percent. The last columns are, for the
 // first style on the middle difficulty listed: the game time, the waves per Uplink between waves 8 and 18, the core integrity left
 // when wave 20 begins (runs that got there), and the Titan: how often it was destroyed, after how many seconds, and how far down its road it got.
+// The closing lines give the same Titan figures for every style and difficulty, summed over the maps.
 //
 // Variants side by side (ablations and sweeps), each summed over the maps given:
 //   node tools/balance.ts sweep [runs] [maps] <variant> <variant> ...
@@ -19,7 +22,7 @@
 // Each row reads, for hero runs on normal and hard and no-hero runs on normal: wins/runs, average wave, core integrity left;
 // then, for the first column, the game time, the waves per Uplink (waves 8 to 18) and the wave of the first Uplink; the core integrity
 // left after wave 5 without the hero; the tower specials fired per run; and, for the first column again, the core integrity left when
-// wave 20 begins and how many of the Titans were destroyed. COLS='hard:hero,easy:nohero' picks other columns.
+// wave 20 begins and how many of the Titans were destroyed. COLS='hard:hero,easy:nohero' picks other columns (styles hero, nohero, uplink).
 //
 // Environment switches (they carry over into matrix cells):
 // BAN='arc,missile' locks tower types (never unlocked, their blueprint is never offered); BAN='card:hollow,kind:hero' removes cards by id or kind;
@@ -72,6 +75,7 @@ function single() {
   for (const kv of (process.env.MAP || '').split(',')) { const [k, v] = kv.split('='); if ((k === 'gold' || k === 'lives') && +v > 0) mapScale[k] = +v; }
   const runs = +(process.argv[2] || 5), skill = +(process.argv[3] || 1);
   const style = process.argv[4] || 'hero', focus = style.startsWith('focus:'), mono = style.startsWith('mono:') ? style.slice(5) : focus ? style.slice(6) : '', noHero = style === 'nohero' || (!!mono && !focus);
+  const uplink = style === 'uplink';
   const coop = process.argv[8] === 'coop';
   let mix: Record<string, number> | null = null;
   if (mono) {
@@ -102,7 +106,7 @@ function single() {
     let wins = 0, waves = 0, lives = 0, time = 0, winTime = 0, start = 0, minWave = 1e9, ultSum = 0, specSum = 0, midUlts = 0, midWaves = 0, mul = 1, ult1 = 0, ult1N = 0, lives6 = 0, lives6N = 0, lives20 = 0, lives20N = 0, titans = 0, titanKills = 0, titanTime = 0, titanProg = 0;
     const built: Record<string, number> = {};
     for (let r = 0; r < runs; r++) {
-      const sim = new Sim({ seed: seed0 + r, pauseOnCards: false, map, diff, survival, mode: coop ? 'coop' : 'solo', players: coop ? 2 : 1 });
+      const sim = new Sim({ seed: seed0 + r, pauseOnCards: false, map, diff, survival, uplink, mode: coop ? 'coop' : 'solo', players: coop ? 2 : 1 });
       const bots = sim.players.map((_, i) => new Bot(sim, i, skill));
       if (mix) for (const b of bots) { b.mix = mix; b.mixHero = focus; for (const t in mix) sim.unlocked.add(t as TowerType); }
       if (forceMul > 0) sim.mapMul = forceMul;
@@ -144,7 +148,7 @@ function single() {
       for (const t of sim.towers) built[t.type] = (built[t.type] || 0) + 1 / runs;
       if (!quiet && !json) console.log(`${map.id.padEnd(11)} ${diff.padEnd(6)} run ${r}: ${sim.won ? 'WON ' : 'lost'} wave ${String(sim.wave).padStart(2)}/${sim.winWave} t=${Math.round(sim.time)}s lives=${sim.lives} lvl=${sim.level} towers=${sim.towers.length} spires=${sim.spires} kills=${sim.kills} ults=${ults} specials=${specials} crits=${crits} lives@5,10,..=${trail.join(',')}`);
     }
-    const label = (coop ? 'coop ' : '') + (mono ? style : noHero ? 'nohero' : 'hero  ');
+    const label = (coop ? 'coop ' : '') + (mono ? style : noHero ? 'nohero' : uplink ? 'uplink' : 'hero  ');
     if (json) {
       const cell: Cell = { map: map.id, tier: map.tier || 0, mul, diff, style: label.trim(), runs, wins, wave: waves / runs, minWave, lives: lives / runs, start, time: time / runs / 60, winTime: wins ? winTime / wins / 60 : 0, ults: ultSum / runs, specials: specSum / runs, perUlt: midUlts ? midWaves / midUlts : 0, ult1: ult1N ? ult1 / ult1N : 0, lives6: lives6N ? lives6 / lives6N : 0, lives20: lives20N ? lives20 / lives20N : 0, titans, titanKills, titanTime: titanKills ? titanTime / titanKills : 0, titanProg: titanKills ? titanProg / titanKills : 0, towers: built };
       console.log('JSON ' + JSON.stringify(cell));
@@ -183,7 +187,7 @@ async function matrix() {
   const runs = Math.max(1, +(process.argv[3] || 6) | 0);
   const maps = mapsFor(process.argv[4] || 'all,gen');
   const diffs = (process.argv[5] || 'easy,normal,hard').split(',').filter((d) => DIFF_IDS.includes(d));
-  const styles = (process.argv[6] || 'hero,nohero').split(',').filter((s) => /^(hero|nohero|(mono|focus):[a-z0-9:.,]+)$/.test(s));
+  const styles = (process.argv[6] || 'hero,nohero').split(',').filter((s) => /^(hero|nohero|uplink|(mono|focus):[a-z0-9:.,]+)$/.test(s));
   const survival = process.argv[7] === 'survival';
   const jobs: Job[] = [];
   for (const m of maps) for (const d of diffs) for (const s of styles) jobs.push({ key: `${m.id}|${d}|${s}`, map: m.id, diff: d, style: s, runs, mode: survival ? 'survival' : 'quiet', env: {} });
@@ -216,6 +220,12 @@ async function matrix() {
   const groups = [...new Set([...tot.keys()].map((k) => k.split('|')[0]))].sort();
   for (const g of groups) console.log(`${g.padEnd(21)} | ${cols.map((c) => { const t = tot.get(g + '|' + c); return (t ? `${t.w}/${t.n} ${(t.wave / t.k).toFixed(1).padStart(4)}` : '-').padEnd(W); }).join(' | ')} |`);
   console.log(`${ref} ${styles[0]}: a won run takes ${minsN ? (mins / minsN).toFixed(1) : '-'} min, core left when wave 20 begins ${l20N ? Math.round((100 * l20) / l20N) + '%' : '-'}, Titan destroyed ${tk}/${tn}${tk ? ` after ${(tt / tk).toFixed(0)} s at ${Math.round((100 * tp) / tk)}% of its road` : ''}`);
+  // the Titan for every column, so styles can be compared (e.g. the campaign against Uplink mode)
+  for (const c of cols) {
+    let k = 0, n = 0, t = 0, p = 0;
+    for (const m of maps) { const cell = cells.get(`${m.id}|${c.replace(' ', '|')}`); if (cell) { k += cell.titanKills; n += cell.titans; t += cell.titanTime * cell.titanKills; p += cell.titanProg * cell.titanKills; } }
+    console.log(`Titan ${c.padEnd(W)} destroyed ${k}/${n}${k ? ` after ${(t / k).toFixed(0)} s at ${Math.round((100 * p) / k)}% of its road` : ''}`);
+  }
 }
 
 /** Variants side by side: each is a set of environment switches, summed over the maps. */
@@ -226,7 +236,7 @@ async function sweep() {
   if (!variants.length) variants.push('base');
   let cols: [string, string][] = [['normal', 'hero'], ['hard', 'hero'], ['normal', 'nohero']];
   // COLS='hard:hero,easy:nohero' picks other columns
-  const pick = (process.env.COLS || '').split(',').map((c) => c.split(':')).filter((c) => DIFF_IDS.includes(c[0]) && (c[1] === 'hero' || c[1] === 'nohero')) as [string, string][];
+  const pick = (process.env.COLS || '').split(',').map((c) => c.split(':')).filter((c) => DIFF_IDS.includes(c[0]) && (c[1] === 'hero' || c[1] === 'nohero' || c[1] === 'uplink')) as [string, string][];
   if (pick.length) cols = pick;
   const jobs: Job[] = [];
   for (const v of variants) {

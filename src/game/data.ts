@@ -211,6 +211,15 @@ export const TUNE = {
   coopHp: COOP_HP, coopCount: COOP_COUNT, coopFrom: 3, coopRamp: 12,
   /** Lance: extra damage at full heat */
   lanceHeat: LANCE_HEAT,
+  /** Uplink mode, where the archer shoots for the whole run: enemy health and shield multiplier, and the Titan's health multiplier (see spawn() and titanHp() in sim.ts).
+   *  Tuned with tools/balance.ts matrix 6 all,gen easy,normal,hard hero,uplink: the bot wins 336, 238 and 57 of 336 runs in Uplink mode against
+   *  336, 232 and 52 in the campaign, and destroys the Titan at about the same point of its road (42 to 49% of it, against 44 to 46%). */
+  upHp: 2.45, upTitan: 1.1,
+  /** Uplink mode: the same for the Colossus and the Gyre. The campaign keeps its Uplink for them, so an Uplink that never ends helps less against them. */
+  upBoss: 1.9,
+  /** Uplink mode in co-op: a further health multiplier for all of them (the Titan aside), for the second archer who also shoots all run long.
+   *  Two bots on 16 maps then win 100%, 61% and 24% of their runs in Uplink mode on easy, normal and hard, against 97%, 63% and 24% in a co-op campaign. */
+  upCoop: 1.5,
 };
 /** Co-op multiplier for wave w: `full` (e.g. TUNE.coopHp) eased in between wave coopFrom and wave coopFrom + coopRamp. */
 export const coopScale = (full: number, w: number) => 1 + (full - 1) * Math.max(0, Math.min(1, (w - TUNE.coopFrom) / Math.max(1, TUNE.coopRamp)));
@@ -277,6 +286,8 @@ export interface Card {
   max: number;
   icon: string;
   needs?: TowerType;
+  /** The card only feeds the Uplink's charge or its length. Uplink mode has neither, so it never offers these. */
+  meter?: boolean;
   apply(c: CardCtx): void;
 }
 
@@ -314,7 +325,7 @@ export const CARDS: Card[] = [
   { id: 'r_break', name: 'Armour Breaker', desc: 'Rail slugs ignore armour and hit Brutes and Colossi 30% harder.', rar: 1, kind: 'tower', max: 2, icon: '⛏', needs: 'rail', apply: (c) => { c.mods.railBreak += 1; } },
   { id: 'r_scope', name: 'Horizon Scope', desc: 'Railguns gain 25% range.', rar: 0, kind: 'tower', max: 2, icon: '◎', needs: 'rail', apply: (c) => { c.mods.tw.rail.range *= 1.25; } },
   { id: 'b_wide', name: 'Wide Band', desc: 'Beacons reach 30% further.', rar: 0, kind: 'tower', max: 2, icon: '◎', needs: 'beacon', apply: (c) => { c.mods.tw.beacon.range *= 1.3; } },
-  { id: 'b_feed', name: 'Uplink Feed', desc: 'Each Beacon slowly charges your ultimate.', rar: 1, kind: 'tower', max: 2, icon: '⚡', needs: 'beacon', apply: (c) => { c.mods.beaconFeed += 1; } },
+  { id: 'b_feed', name: 'Uplink Feed', desc: 'Each Beacon slowly charges your ultimate.', rar: 1, kind: 'tower', max: 2, icon: '⚡', needs: 'beacon', meter: true, apply: (c) => { c.mods.beaconFeed += 1; } },
   { id: 'f_fuel', name: 'Long Conduits', desc: 'Firewall Pylons link one tile further apart.', rar: 0, kind: 'tower', max: 2, icon: '◎', needs: 'flame', apply: (c) => { c.mods.flameLink += 1; } },
   { id: 'f_burn', name: 'Sticky Fire', desc: 'Whatever crosses a firewall burns 1.5 seconds longer and 40% hotter.', rar: 0, kind: 'tower', max: 3, icon: '♨', needs: 'flame', apply: (c) => { c.mods.flameBurn += 1; } },
   { id: 'f_melt', name: 'Slag Curtain', desc: 'Firewalls are 30% thicker, and burning enemies lose 40% of their armour.', rar: 1, kind: 'tower', max: 2, icon: '⛏', needs: 'flame', apply: (c) => { c.mods.flameMelt += 1; } },
@@ -338,13 +349,13 @@ export const CARDS: Card[] = [
   { id: 'volatile', name: 'Volatile Tips', desc: 'Arrows explode in a small blast.', rar: 1, kind: 'hero', max: 3, icon: '✹', apply: (c) => { c.hero.explode += 1; } },
   { id: 'quick', name: 'Quick Draw', desc: 'Kestrel draws the bow 25% faster.', rar: 0, kind: 'hero', max: 4, icon: '≫', apply: (c) => { c.hero.rate *= 1.25; } },
   { id: 'overcharge', name: 'Overcharge', desc: 'Arrows and skills deal 30% more damage.', rar: 0, kind: 'hero', max: 6, icon: '✦', apply: (c) => { c.hero.dmg *= 1.3; } },
-  { id: 'uplink', name: 'Extended Uplink', desc: 'Ultimate lasts 4 seconds longer.', rar: 1, kind: 'hero', max: 3, icon: '◷', apply: (c) => { c.hero.dur += 4; } },
-  { id: 'charge', name: 'Fast Charge', desc: 'Ultimate charges 25% faster.', rar: 0, kind: 'hero', max: 4, icon: '⚡', apply: (c) => { c.hero.charge *= 1.25; } },
+  { id: 'uplink', name: 'Extended Uplink', desc: 'Ultimate lasts 4 seconds longer.', rar: 1, kind: 'hero', max: 3, icon: '◷', meter: true, apply: (c) => { c.hero.dur += 4; } },
+  { id: 'charge', name: 'Fast Charge', desc: 'Ultimate charges 25% faster.', rar: 0, kind: 'hero', max: 4, icon: '⚡', meter: true, apply: (c) => { c.hero.charge *= 1.25; } },
   { id: 'arcarrow', name: 'Storm Fletching', desc: 'Arrows chain lightning to 2 enemies.', rar: 2, kind: 'hero', max: 2, icon: '⌁', apply: (c) => { c.hero.chain += 2; } },
   { id: 'rain', name: 'Monsoon Protocol', desc: 'Arrow Rain is larger and hits harder.', rar: 1, kind: 'hero', max: 3, icon: '☂', apply: (c) => { c.hero.rain += 0.5; } },
   { id: 'sing', name: 'Event Horizon', desc: 'Singularity is larger and hits harder.', rar: 1, kind: 'hero', max: 3, icon: '◍', apply: (c) => { c.hero.sing += 0.5; } },
   { id: 'scanner', name: 'Weak Point Scanner', desc: 'Weak-point hits deal 30% more damage.', rar: 1, kind: 'hero', max: 3, icon: '⌖', apply: (c) => { c.hero.weak += 0.3; } },
-  { id: 'relayup', name: 'Relay Uplink', desc: 'Ultimate lasts 1.5 seconds longer per Uplink Spire you own (up to 3 Spires).', rar: 1, kind: 'hero', max: 2, icon: '⟟', apply: (c) => { c.hero.relay += 1.5; } },
+  { id: 'relayup', name: 'Relay Uplink', desc: 'Ultimate lasts 1.5 seconds longer per Uplink Spire you own (up to 3 Spires).', rar: 1, kind: 'hero', max: 2, icon: '⟟', meter: true, apply: (c) => { c.hero.relay += 1.5; } },
   { id: 'cdr', name: 'Coolant Loop', desc: 'Hero skills recharge 20% faster.', rar: 0, kind: 'hero', max: 3, icon: '↻', apply: (c) => { c.hero.cdr *= 0.8; } },
   // economy
   { id: 'salvage', name: 'Salvage Rights', desc: 'Earn 20% more credits from kills.', rar: 0, kind: 'eco', max: 4, icon: '¤', apply: (c) => { c.mods.gold *= 1.2; } },
