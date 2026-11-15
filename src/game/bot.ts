@@ -1,7 +1,7 @@
 // Autoplayer: drives the menu attract mode, the trailer, and headless balance tests.
-import { GW, GH, TOWERS, ENEMIES, ENEMY_SCALE, MAX_ENERGY, CARD_BY_ID, LINK_RANGE, WALL_HALF, FIRE_RING, cellX, cellZ } from './data.ts';
+import { GW, GH, TOWERS, ENEMIES, ENEMY_SCALE, MAX_ENERGY, CARD_BY_ID, LINK_RANGE, WALL_HALF, FIRE_RING, TITAN_SLOW, cellX, cellZ } from './data.ts';
 import type { TowerType } from './data.ts';
-import { Sim, nodePos, weakPos, raySphere, linkRange, segDist, paceOf, ARROW_PAD, ARROW_SPEED } from './sim.ts';
+import { Sim, nodePos, weakPos, weakOpen, raySphere, linkRange, segDist, paceOf, ARROW_PAD, ARROW_SPEED } from './sim.ts';
 import type { Enemy, Tower } from './sim.ts';
 import { hexDist } from './hex.ts';
 
@@ -189,20 +189,21 @@ export class Bot {
     if (t.type === 'flame') { // Inferno: what stands in or right before its walls (or its ring when it has no partner)
       const walls = s.walls.filter((w) => w.a === t.id || w.b === t.id);
       for (const e of s.enemies) {
+        if (e.type === 'mite') continue;
         const near = walls.length ? walls.some((w) => w.on && segDist(e.x, e.z, w.ax, w.az, w.bx, w.bz) <= s.wallHalf(w) * 2 + 1 + e.r) : Math.hypot(e.x - t.x, e.z - t.z) <= FIRE_RING * 1.5 + 1 + e.r;
         if (!near) continue;
         n++;
-        if (e.type === 'boss' || e.type === 'brute') heavy = true;
+        if (e.type === 'boss' || e.type === 'brute' || e.type === 'titan') heavy = true;
       }
       return n >= 4 || heavy;
     }
     const all = t.type === 'rail' || t.type === 'missile';
     for (const e of s.enemies) {
-      if (!all && Math.hypot(e.x - t.x, e.z - t.z) > r) continue;
+      if (e.type === 'mite' || (!all && Math.hypot(e.x - t.x, e.z - t.z) > r)) continue;
       if (t.type === 'mortar' && ENEMIES[e.type].fly) continue;
       n++;
-      // a Gyre still spinning is worth a Flash Freeze or a Collapse on its own: both stop its rim
-      if (e.type === 'boss' || e.type === 'brute' || (e.type === 'wheel' && e.spin > 0.5 && (t.type === 'cryo' || t.type === 'gravity'))) heavy = true;
+      // a Gyre still spinning is worth a Flash Freeze or a Collapse on its own: both stop its rim. Every special is worth it on the Titan: nothing else the towers do hurts it.
+      if (e.type === 'boss' || e.type === 'brute' || e.type === 'titan' || (e.type === 'wheel' && (e.spin > 0.5 ? t.type === 'cryo' || t.type === 'gravity' : true))) heavy = true;
     }
     return all ? n >= 8 || (heavy && n >= 1) : n >= 4 || heavy;
   }
@@ -232,11 +233,15 @@ export class Bot {
       }
       // ultimate: uplink to the Spire closest to the head of the attack
       // (a full charge is kept for a Colossus when the wave intel shows one coming and the field is quiet)
-      const bossNow = s.enemies.some((e) => e.type === 'boss');
+      const bossNow = s.enemies.some((e) => e.type === 'boss' || e.type === 'wheel');
       const bossSoon = !bossNow && (s.queue.some((q) => q.type === 'boss') || (s.preview.lanes.some((l) => l.some((o) => o.type === 'boss')) && s.enemies.length < 12));
-      if (this.useHero && (!this.mix || this.mixHero) && !p.heroActive && p.energy >= MAX_ENERGY && s.spires > 0 && !bossSoon && (s.enemies.length > 5 || bossNow)) {
+      let field = 0;
+      for (const e of s.enemies) if (e.type !== 'mite') field++;
+      // while the Titan walks the Uplink is held open for everyone: always take it, also in the runs that otherwise play without the hero
+      const titan = s.overlink && !p.heroActive && s.spires > 0;
+      if (titan || (this.useHero && (!this.mix || this.mixHero) && !p.heroActive && p.energy >= MAX_ENERGY && s.spires > 0 && !bossSoon && (field > 5 || bossNow))) {
         const sp = this.bestSpire();
-        if (sp) { s.activateHero(this.pi, sp.id); const o = s.heroOrigin(this.pi); if (o) { this.aim.x = o.x; this.aim.y = 1; this.aim.z = o.z + 6; } }
+        if (sp && s.activateHero(this.pi, sp.id)) { const o = s.heroOrigin(this.pi); if (o) { this.aim.x = o.x; this.aim.y = 1; this.aim.z = o.z + 6; } }
       }
     }
     if (p.heroActive) this.fight(dt);
@@ -259,6 +264,22 @@ export class Bot {
     return best;
   }
 
+  /** The Titan's weak point worth the most that an arrow from `o` reaches before it meets the hull (the same test the sim applies), or -1. */
+  private titanWeak(e: Enemy, o: { x: number; y: number; z: number }): number {
+    const wk = ENEMIES.titan.weak!;
+    let best = -1, bm = 0;
+    for (let i = 0; i < wk.length; i++) {
+      if (wk[i].mul <= bm || !weakPos(e, i, V)) continue;
+      const dx = V.x - o.x, dy = V.y - o.y, dz = V.z - o.z, L = Math.hypot(dx, dy, dz) || 1;
+      if (L > 62 || !weakOpen(e, i, dx, dz)) continue;
+      const ub = raySphere(o.x, o.y, o.z, dx / L, dy / L, dz / L, e.x, e.y, e.z, e.r + ARROW_PAD);
+      const uw = raySphere(o.x, o.y, o.z, dx / L, dy / L, dz / L, V.x, V.y, V.z, wk[i].r * ENEMY_SCALE.titan);
+      if (ub >= 0 && uw > ub + 0.2) continue; // the hull is in the way from here
+      bm = wk[i].mul; best = i;
+    }
+    return best;
+  }
+
   private fight(dt: number) {
     const s = this.sim, p = s.players[this.pi];
     const o = s.heroOrigin(this.pi);
@@ -273,20 +294,45 @@ export class Bot {
       want = { x: V.x, y: V.y, z: V.z }; node = t.id; tol = 0.012;
       break;
     }
-    // 2. otherwise the most dangerous enemy in reach
-    let bd = 1e9;
+    // 2. otherwise the most dangerous enemy in reach (the Titan before everything, then a Colossus, a Gyre, a Brute)
+    let bd = 1e9, mite: Enemy | null = null, md = 45, heavy = false;
     for (const e of s.enemies) {
-      const d = Math.hypot(e.x - o.x, e.z - o.z) + this.progress(e) * -0.15 - (e.type === 'boss' ? 10 : e.type === 'brute' || e.type === 'wheel' ? 3 : 0); // full-draw arrows cut through half of a Gyre's guard
+      if (e.type === 'mite') { // mites sitting on a tower with time left: worth an arrow each to get the tower back
+        const d = Math.hypot(e.x - o.x, e.z - o.z);
+        if (e.latched && e.ttl > 2 && d < md) { md = d; mite = e; }
+        continue;
+      }
+      if (e.type === 'boss' || e.type === 'titan') heavy = true;
+      const d = Math.hypot(e.x - o.x, e.z - o.z) + this.progress(e) * -0.15 - (e.type === 'titan' ? 1000 : e.type === 'boss' ? 10 : e.type === 'wheel' ? 6 : e.type === 'brute' ? 3 : 0); // full-draw arrows cut through half of a Gyre's guard
       if (d < bd) { bd = d; tgt = e; }
     }
-    if (!want && tgt) {
+    const titan = tgt && tgt.type === 'titan' ? tgt : null;
+    if (titan && this.teleCd <= 0 && s.spires > 1) {
+      // stand where a weak point shows: the Spire with the best one in view, the nearest of those
+      const here = this.titanWeak(titan, o), wk = ENEMIES.titan.weak!;
+      let best: Tower | null = null, bv = here >= 0 ? wk[here].mul - Math.hypot(titan.x - o.x, titan.z - o.z) * 0.01 + 0.4 : -1;
+      for (const t of s.towers) {
+        if (t.type !== 'spire' || t.id === p.heroTower) continue;
+        const from = { x: t.x, y: o.y - (s.towerById(p.heroTower)?.h ?? t.h) + t.h, z: t.z }, i = this.titanWeak(titan, from);
+        const v = i >= 0 ? wk[i].mul - Math.hypot(titan.x - t.x, titan.z - t.z) * 0.01 : -1;
+        if (v > bv) { bv = v; best = t; }
+      }
+      this.teleCd = 1.5;
+      if (best && s.heroTeleport(this.pi, best.id)) return;
+    }
+    if (!want && mite && !heavy) { want = { x: mite.x, y: mite.y, z: mite.z }; tgt = mite; tol = 0.006; }
+    else if (!want && tgt) {
       const dist = Math.hypot(tgt.x - o.x, tgt.y - o.y, tgt.z - o.z), T = dist / ARROW_SPEED;
-      const v = paceOf(tgt) * (tgt.slowT > 0 ? 1 - tgt.slowF : 1) * (tgt.frz > 0 || tgt.sing > 0 ? 0 : 1) * T;
+      const held = tgt.breach > 0 ? 0 : titan ? 1 - TITAN_SLOW * Math.max(tgt.slowT > 0 ? tgt.slowF : 0, tgt.frz > 0 ? 1 : 0, tgt.sing > 0 ? 0.9 : 0) : (tgt.slowT > 0 ? 1 - tgt.slowF : 1) * (tgt.frz > 0 || tgt.sing > 0 ? 0 : 1);
+      const v = paceOf(tgt) * held * T;
       const lx = Math.sin(tgt.yaw) * v, lz = Math.cos(tgt.yaw) * v;
       want = { x: tgt.x + lx, y: tgt.y, z: tgt.z + lz };
       // a weak point, when one can be reached before the hull is in the way
       const wk = ENEMIES[tgt.type].weak;
-      if (wk) for (let i = 0; i < wk.length; i++) {
+      if (titan) {
+        const i = this.titanWeak(titan, o);
+        if (i >= 0 && weakPos(titan, i, V)) { want = { x: V.x + lx, y: V.y, z: V.z + lz }; tol = 0.015; }
+      } else if (wk) for (let i = 0; i < wk.length; i++) {
         if (!weakPos(tgt, i, V)) continue;
         const dx = V.x - o.x, dy = V.y - o.y, dz = V.z - o.z, L = Math.hypot(dx, dy, dz) || 1;
         const ub = raySphere(o.x, o.y, o.z, dx / L, dy / L, dz / L, tgt.x, tgt.y, tgt.z, tgt.r + ARROW_PAD);
@@ -313,7 +359,7 @@ export class Bot {
     if (!tgt) return;
     const dist = Math.hypot(tgt.x - o.x, tgt.z - o.z);
     // follow the fight: hop to a Spire that is clearly closer
-    if (this.teleCd <= 0 && s.spires > 1) {
+    if (this.teleCd <= 0 && s.spires > 1 && !titan && tgt.type !== 'mite') {
       let best: Tower | null = null, bdist = dist - 9;
       for (const t of s.towers) { if (t.type !== 'spire' || t.id === p.heroTower) continue; const d = Math.hypot(t.x - tgt.x, t.z - tgt.z); if (d < bdist) { bdist = d; best = t; } }
       if (best && s.heroTeleport(this.pi, best.id)) { this.teleCd = 2.5; return; }
@@ -322,7 +368,9 @@ export class Bot {
     s.heroAim(this.pi, !loose, want.x, want.y, want.z);
     if (loose) {
       // skills go right after an arrow has left, so they never cost a draw in progress
-      if (s.enemies.length > 6) { s.heroSkill(this.pi, 1, tgt.x, tgt.gy, tgt.z); s.heroSkill(this.pi, 2, tgt.x, tgt.gy, tgt.z); }
+      if (tgt.type === 'mite') return;
+      // Arrow Rain and Singularity only slow the Titan: they are kept for its last stretch and for when it stands at the core
+      if (titan ? titan.breach > 0 || this.progress(titan) > -0.3 * s.map.lanes[titan.lane].len : s.enemies.length > 6) { s.heroSkill(this.pi, 1, tgt.x, tgt.gy, tgt.z); s.heroSkill(this.pi, 2, tgt.x, tgt.gy, tgt.z); }
       s.heroSkill(this.pi, 0, want.x, want.y, want.z);
     }
   }

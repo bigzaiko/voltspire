@@ -1,4 +1,4 @@
-// VOLTSPIRE: static game data: map, towers, enemies, cards.
+// BEATSPIRE: static game data: map, towers, enemies, cards.
 
 // The board is a hex grid: all grid geometry lives in hex.ts.
 export { CELL, GW, GH, cellX, cellZ, worldToCell } from './hex.ts';
@@ -45,9 +45,11 @@ export const LVL_RANGE = [1, 1.08, 1.16];
 export const LVL_RATE = [1, 1.1, 1.25];
 export const upgradeCost = (t: TowerType, lvl: number) => Math.round(TOWERS[t].cost * (lvl === 1 ? 0.9 : 1.6));
 
-export type EnemyType = 'grunt' | 'runner' | 'drone' | 'shield' | 'brute' | 'boss' | 'wheel';
+export type EnemyType = 'grunt' | 'runner' | 'drone' | 'shield' | 'brute' | 'boss' | 'wheel' | 'brood' | 'mite' | 'titan';
 // New types go at the end: co-op snapshots send the index.
-export const ENEMY_TYPES: EnemyType[] = ['grunt', 'runner', 'drone', 'shield', 'brute', 'boss', 'wheel'];
+export const ENEMY_TYPES: EnemyType[] = ['grunt', 'runner', 'drone', 'shield', 'brute', 'boss', 'wheel', 'brood', 'mite', 'titan'];
+/** The types a normal wave is filled from, oldest first: the later a type stands here, the larger its share once it is unlocked (grunts are always mixed in). The Gyre, the Colossus, mites and the Titan come by their own rules. */
+export const WAVE_POOL: EnemyType[] = ['grunt', 'runner', 'drone', 'brood', 'shield', 'brute'];
 
 export interface EnemyDef {
   name: string;
@@ -65,12 +67,12 @@ export interface EnemyDef {
   from: number; // first wave
   fly?: boolean;
   scale: number;
-  /** Weak points in the model's local space (x = right, y = up, z = forward, unscaled). Only Kestrel's arrows and Rail Shot can hit them. */
-  weak?: { x: number; y: number; z: number; r: number; mul: number }[];
+  /** Weak points in the model's local space (x = right, y = up, z = forward, unscaled). Only Kestrel's arrows and Rail Shot can hit them. `front`: it only shows from in front (see weakOpen() in sim.ts). */
+  weak?: { x: number; y: number; z: number; r: number; mul: number; front?: boolean }[];
 }
 
 /** Model scale per enemy type (weak points and the view use it). */
-export const ENEMY_SCALE: Record<EnemyType, number> = { grunt: 1, runner: 1, drone: 1, shield: 1, brute: 1, boss: 0.95, wheel: 1 };
+export const ENEMY_SCALE: Record<EnemyType, number> = { grunt: 1, runner: 1, drone: 1, shield: 1, brute: 1, boss: 0.95, wheel: 1.35, brood: 1, mite: 1, titan: 1 };
 
 export const ENEMIES: Record<EnemyType, EnemyDef> = {
   grunt: { name: 'Grunt', hp: 28, speed: 3.0, bounty: 5, xp: 2, energy: 1.5, r: 0.55, y: 0.6, armor: 0, shield: 0, leak: 1, cost: 1, from: 1, scale: 1 },
@@ -79,8 +81,18 @@ export const ENEMIES: Record<EnemyType, EnemyDef> = {
   shield: { name: 'Aegis', hp: 55, speed: 2.5, bounty: 9, xp: 5, energy: 3, r: 0.7, y: 0.8, armor: 0, shield: 55, leak: 2, cost: 3, from: 6, scale: 1 },
   brute: { name: 'Brute', hp: 175, speed: 1.9, bounty: 13, xp: 8, energy: 5, r: 0.95, y: 1.1, armor: 3, shield: 0, leak: 3, cost: 5, from: 8, scale: 1, weak: [{ x: 0, y: 1.3, z: -0.55, r: 0.4, mul: 2.5 }] },
   boss: { name: 'Colossus', hp: 1200, speed: 1.3, bounty: 160, xp: 50, energy: 30, r: 1.6, y: 1.4, armor: 4, shield: 0, leak: 6, cost: 30, from: 5, scale: 1, weak: [{ x: 0, y: 2.1, z: -1.6, r: 0.6, mul: 3 }, { x: 0, y: 2.9, z: 1.5, r: 0.45, mul: 2.5 }] },
-  // Gyre: a machine riding inside one large armoured wheel. `speed` is its pace at full spin (see WHEEL_GUARD below).
-  wheel: { name: 'Gyre', hp: 130, speed: 4.4, bounty: 11, xp: 6, energy: 3.5, r: 1.05, y: 1.1, armor: 0, shield: 0, leak: 2, cost: 4, from: 9, scale: 1 },
+  // Gyre: a machine riding inside one large armoured wheel, a mini-boss that rolls in on its own (see gyreCount). `speed` is its pace at full spin (see WHEEL_GUARD below).
+  wheel: { name: 'Gyre', hp: 520, speed: 4.2, bounty: 55, xp: 24, energy: 12, r: 1.4, y: 1.5, armor: 0, shield: 0, leak: 4, cost: 16, from: 8, scale: 1 },
+  // Broodcarrier: sturdy and slow. It walks the road and lets swarms of mites loose on the towers beside it (see BROOD_* below).
+  brood: { name: 'Broodcarrier', hp: 230, speed: 1.8, bounty: 15, xp: 9, energy: 5, r: 1.0, y: 1.0, armor: 2, shield: 0, leak: 3, cost: 9, from: 6, scale: 1 },
+  // Mite: a tiny spider machine from a Broodcarrier. It runs across the deck to a tower, climbs it and jams it. Any hit destroys it; it never goes for the core.
+  mite: { name: 'Mite', hp: 1, speed: 7, bounty: 0, xp: 0, energy: 0.3, r: 0.35, y: 0.25, armor: 0, shield: 0, leak: 0, cost: 0, from: 9999, scale: 1 },
+  // Titan: the giant Colossus of the finale, twice as tall as an Uplink Spire. Weak points: the eye (from in front), the reactor on its back, and the two hip joints.
+  // Its health comes from Sim.titanHp() (hp here is not used) and its pace from the length of its road (see TITAN_* below).
+  titan: {
+    name: 'Titan', hp: 1, speed: 1.4, bounty: 0, xp: 0, energy: 0, r: 3.2, y: 9, armor: 0, shield: 0, leak: 0, cost: 0, from: 9999, scale: 1,
+    weak: [{ x: 0, y: 13.4, z: 2.2, r: 0.9, mul: 3, front: true }, { x: 0, y: 10.2, z: -2.0, r: 1.1, mul: 2.5 }, { x: 2.4, y: 6.4, z: 0, r: 0.8, mul: 1.6 }, { x: -2.4, y: 6.4, z: 0, r: 0.8, mul: 1.6 }],
+  },
 };
 
 /**
@@ -88,20 +100,63 @@ export const ENEMIES: Record<EnemyType, EnemyDef> = {
  * through, and the Gyre rolls at WHEEL_CRAWL of its speed with the rim stopped, rising to all of it at full spin.
  * WHEEL_BLEED: spin a hit takes off, per share of the Gyre's full health the hit would have dealt without the guard.
  * WHEEL_DRAG: spin lost per second while slowed. WHEEL_SINK: per second while a Graviton Well or a Singularity holds it. A freeze stops it dead.
- * WHEEL_REST: seconds without a hit before it spins back up, at WHEEL_SPINUP per second.
+ * WHEEL_REST: seconds without a hit before it spins back up, at WHEEL_SPINUP per second (slow: focused fire and freezes keep the rim down).
  * WHEEL_PIERCE: share of the guard that Rail shots and Kestrel's full-draw arrows ignore.
- * WHEEL_ESCORT: first wave on which Gyres roll in with each Colossus, WHEEL_ESCORTS of them per Colossus.
  */
 export const WHEEL_GUARD = 0.8;
 export const WHEEL_CRAWL = 0.45;
 export const WHEEL_BLEED = 2;
 export const WHEEL_DRAG = 0.4;
 export const WHEEL_SINK = 1.2;
-export const WHEEL_REST = 1.2;
-export const WHEEL_SPINUP = 0.3;
+export const WHEEL_REST = 2;
+export const WHEEL_SPINUP = 0.15;
 export const WHEEL_PIERCE = 0.5;
-export const WHEEL_ESCORT = 15;
-export const WHEEL_ESCORTS = 2;
+/** The Gyre is a mini-boss: one rolls in on wave GYRE_FIRST and every GYRE_EVERY waves after it, two from wave GYRE_PAIR on. The rest of that wave is GYRE_WAVE of its usual size. */
+export const GYRE_FIRST = 8;
+export const GYRE_EVERY = 5;
+export const GYRE_PAIR = 18;
+export const GYRE_WAVE = 0.8;
+export const gyreCount = (w: number) => (w >= GYRE_FIRST && (w - GYRE_FIRST) % GYRE_EVERY === 0 ? (w >= GYRE_PAIR ? 2 : 1) : 0);
+
+/**
+ * Broodcarrier and mites. BROOD_EVERY: seconds between swarms (the next one only leaves once the last is gone), BROOD_FIRST: seconds after
+ * it appears before the first. BROOD_SIZE: mites per swarm. BROOD_REACH: how far from the carrier a tower can be to be picked.
+ * MITE_HOLD: seconds a mite stays on its tower before it burns out, MITE_LIFE: the longest a mite lives in all.
+ * JAM_LINGER: seconds a tower stays jammed after the last mite on it is gone.
+ */
+/** The most Broodcarriers one wave brings: one at first, one more every BROOD_MORE waves. */
+export const BROOD_MORE = 7;
+export const broodCap = (w: number) => 1 + Math.floor(Math.max(0, w - ENEMIES.brood.from) / BROOD_MORE);
+export const BROOD_EVERY = 7;
+export const BROOD_FIRST = 2.5;
+export const BROOD_SIZE = 4;
+export const BROOD_REACH = 8.5;
+export const MITE_HOLD = 4.6;
+export const MITE_LIFE = 9;
+export const JAM_LINGER = 0.4;
+
+/**
+ * The Titan. TITAN_LAND: seconds from the leap to the impact. TITAN_STUN: seconds every tower is stunned by the impact.
+ * TITAN_WINDUP: seconds at the core before its first blow, TITAN_STRIKE_EVERY: seconds between blows, TITAN_STRIKE: share of the core's maximum per blow.
+ * TITAN_SLOW: strength of slowing effects on it. TITAN_WALK: seconds it aims to take for its road (its pace is kept between TITAN_PACE[0] and [1]).
+ * TITAN_LEAD: waves of warning before the earliest arrival. TITAN_GOLD: credits for destroying it (it also grants a level).
+ * TITAN_SURVIVAL: its first wave in Survival, TITAN_AGAIN: waves until the next one, TITAN_TOUGHER: health factor for each one after the first.
+ * TITAN_SMASH: seconds between the buildings it wrecks while it roams the district (lowest, highest).
+ */
+export const TITAN_LAND = 2.5;
+export const TITAN_STUN = 6;
+export const TITAN_WINDUP = 4;
+export const TITAN_STRIKE_EVERY = 5;
+export const TITAN_STRIKE = 0.4;
+export const TITAN_SLOW = 0.4;
+export const TITAN_WALK = 70;
+export const TITAN_PACE = [0.9, 1.7];
+export const TITAN_LEAD = 5;
+export const TITAN_GOLD = 350;
+export const TITAN_SURVIVAL = 22;
+export const TITAN_AGAIN = 12;
+export const TITAN_TOUGHER = 1.5;
+export const TITAN_SMASH = [20, 40];
 
 /** Global balance knobs (tools/balance.ts can override them from the TUNE environment variable to sweep values). */
 /** Strength of each extra Twin Barrels bolt, and the damage multiplier of an Overpressure crit. */
@@ -136,12 +191,16 @@ export const COOP_HP = 2.5;
 export const COOP_COUNT = 1.2;
 
 export const TUNE = {
-  /** enemy health per wave: 1 + hp1·(w-1) + hp2·(w-1)² + hp3·(w-1)³ */
-  hp1: 0.2, hp2: 0.02, hp3: 0.005,
+  /** enemy health per wave: 1 + hp1·(w-1) + hp2·(w-1)² + hp3·(w-1)³ (the square term carries the middle of a run, the cube term the waves past 20) */
+  hp1: 0.2, hp2: 0.055, hp3: 0.0033,
   /** wave budget: bud0 + bud1·w + w^budP */
   bud0: 8, bud1: 5, budP: 1.5,
   /** base arrow damage, credits per kill, wave-clear bonus (base + perWave·w), kill energy */
-  arrow: 10, bounty: 1, clear0: 15, clear1: 3, energy: 1, energyT: 0.8,
+  arrow: 10, bounty: 0.92, clear0: 13.8, clear1: 2.76, energy: 1, energyT: 0.8,
+  /** tower damage and xp from kills (the knobs of the balance pass), and how often rare and epic cards are offered next to common ones (weight 10) */
+  tdmg: 0.92, xp: 0.92, rare: 4.25, epic: 1.7,
+  /** Titan: health per point of bow strength at the wave it arrives on (see titanHp() in sim.ts), and how much harder tower specials hit it */
+  titan: 5200, titanSpec: 1,
   /** enemy health scales with (mean road length / mapLen)^mapPow · (road in reach of the best tiles / mapCov)^mapCovPow, see mapEase() in sim.ts.
    *  starter: extra factor for the first map (Switchback), which new players learn on and which plays harder than its shape suggests */
   mapLen: 105, mapPow: 0.2, mapCov: 39.8, mapCovPow: 0.64, starter: 0.78,

@@ -1,4 +1,4 @@
-"""VOLTSPIRE enemies - "the Static": cold machines. Dark slate hulls, gunmetal-violet plating, blue-white glows.
+"""BEATSPIRE enemies - "the Static": cold machines. Dark slate hulls, gunmetal-violet plating, blue-white glows.
 Brute and boss carry weak points: nodes weak_<n> with material glow_weak, placed where the game's hit test expects them."""
 import math
 from vs_lib import *
@@ -628,4 +628,226 @@ def enemy_wheel():
     return m
 
 
-ENEMIES = [enemy_grunt, enemy_runner, enemy_drone, enemy_brute, enemy_shield, enemy_boss, enemy_wheel]
+# ------------------------------------------------------------------ 14. broodcarrier
+def enemy_brood():
+    """Broodcarrier: a low, wide carrier on six short legs. Its back is a ribbed frame round six launch cells; the lids
+    swing open when a swarm of mites leaves.
+    Rig: body > head, body > cell_1..6 (lids, pivot on their outer edge; 1-3 left front to rear, 4-6 right),
+    body > leg_1..6 > _upper > _lower > _toe (1-3 left front to rear, 4-6 right front to rear)."""
+    m = enemy_model('enemy_brood')
+    b = m.joint('body', (0, 0, 0.74))
+    b.prism([(-1.22, 0.62), (-1.02, 0.90), (-0.60, 1.02), (0.95, 1.02), (1.30, 0.84), (1.24, 0.56), (0.70, 0.42),
+             (-0.85, 0.42)], 1.40, 'hull', bevel=0.05, plane='yz')
+    b.box((0.60, 1.30, 0.10), 'trim', bevel=0.03, at=(0, 0.0, 0.40))                              # belly drive
+    with b.sym():
+        # sponsons the legs hang from, a plated shoulder over them and a light strip along the flank
+        b.box((0.30, 2.05, 0.30), 'hull', bevel=0.06, at=(0.80, 0.02, 0.64))
+        b.prism(slab([(0.64, 0.94), (0.90, 0.86), (0.99, 0.66)], 0.05), 1.90, 'paint', bevel=0.015, plane='xz',
+                at=(0, 0.02, 0))
+        b.box((0.02, 1.50, 0.035), 'glow_main', bevel=0, at=(0.958, 0.02, 0.60))
+        b.box((0.22, 0.03, 0.10), 'glow_main', bevel=0, at=(0.36, 1.285, 0.72), rot=(-12, 0, 0))    # exhaust
+        b.box((0.08, 1.90, 0.10), 'trim', bevel=0.02, at=(0.68, 0.10, 1.07))                         # deck rail
+    # the back: ribs across, a spine down the middle, a lit floor in every cell
+    for y in (-0.82, -0.20, 0.40, 1.00):
+        b.box((1.40, 0.09, 0.13), 'hull', bevel=0.025, at=(0, y, 1.085))
+    b.box((0.11, 1.90, 0.13), 'hull', bevel=0.025, at=(0, 0.10, 1.085))
+    k = 0
+    for s in (1, -1):
+        for y in (-0.51, 0.10, 0.70):
+            k += 1
+            b.box((0.46, 0.40, 0.02), 'glow_main', bevel=0, at=(s * 0.36, y, 1.03))
+            b.box((0.50, 0.44, 0.06), 'hull', bevel=0, at=(s * 0.36, y, 0.99))
+            c = m.joint(f'cell_{k}', (s * 0.63, y, 1.115), parent=b)
+            c.box((0.52, 0.47, 0.05), 'paint', bevel=0.012, at=(s * 0.375, y, 1.115))
+            c.box((0.07, 0.32, 0.03), 'trim', bevel=0.008, at=(s * 0.20, y, 1.15))
+    # head: a low prow with a visor slit and two mandibles
+    h = m.joint('head', (0, -1.10, 0.72), parent=b)
+    h.prism([(-1.66, 0.58), (-1.56, 0.80), (-1.22, 0.92), (-1.08, 0.86), (-1.08, 0.50), (-1.36, 0.44)], 0.78, 'hull',
+            bevel=0.04, plane='yz')
+    h.prism(slab([(-1.06, 0.93), (-1.24, 0.955), (-1.64, 0.82)], 0.04), 0.66, 'paint', bevel=0.012, plane='yz')
+    h.box((0.50, 0.03, 0.06), 'glow_main', bevel=0, at=(0, -1.628, 0.68), rot=(20, 0, 0))
+    with h.sym():
+        h.prism([(-1.84, 0.40), (-1.62, 0.56), (-1.40, 0.50), (-1.52, 0.42)], 0.05, 'trim', bevel=0.01, plane='yz',
+                at=(0.27, 0, 0))
+        h.sphere(0.04, 'glow_main', segs=6, rings=4, at=(0.33, -1.50, 0.80))
+    b.rod((0.30, 1.05, 1.10), (0.36, 1.30, 1.42), 0.012, 'trim', segs=4, r2=0.005)
+    # six short legs: hip under the sponson, a high knee, a blade shin
+    Hh, K, F = (0.12, 0, 0.60), (0.52, 0, 0.98), (0.84, 0, 0.06)
+    for i, (s, hy, ang) in enumerate(((1, -0.74, -32), (1, 0.02, 0), (1, 0.78, 32), (-1, -0.74, 212), (-1, 0.02, 180),
+                                      (-1, 0.78, 148))):
+        Fm = T(at=(s * 0.80, hy, 0)) @ rotz(ang)
+        root, up, lo, toe = radial_leg(m, str(i + 1), b, Fm, (Hh, K, F))
+        with up.frames(Fm):
+            up.cyl(0.11, 0.16, 'trim', segs=8, bevel=0.02, o='c', rot=(90, 0, 0), at=Hh)
+            up.limb(Hh, K, 0.085, 0.07, 'hull', segs=6, power=3, up=(0, 0, 1))
+            up.prism(slab([(0.08, 0.76), (0.40, 1.04), (0.58, 1.09)], 0.04), 0.15, 'paint', bevel=0.012, plane='xz')
+            up.cyl(0.085, 0.15, 'trim', segs=8, bevel=0.015, o='c', rot=(90, 0, 0), at=K)
+        with lo.frames(Fm):
+            lo.prism([(0.46, 1.02), (0.58, 1.02), (0.90, 0.16), (0.84, 0.05), (0.78, 0.09), (0.56, 0.62)], 0.10, 'hull',
+                     bevel=0.018, plane='xz')
+            lo.prism(slab([(0.60, 1.07), (0.68, 0.98), (0.935, 0.34)], 0.035), 0.13, 'paint', bevel=0.01, plane='xz')
+            lo.prism(slab([(0.895, 0.46), (0.745, 0.84)], 0.012), 0.03, 'glow_main', plane='xz')
+        with toe.frames(Fm):
+            toe.prism([(0.72, 0.0), (0.76, 0.07), (0.92, 0.07), (1.00, 0.0)], 0.18, 'trim', bevel=0.012, plane='xz')
+    return m
+
+
+# ------------------------------------------------------------------ 15. mite
+def enemy_mite():
+    """Mite: a spider machine the size of a hand. Very few triangles: the view draws dozens at once, instanced.
+    Nodes: body, eye (its lights), legs_a and legs_b (four legs each, pivot at the body centre: the view swings the two
+    sets against each other)."""
+    m = enemy_model('enemy_mite')
+    C = (0, 0, 0.11)
+    b = m.joint('body', C)
+    b.sphere(0.5, 'hull', segs=6, rings=3, at=(0, 0.05, 0.125), scale=(0.25, 0.34, 0.17))
+    b.box((0.15, 0.12, 0.075), 'paint', bevel=0, at=(0, -0.14, 0.10))
+    e = m.joint('eye', C)
+    e.box((0.10, 0.02, 0.03), 'glow_main', bevel=0, at=(0, -0.205, 0.105))
+    e.box((0.05, 0.14, 0.015), 'glow_main', bevel=0, at=(0, 0.06, 0.212))
+    angs = [a for a in (-52, -18, 18, 52)] + [180 - a for a in (-52, -18, 18, 52)]
+    for name, idx in (('legs_a', (0, 2, 5, 7)), ('legs_b', (1, 3, 4, 6))):
+        n = m.joint(name, C)
+        for i in idx:
+            with n.frames(rotz(angs[i])):
+                n.rod((0.08, 0, 0.11), (0.21, 0, 0.215), 0.016, 'trim', segs=3)
+                n.rod((0.21, 0, 0.215), (0.34, 0, 0.0), 0.014, 'trim', segs=3, r2=0.006)
+    return m
+
+
+# ------------------------------------------------------------------ 16. titan
+def enemy_titan():
+    """Titan: a strider fifteen units tall. A compact hull rides high on a yoke between two hip hubs; a fore and an aft leg
+    leave each hub, climb to a knee above the hull's belly and come down far outside the road. A segmented neck carries a
+    long armoured head whose eye sits on the head's own pivot, so it stays put however the head turns.
+    Weak points at the game's coordinates (glTF): weak_1 eye (0, 13.4, 2.2), weak_2 reactor on the tail (0, 10.2, -2.0),
+    weak_3 / weak_4 the hip hubs (+-2.4, 6.4, 0).
+    Rig: body > neck_1 > neck_2 > head, body > leg_1..4 > _upper > _lower > _foot > _toe (1-2 left front, rear;
+    3-4 right front, rear)."""
+    m = Model('enemy_titan', {'hull': ('#171a22', 0.6, 0.45), 'paint': ('#3d3958', 0.35, 0.55), 'trim': ('#5d6470', 0.65, 0.42),
+                              'glow_main': '#8fd0ff', 'glow_weak': '#8a7dff', 'glow_reactor': '#8a7dff'})
+    HY = -0.25
+    b = m.joint('body', (0, 0, 9.6))
+    # hull
+    b.loft([(8.15, 0.8, 1.2), (8.5, 1.45, 1.95), (9.3, 1.75, 2.25), (10.1, 1.7, 2.15), (10.7, 1.35, 1.7),
+            (10.95, 0.8, 1.05)], 'hull', segs=14, power=3.0, sharp=40, at=(0, HY, 0))
+    b.loft([(9.22, 1.78, 2.28), (9.38, 1.80, 2.30), (9.54, 1.78, 2.28)], 'trim', segs=14, power=3.0, at=(0, HY, 0))
+    b.loft([(10.72, 1.37, 1.73), (10.98, 0.86, 1.12), (11.07, 0.5, 0.7), (11.07, 0.0, 0.0)], 'paint', segs=14, power=3.0,
+           at=(0, HY, 0.03))
+    with b.frames([T(at=(0, HY, 0)) @ rotz(a) for a in (-47, 47, 133, 227)]):
+        b.prism(slab([(1.45, 10.82), (2.15, 10.25), (2.36, 9.35), (2.10, 8.55)], 0.14), 1.5, 'paint', bevel=0.03,
+                plane='xz')
+        b.prism(slab([(2.19, 10.2), (2.40, 9.36)], 0.03), 0.2, 'trim', plane='xz', at=(0.03, 0, 0))
+    with b.frames(radial(14, radius=0.0, start=12)):
+        b.cyl(0.06, 0.05, 'trim', segs=5, rot=RIGHT, at=(1.5, 0, 8.72))
+    with b.sym():
+        b.box((0.06, 1.6, 0.10), 'glow_main', bevel=0, at=(1.76, HY, 9.82))
+        b.box((0.06, 1.0, 0.06), 'glow_main', bevel=0, at=(1.72, HY, 10.06))
+        b.box((0.5, 0.06, 0.12), 'glow_main', bevel=0, at=(0.62, HY - 2.215, 9.55))
+        # dorsal fins either side of the reactor
+        b.prism([(0.5, 10.6), (1.4, 10.3), (2.5, 11.9), (2.36, 12.5), (2.0, 11.9), (1.1, 10.9)], 0.16, 'hull',
+                bevel=0.03, plane='yz', at=(1.3, 0, 0))
+        b.prism([(1.45, 10.38), (2.58, 11.95), (2.50, 12.0), (1.35, 10.45)], 0.24, 'paint', bevel=0.02, plane='yz',
+                at=(1.3, 0, 0))
+        b.sphere(0.07, 'glow_main', segs=6, rings=4, at=(1.3, 2.38, 12.56))
+    # keel, belly vent and the yoke out to the hip hubs
+    b.loft([(7.2, 0.5, 0.7), (7.6, 0.85, 1.1), (8.3, 1.0, 1.4)], 'hull', segs=10, power=3.0, sharp=40, at=(0, HY * 0.5, 0))
+    b.lathe([(0.55, 7.25), (0.62, 7.1), (0.45, 6.95), (0.0, 6.9)], 'trim', segs=10, at=(0, HY * 0.5, 0))
+    b.ring(0.5, 0.08, 0.05, 'glow_reactor', segs=10, at=(0, HY * 0.5, 7.08))
+    with b.sym():
+        b.limb((0.6, 0, 7.75), (2.1, 0, 7.15), 0.5, 0.38, 'hull', segs=6, power=3, up=(0, 0, 1))
+        b.prism(slab([(0.7, 8.3), (1.7, 7.85), (2.5, 7.55)], 0.12), 0.9, 'paint', bevel=0.03, plane='xz')
+        b.box((0.6, 0.7, 0.36), 'hull', bevel=0.08, at=(2.4, 0, 7.42))
+        b.torus(0.92, 0.2, 'trim', segs=16, rsegs=6, rot=RIGHT, at=(2.4, 0, 6.4))
+        b.torus(0.92, 0.06, 'glow_main', segs=16, rsegs=4, rot=RIGHT, at=(2.62, 0, 6.4))
+    weak_big(m, 'weak_3', (2.4, 0, 6.4), 0.66, b)
+    weak_big(m, 'weak_4', (-2.4, 0, 6.4), 0.66, b)
+    # legs
+    Hh, K, A, F = (0.95, 0, 6.4), (3.1, 0, 10.6), (5.4, 0, 1.5), (5.7, 0, 0.3)
+    for i, (s, ang) in enumerate(((1, -55), (1, 55), (-1, 235), (-1, 125))):
+        Fm = T(at=(s * 2.4, 0, 0)) @ rotz(ang)
+        root, up, lo, ft, toe = radial_leg(m, str(i + 1), b, Fm, (Hh, K, A, F))
+        with b.frames(Fm):
+            b.sphere(0.48, 'trim', segs=8, rings=5, at=Hh)
+        with up.frames(Fm):
+            up.limb(Hh, K, 0.46, 0.40, 'hull', segs=6, power=3, up=(0, 0, 1))
+            up.prism(slab([(0.72, 7.15), (2.25, 10.24), (2.75, 11.25), (3.45, 11.3)], 0.2), 0.86, 'paint', bevel=0.04,
+                     plane='xz')
+            up.rod((1.5, 0, 6.6), (2.75, 0, 9.3), 0.1, 'trim', segs=6)
+            up.cyl(0.62, 1.0, 'trim', segs=12, bevel=0.05, o='c', rot=(90, 0, 0), at=K)
+            for y in (-0.51, 0.51):
+                up.cyl(0.26, 0.04, 'glow_main', segs=8, o='c', rot=(90, 0, 0), at=(K[0], y, K[2]))
+        with lo.frames(Fm):
+            lo.prism([(2.7, 10.75), (3.45, 11.0), (5.78, 1.95), (5.5, 1.3), (5.05, 1.55), (3.25, 9.2)], 0.66, 'hull',
+                     bevel=0.06, plane='xz')
+            lo.prism(slab([(3.3, 11.25), (3.79, 10.23), (5.72, 2.73)], 0.16), 0.8, 'paint', bevel=0.03, plane='xz')
+            lo.prism(slab([(5.50, 3.6), (4.15, 8.85)], 0.05), 0.16, 'glow_main', plane='xz')
+            lo.rod((3.0, 0, 9.5), (4.25, 0, 5.9), 0.1, 'trim', segs=6)
+            lo.cyl(0.42, 0.84, 'trim', segs=10, bevel=0.04, o='c', rot=(90, 0, 0), at=A)
+        with ft.frames(Fm):
+            ft.limb(A, F, 0.34, 0.28, 'hull', segs=6, power=3, up=(0, 0, 1))
+            ft.prism(slab([(5.62, 1.55), (5.95, 0.55)], 0.1), 0.7, 'paint', bevel=0.03, plane='xz')
+        with toe.frames(Fm):
+            toe.prism([(4.95, 0.0), (5.05, 0.42), (5.6, 0.72), (6.15, 0.55), (6.6, 0.0)], 1.25, 'hull', bevel=0.07,
+                      plane='xz')
+            for y in (-0.42, 0.0, 0.42):
+                toe.prism([(6.35, 0.0), (6.45, 0.4), (7.15, 0.0)], 0.3, 'trim', plane='xz', at=(0, y, 0))
+            toe.prism([(5.05, 0.0), (4.98, 0.34), (4.45, 0.0)], 0.4, 'trim', plane='xz')
+    # reactor on the tail: weak_2
+    W2 = (0, 2.0, 10.2)
+    with b.frames(T(at=W2, rot=(-50, 0, 0))):
+        b.ring(1.12, 0.22, 0.3, 'trim', segs=14, at=(0, 0, -0.1))
+        b.ring(1.04, 0.06, 0.08, 'glow_reactor', segs=14, at=(0, 0, 0.08))
+        with b.frames(radial(4, start=45)):
+            b.prism([(0.95, -0.5), (1.3, -0.45), (1.36, 0.1), (1.15, 0.62), (1.02, 0.55), (1.14, 0.1), (1.08, -0.2)],
+                    0.36, 'paint', plane='xz')
+    weak_big(m, 'weak_2', W2, 0.92, b)
+    # neck: four armoured segments that climb forward to a socket right under the eye
+    b.cyl(0.95, 0.3, 'trim', segs=12, bevel=0.05, at=(0, -1.72, 10.42), rot=(12, 0, 0))
+    n1 = m.joint('neck_1', (0, -1.75, 10.55), parent=b)
+    n2 = m.joint('neck_2', (0, -2.02, 11.70), parent=n1)
+    NP = [(0, -1.75, 10.6), (0, -1.9, 11.15), (0, -2.02, 11.7), (0, -2.14, 12.2), (0, -2.2, 12.62)]
+    NR = [0.74, 0.68, 0.62, 0.56, 0.52]
+    for k in range(4):
+        n = n1 if k < 2 else n2
+        n.limb(NP[k], NP[k + 1], NR[k], NR[k + 1], 'hull', segs=8, power=2.6, up=(0, -1, 0))
+        n.cyl(NR[k + 1] + 0.1, 0.16, 'trim', segs=10, bevel=0.03, o='c', m=aim(NP[k], NP[k + 1]),
+              at=(0, 0, dist(NP[k], NP[k + 1])))
+        n.box((0.3, 0.05, 0.22), 'glow_main', bevel=0, at=(0, NP[k][1] - NR[k] + 0.02 - 0.06, NP[k][2] + 0.3), rot=(-14, 0, 0))
+    with n1.sym():
+        n1.rod((0.78, -1.5, 10.5), (0.6, -1.95, 11.6), 0.07, 'trim', segs=5)
+    n2.lathe([(0.5, 12.52), (0.64, 12.6), (0.58, 12.74), (0.3, 12.7), (0.0, 12.7)], 'trim', segs=10, at=(0, -2.2, 0))
+    # head: pivot = the eye
+    E = (0, -2.2, 13.4)
+    h = m.joint('head', E, parent=n2)
+    cowl = [(-0.5, 14.3), (-0.8, 14.72), (-2.6, 14.8), (-5.2, 14.25), (-6.1, 13.6), (-5.85, 13.42), (-4.7, 13.92),
+            (-2.6, 14.3)]
+    h.prism(cowl, 1.9, 'hull', bevel=0.08, plane='yz')
+    h.prism(slab([(-0.8, 14.76), (-2.6, 14.84), (-5.2, 14.29), (-6.1, 13.64)], 0.1), 1.5, 'paint', bevel=0.03, plane='yz')
+    h.prism([(-0.6, 14.7), (-0.2, 15.0), (-2.2, 14.98), (-3.4, 14.82)], 0.14, 'trim', bevel=0.02, plane='yz')
+    h.prism([(-3.1, 12.75), (-3.0, 13.0), (-4.6, 13.15), (-5.6, 13.25), (-5.75, 13.1), (-4.4, 12.72)], 0.8, 'hull',
+            bevel=0.05, plane='yz')
+    h.box((0.5, 0.06, 0.12), 'glow_main', bevel=0, at=(0, -5.72, 13.3))
+    h.rod((0, -3.05, 12.86), (0, -2.45, 12.8), 0.16, 'trim', segs=6)
+    h.torus(0.88, 0.09, 'trim', segs=14, rsegs=5, at=E)
+    with h.sym():
+        h.prism([(-2.9, 14.3), (-5.3, 13.95), (-5.6, 13.5), (-3.4, 13.7)], 0.1, 'paint', bevel=0.02, plane='yz',
+                at=(0.93, 0, 0))
+        h.prism(slab([(-5.5, 13.52), (-3.45, 13.72)], 0.06), 0.06, 'glow_main', plane='yz', at=(0.97, 0, 0))
+        h.rod((0.42, -3.3, 12.95), (0.8, -3.3, 14.1), 0.1, 'trim', segs=6)
+        h.rod((0.88, -2.2, 13.4), (0.8, -2.2, 14.32), 0.08, 'trim', segs=5)
+        h.rod((0.7, -0.9, 14.7), (0.85, -0.3, 15.0), 0.03, 'trim', segs=4, r2=0.012)
+        h.sphere(0.09, 'glow_main', segs=6, rings=4, at=(0.6, -5.2, 14.12))
+    weak_big(m, 'weak_1', E, 0.74, h)
+    return m
+
+
+def weak_big(m, name, at, r, parent):
+    """A weak point on a machine big enough to be read from across the deck: a rounder core."""
+    w = m.joint(name, at, parent=parent)
+    w.sphere(r, 'glow_weak', segs=14, rings=8, at=at)
+    return w
+
+
+ENEMIES = [enemy_grunt, enemy_runner, enemy_drone, enemy_brute, enemy_shield, enemy_boss, enemy_wheel, enemy_brood,
+           enemy_mite, enemy_titan]

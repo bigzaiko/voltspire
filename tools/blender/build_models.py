@@ -1,4 +1,4 @@
-"""VOLTSPIRE model builder.
+"""BEATSPIRE model builder.
 
     blender -b --python tools/blender/build_models.py [-- --only a,b,c] [--no-render] [--angles]
 
@@ -25,7 +25,7 @@ for mod in (vs_lib, models_towers, models_enemies, models_hero, models_misc):
 BUILDERS = models_towers.TOWERS + models_enemies.ENEMIES + models_hero.HERO + models_misc.MISC
 
 BUDGET = {'enemy_grunt': 2500, 'enemy_runner': 2500, 'enemy_drone': 2500, 'enemy_brute': 4000, 'enemy_shield': 4000,
-          'enemy_boss': 10000, 'enemy_wheel': 6500, 'hero': 9000, 'core': 12000, 'tower_spire': 9000}
+          'enemy_boss': 10000, 'enemy_wheel': 6500, 'enemy_brood': 5000, 'enemy_mite': 300, 'enemy_titan': 14000, 'hero': 9000, 'core': 12000, 'tower_spire': 9000}
 
 
 def budget(name):
@@ -63,7 +63,7 @@ def build(fn):
         export_cameras=False, export_lights=False, export_animations=False, export_skins=False,
         export_morph=False, export_extras=False, export_attributes=False)
     kb = os.path.getsize(path) / 1024
-    flag = '' if tris <= budget(model.name) and kb <= 400 else '   <-- OVER BUDGET'
+    flag = '' if tris <= budget(model.name) and kb <= (500 if model.name == 'enemy_titan' else 400) else '   <-- OVER BUDGET'
     print(f'[build] {model.name:14s} tris={tris:6d}/{budget(model.name):<6d} {kb:7.1f} KB  '
           f'nodes={per}{flag}')
     return model.name

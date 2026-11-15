@@ -8,8 +8,9 @@
 // The whole grid at once, one process per cell, as a table:
 //   node tools/balance.ts matrix [runs] [maps] [diffs] [styles] [survival]
 //   e.g. node tools/balance.ts matrix 6 all,gen easy,normal,hard hero,nohero
-// Each cell reads: wins/runs, average wave reached (lowest wave), core integrity left in percent. The last columns are the game
-// time of a hero run on the middle difficulty listed, and the waves per Uplink between waves 8 and 18.
+// Each cell reads: wins/runs, average wave reached (lowest wave), core integrity left in percent. The last columns are, for the
+// first style on the middle difficulty listed: the game time, the waves per Uplink between waves 8 and 18, the core integrity left
+// when wave 20 begins (runs that got there), and the Titan: how often it was destroyed, after how many seconds, and how far down its road it got.
 //
 // Variants side by side (ablations and sweeps), each summed over the maps given:
 //   node tools/balance.ts sweep [runs] [maps] <variant> <variant> ...
@@ -17,7 +18,8 @@
 //   e.g. node tools/balance.ts sweep 8 all base BAN=arc BAN=cards:arc BAN=kind:hero BAN=specials
 // Each row reads, for hero runs on normal and hard and no-hero runs on normal: wins/runs, average wave, core integrity left;
 // then, for the first column, the game time, the waves per Uplink (waves 8 to 18) and the wave of the first Uplink; the core integrity
-// left after wave 5 without the hero; and the tower specials fired per run. COLS='hard:hero,easy:nohero' picks other columns.
+// left after wave 5 without the hero; the tower specials fired per run; and, for the first column again, the core integrity left when
+// wave 20 begins and how many of the Titans were destroyed. COLS='hard:hero,easy:nohero' picks other columns.
 //
 // Environment switches (they carry over into matrix cells):
 // BAN='arc,missile' locks tower types (never unlocked, their blueprint is never offered); BAN='card:hollow,kind:hero' removes cards by id or kind;
@@ -56,7 +58,7 @@ function mapsFor(which: string): MapDef[] {
   return out;
 }
 
-interface Cell { map: string; tier: number; mul: number; diff: string; style: string; runs: number; wins: number; wave: number; minWave: number; lives: number; start: number; time: number; winTime: number; ults: number; specials: number; perUlt: number; ult1: number; lives6: number; towers: Record<string, number> }
+interface Cell { map: string; tier: number; mul: number; diff: string; style: string; runs: number; wins: number; wave: number; minWave: number; lives: number; start: number; time: number; winTime: number; ults: number; specials: number; perUlt: number; ult1: number; lives6: number; lives20: number; titans: number; titanKills: number; titanTime: number; titanProg: number; towers: Record<string, number> }
 
 if (process.argv[2] === 'matrix') await matrix();
 else if (process.argv[2] === 'sweep') await sweep();
@@ -97,7 +99,7 @@ function single() {
     const map: MapDef = { ...def, gold: Math.round(def.gold * mapScale.gold), lives: Math.max(1, Math.round(def.lives * mapScale.lives)) };
     const bad = validateMap(map);
     if (bad) { console.log(map.id, 'INVALID:', bad); continue; }
-    let wins = 0, waves = 0, lives = 0, time = 0, winTime = 0, start = 0, minWave = 1e9, ultSum = 0, specSum = 0, midUlts = 0, midWaves = 0, mul = 1, ult1 = 0, ult1N = 0, lives6 = 0, lives6N = 0;
+    let wins = 0, waves = 0, lives = 0, time = 0, winTime = 0, start = 0, minWave = 1e9, ultSum = 0, specSum = 0, midUlts = 0, midWaves = 0, mul = 1, ult1 = 0, ult1N = 0, lives6 = 0, lives6N = 0, lives20 = 0, lives20N = 0, titans = 0, titanKills = 0, titanTime = 0, titanProg = 0;
     const built: Record<string, number> = {};
     for (let r = 0; r < runs; r++) {
       const sim = new Sim({ seed: seed0 + r, pauseOnCards: false, map, diff, survival, mode: coop ? 'coop' : 'solo', players: coop ? 2 : 1 });
@@ -117,17 +119,22 @@ function single() {
           if (card.kind !== 'hero') break;
         }
       }
-      let ults = 0, specials = 0, crits = 0, mark = 0, mid = 0, seen = 0, first = 0;
+      let ults = 0, specials = 0, crits = 0, mark = 0, mid = 0, seen = 0, first = 0, landed = 0, prog = 0;
       const trail: number[] = [];
       start = sim.lives;
       for (let i = 0; i < 60 * 60 * 90 && !sim.over; i++) {
         if (noHero) for (const p of sim.players) p.energy = 0;
         for (const b of bots) b.step(1 / 60);
         sim.step(1 / 60);
-        for (const e of sim.events) { if (e.k === 'heroOn') { ults++; if (!first) first = sim.wave; if (sim.wave >= 8 && sim.wave <= 18) mid++; } else if (e.k === 'special') specials++; else if (e.k === 'crit') crits++; }
+        for (const e of sim.events) {
+          if (e.k === 'heroOn') { ults++; if (!first) first = sim.wave; if (sim.wave >= 8 && sim.wave <= 18) mid++; } else if (e.k === 'special') specials++; else if (e.k === 'crit') crits++;
+          else if (e.k === 'titanImpact') { titans++; landed = sim.time; }
+          else if (e.k === 'titanDie') { titanKills++; titanTime += sim.time - landed; titanProg += prog; }
+        }
         sim.events.length = 0;
+        if (sim.titan.phase === 'walk') { const ti = sim.enemies.find((e) => e.type === 'titan'); if (ti) prog = ti.dist / sim.map.lanes[ti.lane].len; }
         if (sim.wave >= mark + 5) { mark += 5; trail.push(sim.lives); }
-        if (sim.wave > seen) { seen = sim.wave; if (seen === 6) { lives6 += sim.lives; lives6N++; } }
+        if (sim.wave > seen) { seen = sim.wave; if (seen === 6) { lives6 += sim.lives; lives6N++; } if (seen === 20) { lives20 += sim.lives; lives20N++; } }
       }
       if (sim.won) { wins++; winTime += sim.time; }
       waves += sim.wave; lives += sim.lives; time += sim.time; minWave = Math.min(minWave, sim.wave); ultSum += ults; specSum += specials;
@@ -139,10 +146,10 @@ function single() {
     }
     const label = (coop ? 'coop ' : '') + (mono ? style : noHero ? 'nohero' : 'hero  ');
     if (json) {
-      const cell: Cell = { map: map.id, tier: map.tier || 0, mul, diff, style: label.trim(), runs, wins, wave: waves / runs, minWave, lives: lives / runs, start, time: time / runs / 60, winTime: wins ? winTime / wins / 60 : 0, ults: ultSum / runs, specials: specSum / runs, perUlt: midUlts ? midWaves / midUlts : 0, ult1: ult1N ? ult1 / ult1N : 0, lives6: lives6N ? lives6 / lives6N : 0, towers: built };
+      const cell: Cell = { map: map.id, tier: map.tier || 0, mul, diff, style: label.trim(), runs, wins, wave: waves / runs, minWave, lives: lives / runs, start, time: time / runs / 60, winTime: wins ? winTime / wins / 60 : 0, ults: ultSum / runs, specials: specSum / runs, perUlt: midUlts ? midWaves / midUlts : 0, ult1: ult1N ? ult1 / ult1N : 0, lives6: lives6N ? lives6 / lives6N : 0, lives20: lives20N ? lives20 / lives20N : 0, titans, titanKills, titanTime: titanKills ? titanTime / titanKills : 0, titanProg: titanKills ? titanProg / titanKills : 0, towers: built };
       console.log('JSON ' + JSON.stringify(cell));
     } else {
-      console.log(`== ${map.id.padEnd(11)} ${diff.padEnd(6)} ${label} skill ${skill}: won ${wins}/${runs}  avg wave ${(waves / runs).toFixed(1)}  avg lives ${(lives / runs).toFixed(1)}/${start}  avg time ${(time / runs / 60).toFixed(1)} min  min wave ${minWave}  ults ${(ultSum / runs).toFixed(1)}  waves/ult ${midUlts ? (midWaves / midUlts).toFixed(2) : '-'}  first ult wave ${ult1N ? (ult1 / ult1N).toFixed(1) : '-'}  lives after wave 5 ${lives6N ? (lives6 / lives6N).toFixed(1) : '-'}  specials ${(specSum / runs).toFixed(0)}  mapMul ${mul.toFixed(2)}`);
+      console.log(`== ${map.id.padEnd(11)} ${diff.padEnd(6)} ${label} skill ${skill}: won ${wins}/${runs}  avg wave ${(waves / runs).toFixed(1)}  avg lives ${(lives / runs).toFixed(1)}/${start}  avg time ${(time / runs / 60).toFixed(1)} min  min wave ${minWave}  ults ${(ultSum / runs).toFixed(1)}  waves/ult ${midUlts ? (midWaves / midUlts).toFixed(2) : '-'}  first ult wave ${ult1N ? (ult1 / ult1N).toFixed(1) : '-'}  lives after wave 5 ${lives6N ? (lives6 / lives6N).toFixed(1) : '-'}  lives at wave 20 ${lives20N ? (lives20 / lives20N).toFixed(1) : '-'}  specials ${(specSum / runs).toFixed(0)}  Titan destroyed ${titanKills}/${titans}${titanKills ? ` in ${(titanTime / titanKills).toFixed(0)} s at ${Math.round((100 * titanProg) / titanKills)}% of its road` : ''}  mapMul ${mul.toFixed(2)}`);
       if (!quiet) console.log('   towers at the end: ' + TOWER_TYPES.filter((t) => built[t]).map((t) => `${t} ${built[t].toFixed(1)}`).join(', '));
     }
   }
@@ -186,13 +193,16 @@ async function matrix() {
   const W = 19;
   const fmt = (c?: Cell) => (c ? `${c.wins}/${c.runs} ${c.wave.toFixed(1).padStart(4)}(${String(c.minWave).padStart(2)}) ${String(Math.round((100 * c.lives) / Math.max(1, c.start))).padStart(3)}%` : '-').padEnd(W);
   const ref = diffs.includes('normal') ? 'normal' : diffs[Math.floor(diffs.length / 2)];
-  console.log(`${'map'.padEnd(12)} T  mul  | ${cols.map((c) => c.padEnd(W)).join(' | ')} | min   w/ult`);
+  console.log(`${'map'.padEnd(12)} T  mul  | ${cols.map((c) => c.padEnd(W)).join(' | ')} | min   w/ult  core@20  Titan`);
+  let l20 = 0, l20N = 0, tk = 0, tn = 0, tt = 0, tp = 0, mins = 0, minsN = 0;
   const tot = new Map<string, { w: number; n: number; wave: number; k: number }>();
   for (const m of maps) {
     const row = cols.map((c) => cells.get(`${m.id}|${c.replace(' ', '|')}`));
     const any = row.find((c) => c);
     const h = cells.get(`${m.id}|${ref}|${styles[0]}`);
-    console.log(`${m.id.padEnd(12)} ${m.tier || '-'} ${(any ? any.mul : 0).toFixed(2)} | ${row.map(fmt).join(' | ')} | ${(h ? h.time : 0).toFixed(1).padStart(4)}  ${h && h.perUlt ? h.perUlt.toFixed(2) : '-'}`);
+    const titan = h && h.titans ? `${h.titanKills}/${h.titans}${h.titanKills ? ` ${h.titanTime.toFixed(0)}s ${Math.round(100 * h.titanProg)}%` : ''}` : '-';
+    console.log(`${m.id.padEnd(12)} ${m.tier || '-'} ${(any ? any.mul : 0).toFixed(2)} | ${row.map(fmt).join(' | ')} | ${(h ? h.time : 0).toFixed(1).padStart(4)}  ${(h && h.perUlt ? h.perUlt.toFixed(2) : '-').padEnd(5)}  ${(h && h.lives20 ? Math.round((100 * h.lives20) / Math.max(1, h.start)) + '%' : '-').padEnd(7)}  ${titan}`);
+    if (h) { if (h.lives20) { l20 += h.lives20 / Math.max(1, h.start); l20N++; } tk += h.titanKills; tn += h.titans; tt += h.titanTime * h.titanKills; tp += h.titanProg * h.titanKills; if (h.winTime) { mins += h.winTime; minsN++; } }
     cols.forEach((c, i) => {
       const cell = row[i];
       if (!cell) return;
@@ -205,6 +215,7 @@ async function matrix() {
   }
   const groups = [...new Set([...tot.keys()].map((k) => k.split('|')[0]))].sort();
   for (const g of groups) console.log(`${g.padEnd(21)} | ${cols.map((c) => { const t = tot.get(g + '|' + c); return (t ? `${t.w}/${t.n} ${(t.wave / t.k).toFixed(1).padStart(4)}` : '-').padEnd(W); }).join(' | ')} |`);
+  console.log(`${ref} ${styles[0]}: a won run takes ${minsN ? (mins / minsN).toFixed(1) : '-'} min, core left when wave 20 begins ${l20N ? Math.round((100 * l20) / l20N) + '%' : '-'}, Titan destroyed ${tk}/${tn}${tk ? ` after ${(tt / tk).toFixed(0)} s at ${Math.round((100 * tp) / tk)}% of its road` : ''}`);
 }
 
 /** Variants side by side: each is a set of environment switches, summed over the maps. */
@@ -225,21 +236,21 @@ async function sweep() {
   }
   const cells = await runJobs(jobs);
   const wide = Math.max(8, ...variants.map((v) => v.length));
-  console.log(`${'variant'.padEnd(wide)} | ${cols.map(([d, s]) => `${d} ${s}`.padEnd(20)).join(' | ')} | min   w/ult  ult1  l@6  specials`);
+  console.log(`${'variant'.padEnd(wide)} | ${cols.map(([d, s]) => `${d} ${s}`.padEnd(20)).join(' | ')} | min   w/ult  ult1  l@6  specials  core@20  Titan`);
   for (const v of variants) {
     const parts: string[] = [];
-    let time = 0, pu = 0, puN = 0, spec = 0, k = 0, u1 = 0, l6 = 0, l6N = 0;
+    let time = 0, pu = 0, puN = 0, spec = 0, k = 0, u1 = 0, l6 = 0, l6N = 0, l20 = 0, l20N = 0, tk = 0, tn = 0;
     for (const [d, s] of cols) {
       let w = 0, n = 0, wave = 0, lives = 0, c = 0;
       for (const m of maps) {
         const cell = cells.get(`${v}|${m.id}|${d}|${s}`);
         if (!cell) continue;
         w += cell.wins; n += cell.runs; wave += cell.wave; lives += cell.lives / Math.max(1, cell.start); c++;
-        if (d === cols[0][0] && s === cols[0][1]) { time += cell.time; spec += cell.specials; u1 += cell.ult1; k++; if (cell.perUlt) { pu += cell.perUlt; puN++; } }
+        if (d === cols[0][0] && s === cols[0][1]) { time += cell.time; spec += cell.specials; u1 += cell.ult1; k++; if (cell.perUlt) { pu += cell.perUlt; puN++; } if (cell.lives20) { l20 += cell.lives20 / Math.max(1, cell.start); l20N++; } tk += cell.titanKills; tn += cell.titans; }
         if (s === 'nohero' || cols.every((c) => c[1] === 'hero')) { l6 += cell.lives6 / Math.max(1, cell.start); l6N++; }
       }
       parts.push((c ? `${String(w).padStart(3)}/${n} ${(wave / c).toFixed(1).padStart(4)} ${String(Math.round((100 * lives) / c)).padStart(3)}%` : '-').padEnd(20));
     }
-    console.log(`${v.padEnd(wide)} | ${parts.join(' | ')} | ${(k ? time / k : 0).toFixed(1).padStart(4)}  ${puN ? (pu / puN).toFixed(2) : '-'}  ${(k ? u1 / k : 0).toFixed(1).padStart(4)}  ${l6N ? String(Math.round((100 * l6) / l6N)).padStart(3) + '%' : '-'}  ${(k ? spec / k : 0).toFixed(0)}`);
+    console.log(`${v.padEnd(wide)} | ${parts.join(' | ')} | ${(k ? time / k : 0).toFixed(1).padStart(4)}  ${puN ? (pu / puN).toFixed(2) : '-'}  ${(k ? u1 / k : 0).toFixed(1).padStart(4)}  ${l6N ? String(Math.round((100 * l6) / l6N)).padStart(3) + '%' : '-'}  ${(k ? spec / k : 0).toFixed(0).padEnd(8)}  ${(l20N ? Math.round((100 * l20) / l20N) + '%' : '-').padEnd(7)}  ${tk}/${tn}`);
   }
 }

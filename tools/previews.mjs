@@ -24,7 +24,10 @@ const CLIPS = {
   tower_pulse: [5], tower_cryo: [5], tower_arc: [5], tower_mortar: [7], tower_rail: [6], tower_beacon: [5], tower_flame: [6],
   tower_lance: [6], tower_missile: [6], tower_gravity: [6], tower_spire: [4, true],
   enemy_grunt: [1.5], enemy_runner: [1.5], enemy_drone: [1.5], enemy_shield: [1.5], enemy_brute: [1.5], enemy_wheel: [1.5], enemy_boss: [2.5],
+  enemy_brood: [2], enemy_titan: [5],
 };
+// STILL=1 also writes public/media/<name>.jpg from one frame of the clip (the frame number is the third entry here)
+const STILLS = { enemy_brood: 52, enemy_titan: 30 };
 const want = process.argv[2] ? process.argv[2].split(',') : Object.keys(CLIPS);
 for (const n of want) if (!CLIPS[n]) { console.error('unknown clip: ' + n); process.exit(1); }
 
@@ -48,8 +51,8 @@ function install(N) {
   function place() {
     const c = sc.cam, u = (frame / N) * TAU;
     const az = ((c.az + (c.sway ?? 5) * Math.sin(u)) * Math.PI) / 180, el = ((c.el + 1.5 * Math.sin(u + 1.3)) * Math.PI) / 180, R = c.R * (1 - 0.035 * Math.cos(u));
-    const o = lead && lead.alive ? lead : star;
-    const y0 = lead ? (lead.gy || 0) : 0;
+    const o = sc.watch ? star : lead && lead.alive ? lead : star;
+    const y0 = lead && !sc.watch ? (lead.gy || 0) : 0;
     cam.tx = o.x + (c.dx || 0); cam.ty = y0 + c.h; cam.tz = o.z + (c.dz || 0);
     cam.x = cam.tx + R * Math.cos(el) * Math.sin(az); cam.y = cam.ty + R * Math.sin(el); cam.z = cam.tz - R * Math.cos(el) * Math.cos(az);
   }
@@ -93,8 +96,12 @@ function install(N) {
     enemy_drone: enemy('drone', [[0, 0.1], [1.8, -0.6], [2.9, 0.55]], { R: 7, az: 50, el: 24, h: 2.3, dx: -0.6 }),
     enemy_shield: enemy('shield', [[0, 0]], { R: 6.6, az: 48, el: 30, h: 0.95 }),
     enemy_brute: enemy('brute', [[0, 0]], { R: 7.8, az: 48, el: 30, h: 1.2 }),
-    enemy_wheel: enemy('wheel', [[0, 0]], { R: 9, az: 50, el: 27, h: 1.15 }, { hp: 400, builds: [['pulse', 4, 2], ['pulse', 7, 2], ['pulse', 10, 2], ['pulse', 13, 2]], from: 5 }),
+    enemy_wheel: enemy('wheel', [[0, 0]], { R: 11.5, az: 50, el: 27, h: 1.55 }, { hp: 400, builds: [['pulse', 4, 2], ['pulse', 7, 2], ['pulse', 10, 2], ['pulse', 13, 2]], from: 5 }),
     enemy_boss: enemy('boss', [[0, 0]], { R: 15.5, az: 50, el: 30, h: 1.6 }),
+    // a Broodcarrier comes up to a Railgun and lets its swarm loose on it: the camera stays on the tower
+    enemy_brood: enemy('brood', [[0, 0]], { R: 13.5, az: 30, el: 30, h: 1.3, dx: 0.4, dz: -1.5 }, { hp: 30, builds: [['rail', 9, 2]], from: 14.2, watch: true }),
+    // the Titan walks past a Spire, its head on Kestrel, who watches from the next one down the road; seen from the south, its moonlit side
+    enemy_titan: enemy('titan', [[0, 0]], { R: 46, az: 138, el: 9, h: 7.6, dx: 1.5, sway: 3 }, { builds: [['spire', 13, 3], ['spire', 17, 3]], from: 14, hero: true, heroOn: 1, calm: true, south: true }),
   };
 
   function start(name) {
@@ -103,14 +110,16 @@ function install(N) {
     for (const t of ['pulse', 'cryo', 'arc', 'mortar', 'rail', 'beacon', 'flame', 'lance', 'missile', 'gravity', 'spire']) sim.unlocked.add(t);
     view.skipIntro(); view.setQuality('high');
     // the camera stands outside the north edge of the deck: the lamp posts along that edge would cross the picture
-    for (const l of view.lamps || []) if (l.position.z < 0) l.visible = false;
+    // (a scene shot from the south hides the other row)
+    for (const l of view.lamps || []) l.visible = SCENES[name].south ? l.position.z < 0 : l.position.z > 0;
     const L = sim.map.lanes[0];
     gx = L.pts[0][0]; rz = L.pts[0][1];
     sc = SCENES[name]; star = null; lead = null; frame = 0; clock = 0;
-    for (const b of sc.builds || []) { const t = build(b[0], b[1], b[2]); star = star || t; }
+    const built = [];
+    for (const b of sc.builds || []) { const t = build(b[0], b[1], b[2]); built.push(t); star = star || t; }
     for (const f of sc.feed || []) f.t = 0;
     if (sc.type) sc.group.forEach(([back, off], i) => { const e = spawn(sc.type, (sc.from ?? 7) - back, off, sc.hp); if (!i) lead = e; });
-    if (sc.hero) { sim.players[0].energy = 100; sim.activateHero(0, star.id); }
+    if (sc.hero) { sim.players[0].energy = 100; sim.activateHero(0, (built[sc.heroOn || 0] || star).id); }
     sim.events.length = 0;
   }
   /** One frame. i runs from minus the run-in up to N - 1; frames below 0 are not recorded. */
@@ -134,6 +143,7 @@ function install(N) {
       for (const e of sim.enemies) { const d = Math.abs(e.dist - (D + 9)); if (e.alive && d < bd) { bd = d; best = e; } }
       if (best) aimAt(best.x + 0.25, best.y, best.z, clock < 0.3 ? 1 : 0.25);
     }
+    if (sc.calm) for (const t of sim.towers) t.stun = 0;
     if (sc.type === 'wheel' && lead) {
       // the Gyre's guard over one loop: up, worn down by the turrets, down for a moment, then it spins back up
       const u = Math.max(0, i) / N, spin = u < 0.2 ? 1 : u < 0.4 ? 1 - 0.92 * ((u - 0.2) / 0.2) : u < 0.58 ? 0.08 : u < 0.9 ? 0.08 + 0.92 * ((u - 0.58) / 0.32) : 1;
@@ -181,6 +191,10 @@ for (const name of want) {
     if (i >= 0) await page.screenshot({ path: join(dir, `f${String(i).padStart(3, '0')}.jpg`), type: 'jpeg', quality: 95 });
   }
   if (held) await page.mouse.up();
+  if (process.env.STILL && STILLS[name] !== undefined) {
+    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', join(dir, `f${String(STILLS[name]).padStart(3, '0')}.jpg`), '-vf', `scale=${SIZE}:${SIZE}:flags=lanczos`, '-q:v', '3', join(ROOT, 'public/media', name + '.jpg')], { stdio: 'inherit' });
+    console.log(`${name}.jpg`);
+  }
   // two passes at a fixed bitrate, so every clip comes out near the same size whatever is in it
   const out = join(OUT, name + '.mp4'), log = join(dir, 'pass');
   // (the screenshots are full-range JPEG: the scaler brings them to plain video-range yuv420p, which every browser plays)

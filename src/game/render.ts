@@ -1,11 +1,11 @@
 // Three.js view of a Sim: models, cameras (bird view + third person on an Uplink Spire), effects.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, ENEMY_SCALE, BOW_TIERS, cellX, cellZ } from './data.ts';
+import { TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, ENEMY_SCALE, BOW_TIERS, TITAN_LAND, GW, GH, cellX, cellZ, worldToCell } from './data.ts';
 import type { TowerType, EnemyType } from './data.ts';
 import { HEX_SIZE, BOARD_W, BOARD_D, HEX_CORNERS } from './hex.ts';
 import { Sim, TOWER_SCALE, TOWER_H, HERO_SCALE, SKILL_CAST, NODE_R, ARROW_PAD, FIRE_RING, SPIRE_R, standY, nodePos, weakPos, spireTarget, raySphere } from './sim.ts';
-import type { Ev, Tower, Enemy } from './sim.ts';
+import type { Ev, Tower, Enemy, TitanState } from './sim.ts';
 import type { GameMap } from './map.ts';
 import { Fx, makeBeam, placeBeam, fireMat, reticleMat, FIRE_CLOCK } from './fx.ts';
 import { buildWorld, noAO, FX_LAYER } from './world.ts';
@@ -25,9 +25,10 @@ const HSL = { h: 0, s: 0, l: 0 };
 const DUST = 0x8f866c; // sand that has been kicked up
 const TRAIL = 0x596066; // what an Arrow Rain shaft leaves in the air: cold white, kept dim so nine of them do not burn out the picture
 const V = new THREE.Vector3(), V2 = new THREE.Vector3(), RO = new THREE.Vector3(), RD = new THREE.Vector3();
-const V3 = new THREE.Vector3(), ZA = new THREE.Vector3(0, 0, 1), M4 = new THREE.Matrix4();
-const C1 = new THREE.Color(), C2 = new THREE.Color(), Q1 = new THREE.Quaternion();
-const W3 = { x: 0, y: 0, z: 0 };
+const V3 = new THREE.Vector3(), ZA = new THREE.Vector3(0, 0, 1), YA = new THREE.Vector3(0, 1, 0), M4 = new THREE.Matrix4(), M5 = new THREE.Matrix4(), M6 = new THREE.Matrix4();
+const C1 = new THREE.Color(), C2 = new THREE.Color(), Q1 = new THREE.Quaternion(), Q2 = new THREE.Quaternion();
+const W3 = { x: 0, y: 0, z: 0 }, PT = { x: 0, z: 0 };
+const wrapA = (a: number) => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
 const ST: TowerState = { down: false, spec: false, power: 1, heat: 0 };
 const TAU = Math.PI * 2;
 const DMG = new Float64Array(96);
@@ -49,6 +50,12 @@ interface WorldApi {
   pulse?(x: number, z: number, color: number, radius: number, strength?: number): void;
   setBeat?(level: number): void;
   fxOptions?: FxOptions;
+  /** The district the Titan roams: lattice pitch, what stands on a cell (0 = open, else its height), wreck the tower on a cell, rebuild them all, ground height off the deck. */
+  cityStep?: number;
+  cityTop?(c: number, row: number): number;
+  citySmash?(c: number, row: number): { x: number; z: number; h: number } | null;
+  cityRestore?(): void;
+  groundY?(x: number, z: number): number;
 }
 
 // Third-person camera: an orbit round a point above and to the right of Kestrel's head.
@@ -182,6 +189,8 @@ interface EVis {
   /** hit flash: the meshes and their own materials, and the seconds the flash still has to run */
   meshes: THREE.Mesh[]; mats: (THREE.Material | THREE.Material[])[]; hitT: number;
   guard: GuardVis | null;
+  /** Titan: its own copies of the lights that are not weak points, its health last frame, and how hard those lights stutter after a hit */
+  own: Glow[]; hp0: number; dim: number;
 }
 interface TVis {
   obj: THREE.Object3D; rig: TowerRig; type: TowerType; lvl: number; grow: number; s: number; seen: number;
@@ -191,12 +200,29 @@ interface TVis {
   /** power node: emblem group (null for towers without a special), its materials, and the model's own node lights */
   node: THREE.Group | null; core: THREE.Mesh | null; nodeMat: THREE.MeshBasicMaterial | null; ringMat: THREE.ShaderMaterial | null; halo: THREE.Sprite | null; mnode: Glow[];
   power: number; boot: number; fired: number; em: number; em2: number; tick: number; downMax: number; deny: number;
+  /** jammed by mites / stunned by the Titan last frame (the lights stutter back on when either ends), and the spark clock for both */
+  jam: boolean; stun: boolean; em3: number;
   /** Firewall Pylon: heading of its emitter head, how hard its walls burn (0 none, 1 on, 2 hot), frame it was last linked, and the ring of fire it burns when it stands alone */
   wYaw: number; wTo: number; wHeat: number; wSeen: number; ring: THREE.Group | null; ringMats: THREE.Material[]; ringOn: number;
   /** lance beam, fed by sim events and kept alive between them */
   beam: THREE.Mesh | null; lnT: number; lnX: number; lnY: number; lnZ: number; lnY0: number; lnHeat: number; lnOver: boolean;
 }
 interface PVis { mesh: THREE.Mesh; kind: string; seen: number; fresh: boolean; em: number }
+/** A mite: where it is drawn, how far it has swung onto its tower's wall (0 deck, 1 wall), its own phase. All mites share a few instanced meshes. */
+interface MVis { x: number; y: number; z: number; on: number; ph: number; seen: number }
+const MITES = 96, MITE_DRAW = 1.25;
+/**
+ * The Titan before it is an enemy. It walks the district's lattice from cell to cell (c, r is the cell it is heading for, at
+ * tx, tz), wrecks a tower now and then, and comes in close as its danger fills. leap >= 0: seconds into its jump onto the gate.
+ */
+interface Roam {
+  v: EVis | null; c: number; r: number; tx: number; tz: number; x: number; y: number; z: number; yaw: number; ang: number; stop: boolean; wait: number; face: number; faceT: number;
+  leap: number; x0: number; y0: number; z0: number; x1: number; y1: number; z1: number; yaw1: number; off: boolean;
+}
+/** The Titan's wreck: its visual, seconds since it died, the clock of its secondary explosions, where it fell. */
+interface Wreck { v: EVis; t: number; tick: number; x: number; z: number; gy: number; down: boolean }
+const CITY_NEAR = [[1, 0], [-1, 0], [0, -1], [-1, -1], [0, 1], [-1, 1]], CITY_NEAR_ODD = [[1, 0], [-1, 0], [1, -1], [0, -1], [1, 1], [0, 1]];
+const cityKey = (c: number, r: number) => (r + 64) * 256 + c + 64;
 /** tele > 0: still dissolving at the spire she is leaving; out: playing the uplink-end animation at `pos` */
 interface HVis { obj: THREE.Object3D; rig: HeroRig | null; pos: THREE.Vector3; tele: number; out: boolean; shown: boolean; tiers: { n: number; o: THREE.Object3D }[] }
 interface ZVis {
@@ -213,8 +239,8 @@ interface BVis { obj: THREE.Group; ret: THREE.Mesh; mat: THREE.ShaderMaterial; d
 interface Later { t: number; fn: () => void }
 
 /** Half-length of road (before and after a corner) over which each type swings through its turn, and the hardest it can turn (rad/s). */
-const TURN_A: Record<EnemyType, number> = { grunt: 0.8, runner: 1.0, drone: 1.3, shield: 1.0, brute: 1.0, boss: 1.6, wheel: 1.3 };
-const TURN_RATE: Record<EnemyType, number> = { grunt: 5, runner: 7, drone: 6, shield: 3.2, brute: 2.6, boss: 1.1, wheel: 3.4 };
+const TURN_A: Record<EnemyType, number> = { grunt: 0.8, runner: 1.0, drone: 1.3, shield: 1.0, brute: 1.0, boss: 1.6, wheel: 1.3, brood: 1.3, mite: 0.3, titan: 3.2 };
+const TURN_RATE: Record<EnemyType, number> = { grunt: 5, runner: 7, drone: 6, shield: 3.2, brute: 2.6, boss: 1.1, wheel: 3.4, brood: 2.2, mite: 9, titan: 0.45 };
 const PO = { x: 0, z: 0, dx: 0, dz: 0, y: 0, yaw: 0 }, PO2 = { x: 0, z: 0, dx: 0, dz: 0, y: 0, yaw: 0 };
 /**
  * Where an enemy at distance d (lateral offset off) along a lane is drawn: like GameMap.pos, but every corner is
@@ -347,6 +373,27 @@ function fallbackModel(name: string): THREE.Object3D {
       for (const sd of [-1, 1]) part(head, new THREE.SphereGeometry(0.08, 8, 6), glow(STATIC), sd * 0.42, 0.12, 0.3);
       return g;
     }
+    if (t === 'titan') {
+      // a hull on four posts with a long head; the weak points sit where the game tests them
+      const body = group(g, 'body', 0, 9.6, 0);
+      part(body, new THREE.BoxGeometry(3.4, 2.6, 4.4), dark);
+      const head = group(body, 'head', 0, 3.8, 2.2);
+      part(head, new THREE.BoxGeometry(1.8, 0.6, 5), dark, 0, 1.1, 1.4);
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) part(g, new THREE.CylinderGeometry(0.3, 0.4, 9, 6), trim, sx * 4, 4.5, sz * 3.5);
+      (d.weak || []).forEach((w, i) => part(group(g, 'weak_' + (i + 1), w.x, w.y, w.z), new THREE.SphereGeometry(w.r * 0.82, 12, 8), glow(VIOLET, 'glow_weak')));
+      return g;
+    }
+    if (t === 'mite') {
+      part(group(g, 'body', 0, 0.11, 0), new THREE.BoxGeometry(0.3, 0.14, 0.42), dark);
+      part(group(g, 'eye', 0, 0.11, 0), new THREE.BoxGeometry(0.1, 0.03, 0.03), glow(STATIC), 0, 0, 0.21);
+      return g;
+    }
+    if (t === 'brood') {
+      const body = group(g, 'body', 0, 0.74, 0);
+      part(body, new THREE.BoxGeometry(1.6, 0.6, 2.5), dark);
+      part(body, new THREE.BoxGeometry(0.5, 0.06, 0.04), glow(STATIC), 0, 0, 1.27);
+      return g;
+    }
     const b = part(g, new THREE.CapsuleGeometry(d.r * 0.7, d.r, 4, 10), dark, 0, t === 'drone' ? 0 : d.r * 1.2, 0);
     part(g, new THREE.SphereGeometry(d.r * 0.3, 8, 6), glow(STATIC), 0, b.position.y + d.r * 0.3, d.r * 0.6);
   } else if (name === 'hero') {
@@ -435,6 +482,27 @@ export class View {
   private thunder = 0; private swarm = 0;
   /** Arrow Rain: the shafts in the air or stuck in the deck (one instanced mesh), and the seconds since this player's own cast (the camera eases back a little for it). */
   private shafts: Shaft[] = []; private shaftMesh: THREE.InstancedMesh; private shaftN = 0; private rainT = 9;
+  /** Mites: their state by enemy id, and the instanced meshes they are drawn with (built from the model on first use). */
+  private mites = new Map<number, MVis>(); private miteParts: { mesh: THREE.InstancedMesh; swing: number; pivot: THREE.Vector3 }[] = [];
+  /** The Titan while it roams and leaps, and its wreck after it has died. */
+  private roam: Roam = { v: null, c: 0, r: 0, tx: 0, tz: 0, x: 0, y: 0, z: 0, yaw: 0, ang: -1.57, stop: false, wait: 0, face: 0, faceT: 0, leap: -1, x0: 0, y0: 0, z0: 0, x1: 0, y1: 0, z1: 0, yaw1: 0, off: false };
+  private wreck: Wreck | null = null;
+  private groundAt = (x: number, z: number) => (Math.abs(x) < BOARD_W / 2 + 3 && Math.abs(z) < BOARD_D / 2 + 3 ? this.deckY(x, z) : this.world.groundY ? this.world.groundY(x, z) : 0);
+  /** Where a Titan foot may come down: the middle of the tile under the spot if that is free deck or road, else of the nearest tile round it that is. */
+  private footing = (x: number, z: number, out: { x: number; z: number }) => {
+    out.x = x; out.z = z;
+    const sim = this.sim;
+    if (!sim) return;
+    const [cx, cz] = worldToCell(x, z);
+    if (cx < 0 || cz < 0 || cx >= GW || cz >= GH) return;
+    let bd = 1e9;
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+      const nx = cx + dx, nz = cz + dz;
+      if (nx < 0 || nz < 0 || nx >= GW || nz >= GH || sim.grid[nz * GW + nx] > 1) continue;
+      const px = cellX(nx, nz), pz = cellZ(nz), d = (px - x) * (px - x) + (pz - z) * (pz - z);
+      if (d < bd) { bd = d; out.x = px; out.z = pz; }
+    }
+  };
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
@@ -586,6 +654,11 @@ export class View {
     for (const [id, v] of this.zv) { this.dropZone(v, false); this.zv.delete(id); }
     for (const [id, v] of this.wv) { this.dropWall(v); this.wv.delete(id); }
     for (const b of this.beacons) b.obj.visible = false;
+    this.mites.clear(); for (const m of this.miteParts) m.mesh.count = 0;
+    if (this.roam.v) { this.poolEnemy(this.roam.v); this.roam.v = null; }
+    if (this.wreck) { this.poolEnemy(this.wreck.v); this.wreck = null; }
+    this.roam.leap = -1; this.roam.off = false;
+    this.world.cityRestore?.();
     this.coreHit = this.coreZap = 9;
     for (const h of this.heroes) { h.obj.visible = false; h.out = false; h.shown = false; h.tele = 0; if (h.rig) resetHero(h.rig); }
     this.later.length = 0; this.zoneWait.length = 0;
@@ -941,15 +1014,66 @@ export class View {
           break;
         }
         case 'die': {
-          const big = e.t === 'boss', mid = e.t === 'brute' || e.t === 'shield' || e.t === 'wheel', gy = this.deckY(e.x, e.z);
+          if (e.t === 'mite') { // a pop and a pinch of sparks: there can be dozens
+            fx.burst(e.x, e.y, e.z, 4, 3.5, STATIC, 0.3, 0.2, 8); fx.flash(e.x, e.y, e.z, 0.45, STATIC, 0.1);
+            if (Math.random() < 0.4) fx.puff(e.x, e.y, e.z, 0.3, 0.5, 0.5);
+            break;
+          }
+          const big = e.t === 'boss', mid = e.t === 'brute' || e.t === 'shield' || e.t === 'wheel' || e.t === 'brood', gy = this.deckY(e.x, e.z);
           fx.burst(e.x, e.y, e.z, big ? 70 : mid ? 14 : 6, big ? 15 : 6, STATIC, big ? 1.1 : 0.45, big ? 0.5 : 0.28, 10);
           fx.burst(e.x, e.y, e.z, big ? 40 : mid ? 8 : 4, big ? 11 : 5, HEAT, big ? 1.3 : 0.7, 0.2, 14);
           fx.flash(e.x, e.y, e.z, big ? 5 : mid ? 1.5 : 0.9, STATIC, big ? 0.45 : 0.16);
           fx.smoke(e.x, e.y + 0.2, e.z, big ? 12 : mid ? 3 : 1, big ? 2.6 : mid ? 1.2 : 0.8, big ? 3 : 0.6);
           if (e.y - gy < 2 && (big || mid || Math.random() < 0.35)) fx.scorch(e.x, e.z, big ? 5 : mid ? 1.7 : 1.1, APRICOT, big ? 10 : 5, gy);
           if (big) { fx.ring(e.x, gy + 0.15, e.z, 9, VIOLET, 0.9); fx.column(e.x, gy, e.z, FROST); this.bump(0.8, e.x, e.z, true); this.pulse(e.x, e.z, STATIC, 14, 1); }
+          // a Gyre is a mini-boss: its wheel goes with a ring and a ripple of its own
+          else if (e.t === 'wheel') { fx.ring(e.x, gy + 0.12, e.z, 4.5, STATIC, 0.6); fx.burst(e.x, e.y, e.z, 26, 9, STATIC, 0.7, 0.3, 9); this.bump(0.35, e.x, e.z); this.pulse(e.x, e.z, STATIC, 8, 0.9); }
           break;
         }
+        case 'brood': {
+          // a swarm leaves: the lids fly open, cold light and a breath of vapour off the carrier's back
+          const v = this.ev.get(e.id), gy = this.deckY(e.x, e.z);
+          if (v) v.rig.open = 1.5;
+          fx.burst(e.x, e.y + 0.4, e.z, 16, 4.5, STATIC, 0.5, 0.2, 7, 1.1); fx.flash(e.x, e.y + 0.5, e.z, 1.3, STATIC, 0.16);
+          fx.puff(e.x, e.y + 0.6, e.z, 0.9, 0.8, 0.9); fx.ring(e.x, gy + 0.1, e.z, 2.0, STATIC, 0.4);
+          break;
+        }
+        case 'jam': {
+          // the mites are on it: a crackle runs up the tower and its tile answers
+          const t = sim && sim.towerById(e.id), h = t ? t.h : 3, a = Math.random() * TAU;
+          fx.arc([e.x + Math.cos(a) * 0.6, 0.3, e.z + Math.sin(a) * 0.6, e.x - Math.cos(a) * 0.4, h * 0.55, e.z - Math.sin(a) * 0.4, e.x, h, e.z], STATIC, 0.05);
+          fx.burst(e.x, h * 0.8, e.z, 12, 4, STATIC, 0.45, 0.2, 6); fx.flash(e.x, h * 0.7, e.z, 1.2, VIOLET, 0.16);
+          fx.ring(e.x, 0.1, e.z, 1.7, VIOLET, 0.4, 1.6, 0.8); this.pulse(e.x, e.z, STATIC, 3, 0.7);
+          break;
+        }
+        case 'unjam': {
+          const v = this.tv.get(e.id), t = sim && sim.towerById(e.id), c = t ? TOWERS[t.type].color : SAND;
+          if (v) v.boot = 0;
+          fx.ring(e.x, 0.1, e.z, 1.9, c, 0.45); fx.burst(e.x, t ? t.h * 0.7 : 2, e.z, 8, 3, c, 0.45, 0.2, -2, 1);
+          break;
+        }
+        case 'titanSmash': this.titanSmash(); break;
+        case 'titanLand': this.titanLeap(e.x, e.z, +e.lane || 0, 0); break;
+        case 'titanImpact': {
+          // it lands: a shock wave over the whole deck, dust rolling out from the gate, and a camera that takes the blow
+          const gy = this.deckY(e.x, e.z);
+          fx.flash(e.x, gy + 3, e.z, 16, STATIC, 0.4); fx.flash(e.x, gy + 2, e.z, 8, 0xffffff, 0.16);
+          fx.ring(e.x, gy + 0.15, e.z, 26, DUST, 1.3, 0.06, 1.3); fx.ring(e.x, gy + 0.2, e.z, 15, STATIC, 0.7, 0.08);
+          fx.burst(e.x, gy + 0.5, e.z, 90, 16, DUST, 1.1, 0.4, 11, 0.5); fx.burst(e.x, gy + 1, e.z, 40, 13, STATIC, 0.8, 0.34, 8);
+          for (let i = 0; i < 14; i++) { const a = (i / 14) * TAU, r = 3 + Math.random() * 5; fx.smoke(e.x + Math.cos(a) * r, gy + 0.3, e.z + Math.sin(a) * r, 2, 2.4, 1.5, 0.7); }
+          fx.scorch(e.x, e.z, 7, STATIC, 12, gy);
+          this.pulse(e.x, e.z, STATIC, 85, 1); this.later.push({ t: 0.22, fn: () => this.pulse(e.x, e.z, VIOLET, 85, 0.9) }); this.later.push({ t: 0.5, fn: () => this.pulse(e.x, e.z, FROST, 60, 0.6) });
+          this.shake = Math.max(this.shake, 3);
+          break;
+        }
+        case 'titanStrike': {
+          // its blow on the core (the 'leak' in the same batch makes the core flinch): the deck rings with it
+          const cx = this.core.x, cz = this.core.z;
+          fx.ring(cx, 0.2, cz, 12, RUST, 0.8, 0.08, 1.2); fx.burst(cx, 2.5, cz, 50, 13, RUST, 0.9, 0.34, 9); fx.smoke(cx, 1, cz, 6, 2, 3, 1);
+          this.pulse(cx, cz, RUST, 40, 1); this.shake = Math.max(this.shake, 1.6);
+          break;
+        }
+        case 'titanDie': this.titanDie(e.x, e.y, e.z); break;
         case 'crit': this.arrowHit(e.x, e.y, e.z, FROST, true, this.dmgId(e.x, e.z, 16)); break;
         case 'crack': fx.star(e.x, e.y, e.z, 2.6, VIOLET, 9, 0.35); fx.burst(e.x, e.y, e.z, 26, 8, VIOLET, 0.8, 0.3, 9); fx.smoke(e.x, e.y, e.z, 3, 1.2, 1); break;
 
@@ -957,20 +1081,20 @@ export class View {
         case 'deflect': this.deflectFx(e.x, e.y, e.z); break;
         case 'spindown': {
           // the rim stalls: the guard goes out in a burst, hot metal off the tread (the rig staggers on its own)
-          const gy = this.deckY(e.x, e.z);
-          fx.flash(e.x, e.y, e.z, 1.5, STATIC, 0.16);
+          const gy = this.deckY(e.x, e.z), ws = ENEMY_SCALE.wheel;
+          fx.flash(e.x, e.y, e.z, 1.5 * ws, STATIC, 0.16);
           fx.burst(e.x, e.y, e.z, 20, 7, STATIC, 0.5, 0.26, 5); fx.burst(e.x, gy + 0.2, e.z, 12, 6, HEAT, 0.6, 0.2, 12);
-          fx.ring(e.x, gy + 0.1, e.z, 2.4, STATIC, 0.4); fx.smoke(e.x, gy + 0.5, e.z, 2, 0.8, 0.7, 0.6);
+          fx.ring(e.x, gy + 0.1, e.z, 2.4 * ws, STATIC, 0.4); fx.smoke(e.x, gy + 0.5, e.z, 2, 0.8 * ws, 0.7, 0.6);
           break;
         }
         case 'spinup': {
           // back up to speed: light climbs the rim and the guard flares as it closes again
-          const v = this.ev.get(e.id), gy = this.deckY(e.x, e.z);
+          const v = this.ev.get(e.id), gy = this.deckY(e.x, e.z), ws = ENEMY_SCALE.wheel;
           if (v && v.guard) v.guard.surge = 1.4;
           const yaw = v ? v.obj.rotation.y : 0, sn = Math.sin(yaw), cs = Math.cos(yaw);
-          fx.ring(e.x, gy + 0.1, e.z, 0.4, STATIC, 0.55, 6.5, 0.8);
-          for (let i = 0; i < 16; i++) { const a = Math.random() * TAU, c = Math.cos(a) * 1.02, h = Math.sin(a) * 1.02; fx.spark(e.x + sn * c, e.y + h, e.z + cs * c, sn * c * 0.6, 2.2 + Math.random() * 2.2, cs * c * 0.6, 0.45 + Math.random() * 0.3, 0.2, STATIC, -1.5); }
-          fx.flash(e.x, e.y, e.z, 1.9, STATIC, 0.34);
+          fx.ring(e.x, gy + 0.1, e.z, 0.4 * ws, STATIC, 0.55, 6.5, 0.8);
+          for (let i = 0; i < 16; i++) { const a = Math.random() * TAU, c = Math.cos(a) * 1.02 * ws, h = Math.sin(a) * 1.02 * ws; fx.spark(e.x + sn * c, e.y + h, e.z + cs * c, sn * c * 0.6, 2.2 + Math.random() * 2.2, cs * c * 0.6, 0.45 + Math.random() * 0.3, 0.2, STATIC, -1.5); }
+          fx.flash(e.x, e.y, e.z, 1.9 * ws, STATIC, 0.34);
           break;
         }
         case 'build': if (this.reveal(e.x, e.z) < 0.5) break; // placed before its tile has arrived (a bot at second zero)
@@ -1053,7 +1177,7 @@ export class View {
         }
         case 'breach': {
           // the core answers: a discharge from its heart into the machine that struck it, and nothing is left standing there
-          const v = this.ev.get(e.id), big = e.t === 'boss', mid = e.t === 'brute' || e.t === 'shield' || e.t === 'wheel';
+          const v = this.ev.get(e.id), big = e.t === 'boss', mid = e.t === 'brute' || e.t === 'shield' || e.t === 'wheel' || e.t === 'brood';
           const x = v ? v.obj.position.x : e.x, z = v ? v.obj.position.z : e.z, y = typeof e.y === 'number' ? e.y : 1, gy = this.deckY(x, z);
           const cx = this.core.x, cz = this.core.z, cy = 2.7;
           this.coreZap = 0;
@@ -1195,7 +1319,7 @@ export class View {
     const v: TVis = {
       obj, rig, type: t.type, lvl: 0, grow: 0, s: -1, seen: 0, glows, acc, pad, buff, lv, addons: [],
       node: null, core: null, nodeMat: null, ringMat: null, halo: null, mnode,
-      power: 1, boot: 9, fired: 9, em: 0, em2: 0, tick: 0, downMax: 0, deny: 0,
+      power: 1, boot: 9, fired: 9, em: 0, em2: 0, tick: 0, downMax: 0, deny: 0, jam: false, stun: false, em3: 0,
       wYaw: t.yaw || 0, wTo: NaN, wHeat: 0, wSeen: -9, ring: null, ringMats: [], ringOn: 0, beam: null, lnT: 0, lnX: 0, lnY: 0, lnZ: 0, lnY0: 0, lnHeat: 0, lnOver: false,
     };
     if (def.special) {
@@ -1288,9 +1412,14 @@ export class View {
 
     // lights: out while offline, a stutter and a surge when the tower reboots
     v.boot += dt; v.fired += dt; if (v.deny > 0) v.deny -= dt;
+    // jammed by mites: the lights stutter and the tower hangs its head. Stunned by the Titan's landing: dark, like a reboot.
+    const jam = t.jam > 0, stun = t.stun > 0;
+    if ((v.jam && !jam) || (v.stun && !stun)) v.boot = 0;
+    v.jam = jam; v.stun = stun;
     let pw = 1;
     if (!off && v.boot < 0.9) pw = v.boot < 0.6 ? (Math.sin(v.boot * 52) > 0.1 ? 1.6 : 0.08) : 1 + (0.9 - v.boot) * 2.5;
-    v.power = off ? damp(v.power, 0.03, 9, dt) : pw;
+    if (jam && !stun) pw = Math.sin(this.time * 61 + t.id * 7) * Math.sin(this.time * 23 + t.id) > 0.12 ? 0.85 : 0.05;
+    v.power = off || stun ? damp(v.power, 0.03, 9, dt) : pw;
     let mul = v.power;
     if (this.fxOptions.towers && this.fxOptions.beat) mul *= 1 + 0.16 * this.beatLevel;
     if (linked) mul *= 1.5;
@@ -1307,12 +1436,26 @@ export class View {
       if (v.wHeat > 0 && !off) mul *= v.wHeat > 1 ? 1.9 + 0.3 * Math.sin(this.time * 31 + t.id) : 1.35 + 0.08 * Math.sin(this.time * 9 + t.id);
       this.syncFireRing(t, v, dt, !linked && !off && v.grow >= 1, spec);
     }
-    ST.down = off; ST.spec = spec; ST.power = mul; ST.heat = t.heat;
+    ST.down = off || jam || stun; ST.spec = spec; ST.power = mul; ST.heat = t.heat;
     updateTower(v.rig, yaw, t.cd, t.type === 'beacon' || t.type === 'spire' ? 0 : sim.towerRate(t), dt, ST);
     for (const g of v.glows) if (g.m !== v.rig.glow) g.m.emissiveIntensity = g.i0 * mul;
     // offline: the pool on the deck turns to a slow rust warning light
     if (off) (v.pad.material as THREE.MeshBasicMaterial).color.setHex(RUST).multiplyScalar(0.1 + 0.08 * Math.sin(this.time * 5 + t.id));
+    else if (stun) (v.pad.material as THREE.MeshBasicMaterial).color.setHex(STATIC).multiplyScalar(0.03);
+    else if (jam) (v.pad.material as THREE.MeshBasicMaterial).color.setHex(VIOLET).multiplyScalar(0.06 + 0.2 * mul);
     else (v.pad.material as THREE.MeshBasicMaterial).color.setHex(c).multiplyScalar(0.24 * Math.min(1.3, mul));
+    if (jam || stun) {
+      // cold crackle off a jammed tower, hot spits and a thread of smoke off a stunned one
+      v.em3 += dt * (jam ? 7 : 2.4);
+      while (v.em3 >= 1) {
+        v.em3 -= 1;
+        const a = Math.random() * TAU, y = t.h * (0.3 + Math.random() * 0.6);
+        if (jam) {
+          fx.burst(t.x + Math.cos(a) * 0.5, y, t.z + Math.sin(a) * 0.5, 3, 2.6, Math.random() < 0.3 ? VIOLET : STATIC, 0.3, 0.16, 5);
+          if (Math.random() < 0.3) fx.arc([t.x + Math.cos(a) * 0.5, y, t.z + Math.sin(a) * 0.5, t.x + Math.cos(a + 1.4) * 0.6, y + (Math.random() - 0.5) * 1.2, t.z + Math.sin(a + 1.4) * 0.6], STATIC, 0.035);
+        } else { fx.burst(t.x + Math.cos(a) * 0.4, y, t.z + Math.sin(a) * 0.4, 4, 3, HEAT, 0.5, 0.16, 10); if (Math.random() < 0.5) fx.puff(t.x, t.h * 0.9, t.z, 0.5, 1.2, 0.9); }
+      }
+    }
     if (off) {
       // shorted out: now and then a spit of sparks and a thread of smoke
       v.em += dt * 3;
@@ -1449,7 +1592,7 @@ export class View {
    * and is a dead rust arc while the tower is offline.
    */
   private syncNode(t: Tower, v: TVis, b: number) {
-    const c = TOWERS[t.type].color, off = t.down > 0, spec = t.spec > 0, ready = t.charge >= 1 && !off && !spec;
+    const c = TOWERS[t.type].color, held = t.jam > 0 || t.stun > 0, off = t.down > 0 || held, spec = t.spec > 0, ready = t.charge >= 1 && !off && !spec;
     const beat = 0.5 + 0.5 * Math.sin(this.time * 4.2 + t.id);
     for (const g of v.mnode) g.m.emissiveIntensity = g.i0 * (off ? 0.01 : spec ? 0.2 + 3 * Math.max(0, 1 - v.fired / 0.35) : ready ? 0.3 + 0.1 * beat : 0.03 + (0.1 + 0.2 * b) * t.charge * t.charge);
     const node = v.node;
@@ -1464,9 +1607,9 @@ export class View {
     (u.color.value as THREE.Color).setHex(c);
     // offline: a rust arc that drains as the reboot runs down
     if (off) v.downMax = Math.max(v.downMax, t.down); else v.downMax = 0;
-    if (off) (u.color.value as THREE.Color).setHex(RUST);
+    if (off) (u.color.value as THREE.Color).setHex(held ? VIOLET : RUST);
     else if (deny > 0) (u.color.value as THREE.Color).lerp(C1.setHex(0x8a8478), Math.min(1, deny * 1.5));
-    u.fill.value = ready ? 1 : off ? t.down / (v.downMax || 1) : spec ? 0 : t.charge;
+    u.fill.value = ready ? 1 : held ? t.charge : off ? t.down / (v.downMax || 1) : spec ? 0 : t.charge;
     const dk = deny > 0 ? (Math.sin(v.deny * 60) > 0 ? 0.3 : 0.9) : 1;
     u.gain.value = (off ? 0.4 : spec ? 0.2 + 2.2 * flash : ready ? 0.85 + 0.3 * beat : 0.5) * dk;
     u.mark.value = ready ? 1 : spec ? flash : 0;
@@ -1501,6 +1644,18 @@ export class View {
       if (!under || !m.material.name.startsWith('glow')) return;
       const c = (m.material as THREE.MeshStandardMaterial).clone(); m.material = c; wglow.push({ m: c, i0: c.emissiveIntensity });
     });
+    // the Titan's other lights are its own too: they stutter when it is hurt and fail when it dies
+    const own: Glow[] = [];
+    if (type === 'titan') {
+      const mine = new Map<string, THREE.MeshStandardMaterial>();
+      for (const m of meshes) {
+        const mat = m.material as THREE.MeshStandardMaterial;
+        if (Array.isArray(mat) || !mat.name.startsWith('glow') || wglow.some((g) => g.m === mat)) continue;
+        let c = mine.get(mat.uuid);
+        if (!c) { c = mat.clone(); c.emissiveIntensity *= 0.5; mine.set(mat.uuid, c); own.push({ m: c, i0: c.emissiveIntensity }); }   // its light strips are metres long: at a small machine's brightness they burn out the view from a Spire
+        m.material = c;
+      }
+    }
     const guard = type === 'wheel' ? this.makeGuard(obj) : null;
     const rig = makeEnemyRig(obj, type);
     const d = ENEMIES[type];
@@ -1532,7 +1687,7 @@ export class View {
     this.dyn.add(obj);
     // the hp bars, glow and bubble were added after the traverse: only the model's own meshes flash
     return { obj, rig, sx: 0, sz: 0, back, bar, sbar, bubble, glow, ice: null, weak, wglow, type, phase: Math.random() * 6.28, seen: 0, fresh: true, lx: 0, lz: 0, lgy: 0, tilt: 0, em: 0,
-      meshes, mats: meshes.map((m) => m.material), hitT: 0, guard };
+      meshes, mats: meshes.map((m) => m.material), hitT: 0, guard, own, hp0: -1, dim: 0 };
   }
   /**
    * The Gyre's guard. The rim's light strips get their own material so each wheel can dim alone; on both faces of the rim
@@ -1559,13 +1714,28 @@ export class View {
   /** A hit glances off a Gyre's spinning rim at (x, y, z) = its centre: a ricochet spark off the tread, and the guard flares. */
   private deflectFx(x: number, y: number, z: number) {
     const fx = this.fx;
-    let v: EVis | undefined, bd = 4;
-    for (const o of this.ev.values()) { if (o.type !== 'wheel') continue; const d = (o.obj.position.x - x) * (o.obj.position.x - x) + (o.obj.position.z - z) * (o.obj.position.z - z); if (d < bd) { bd = d; v = o; } }
+    let v: EVis | undefined, bd = 4, titan: EVis | undefined;
+    for (const o of this.ev.values()) {
+      if (o.type === 'titan') titan = o;
+      if (o.type !== 'wheel') continue;
+      const d = (o.obj.position.x - x) * (o.obj.position.x - x) + (o.obj.position.z - z) * (o.obj.position.z - z); if (d < bd) { bd = d; v = o; }
+    }
+    if (!v && titan) {
+      // the Titan's plating: the shot skids off where it struck, away from the hull
+      const d = ENEMIES.titan, cx = titan.obj.position.x, cy = titan.obj.position.y + d.y, cz = titan.obj.position.z;
+      let dx = x - cx, dy = y - cy, dz = z - cz;
+      const l = Math.hypot(dx, dy, dz) || 1; dx /= l; dy /= l; dz /= l;
+      fx.flash(x, y, z, 1.1, FROST, 0.1);
+      fx.beam(x, y, z, x + dx * 2.4 + (Math.random() - 0.5), y + dy * 2.4 + 0.8, z + dz * 2.4 + (Math.random() - 0.5), FROST, 0.07, 0.12);
+      fx.spray(x, y, z, dx, dy, dz, 12, 12, STATIC, 0.4, 0.24, 0.5); fx.spray(x, y, z, dx, dy, dz, 5, 7, HEAT, 0.5, 0.16, 0.6);
+      return;
+    }
     if (v && v.guard) v.guard.surge = Math.max(v.guard.surge, 0.7);
     // a point on the top or the back of the tread, thrown off the way the rim is moving there (forward over the top, up at the back)
-    const yaw = v ? v.obj.rotation.y : Math.random() * TAU, sn = Math.sin(yaw), cs = Math.cos(yaw);
+    const yaw = v ? v.obj.rotation.y : Math.random() * TAU, sn = Math.sin(yaw), cs = Math.cos(yaw), R = 1.1 * ENEMY_SCALE.wheel;
     const a = 0.9 + Math.random() * 2.1, c = Math.cos(a), h = Math.sin(a), sd = (Math.random() - 0.5) * 0.4;
-    const px = x + sn * c * 1.1 + cs * sd, py = y + h * 1.1, pz = z + cs * c * 1.1 - sn * sd;
+    if (v) y = v.obj.position.y + R;
+    const px = x + sn * c * R + cs * sd, py = y + h * R, pz = z + cs * c * R - sn * sd;
     const dx = sn * (c * 0.5 + h * 0.9) + cs * sd * 2, dy = h * 0.5 - c * 0.9 + 0.3, dz = cs * (c * 0.5 + h * 0.9) - sn * sd * 2, l = Math.hypot(dx, dy, dz) || 1;
     fx.flash(px, py, pz, 0.6, FROST, 0.09);
     fx.beam(px, py, pz, px + (dx / l) * 1.9, py + (dy / l) * 1.9, pz + (dz / l) * 1.9, FROST, 0.06, 0.11);
@@ -1600,7 +1770,14 @@ export class View {
     if (atCore) dist = stand;
     roundedPose(sim.map, lane, dist, off, TURN_A[e.type], PO);
     const gy = e.gy || 0, fly = e.type === 'drone', y = fly ? e.y : gy;
-    if (v.fresh) { v.obj.position.set(PO.x, y, PO.z); v.obj.rotation.set(0, PO.yaw, 0); v.fresh = false; v.tilt = 0; v.lx = PO.x; v.lz = PO.z; v.lgy = gy; resetEnemy(v.rig); }
+    if (v.fresh) {
+      v.obj.position.set(PO.x, y, PO.z); v.obj.rotation.set(0, PO.yaw, 0); v.fresh = false; v.tilt = 0; v.lx = PO.x; v.lz = PO.z; v.lgy = gy; resetEnemy(v.rig);
+      if (e.type === 'titan') {
+        // it picks its footing on the deck; fresh from its leap, the legs take the fall
+        v.rig.ground = this.groundAt; v.rig.snap = this.footing; v.hp0 = e.hp; v.dim = 0; v.glow.visible = true;
+        if (this.roam.off) { this.roam.off = false; v.rig.sagV = -9; }
+      }
+    }
     else {
       v.obj.position.set(PO.x, y, PO.z);
       let dy = PO.yaw - v.obj.rotation.y;
@@ -1610,7 +1787,7 @@ export class View {
       v.obj.rotation.y += Math.max(-lim, Math.min(lim, dy));
       // walkers lean with a ramp
       const run = Math.hypot(PO.x - v.lx, PO.z - v.lz);
-      if (!fly && run > 1e-4) v.tilt = damp(v.tilt, -Math.atan2(gy - v.lgy, run) * 0.8, 6, dt);
+      if (!fly && run > 1e-4 && e.type !== 'titan') v.tilt = damp(v.tilt, -Math.atan2(gy - v.lgy, run) * 0.8, 6, dt);
       v.obj.rotation.x = v.tilt;
       v.lx = PO.x; v.lz = PO.z; v.lgy = gy;
     }
@@ -1629,9 +1806,19 @@ export class View {
       let bd = 400;
       for (const t of sim.towers) { const dd = (t.x - e.x) * (t.x - e.x) + (t.z - e.z) * (t.z - e.z); if (dd < bd) { bd = dd; look = Math.atan2(t.x - e.x, t.z - e.z); } }
     }
-    const frozen = e.frz > 0, strike = atCore || (e.breach || 0) > 0;
+    const titan = e.type === 'titan';
+    if (titan) {
+      // its head follows the nearest Spire that has someone on it, eye to eye
+      let bd = 1e9;
+      for (const p of sim.players) {
+        const t = p.heroActive ? sim.towerById(p.heroTower) : undefined, dd = t ? Math.hypot(t.x - e.x, t.z - e.z) : 1e9;
+        if (t && dd < bd) { bd = dd; look = Math.atan2(t.x - e.x, t.z - e.z); v.rig.lookPitch = Math.max(-0.3, Math.min(0.6, Math.atan2(gy + 13.4 - (t.h + 0.8), Math.max(3, dd - 2.2)))); }
+      }
+    }
+    const frozen = e.frz > 0 && !titan, strike = atCore || (e.breach || 0) > 0;
     const spin = e.type === 'wheel' ? (typeof e.spin === 'number' ? e.spin : 1) : 0;
     updateEnemy(v.rig, dt, e.hp / e.maxHp, e.sing > 0, frozen && e.type !== 'boss', look, strike, spin);
+    if (titan) this.titanWalkFx(e, v, dt);
     if (v.guard) this.syncGuard(e, v, v.guard, spin, frozen, dt, fresh);
     if (v.rig.hit) {
       // a blow lands on the core: sparks where the machine meets it
@@ -1644,7 +1831,7 @@ export class View {
 
     // hp bar: thin, flat, drains to the left
     const r = Math.max(0, e.hp / e.maxHp), bw = (0.5 + e.r * 0.8) / sc, bh = 0.055 / sc;
-    v.bar.visible = v.back.visible = r < 0.999;
+    v.bar.visible = v.back.visible = r < 0.999 && !titan;   // (the Titan's health is a bar in the HUD)
     if (v.bar.visible) {
       const f = Math.max(0.04, r);
       v.bar.material = this.barMats[r > 0.6 ? 0 : r > 0.3 ? 1 : 2];
@@ -1727,10 +1914,10 @@ export class View {
     g.em += dt * (5 + 16 * v.rig.mv);
     while (g.em >= 1) {
       g.em -= 1;
-      const yaw = v.obj.rotation.y, sn = Math.sin(yaw), cs = Math.cos(yaw), gy = e.gy || 0;
+      const yaw = v.obj.rotation.y, sn = Math.sin(yaw), cs = Math.cos(yaw), gy = e.gy || 0, ws = ENEMY_SCALE.wheel;
       // hot metal from under the tread, and now and then a cold crackle from a strip that tries to light
-      this.fx.spark(e.x - sn * 0.25, gy + 0.08, e.z - cs * 0.25, -sn * (2 + Math.random() * 3) + (Math.random() - 0.5) * 2.5, 1.5 + Math.random() * 2.5, -cs * (2 + Math.random() * 3) + (Math.random() - 0.5) * 2.5, 0.4 + Math.random() * 0.3, 0.16, HEAT, 11);
-      if (Math.random() < 0.35) { const a = Math.random() * TAU; this.fx.burst(e.x + sn * Math.cos(a) * 0.82, gy + 1.1 + Math.sin(a) * 0.82, e.z + cs * Math.cos(a) * 0.82, 2, 2.5, STATIC, 0.25, 0.16, 4); }
+      this.fx.spark(e.x - sn * 0.25 * ws, gy + 0.08, e.z - cs * 0.25 * ws, -sn * (2 + Math.random() * 3) + (Math.random() - 0.5) * 2.5, 1.5 + Math.random() * 2.5, -cs * (2 + Math.random() * 3) + (Math.random() - 0.5) * 2.5, 0.4 + Math.random() * 0.3, 0.16, HEAT, 11);
+      if (Math.random() < 0.35) { const a = Math.random() * TAU; this.fx.burst(e.x + sn * Math.cos(a) * 0.82 * ws, gy + (1.1 + Math.sin(a) * 0.82) * ws, e.z + cs * Math.cos(a) * 0.82 * ws, 2, 2.5, STATIC, 0.25, 0.16, 4); }
     }
   }
 
@@ -1742,6 +1929,294 @@ export class View {
     const o = this.bow, dx = W3.x - o.x, dy = W3.y - o.y, dz = W3.z - o.z, L = Math.hypot(dx, dy, dz) || 1;
     const ub = raySphere(o.x, o.y, o.z, dx / L, dy / L, dz / L, e.x, e.y, e.z, e.r + ARROW_PAD);
     return ub < 0 || L - r - 0.1 <= ub + 0.35;
+  }
+
+  // ---------- mites ----------
+  /** The mite model as instanced meshes: one per part and material, the two leg sets with their pivot taken out so they can swing. */
+  private buildMites() {
+    const model = this.models.enemy_mite;
+    model.updateWorldMatrix(true, true);
+    const inv = new THREE.Matrix4().copy(model.matrixWorld).invert();
+    model.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || Array.isArray(m.material)) return;
+      let swing = 0, piv: THREE.Object3D | null = null;
+      for (let p: THREE.Object3D | null = o; p; p = p.parent) { if (p.name === 'legs_a') { swing = 1; piv = p; } else if (p.name === 'legs_b') { swing = -1; piv = p; } }
+      const pivot = new THREE.Vector3();
+      if (piv) pivot.setFromMatrixPosition(piv.matrixWorld).applyMatrix4(inv);
+      const geo = m.geometry.clone().applyMatrix4(new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z).multiply(inv).multiply(m.matrixWorld));
+      const mesh = new THREE.InstancedMesh(geo, m.material, MITES);
+      mesh.count = 0; mesh.frustumCulled = false; mesh.castShadow = !m.material.name.startsWith('glow');
+      this.dyn.add(mesh);
+      this.miteParts.push({ mesh, swing, pivot });
+    });
+  }
+  /**
+   * Mites are drawn where the sim has them (each can be shot off on its own): flat on the deck while they run, and swung
+   * onto the wall once they sit on their tower, belly to it, head up, creeping a little on the spot.
+   */
+  private syncMites(dt: number, f: number) {
+    const sim = this.sim!, k = 1 - Math.exp(-dt * 22), sc = MITE_DRAW * ENEMY_SCALE.mite;
+    let n = 0;
+    for (const e of sim.enemies) {
+      if (e.type !== 'mite' || n >= MITES) continue;
+      if (!this.miteParts.length) this.buildMites();
+      let v = this.mites.get(e.id);
+      const gy = e.gy || 0;
+      if (!v) { v = { x: e.x, y: gy, z: e.z, on: e.latched ? 1 : 0, ph: (e.id * 0.618) % 1, seen: f }; this.mites.set(e.id, v); }
+      v.seen = f;
+      v.x += (e.x - v.x) * k; v.y += (gy - v.y) * k; v.z += (e.z - v.z) * k;
+      v.on = damp(v.on, e.latched ? 1 : 0, 9, dt);
+      const t = v.on > 0.01 ? sim.towerById(e.prey) : undefined;
+      Q1.setFromAxisAngle(YA, e.yaw);
+      let px = v.x, py = v.y + 0.02, pz = v.z;
+      if (t) {
+        // wall frame: up = out from the tower's axis, forward = up the tower with a slow wander to either side
+        let nx = v.x - t.x, nz = v.z - t.z;
+        const l = Math.hypot(nx, nz) || 1, wd = 0.6 * Math.sin(this.time * 1.7 + v.ph * 30), creep = 0.07 * Math.sin(this.time * 2.3 + v.ph * 20) * v.on;
+        nx /= l; nz /= l;
+        V.set(nx, 0, nz); V2.set(-nz * Math.sin(wd), Math.cos(wd), nx * Math.sin(wd)); V3.crossVectors(V, V2);
+        Q1.slerp(Q2.setFromRotationMatrix(M4.makeBasis(V3, V, V2)), ease(v.on));
+        px += V2.x * creep; py += V2.y * creep; pz += V2.z * creep;
+      }
+      M5.compose(V.set(px, py, pz), Q1, V2.setScalar(sc));
+      // the two leg sets swing against each other: fast on the run, slow on the wall
+      const a = 0.38 * Math.sin(this.time * (e.latched ? 9 : 34) + v.ph * 40);
+      for (const p of this.miteParts) {
+        if (p.swing) p.mesh.setMatrixAt(n, M6.makeRotationY(a * p.swing).setPosition(p.pivot).premultiply(M5));
+        else p.mesh.setMatrixAt(n, M5);
+      }
+      n++;
+    }
+    for (const p of this.miteParts) if (n || p.mesh.count) { p.mesh.count = n; p.mesh.instanceMatrix.needsUpdate = true; }
+    if (this.mites.size > n) for (const [id, v] of this.mites) if (v.seen !== f) this.mites.delete(id);
+  }
+
+  // ---------- the Titan ----------
+  /** What a footfall of the Titan does: dust and a ring; on the deck the tile borders answer and the camera feels it. */
+  private footfall(x: number, z: number, deck: boolean) {
+    const fx = this.fx, gy = this.groundAt(x, z);
+    fx.ring(x, gy + 0.1, z, deck ? 3 : 4.5, DUST, 0.55, 0.2, 0.9);
+    fx.smoke(x, gy + 0.3, z, deck ? 2 : 3, deck ? 1.2 : 2.4, 1.6, 0.5);
+    fx.burst(x, gy + 0.2, z, 10, 5, DUST, 0.5, 0.26, 10, 0.3);
+    if (deck) { this.pulse(x, z, STATIC, 7, 0.75); this.bump(0.3, x, z, true); }
+  }
+  /** The Titan on the deck: its footfalls, and how it shows a hit that got through (a weak point, a tower special). */
+  private titanWalkFx(e: Enemy, v: EVis, dt: number) {
+    const fx = this.fx, steps = v.rig.steps;
+    if (steps) for (let i = 0; i < steps.length; i += 2) this.footfall(steps[i], steps[i + 1], true);
+    if (v.hp0 >= 0 && e.hp < v.hp0 - 1e-6) {
+      const big = (v.hp0 - e.hp) / e.maxHp > 0.015;
+      this.flashEnemy(v, true); v.dim = 1;
+      fx.burst(e.x, e.y + 1, e.z, big ? 40 : 14, 11, VIOLET, 0.8, 0.34, 9); fx.burst(e.x, e.y, e.z, big ? 20 : 8, 8, HEAT, 0.9, 0.22, 12);
+      if (big) { fx.flash(e.x, e.y + 1, e.z, 6, VIOLET, 0.22); fx.smoke(e.x, e.y + 1.5, e.z, 4, 2, 3, 1); this.bump(0.45, e.x, e.z, true); }
+    }
+    v.hp0 = e.hp;
+    v.dim *= Math.exp(-dt * 2.2);
+    const lit = v.dim > 0.03 ? 1 - 0.85 * v.dim * (Math.sin(this.time * 67) > -0.2 ? 1 : 0) : 1;
+    for (const g of v.own) g.m.emissiveIntensity = g.i0 * lit;
+  }
+  private cityXZ(c: number, r: number, out: { x: number; z: number }) { const s = this.world.cityStep || 13; out.x = (c + (r & 1 ? 0.5 : 0)) * s; out.z = r * s * 0.8660254; return out; }
+  private walkable(c: number, r: number) { return Math.abs(c) <= 26 && Math.abs(r) <= 24 && (this.world.cityTop ? this.world.cityTop(c, r) : 0) < 5; }
+  /** Where the roaming Titan wants to be: on a wide ring round the platform, or (warned) behind the gate it will land on, nearer as its danger fills. */
+  private roamGoal(T: TitanState, out: { x: number; z: number }) {
+    const sim = this.sim!, R = this.roam;
+    if (T.phase === 'far') { out.x = Math.cos(R.ang) * (BOARD_W / 2 + 84); out.z = Math.sin(R.ang) * (BOARD_D / 2 + 84); return out; }
+    const L = sim.map.lanes[T.lane] || sim.map.lanes[0], a = L.pts[0], b = L.pts[1] || a, l = Math.hypot(a[0] - b[0], a[1] - b[1]) || 1;
+    const d = 15 + (1 - sat(T.danger)) * 64;
+    out.x = a[0] + ((a[0] - b[0]) / l) * d; out.z = a[1] + ((a[1] - b[1]) / l) * d;
+    return out;
+  }
+  /** Put the roaming Titan on the open cell nearest to where it wants to be. */
+  private roamStart(T: TitanState) {
+    const R = this.roam;
+    R.ang = -Math.PI / 2 + 0.7 * Math.sin(T.wave * 12.9898);
+    this.roamGoal(T, PT);
+    const gx = PT.x, gz = PT.z;
+    let bd = 1e9;
+    for (let r = -24; r <= 24; r++) for (let c = -26; c <= 26; c++) {
+      if (!this.walkable(c, r)) continue;
+      this.cityXZ(c, r, PT);
+      const d = Math.hypot(PT.x - gx, PT.z - gz);
+      if (d < bd) { bd = d; R.c = c; R.r = r; R.x = PT.x; R.z = PT.z; }
+    }
+    R.tx = R.x; R.tz = R.z; R.y = this.groundAt(R.x, R.z); R.yaw = Math.atan2(-R.x, -R.z); R.stop = false; R.wait = 0; R.faceT = 0; R.leap = -1;
+  }
+  /** Next cell on the way to its goal: a search over the open cells for the one nearest the goal, then the first step toward it. False if it is already as near as it can get. */
+  private roamNext(T: TitanState) {
+    const R = this.roam;
+    this.roamGoal(T, PT);
+    const gx = PT.x, gz = PT.z, seen = new Map<number, number>(), q: number[] = [R.c, R.r];
+    this.cityXZ(R.c, R.r, PT);
+    let best = -1, bd = Math.hypot(PT.x - gx, PT.z - gz) - 0.5;
+    seen.set(cityKey(R.c, R.r), -1);
+    for (let i = 0; i < q.length && i < 900; i += 2) {
+      const c = q[i], r = q[i + 1];
+      for (const n of r & 1 ? CITY_NEAR_ODD : CITY_NEAR) {
+        const nc = c + n[0], nr = r + n[1], key = cityKey(nc, nr);
+        if (seen.has(key) || !this.walkable(nc, nr)) continue;
+        seen.set(key, i); q.push(nc, nr);
+        this.cityXZ(nc, nr, PT);
+        const d = Math.hypot(PT.x - gx, PT.z - gz);
+        if (d < bd) { bd = d; best = q.length - 2; }
+      }
+    }
+    if (best < 0) return false;
+    let i = best;
+    for (let p = seen.get(cityKey(q[i], q[i + 1]))!; p > 0; p = seen.get(cityKey(q[i], q[i + 1]))!) i = p;
+    R.c = q[i]; R.r = q[i + 1];
+    this.cityXZ(R.c, R.r, PT); R.tx = PT.x; R.tz = PT.z;
+    return true;
+  }
+  /**
+   * The Titan before its wave: it walks the district among the towers, comes in behind its gate as the danger fills, and
+   * leaps onto the gate when its wave begins. The same visual then becomes the enemy that walks the road.
+   */
+  private syncTitan(dt: number) {
+    const sim = this.sim!, T = sim.titan, R = this.roam, ph = T ? T.phase : 'none';
+    if ((ph !== 'far' && ph !== 'warn' && ph !== 'landing') || !this.world.cityTop || !this.models.enemy_titan) {
+      if (R.v) { this.poolEnemy(R.v); R.v = null; }
+      R.leap = -1;
+      return;
+    }
+    if (!R.v) {
+      const v = R.v = this.enemyVis('titan');
+      v.fresh = false; v.glow.visible = false; v.hp0 = -1; v.dim = 0; v.bar.visible = v.back.visible = false;
+      for (const g of v.own) g.m.emissiveIntensity = g.i0;
+      for (const g of v.wglow) g.m.emissiveIntensity = g.i0;
+      this.roamStart(T);
+      v.obj.position.set(R.x, R.y, R.z); v.obj.rotation.set(0, R.yaw, 0);
+      resetEnemy(v.rig); v.rig.ground = this.groundAt; v.rig.snap = null;
+    }
+    const v = R.v, rig = v.rig;
+    if (v.hitT > 0 && (v.hitT -= dt) <= 0) for (let i = 0; i < v.meshes.length; i++) v.meshes[i].material = v.mats[i];
+    if (ph === 'landing' && R.leap < 0) { sim.map.pos(T.lane, 0, PO2); this.titanLeap(PO2.x, PO2.z, T.lane, T.t); }
+    if (R.leap >= 0) {
+      const u0 = R.leap / TITAN_LAND, u = (R.leap += dt) / TITAN_LAND, dx = R.x1 - R.x0, dz = R.z1 - R.z0, D = Math.hypot(dx, dz);
+      if (u < 0.3) {
+        // it gathers itself: down on its legs, turning to face the gate
+        rig.crouch = ease(u / 0.24); rig.air = 0;
+        const err = wrapA(Math.atan2(dx, dz) - R.yaw);
+        R.yaw += Math.max(-2.4 * dt, Math.min(2.4 * dt, err));
+      } else {
+        const s = sat((u - 0.3) / 0.7);
+        if (u0 < 0.3) { // it leaves the ground
+          this.fx.ring(R.x0, R.y0 + 0.3, R.z0, 14, DUST, 1, 0.1, 0.9); this.fx.smoke(R.x0, R.y0 + 1, R.z0, 8, 4, 8, 1.2); this.fx.flash(R.x0, R.y0 + 4, R.z0, 9, STATIC, 0.3);
+          this.bump(0.8, R.x0, R.z0, true);
+        }
+        rig.crouch = 1 - sat(s * 8); rig.air = Math.max(1e-3, sat(s * 7) * (1 - ease((s - 0.78) / 0.22)));
+        R.x = R.x0 + dx * s; R.z = R.z0 + dz * s; R.y = R.y0 + (R.y1 - R.y0) * s + (12 + D * 0.12) * 4 * s * (1 - s);
+        R.yaw += wrapA(R.yaw1 - R.yaw) * (1 - Math.exp(-dt * 3.5));
+      }
+    } else {
+      const dx = R.tx - R.x, dz = R.tz - R.z, d = Math.hypot(dx, dz), sp = ph === 'warn' ? 2.5 : 1.9;
+      if ((d < 3.8 || R.stop) && (R.wait -= dt) <= 0) {
+        // at its cell: where next? (stuck in a pocket of towers, it waits and looks again; a wrecked tower opens the way)
+        this.roamGoal(T, PT);
+        const far = Math.hypot(PT.x - R.x, PT.z - R.z);
+        if (ph === 'far' && far < 30) R.ang += 0.5;
+        R.stop = !this.roamNext(T);
+        if (R.stop && ph === 'warn' && this.roamGoal(T, PT) && far > 4 && far < 34) { R.tx = PT.x; R.tz = PT.z; R.stop = false; }   // the last stretch is open ground
+        R.wait = R.stop ? 1.5 : 0;
+      }
+      if (!R.stop && d >= 1) {
+        const err = wrapA(Math.atan2(dx, dz) - R.yaw), w = sp * 0.3 * dt, go = sp * Math.max(0.12, Math.cos(err));
+        R.yaw += Math.max(-w, Math.min(w, err));
+        R.x += Math.sin(R.yaw) * go * dt; R.z += Math.cos(R.yaw) * go * dt;
+      } else {
+        // it stands: turned to the platform, or to the tower it has just struck
+        const err = wrapA((R.faceT > 0 ? R.face : Math.atan2(-R.x, -R.z)) - R.yaw);
+        R.yaw += Math.max(-0.45 * dt, Math.min(0.45 * dt, err));
+      }
+      R.faceT -= dt;
+      R.y = damp(R.y, this.groundAt(R.x, R.z), 2.5, dt);
+    }
+    v.obj.position.set(R.x, R.y, R.z); v.obj.rotation.set(0, R.yaw, 0);
+    updateEnemy(rig, dt, 1, false, false, NaN, false);
+    if (R.leap < 0 && rig.steps) for (let i = 0; i < rig.steps.length; i += 2) this.footfall(rig.steps[i], rig.steps[i + 1], false);
+  }
+  /** The Titan jumps from where it stands onto the gate at (x, z). t0: seconds of the leap that are already gone. */
+  private titanLeap(x: number, z: number, lane: number, t0: number) {
+    const sim = this.sim, R = this.roam;
+    if (!sim || !R.v || R.leap >= 0) return;   // (no visual yet: syncTitan starts the leap as soon as it has one)
+    const L = sim.map.lanes[lane] || sim.map.lanes[0], a = L.pts[0], b = L.pts[1] || a;
+    R.leap = Math.max(0, t0); R.x0 = R.x; R.y0 = R.y; R.z0 = R.z; R.x1 = x; R.z1 = z; R.y1 = L.ys[0] || 0; R.yaw1 = Math.atan2(b[0] - a[0], b[1] - a[1]);
+  }
+  /** It wrecks a tower of the district: one next to it, for choice the one in its way. The tower comes down in dust with a flash that carries to the deck. */
+  private titanSmash() {
+    const sim = this.sim, R = this.roam, W = this.world, v = R.v;
+    if (!sim || !v || R.leap >= 0 || !W.citySmash || !W.cityTop || !W.cityStep) return;
+    const s = W.cityStep, r0 = Math.round(R.z / (s * 0.8660254)), c0 = Math.round(R.x / s - (r0 & 1 ? 0.5 : 0)), cand: number[][] = [];
+    this.roamGoal(sim.titan, PT);
+    const gx = PT.x, gz = PT.z;
+    for (const n of r0 & 1 ? CITY_NEAR_ODD : CITY_NEAR) {
+      const c = c0 + n[0], r = r0 + n[1], top = W.cityTop(c, r);
+      if (top < 5 || top === Infinity) continue;
+      this.cityXZ(c, r, PT);
+      cand.push([Math.hypot(PT.x - gx, PT.z - gz), c, r]);
+    }
+    cand.sort((a, b) => a[0] - b[0]);
+    let b: { x: number; z: number; h: number } | null = null;
+    for (const c of cand) if ((b = W.citySmash(c[1], c[2]))) break;
+    if (!b) return;
+    const fx = this.fx, hit = b, h = Math.min(hit.h, 40), gy = -3;
+    v.rig.lunge = 1; R.face = Math.atan2(hit.x - R.x, hit.z - R.z); R.faceT = 2.4; R.wait = Math.min(R.wait, 0.4);
+    fx.flash(hit.x, gy + h * 0.55, hit.z, 13, STATIC, 0.32); fx.flash(hit.x, gy + h * 0.55, hit.z, 6, 0xffffff, 0.12);
+    fx.burst(hit.x, gy + h * 0.6, hit.z, 40, 14, HEAT, 1.2, 0.5, 9); fx.burst(hit.x, gy + h * 0.6, hit.z, 30, 10, STATIC, 0.9, 0.5, 6);
+    for (let i = 0; i < 6; i++) this.later.push({ t: 0.3 + i * 0.5, fn: () => {
+      const up = 1 - i / 6;
+      fx.smoke(hit.x, gy + 1 + h * 0.5 * up, hit.z, 5, 5 + 2 * (1 - up), 9, 1.4);
+      if (i === 4) { fx.ring(hit.x, gy + 0.3, hit.z, 16, DUST, 1.2, 0.1, 0.8); fx.burst(hit.x, gy + 1, hit.z, 40, 12, DUST, 1.2, 0.6, 8, 0.4); }
+    } });
+    this.bump(0.9, hit.x, hit.z);
+  }
+  /** The Titan dies: its visual leaves the enemy list and becomes a wreck that takes its time coming down (syncWreck). */
+  private titanDie(x: number, y: number, z: number) {
+    const fx = this.fx;
+    let v: EVis | undefined;
+    for (const [id, o] of this.ev) if (o.type === 'titan') { v = o; this.ev.delete(id); break; }
+    fx.flash(x, y, z, 12, VIOLET, 0.5); fx.flash(x, y, z, 6, 0xffffff, 0.2); fx.star(x, y, z, 7, FROST, 14, 0.4);
+    fx.burst(x, y, z, 120, 18, VIOLET, 1.3, 0.5, 9); fx.burst(x, y, z, 60, 12, HEAT, 1.5, 0.3, 12);
+    this.shake = Math.max(this.shake, 1.6); this.pulse(x, z, VIOLET, 40, 1);
+    if (!v) return;
+    if (this.wreck) this.poolEnemy(this.wreck.v);
+    for (const w of v.weak) w.core.visible = w.ring.visible = false;
+    if (v.hitT > 0) { v.hitT = 0; for (let i = 0; i < v.meshes.length; i++) v.meshes[i].material = v.mats[i]; }
+    v.bar.visible = v.back.visible = false; v.glow.visible = false;
+    v.rig.dead = 1e-3; v.rig.snap = null; v.rig.ground = null;
+    this.wreck = { v, t: 0, tick: 0.3, x: v.obj.position.x, z: v.obj.position.z, gy: v.obj.position.y, down: false };
+  }
+  /** The long collapse: lights failing in fits, explosions walking over the hull as it sinks, the hull meeting the deck with a ripple that crosses all of it, then the wreck going under its own smoke. */
+  private syncWreck(dt: number) {
+    const w = this.wreck;
+    if (!w) return;
+    const fx = this.fx, v = w.v, rig = v.rig;
+    w.t += dt; rig.dead = w.t;
+    updateEnemy(rig, dt, 0, false, false, NaN, false);
+    const k = ease(w.t / 2.6), hy = w.gy + ENEMIES.titan.y - 5.6 * k;
+    const fits = w.t < 2.8 ? (Math.sin(this.time * 53) * Math.sin(this.time * 17) > 0.12 * w.t ? 1 - 0.7 * k : 0.04) : 0.02;
+    for (const g of v.own) g.m.emissiveIntensity = g.i0 * fits;
+    for (const g of v.wglow) g.m.emissiveIntensity = g.i0 * (w.t < 3.2 ? 0.4 + 1.2 * Math.abs(Math.sin(this.time * 9)) * (1 - 0.5 * k) : 0.03);
+    if (w.t < 3.6 && (w.tick -= dt) <= 0) {
+      w.tick = 0.16 + Math.random() * 0.3;
+      const a = Math.random() * TAU, r = Math.random() * 3, px = w.x + Math.cos(a) * r, pz = w.z + Math.sin(a) * r, py = hy + (Math.random() - 0.3) * 2.5, big = Math.random() < 0.35;
+      fx.flash(px, py, pz, big ? 4.5 : 2.4, big ? APRICOT : VIOLET, 0.2); fx.burst(px, py, pz, big ? 30 : 14, big ? 12 : 8, big ? HEAT : STATIC, 0.8, 0.3, 10);
+      fx.smoke(px, py, pz, big ? 4 : 2, big ? 2.4 : 1.5, 2, 1.2);
+      if (big) { this.bump(0.5, px, pz, true); this.pulse(px, pz, APRICOT, 9, 0.7); }
+    }
+    if (!w.down && w.t >= 2.5) {
+      w.down = true;
+      fx.ring(w.x, w.gy + 0.15, w.z, 22, DUST, 1.2, 0.06, 1.2); fx.ring(w.x, w.gy + 0.2, w.z, 12, VIOLET, 0.7, 0.1);
+      fx.burst(w.x, w.gy + 1, w.z, 80, 15, DUST, 1.1, 0.4, 11, 0.5); fx.column(w.x, w.gy, w.z, VIOLET, 30); fx.scorch(w.x, w.z, 8, VIOLET, 14, w.gy);
+      for (let i = 0; i < 10; i++) { const a = (i / 10) * TAU; fx.smoke(w.x + Math.cos(a) * 4, w.gy + 0.5, w.z + Math.sin(a) * 4, 3, 2.6, 2, 0.8); }
+      this.pulse(w.x, w.z, VIOLET, 85, 1); this.later.push({ t: 0.25, fn: () => this.pulse(w.x, w.z, STATIC, 85, 0.9) });
+      this.shake = Math.max(this.shake, 2.4);
+    }
+    if (w.t > 4.6) {
+      v.obj.position.y -= dt * 5.5;
+      if (Math.random() < dt * 14) fx.smoke(w.x + (Math.random() - 0.5) * 6, w.gy + 0.6, w.z + (Math.random() - 0.5) * 6, 2, 2.4, 2, 0.9);
+      if (w.t > 7.6) { this.poolEnemy(v); this.wreck = null; }
+    }
   }
 
   /** collapse = the zone ran out in play (a singularity goes with a hard flash), false when the match is cleared away. */
@@ -1780,12 +2255,21 @@ export class View {
 
     // enemies
     for (const e of sim.enemies) {
+      if (e.type === 'mite') continue;   // drawn instanced, all of them together (syncMites)
       let v = this.ev.get(e.id);
-      if (!v) { v = this.enemyVis(e.type); this.ev.set(e.id, v); }
+      if (!v) {
+        // the Titan that leapt in from the district is the one that now walks
+        if (e.type === 'titan' && this.roam.v) { v = this.roam.v; this.roam.v = null; this.roam.leap = -1; this.roam.off = true; v.fresh = true; v.obj.visible = true; }
+        else v = this.enemyVis(e.type);
+        this.ev.set(e.id, v);
+      }
       v.seen = f;
       this.syncEnemy(e, v, dt, k, b, aim);
     }
     for (const [id, v] of this.ev) if (v.seen !== f) { this.poolEnemy(v); this.ev.delete(id); }
+    this.syncMites(dt, f);
+    this.syncTitan(dt);
+    this.syncWreck(dt);
 
     // towers
     for (const t of sim.towers) {

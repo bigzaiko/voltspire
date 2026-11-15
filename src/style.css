@@ -181,12 +181,30 @@ body:has(#editor:not(.hidden)) #btn-full { display: none; }
 #t-spec.spire #t-spec-name, #t-spec.spire #t-spec-state { color: var(--verdigris); }
 #t-note { margin: 8px 0 0; font-size: 13px; line-height: 1.3; color: var(--rust); }
 #t-note:empty { display: none; }
+#t-spec.jam .bar i { background: var(--violet); }
+#t-spec.jam #t-spec-state { color: var(--violet); }
+#t-spec.stun .bar i { background: var(--static); }
+#t-spec.stun #t-spec-state { color: var(--static); }
 #vs { position: absolute; right: calc(12px + var(--safe-r)); top: calc(var(--top-h) + 14px); width: 230px; }
 #vs h3 { color: var(--static); }
 #vs-status { margin-bottom: 10px; font-family: var(--display); font-size: 17px; font-weight: 500; letter-spacing: 0.03em; font-variant-numeric: tabular-nums; }
 #vs-squads { display: grid; gap: 6px; }
 #vs-squads .btn { width: 100%; justify-content: space-between; }
 
+/* the Titan: a danger bar while it approaches (violet), its hull once it walks (cold blue-white) */
+#titan { position: absolute; top: calc(var(--top-h) + 12px); left: 50%; transform: translateX(-50%); z-index: 2; display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 6px 12px; width: min(440px, 50vw); padding: 7px 12px 9px; background: var(--plate); border: 1px solid var(--line); border-left: 3px solid var(--violet); border-radius: var(--r); }
+#titan-label { font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; color: var(--violet); white-space: nowrap; }
+#titan-sub { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+#titan .bar { grid-column: 1 / -1; }
+#titan .bar i { background: var(--violet); }
+#titan.walk { border-left-color: var(--static); }
+#titan.walk #titan-label { color: var(--static); }
+#titan.walk .bar i { background: var(--static); }
+#hud:has(#titan:not(.hidden)) #lock-hint { top: calc(var(--top-h) + 76px); }
+#hud:has(#titan:not(.hidden)) #vs { top: calc(var(--top-h) + 76px); }
+/* Overlink: the Uplink is held open while the Titan stands */
+#ult.held #ult-label, #hero-time.held #hero-label { color: var(--verdigris); }
+#ult.held .bar i, #hero-time.held .bar i { background: repeating-linear-gradient(135deg, var(--verdigris) 0 8px, var(--verdigris-dim) 8px 16px); }
 #announce { position: absolute; top: 19%; left: 0; right: 0; padding: 14px 16px 12px; text-align: center; font-family: var(--display); font-weight: 700; font-size: clamp(30px, 5.2vw, 66px); line-height: 1; letter-spacing: 0.12em; text-transform: uppercase; color: var(--sand); background: rgba(16, 14, 12, 0.8); border-block: 1px solid var(--line-2); opacity: 0; }
 #announce.show { animation: announce 2.4s ease-out forwards; }
 #announce small { display: block; margin-top: 10px; font-family: var(--mono); font-size: clamp(11px, 0.24em, 15px); font-weight: 500; letter-spacing: 0.24em; color: var(--apricot); }
@@ -236,6 +254,13 @@ body.hero #tutor { bottom: 190px; }
 #marks .mark svg { display: block; width: 8px; height: 8px; margin: 2px auto 0; fill: var(--ink); }
 #marks .mark { position: absolute; left: -7px; top: -7px; width: 14px; height: 14px; display: none; font-style: normal; font-size: 10px; line-height: 17px; text-align: center; color: var(--ink); background: var(--apricot); border: 1px solid var(--soot-0); border-radius: var(--r); animation: bob 1s ease-in-out infinite alternate; pointer-events: none; }
 @keyframes bob { to { margin-top: -3px; } }
+/* a tower that is jammed by mites (violet) or stunned by the Titan (cold blue-white) */
+#marks .mark.jam, #marks .mark.stun { left: -8px; top: -8px; width: 16px; height: 16px; animation: none; }
+#marks .mark.jam { background: var(--violet); }
+#marks .mark.stun { background: var(--static); }
+#marks .mark.jam svg, #marks .mark.stun svg { width: 12px; height: 12px; margin-top: 1px; }
+/* F3 diagnostics: frame times and the mouse path */
+#diag { position: fixed; right: calc(8px + var(--safe-r)); top: 50%; transform: translateY(-50%); z-index: 47; margin: 0; padding: 7px 10px; font-family: var(--mono); font-size: 11px; line-height: 1.5; color: var(--sand); background: rgba(16, 14, 12, 0.88); border: 1px solid var(--line-2); border-radius: var(--r); pointer-events: none; white-space: pre; }
 
 /* ---------- hero HUD ---------- */
 #herohud { position: absolute; inset: 0; }
@@ -447,13 +472,18 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
 .seg .chip:first-child { margin-left: 0; border-radius: var(--r) 0 0 var(--r); }
 .seg .chip:last-child { border-radius: 0 var(--r) var(--r) 0; }
 .seg .chip.on { position: relative; z-index: 1; }
-#map-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; max-height: min(46vh, 430px); overflow-y: auto; padding: 0 8px 8px 0; }
-.mapcard { display: grid; gap: 2px; padding: 6px 6px 9px; text-align: left; color: var(--bone); font-family: var(--body); background: var(--soot-2); border: 1px solid var(--line); border-radius: var(--r); cursor: pointer; transition: background-color 0.1s, border-color 0.1s; }
+/* The map picker has one fixed height (pre-made grid and generated preview alike), so the sheet fits the screen and nothing moves when the filter or the source changes. */
+#setup { --pick-h: clamp(150px, calc(100vh - 530px), 400px); }
+.map-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; }
+#map-tier .chip { min-height: 38px; padding: 0 14px; }
+#map-tier .chip small:empty { display: none; }
+#map-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(136px, 1fr)); align-content: start; gap: 8px; height: var(--pick-h); overflow-y: auto; overscroll-behavior: contain; padding: 0 8px 0 0; }
+.mapcard { display: grid; gap: 2px; padding: 5px 5px 7px; text-align: left; color: var(--bone); font-family: var(--body); background: var(--soot-2); border: 1px solid var(--line); border-radius: var(--r); cursor: pointer; transition: background-color 0.1s, border-color 0.1s; }
 .mapcard:hover { background: var(--soot-3); border-color: var(--line-2); }
 .mapcard.on { border-color: var(--sand); background: var(--soot-3); box-shadow: inset 0 0 0 1px var(--sand), 5px 5px 0 rgba(0, 0, 0, 0.4); }
-.mapcard canvas { display: block; width: 100%; margin-bottom: 6px; border-radius: 1px; }
-.mapcard b { display: block; padding: 0 4px; font-family: var(--display); font-size: 19px; font-weight: 600; line-height: 1.05; letter-spacing: 0.05em; text-transform: uppercase; color: var(--sand); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mapcard span { padding: 0 4px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mapcard canvas { display: block; width: 100%; margin-bottom: 4px; border-radius: 1px; }
+.mapcard b { display: block; padding: 0 4px; font-family: var(--display); font-size: 17px; font-weight: 600; line-height: 1.05; letter-spacing: 0.05em; text-transform: uppercase; color: var(--sand); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mapcard span { padding: 0 4px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mapcard.on span { color: var(--apricot); }
 #setup-desc { min-height: 4.2em; padding-left: 90px; font-size: 15px; }
 #setup-diff .chip small { min-width: 8ch; text-align: left; }
@@ -462,8 +492,9 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
 .mapcard .rec { min-height: 1.4em; color: var(--sand-dim); }
 .mapcard.on .rec { color: var(--sand); }
 .mapcard .rec.none, .mapcard.on .rec.none { color: var(--soot-4); }
-#gen { display: grid; grid-template-columns: minmax(0, 416px) minmax(190px, 1fr); gap: 16px; align-items: start; }
-#gen-cv { display: block; width: 100%; height: auto; border: 1px solid var(--line-2); border-radius: 1px; }
+#gen { display: grid; grid-template-columns: auto minmax(190px, 1fr); gap: 16px; align-items: start; height: var(--pick-h); }
+#gen-cv { display: block; height: 100%; width: auto; max-width: 100%; min-height: 0; aspect-ratio: 416 / 288; border: 1px solid var(--line-2); border-radius: 1px; }
+#gen-side { max-height: 100%; overflow-y: auto; }
 #gen-side { display: grid; gap: 8px; justify-items: start; }
 #gen-side .lab + .seg, #gen-side .gen-seed { margin-bottom: 6px; }
 .gen-seed { display: flex; gap: 6px; }
@@ -483,7 +514,10 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
 @media (max-width: 900px) {
   .stat.bow { display: none; }
   .set-grid { grid-template-columns: 1fr; }
-  #gen { grid-template-columns: 1fr; }
+  #gen { grid-template-columns: 1fr; height: auto; }
+  #gen-cv { width: 100%; height: auto; }
+  #gen-side { max-height: none; }
+  #setup { --pick-h: clamp(150px, calc(100vh - 600px), 400px); }
   .tw { width: 58px; }
   #ult { flex-basis: 130px; min-width: 110px; }
   #btn-wave { padding: 0 12px; }
@@ -531,7 +565,10 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
   .set-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
   .settings > label, .set-row { min-height: 42px; font-size: 14px; }
   .settings input[type='range'] { width: 130px; }
-  #gen { grid-template-columns: 236px minmax(0, 1fr); gap: 12px; }
+  #gen { grid-template-columns: 236px minmax(0, 1fr); gap: 12px; height: auto; }
+  #gen-cv { width: 100%; height: auto; }
+  #titan { top: calc(var(--top-h) + 6px); width: min(300px, 40vw); padding: 4px 10px 6px; gap: 3px 10px; }
+  #diag { font-size: 10px; }
   .stat.next { min-width: 96px; }
   .toast { font-size: 13px; padding-block: 5px; }
 
@@ -546,7 +583,8 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
   .cover .menu-buttons .btn { min-height: 46px; font-size: 19px; }
   .cover .menu-buttons .btn:nth-child(2) { border-top: 0; }
   #pause .menu-buttons .btn { min-height: 46px; font-size: 20px; }
-  #map-row { grid-auto-flow: column; grid-template-columns: none; grid-auto-columns: 150px; max-height: none; overflow-x: auto; overflow-y: hidden; padding: 0 0 8px; }
+  #map-row { grid-auto-flow: column; grid-template-columns: none; grid-auto-columns: 132px; height: auto; overflow-x: auto; overflow-y: hidden; padding: 0 0 8px; }
+  #map-tier .chip { padding: 0 10px; }
   #setup-desc { min-height: 0; font-size: 14px; }
   .field { grid-template-columns: 64px minmax(0, 1fr); gap: 10px; }
   .field .lab { padding-top: 11px; }

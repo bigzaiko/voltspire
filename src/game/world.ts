@@ -621,17 +621,30 @@ function slabTextures() {
   return { map, normalMap: new THREE.CanvasTexture(normalFromHeight(hgt, 2.2)) };
 }
 
+/** Top of the basalt column (c, row) of the terrain lattice, which stands at (x, z), d away from the platform. */
+function columnY(c: number, row: number, x: number, z: number, d: number) {
+  const h = hash2(c * 1.7 + 11, row * 2.3 + 5), n = vnoise(x * 0.035 + 3, z * 0.035 + 7);
+  if (d < 7) return -1.5 - 0.3 * Math.floor(h * 3);
+  if (d < 15) return -2.0 - (d - 7) * 0.08 - 0.3 * Math.floor(h * 3);
+  const t = (d - 15) / 30;
+  return -2.8 + Math.round((t * (0.3 + n * n * 11) + (h > 0.9 ? 1.6 : 0)) / 0.7) * 0.7;
+}
+const TERRACE_W = 5.2, GROUND_Y = -3.1;
+/** Height of the ground round the platform: the basalt columns near it, the district's paving beyond them. */
+function groundY(x: number, z: number) {
+  const rowH = TERRACE_W * Math.sqrt(3) / 2, row = Math.round(z / rowH), c = Math.round(x / TERRACE_W - (row & 1 ? 0.5 : 0));
+  const cx = (c + (row & 1 ? 0.5 : 0)) * TERRACE_W, cz = row * rowH, d = dBox(cx, cz);
+  if (d > 46 || (Math.abs(cx) < HX - 6 && Math.abs(cz) < HZ - 6)) return GROUND_Y;
+  return columnY(c, row, cx, cz, d);
+}
+
 /** Basalt-like hex columns stepping down from the platform and up again toward the city. */
 function terrain(tileW: number) {
   const rowH = tileW * Math.sqrt(3) / 2, R = tileW / Math.sqrt(3), list: number[] = [];
   for (let row = -26; row <= 26; row++) for (let c = -30; c <= 30; c++) {
     const x = (c + (row & 1 ? 0.5 : 0)) * tileW, z = row * rowH, d = dBox(x, z);
     if (d > 46 || (Math.abs(x) < HX - 6 && Math.abs(z) < HZ - 6)) continue;
-    const h = hash2(c * 1.7 + 11, row * 2.3 + 5), n = vnoise(x * 0.035 + 3, z * 0.035 + 7);
-    let y: number;
-    if (d < 7) y = -1.5 - 0.3 * Math.floor(h * 3);
-    else if (d < 15) y = -2.0 - (d - 7) * 0.08 - 0.3 * Math.floor(h * 3);
-    else { const t = (d - 15) / 30; y = -2.8 + Math.round((t * (0.3 + n * n * 11) + (h > 0.9 ? 1.6 : 0)) / 0.7) * 0.7; }
+    const h = hash2(c * 1.7 + 11, row * 2.3 + 5), y = columnY(c, row, x, z, d);
     list.push(x, y, z, (0.5 + h * 0.4 + Math.max(0, y + 2) * 0.03) * (0.55 + 0.45 * Math.min(1, d / 14)));
   }
   const g = new THREE.CylinderGeometry(R * 0.985, R * 0.985, 1, 6).translate(0, -0.5, 0);
@@ -713,6 +726,12 @@ function signTexture(seed: number, w: number, h: number) {
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
   return t;
 }
+
+/** Pitch of the district's honeycomb lattice: tower (c, row) stands at ((c + half a step on odd rows) * CITY_STEP, row * CITY_STEP * sqrt(3) / 2). */
+const CITY_STEP = 13;
+const cityKey = (c: number, row: number) => (row + 64) * 256 + c + 64;
+/** One district tower: where it stands, how high it reaches, its vertices in the city mesh, whether it can be wrecked, and how far it has come down (0 standing, 1 rubble). */
+interface CityTower { x: number; z: number; top: number; start: number; count: number; ok: boolean; fall: number; lean: number }
 
 /** The district: hex-footprint towers on a honeycomb lattice, unlit, with the light painted into vertex colours. */
 function skyline(haze: THREE.Color, warm: THREE.Color) {
@@ -797,7 +816,8 @@ function skyline(haze: THREE.Color, warm: THREE.Color) {
     signs.push({ mat, base, phase: seed * 1.7 });
   }
   // honeycomb lattice: neighbours share walls here and there, like basalt
-  const TW = 13, rowH = TW * Math.sqrt(3) / 2, RC = TW / Math.sqrt(3);
+  const TW = CITY_STEP, rowH = TW * Math.sqrt(3) / 2, RC = TW / Math.sqrt(3);
+  const towers = new Map<number, CityTower>();
   for (let row = -24; row <= 24; row++) for (let c = -26; c <= 26; c++) {
     const x = (c + (row & 1 ? 0.5 : 0)) * TW, z = row * rowH, d = dBox(x, z);
     if (d < 56 || d > 240) continue;
@@ -805,11 +825,20 @@ function skyline(haze: THREE.Color, warm: THREE.Color) {
     if (rnd() > (d < 100 ? 0.4 + n * 0.4 : 0.2 + n * 0.4)) continue;
     let clash = false;
     for (const s of carriers) if (Math.hypot(x - s[0], z - s[1]) < s[2] + RC + 2) clash = true;
-    if (clash) continue;
+    if (clash) { towers.set(cityKey(c, row), { x, z, top: Infinity, start: 0, count: 0, ok: false, fall: 0, lean: 0 }); continue; }
     const low = rnd() < 0.3 && d < 110; // wide low block: a terrace
     const R = RC * (low ? 0.99 : 0.55 + rnd() * 0.44);
     const h = low ? 4 + Math.round(rnd() * 4) * 2.5 : d < 90 ? 9 + rnd() * 18 + n * 10 + (d - 56) * 0.3 : 22 + rnd() * rnd() * 90 + (d - 90) * 0.28 + n * 22;
-    tower(x + (low ? 0 : (rnd() - 0.5) * 2), z + (low ? 0 : (rnd() - 0.5) * 2), R, h, Math.PI / 2);
+    const start = pos.length / 3, lamps = lights.length;
+    const top = tower(x + (low ? 0 : (rnd() - 0.5) * 2), z + (low ? 0 : (rnd() - 0.5) * 2), R, h, Math.PI / 2);
+    // (a tower that carries a lamp stays up: its light is not part of this mesh)
+    towers.set(cityKey(c, row), { x, z, top, start, count: pos.length / 3 - start, ok: lights.length === lamps, fall: 0, lean: rnd() * 6.283 });
+  }
+  // the sign towers stand off the lattice: every cell one of them covers is closed ground too
+  for (let row = -24; row <= 24; row++) for (let c = -26; c <= 26; c++) {
+    const x = (c + (row & 1 ? 0.5 : 0)) * TW, z = row * rowH;
+    if (towers.has(cityKey(c, row)) || !carriers.some((s) => Math.hypot(x - s[0], z - s[1]) < s[2] + RC)) continue;
+    towers.set(cityKey(c, row), { x, z, top: Infinity, start: 0, count: 0, ok: false, fall: 0, lean: 0 });
   }
 
   const ft = facadeTextures();
@@ -841,7 +870,53 @@ function skyline(haze: THREE.Color, warm: THREE.Color) {
   cg.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   g.add(new THREE.Mesh(cg, mat));
   g.add(noAO(new THREE.Mesh(mergeGeometries(lights), new THREE.MeshBasicMaterial({ vertexColors: true }))));
-  return { group: g, signs };
+  // wrecking: a tower comes down by squashing its own vertices toward the ground, leaning as it goes
+  const attr = cg.getAttribute('position') as THREE.BufferAttribute, live = attr.array as Float32Array, rest = live.slice();
+  const falling: CityTower[] = [];
+  const pose = (t: CityTower) => {
+    const k = t.fall * t.fall * (3 - 2 * t.fall), lx = Math.cos(t.lean) * 0.16 * k, lz = Math.sin(t.lean) * 0.16 * k;
+    for (let i = t.start * 3, e = (t.start + t.count) * 3; i < e; i += 3) {
+      const hgt = rest[i + 1] - BASE;
+      live[i] = rest[i] + lx * hgt; live[i + 1] = BASE + hgt * (1 - 0.88 * k); live[i + 2] = rest[i + 2] + lz * hgt;
+    }
+    attr.addUpdateRange(t.start * 3, t.count * 3);
+  };
+  const city = {
+    group: g, signs,
+    /** What stands on lattice cell (c, row): 0 for open ground, the height of its tower otherwise (Infinity: it can be neither passed nor wrecked). */
+    top(c: number, row: number) {
+      const t = towers.get(cityKey(c, row));
+      if (t) return t.fall >= 1 ? 0 : t.top;
+      return dBox((c + (row & 1 ? 0.5 : 0)) * TW, row * rowH) < 22 ? Infinity : 0;
+    },
+    /** Bring the tower on (c, row) down. Returns where it stood and how tall it was, or null if nothing there can fall. */
+    smash(c: number, row: number) {
+      const t = towers.get(cityKey(c, row));
+      if (!t || !t.ok || t.fall > 0) return null;
+      t.fall = 1e-4; falling.push(t);
+      return { x: t.x, z: t.z, h: t.top };
+    },
+    /** Every wrecked tower stands again (a new match). */
+    restore() {
+      falling.length = 0;
+      let any = false;
+      for (const t of towers.values()) if (t.fall > 0) { t.fall = 0; any = true; }
+      if (any) { live.set(rest); attr.clearUpdateRanges(); attr.needsUpdate = true; }
+    },
+    update(dt: number) {
+      if (!falling.length) return;
+      attr.clearUpdateRanges();
+      for (let i = falling.length - 1; i >= 0; i--) {
+        const t = falling[i];
+        // slow to start, then it goes: about three seconds for a tall one
+        t.fall = Math.min(1, t.fall + dt * (0.12 + 0.75 * t.fall));
+        pose(t);
+        if (t.fall >= 1) falling.splice(i, 1);
+      }
+      attr.needsUpdate = true;
+    },
+  };
+  return city;
 }
 
 const SKY_FRAG = `
@@ -949,9 +1024,8 @@ export function buildWorld(scene: THREE.Scene, renderer?: THREE.WebGLRenderer) {
   scene.add(fill);
 
   // ---- far ground, basalt columns, city ----
-  const TERRACE_W = 5.2;
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(900, 900), new THREE.MeshStandardMaterial({ ...pavingTextures(TERRACE_W), roughness: 1, metalness: 1, envMapIntensity: 0.3 }));
-  ground.rotation.x = -Math.PI / 2; ground.position.y = -3.1; ground.receiveShadow = true;
+  ground.rotation.x = -Math.PI / 2; ground.position.y = GROUND_Y; ground.receiveShadow = true;
   scene.add(ground);
   scene.add(terrain(TERRACE_W));
   const city = skyline(haze, warm);
@@ -1269,7 +1343,12 @@ export function buildWorld(scene: THREE.Scene, renderer?: THREE.WebGLRenderer) {
       introT += dt;
       if (introT >= INTRO) { introT = -1; pose(INTRO); } else pose(introT);
     }
+    city.update(dt);
   };
 
-  return { sun, setMap, startIntro, skipIntro, introActive, revealAt, roadY, pulse, setBeat, fxOptions, update };
+  // the district as the Titan needs it: its lattice, what stands on each cell, the ground between it and the platform
+  return {
+    sun, setMap, startIntro, skipIntro, introActive, revealAt, roadY, pulse, setBeat, fxOptions, update,
+    cityStep: CITY_STEP, cityTop: city.top, citySmash: city.smash, cityRestore: city.restore, groundY,
+  };
 }

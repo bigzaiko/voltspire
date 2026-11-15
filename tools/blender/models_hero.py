@@ -1,4 +1,4 @@
-"""VOLTSPIRE hero: "Kestrel", a lean hooded ranger. Exported as a jointed rig in a relaxed ready
+"""BEATSPIRE hero: "Kestrel", a lean hooded ranger. Exported as a jointed rig in a relaxed ready
 stance (bow lowered); the aim / draw / skill poses are produced by src/game/anim.ts.
 
 Seen in game from behind / above at ~5 m, so the back carries the design: a pointed cloth hood, a

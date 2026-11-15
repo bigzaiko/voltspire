@@ -1,5 +1,7 @@
-// Touch controls. Bird view: tap, drag to pan, pinch to zoom, twist to turn, hold then drag to move the build ghost.
-// Uplink: drag to aim, hold Draw and let go to loose, round buttons for the skills.
+// Touch controls. Bird view: tap, drag with one finger to pan, hold then drag to move the build ghost. Two fingers
+// either pinch (zoom) or twist (turn): whichever passes its threshold first, and it stays that until a finger lifts.
+// Uplink: drag to aim (slow drags aim finely, quick swipes turn far), hold Draw and let go to loose, and the thumb
+// that holds Draw can keep aiming. Round buttons for the skills.
 // Mouse and keyboard handlers in play.ts stay active; everything here only reacts to touch pointers,
 // except the on-screen buttons, which also take a mouse press or a keyboard activation.
 // The styles (touch.css) are linked from play.html.
@@ -20,7 +22,8 @@ export interface TouchApi {
   hoverAt(clientX: number, clientY: number): void;
   /** drag by (dx, dy) pixels; (x, y) is where the finger, or the middle of two fingers, is now */
   pan(dx: number, dy: number, x: number, y: number): void;
-  zoom(factor: number): void;
+  /** factor above 1 zooms in; (x, y) is the point between the fingers, which stays where it is */
+  zoom(factor: number, x?: number, y?: number): void;
   /** two fingers twisted by this many radians, clockwise on screen */
   rotate(angle: number): void;
   pause(): void;
@@ -29,14 +32,24 @@ export interface TouchApi {
 
 const FREE = 0, BIRD = 1, LOOK = 2, FIRE = 3;
 /** finger travel in px before a press counts as a drag */
-const DEAD = 10;
+const DEAD = 12;
 /** press this long without moving and the drag moves the build ghost instead of the camera */
 const HOLD_MS = 240;
-// Look deltas are scaled so that a thumb sweep of about 300 px turns 120 degrees when the
-// controller applies its mouse factor of 0.0022 rad per px. Vertical is a little calmer.
+// Look deltas are scaled for the controller's mouse factor of 0.0022 rad per px, and then by the speed of the
+// finger: below SLOW px per ms the gain is LOOK_FINE (100 px turn about 20 degrees, for aiming), above FAST it is
+// LOOK_SWIPE (a quick 300 px swipe turns more than half a circle). Vertical is a little calmer.
 const LOOK_X = 3.2, LOOK_Y = 2.2;
+const LOOK_FINE = 0.5, LOOK_SWIPE = 1.9, SLOW = 0.08, FAST = 1.1;
+/** the thumb that holds Draw aims a little finer than the free finger */
+const FIRE_AIM = 0.8;
+// Two fingers: the spread has to change by this much (px, or this share of the spread) to become a pinch,
+// or the line between the fingers has to turn by this much (radians, with the fingers at least APART px apart) to become a twist.
+const PINCH_PX = 18, PINCH_PART = 0.07, TWIST = 0.14, APART = 70;
 
-interface Slot { id: number; role: number; x: number; y: number; sx: number; sy: number; moved: boolean; hover: boolean; el: Element | null }
+interface Slot { id: number; role: number; x: number; y: number; sx: number; sy: number; moved: boolean; pan: boolean; hover: boolean; el: Element | null; t: number; v: number }
+/** What two fingers on the board are doing: 0 undecided, 1 pinch, 2 twist. d and a are the spread and angle last used. */
+interface Pair { mode: 0 | 1 | 2; d0: number; a0: number; d: number; a: number }
+const turn = (a: number): number => (a > Math.PI ? a - Math.PI * 2 : a < -Math.PI ? a + Math.PI * 2 : a);
 
 export function initTouch(api: TouchApi): void {
   const canvas = api.canvas;
@@ -45,8 +58,9 @@ export function initTouch(api: TouchApi): void {
   const lookPad = byId('t-look'), fireBtn = byId('t-fire');
 
   const slots: Slot[] = [];
-  for (let i = 0; i < 4; i++) slots.push({ id: -1, role: FREE, x: 0, y: 0, sx: 0, sy: 0, moved: false, hover: false, el: null });
+  for (let i = 0; i < 4; i++) slots.push({ id: -1, role: FREE, x: 0, y: 0, sx: 0, sy: 0, moved: false, pan: false, hover: false, el: null, t: 0, v: 0 });
   let active = false;
+  let pair: Pair | null = null;
   let holdTimer = 0;
   let holdSlot: Slot | null = null;
 
@@ -70,13 +84,18 @@ export function initTouch(api: TouchApi): void {
     for (let i = 0; i < slots.length; i++) if (slots[i] !== s && slots[i].role === BIRD) return slots[i];
     return null;
   }
+  /** Direction of the line between two fingers. Always measured from the same finger, whichever of them just moved. */
+  function lineOf(a: Slot, b: Slot): number {
+    const first = slots.indexOf(a) < slots.indexOf(b) ? a : b, second = first === a ? b : a;
+    return Math.atan2(second.y - first.y, second.x - first.x);
+  }
   function take(e: PointerEvent, role: number, el: Element): Slot | null {
     let s = find(e.pointerId);
     if (!s) for (let i = 0; i < slots.length; i++) if (slots[i].role === FREE) { s = slots[i]; break; }
     if (!s) return null;
     s.id = e.pointerId; s.role = role; s.el = el;
     s.x = s.sx = e.clientX; s.y = s.sy = e.clientY;
-    s.moved = false; s.hover = false;
+    s.moved = false; s.pan = false; s.hover = false; s.t = e.timeStamp; s.v = 0;
     try { el.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
     return s;
   }
@@ -100,7 +119,14 @@ export function initTouch(api: TouchApi): void {
       s.role = FREE;
       if (count(FIRE) === 0) { api.fire(false); if (fireBtn) fireBtn.classList.remove('on'); }
     }
+    const bird = s.role === BIRD;
     s.role = FREE; s.id = -1; s.el = null;
+    if (bird) {
+      // The gesture of two fingers ends when one lifts. The finger that stays has to leave the dead zone again
+      // before it pans, so lifting two fingers one after the other never shoves the board.
+      pair = null;
+      for (let i = 0; i < slots.length; i++) if (slots[i].role === BIRD) { slots[i].pan = false; slots[i].sx = slots[i].x; slots[i].sy = slots[i].y; }
+    }
   }
 
   function downSurface(e: PointerEvent): void {
@@ -119,9 +145,12 @@ export function initTouch(api: TouchApi): void {
       holdSlot = s;
       holdTimer = window.setTimeout(onHold, HOLD_MS);
     } else {
-      // A second finger makes it a pinch. Neither finger may end as a tap.
+      // A second finger starts a pinch or a twist. Neither finger may end as a tap, and the pan stops.
       clearHold();
-      for (let i = 0; i < slots.length; i++) if (slots[i].role === BIRD) { slots[i].moved = true; slots[i].hover = false; }
+      for (let i = 0; i < slots.length; i++) if (slots[i].role === BIRD) { slots[i].moved = true; slots[i].pan = false; slots[i].hover = false; }
+      const o = other(s);
+      pair = null;
+      if (o && n === 2) { const d = Math.hypot(s.x - o.x, s.y - o.y), a = lineOf(s, o); pair = { mode: 0, d0: d, a0: a, d, a }; }
     }
   }
 
@@ -144,34 +173,50 @@ export function initTouch(api: TouchApi): void {
     if (s.role === LOOK || s.role === FIRE) {
       s.x = e.clientX; s.y = e.clientY;
       // The mouse may hold Fire too, but it aims through pointer lock, not through this drag.
-      if (e.pointerType === 'touch' && api.isHero() && (dx !== 0 || dy !== 0)) api.look(dx * LOOK_X, dy * LOOK_Y);
+      if (e.pointerType !== 'touch' || !api.isHero() || (dx === 0 && dy === 0)) return;
+      const ms = Math.max(4, Math.min(60, e.timeStamp - s.t));
+      s.t = e.timeStamp;
+      s.v += (Math.hypot(dx, dy) / ms - s.v) * 0.5;
+      const u = Math.max(0, Math.min(1, (s.v - SLOW) / (FAST - SLOW)));
+      const k = (LOOK_FINE + (LOOK_SWIPE - LOOK_FINE) * u * u * (3 - 2 * u)) * (s.role === FIRE ? FIRE_AIM : 1);
+      api.look(dx * LOOK_X * k, dy * LOOK_Y * k);
       return;
     }
     if (s.role !== BIRD) return;
     const o = other(s);
     if (o) {
-      const d0 = Math.hypot(s.x - o.x, s.y - o.y), a0 = Math.atan2(s.y - o.y, s.x - o.x);
       s.x = e.clientX; s.y = e.clientY;
-      const d1 = Math.hypot(s.x - o.x, s.y - o.y);
-      if (d0 > 8 && d1 > 8) api.zoom(d1 / d0);
-      // A twist only counts with the fingers well apart: close together the angle is all jitter.
-      if (d0 > 60 && d1 > 60) {
-        let da = Math.atan2(s.y - o.y, s.x - o.x) - a0;
-        if (da > Math.PI) da -= Math.PI * 2; else if (da < -Math.PI) da += Math.PI * 2;
-        if (Math.abs(da) < 0.5) api.rotate(da);
+      const g = pair;
+      if (!g) return; // a third finger: nothing moves
+      const d = Math.hypot(s.x - o.x, s.y - o.y), a = lineOf(s, o);
+      if (g.mode === 0) {
+        // how far along each gesture is toward its threshold; the first past 1 wins and the other is ignored from then on
+        const pinch = Math.abs(d - g.d0) / Math.max(PINCH_PX, g.d0 * PINCH_PART);
+        const twist = Math.min(d, g.d0) >= APART ? Math.abs(turn(a - g.a0)) / TWIST : 0;
+        if (pinch < 1 && twist < 1) return;
+        g.mode = pinch >= twist ? 1 : 2;
+        // start from here, so the camera does not jump by the distance the threshold took
+        g.d = d; g.a = a;
+        return;
       }
-      // The midpoint moves half as far as the one finger that moved.
-      api.pan(dx * 0.5, dy * 0.5, (s.x + o.x) / 2, (s.y + o.y) / 2);
+      if (g.mode === 1) {
+        if (d > 8 && g.d > 8) api.zoom(d / g.d, (s.x + o.x) / 2, (s.y + o.y) / 2);
+        g.d = d;
+      } else {
+        const da = turn(a - g.a);
+        if (Math.abs(da) < 0.5) api.rotate(da);
+        g.a = a;
+      }
       return;
     }
     if (s.hover) { s.x = e.clientX; s.y = e.clientY; api.hoverAt(s.x, s.y); return; }
-    if (!s.moved) {
+    if (!s.pan) {
       const tx = e.clientX - s.sx, ty = e.clientY - s.sy;
-      if (tx * tx + ty * ty < DEAD * DEAD) return;
-      // Leaving the dead zone starts the drag from here, so the camera does not jump.
-      s.moved = true;
-      if (holdSlot === s) clearHold();
       s.x = e.clientX; s.y = e.clientY;
+      if (tx * tx + ty * ty < DEAD * DEAD) return;
+      // Leaving the dead zone starts the drag from here, so the camera does not jump. From now on it is no tap.
+      s.moved = true; s.pan = true;
+      if (holdSlot === s) clearHold();
       return;
     }
     s.x = e.clientX; s.y = e.clientY;

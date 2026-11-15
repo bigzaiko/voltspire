@@ -1,17 +1,20 @@
-// VOLTSPIRE game simulation (no rendering, no DOM). Runs in the browser and in Node.
+// BEATSPIRE game simulation (no rendering, no DOM). Runs in the browser and in Node.
 import {
   CELL, GW, GH, MAX_ENERGY, WIN_WAVE, cellX, cellZ,
   TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, ENEMY_SCALE, CARDS, CARD_BY_ID, BOW_TIERS, bowTier,
   LVL_DMG, LVL_RANGE, LVL_RATE, upgradeCost, waveHpMul, waveBudget, baseMods, baseHero, TUNE,
   TWIN_BOLT, PULSE_CRIT, RAIL_CAP, LANCE_FOCUS, BREACH_TIME, BREACH_TIME_BOSS, BREACH_SHARE, coopScale,
   FIRST_WAVE_IN, NEXT_WAVE_IN, DRAW_TIME, MIN_DRAW, NOCK_TIME, FULL_DRAW_MUL, HERO_DUR, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR,
-  WHEEL_GUARD, WHEEL_CRAWL, WHEEL_BLEED, WHEEL_DRAG, WHEEL_SINK, WHEEL_REST, WHEEL_SPINUP, WHEEL_PIERCE, WHEEL_ESCORT, WHEEL_ESCORTS,
+  WHEEL_GUARD, WHEEL_CRAWL, WHEEL_BLEED, WHEEL_DRAG, WHEEL_SINK, WHEEL_REST, WHEEL_SPINUP, WHEEL_PIERCE, WAVE_POOL, gyreCount, GYRE_WAVE,
+  BROOD_EVERY, BROOD_FIRST, BROOD_SIZE, BROOD_REACH, MITE_HOLD, MITE_LIFE, JAM_LINGER,
+  TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY, TITAN_STRIKE, TITAN_SLOW, TITAN_WALK, TITAN_PACE, TITAN_LEAD, TITAN_GOLD, TITAN_SURVIVAL, TITAN_AGAIN, TITAN_TOUGHER, TITAN_SMASH,
 } from './data.ts';
 import type { TowerType, EnemyType, Mods, HeroStats, Card } from './data.ts';
+import { broodCap } from './data.ts';
 import { GameMap, DEFAULT_MAP, diffById } from './map.ts';
 import type { MapDef, Difficulty, PathOut } from './map.ts';
 import { hexDist } from './hex.ts';
-export { DRAW_TIME, MIN_DRAW, NOCK_TIME, HERO_DUR, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR, BREACH_TIME, BREACH_TIME_BOSS };
+export { DRAW_TIME, MIN_DRAW, NOCK_TIME, HERO_DUR, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR, BREACH_TIME, BREACH_TIME_BOSS, TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY };
 /** How far from the end of its road an enemy stops to attack the core (plus 0.6 of its radius). */
 export const CORE_STAND = 1.6;
 
@@ -33,6 +36,10 @@ export interface Enemy {
   crackT: number;
   /** Gyre: rim spin 0..1 (0 for every other type), seconds until it may spin back up, whether it has stalled (between the 'spindown' and 'spinup' events), and the time of its next 'deflect' event */
   spin: number; spinCd: number; stalled: boolean; deflAt: number;
+  /** Mite: the id of the tower it is after (0 for every other type), whether it sits on that tower, and the id of the Broodcarrier it came from. */
+  prey: number; latched: boolean; mom: number;
+  /** Broodcarrier: seconds until it may let its next swarm loose. Mite: seconds it has left. */
+  ttl: number;
 }
 export interface Tower {
   id: number; type: TowerType; cx: number; cz: number; x: number; z: number;
@@ -41,7 +48,11 @@ export interface Tower {
   charge: number; spec: number; down: number;
   /** lance heat 0..1 and its current target id; aux = shells/missiles left in a special burst; fxT = internal timer */
   heat: number; tgt: number; aux: number; fxT: number;
+  /** Seconds left jammed by mites, and stunned by the Titan's landing. Either way the tower neither fires nor charges (apart from `down`, the reboot after a special). */
+  jam: number; stun: number;
 }
+/** True while a tower does nothing: rebooting, jammed by mites or stunned by the Titan. */
+export const towerOff = (t: Tower) => t.down > 0 || t.jam > 0 || t.stun > 0;
 export type ProjKind = 'bolt' | 'shell' | 'arrow' | 'missile';
 const PROJ_KINDS: ProjKind[] = ['bolt', 'shell', 'arrow', 'missile'];
 export interface Proj {
@@ -50,6 +61,8 @@ export interface Proj {
   tier: number; aoe: number; chain: number; sx: number; sz: number; tx: number; ty: number; tz: number; t: number; T: number;
   /** share of a Gyre's guard the direct hit ignores (full-draw arrows) */
   cut?: number;
+  /** fired by a tower special: these are the only tower shots that hurt the Titan */
+  sp?: boolean;
 }
 export type ZoneKind = 'burn' | 'rain' | 'sing';
 const ZONE_KINDS: ZoneKind[] = ['burn', 'rain', 'sing'];
@@ -71,6 +84,15 @@ export interface Player {
 export interface WavePreview { wave: number; lanes: { type: EnemyType; n: number }[][] }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type Ev = { k: string; [key: string]: any };
+/**
+ * The Titan, the giant Colossus of the finale (one per campaign; in Survival one every few waves; never in Versus).
+ * far: it roams the district. warn: `danger` fills toward the wave it arrives on. landing: it leaps onto the gate of its lane
+ * (TITAN_LAND seconds). walk: it is an enemy of type 'titan' on that lane. dead: destroyed.
+ * `wave` is the wave it arrives on, `t` the seconds spent in this phase, `lane` the road it takes.
+ */
+export type TitanPhase = 'none' | 'far' | 'warn' | 'landing' | 'walk' | 'dead';
+export const TITAN_PHASES: TitanPhase[] = ['none', 'far', 'warn', 'landing', 'walk', 'dead'];
+export interface TitanState { phase: TitanPhase; danger: number; wave: number; t: number; lane: number }
 
 /** World scale: combat towers are about 3 to 4.5 units tall, Uplink Spires ~7.5; Kestrel is ~0.9 and stands on top of a Spire. */
 export const TOWER_SCALE = 1.15;
@@ -83,6 +105,8 @@ export const SKILL_CD = [4, 11, 18]; // rail shot, arrow rain, singularity
 export const SKILL_CAST = [0.1, 0.26, 0.18];
 /** Seconds a skill occupies the bow: no arrows can be loosed until its pose has let go of the string. */
 export const SKILL_LOCK = [0.62, 0.86, 0.62];
+/** Arrow Rain: seconds the volley is in the air before the first hits land (the zone exists from the cast and lasts this much longer). */
+export const RAIN_DELAY = 0.8;
 /** Radius of a tower's power node (see nodePos). */
 export const NODE_R = 0.6;
 /** Extra radius an arrow gets against an enemy body. There is no other aim assistance. */
@@ -103,7 +127,7 @@ export const DECK_GAP = 1.2;
 export const SNAP_EVENTS = 90;
 export const SNAP_EVENTS_MAX = 120;
 /** Events a co-op guest must never miss (everything else is cosmetic and may be dropped under load). */
-export const MUST_EVENTS: ReadonlySet<string> = new Set(['heroOn', 'heroOff', 'tele', 'special', 'down', 'up', 'wave', 'boss', 'clear', 'levelup', 'card', 'win', 'lose', 'leak', 'build', 'sell', 'incoming']);
+export const MUST_EVENTS: ReadonlySet<string> = new Set(['heroOn', 'heroOff', 'tele', 'special', 'down', 'up', 'wave', 'boss', 'clear', 'levelup', 'card', 'win', 'lose', 'leak', 'build', 'sell', 'incoming', 'titanLand', 'titanImpact', 'titanDie']);
 
 interface P3 { x: number; y: number; z: number }
 /** Height Kestrel's feet are at when she stands on this tower. */
@@ -132,7 +156,7 @@ export function computeWalls(towers: Tower[], linkBonus = 0): Wall[] {
     const na = links.get(p.a.id) || 0, nb = links.get(p.b.id) || 0;
     if (na >= 2 || nb >= 2) continue;
     links.set(p.a.id, na + 1); links.set(p.b.id, nb + 1);
-    const on = p.a.down <= 0 && p.b.down <= 0;
+    const on = !towerOff(p.a) && !towerOff(p.b);
     out.push({ a: p.a.id, b: p.b.id, ax: p.a.x, az: p.a.z, bx: p.b.x, bz: p.b.z, on, hot: on && (p.a.spec > 0 || p.b.spec > 0) });
   }
   return out;
@@ -153,9 +177,17 @@ export function weakPos<T extends P3>(e: Enemy, i: number, out: T): T | null {
   out.y = e.gy + w.y * s;
   return out;
 }
-/** Distance along a unit ray to where it enters a sphere (0 if it starts inside), or -1 if it misses. */
+/** True if a shot travelling along (dx, dz) can reach an enemy's i-th weak point: one marked `front` (the Titan's eye) only shows to a shot that comes at it from in front or from the side, not from behind. */
+export function weakOpen(e: Enemy, i: number, dx: number, dz: number): boolean {
+  const list = ENEMIES[e.type].weak, w = list && list[i];
+  if (!w) return false;
+  if (!w.front) return true;
+  const l = Math.hypot(dx, dz) || 1;
+  return (dx * Math.sin(e.yaw) + dz * Math.cos(e.yaw)) / l < 0.25;
+}
 /** An enemy's own pace before slows. A Gyre rolls at WHEEL_CRAWL of its speed with the rim stopped, and at all of it at full spin. */
 export function paceOf(e: Enemy): number { return e.type === 'wheel' ? e.speed * (WHEEL_CRAWL + (1 - WHEEL_CRAWL) * e.spin) : e.speed; }
+/** Distance along a unit ray to where it enters a sphere (0 if it starts inside), or -1 if it misses. */
 export function raySphere(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, cx: number, cy: number, cz: number, r: number) {
   const mx = cx - ox, my = cy - oy, mz = cz - oz;
   const c = mx * mx + my * my + mz * mz - r * r;
@@ -186,7 +218,7 @@ export type Mode = 'solo' | 'coop' | 'versus';
 export interface SimOpts { mode: Mode; players: number; seed: number; pauseOnCards: boolean; map: MapDef; diff: string; survival: boolean }
 
 const xpNeed = (lvl: number) => Math.round(12 + lvl * 7 + lvl * lvl * 0.55);
-const GAPS: Record<EnemyType, number> = { grunt: 0.55, runner: 0.33, drone: 0.5, shield: 0.95, brute: 1.3, boss: 3, wheel: 1.1 };
+const GAPS: Record<EnemyType, number> = { grunt: 0.55, runner: 0.33, drone: 0.5, shield: 0.95, brute: 1.3, boss: 3, wheel: 8, brood: 1.7, mite: 0.1, titan: 5 };
 const tmp: PathOut = { x: 0, z: 0, dx: 0, dz: 0, y: 0 };
 const W3 = { x: 0, y: 0, z: 0 };
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -225,7 +257,17 @@ export function mapEase(map: GameMap): number {
 }
 
 function newTower(id: number, type: TowerType, cx: number, cz: number, spent: number): Tower {
-  return { id, type, cx, cz, x: cellX(cx, cz), z: cellZ(cz), lvl: 1, cd: 0.3, yaw: 0, buff: 0, spent, h: TOWER_H[type], charge: 0, spec: 0, down: 0, heat: 0, tgt: 0, aux: 0, fxT: 0 };
+  return { id, type, cx, cz, x: cellX(cx, cz), z: cellZ(cz), lvl: 1, cd: 0.3, yaw: 0, buff: 0, spent, h: TOWER_H[type], charge: 0, spec: 0, down: 0, heat: 0, tgt: 0, aux: 0, fxT: 0, jam: 0, stun: 0 };
+}
+/** An enemy of a type with everything else at rest (spawn() and the co-op replica fill in the rest). */
+function newEnemy(id: number, type: EnemyType): Enemy {
+  const d = ENEMIES[type];
+  return {
+    id, type, x: 0, z: 0, y: d.y, yaw: 0, dist: 0, lane: 0, off: 0, hp: 1, maxHp: 1, shield: 0, maxShield: 0, shieldCd: 0,
+    speed: d.speed, slowT: 0, slowF: 0, sing: 0, alive: true, r: d.r, armor: 0,
+    gy: 0, frz: 0, burnT: 0, burnD: 0, burnAcc: 0, vulnT: 0, pull: 0, pullCd: 0, burn2T: 0, burn2D: 0, breach: 0, crackT: 0,
+    spin: 0, spinCd: 0, stalled: false, deflAt: 0, prey: 0, latched: false, mom: 0, ttl: 0,
+  };
 }
 
 export class Sim {
@@ -251,6 +293,14 @@ export class Sim {
   mapMul = 1;
   /** The wave the next startWave() releases, per lane. */
   preview: WavePreview = { wave: 0, lanes: [] };
+  /** The Titan (see TitanState). */
+  titan: TitanState = { phase: 'none', danger: 0, wave: 0, t: 0, lane: 0 };
+  /** True while the Titan walks: every player's Uplink is held open (charge pinned at full, the Uplink timer does not run down, leaving and coming back is free). */
+  overlink = false;
+  /** Titans destroyed so far (each one after the first is tougher), the time until it wrecks the next building, its own random stream, and when the current wave began. */
+  private titanN = 0; private smashIn = 0; private trand: () => number = Math.random; private waveT0 = 0;
+  /** Set while a hit is one that hurts the Titan: a weak-point hit or a tower special. */
+  private sp = false;
   private next: { wave: number; items: { t: number; type: EnemyType; lane: number }[] } | null = null;
   private nid = 1;
   private snapN = 0; private modsSig = '';
@@ -270,6 +320,17 @@ export class Sim {
     this.endless = this.opts.survival;
     this.winWave = this.diff.waves;
     this.mapMul = mapEase(this.map);
+    // the Titan keeps its own random stream, so it does not shift what the waves are made of
+    this.trand = mulberry((this.opts.seed ^ 0x7174616e) >>> 0);
+    if (this.opts.mode !== 'versus') {
+      const T = this.titan, lens = this.map.lanes.map((l) => l.len), top = Math.max(...lens);
+      // it takes the longest road (one of them when several are about as long)
+      const longest = lens.map((_, i) => i).filter((i) => lens[i] >= top * 0.9);
+      T.phase = 'far';
+      T.wave = this.endless ? TITAN_SURVIVAL : Math.max(2, this.winWave - 4 + Math.floor(this.trand() * 4 * 0.999));
+      T.lane = longest[Math.floor(this.trand() * longest.length * 0.999)] || 0;
+      this.smashIn = TITAN_SMASH[0] + this.trand() * (TITAN_SMASH[1] - TITAN_SMASH[0]);
+    }
     for (const t of this.map.def.towers) {
       if (!Object.hasOwn(TOWERS, t.t) || !(t.cx >= 0 && t.cz >= 0 && t.cx < GW && t.cz < GH) || this.grid[t.cz * GW + t.cx] !== 0) continue;
       this.grid[t.cz * GW + t.cx] = 2;
@@ -302,7 +363,7 @@ export class Sim {
   }
   /** Half the thickness of a wall of fire (wider while an Inferno runs on it, and with Slag Curtain). */
   wallHalf(w: Wall) { return WALL_HALF * (1 + 0.3 * this.mods.flameMelt) * (w.hot ? INFERNO_WIDE : 1); }
-  towerDmg(t: Tower) { return TOWERS[t.type].dmg * LVL_DMG[t.lvl - 1] * this.mods.tDmg * this.mods.tw[t.type].dmg * (1 + t.buff); }
+  towerDmg(t: Tower) { return TOWERS[t.type].dmg * TUNE.tdmg * LVL_DMG[t.lvl - 1] * this.mods.tDmg * this.mods.tw[t.type].dmg * (1 + t.buff); }
   towerRate(t: Tower) { return TOWERS[t.type].rate * LVL_RATE[t.lvl - 1] * this.mods.tRate * this.mods.tw[t.type].rate * (1 + t.buff * 0.6); }
   /** Arrow damage. An upgraded Spire amplifies the arrows fired from it (+15% per level). */
   arrowDmg(p: Player) {
@@ -310,7 +371,13 @@ export class Sim {
     return TUNE.arrow * BOW_TIERS[this.tier].mul * p.stats.dmg * (1 + 0.15 * ((t ? t.lvl : 1) - 1));
   }
   /** True if the tower's special can be fired right now. */
-  specialReady(t: Tower) { return !!TOWERS[t.type].special && t.charge >= 1 && t.down <= 0 && t.spec <= 0; }
+  specialReady(t: Tower) { return !!TOWERS[t.type].special && t.charge >= 1 && !towerOff(t) && t.spec <= 0; }
+  /** True from the Titan's leap until it is destroyed: nothing else spawns and no wave can be called. */
+  get titanBusy() { return this.titan.phase === 'landing' || this.titan.phase === 'walk'; }
+  /** The Titan's health when it lands: sized by the strength of the bow on its wave (only weak-point hits and tower specials hurt it), the difficulty and the number of players. */
+  titanHp() {
+    return TUNE.titan * BOW_TIERS[bowTier(this.titan.wave)].mul * Math.sqrt(this.diff.hp) * (1 + 0.75 * (this.players.length - 1)) * Math.pow(TITAN_TOUGHER, this.titanN);
+  }
 
   // ---------- building ----------
   canBuild(type: TowerType, cx: number, cz: number) {
@@ -357,7 +424,7 @@ export class Sim {
     return true;
   }
   /** A beacon's current boost (0 while it reboots; tripled during Surge). */
-  beaconBoost(b: Tower) { return b.down > 0 ? 0 : (0.25 + 0.1 * (b.lvl - 1) + this.mods.beacon) * (b.spec > 0 ? 3 : 1); }
+  beaconBoost(b: Tower) { return towerOff(b) ? 0 : (0.25 + 0.1 * (b.lvl - 1) + this.mods.beacon) * (b.spec > 0 ? 3 : 1); }
   recomputeBuffs() {
     this.beacons = 0; this.spires = 0;
     for (const t of this.towers) { if (t.type === 'beacon') this.beacons++; else if (t.type === 'spire') this.spires++; }
@@ -365,7 +432,7 @@ export class Sim {
       t.buff = 0;
       if (t.type === 'beacon' || t.type === 'spire') continue;
       for (const b of this.towers) {
-        if (b.type !== 'beacon' || b.down > 0) continue;
+        if (b.type !== 'beacon' || towerOff(b)) continue;
         if (Math.hypot(b.x - t.x, b.z - t.z) <= this.range(b)) t.buff = Math.max(t.buff, this.beaconBoost(b));
       }
     }
@@ -429,23 +496,30 @@ export class Sim {
     const L = this.map.lanes.length, lane = () => Math.floor(r() * L * 0.999);
     let t = 0.5;
     const gapMul = Math.max(0.35, 0.8 - w * 0.02);
-    if (w % 5 === 0) {
+    const T = this.titan;
+    if (T.phase !== 'none' && w === T.wave && !(T.phase === 'dead' && this.campaign)) {
+      // the Titan comes alone: nothing else spawns on its wave
+      items.push({ t: 0, type: 'titan', lane: T.lane });
+      budget = 0;
+    } else if (w % 5 === 0) {
       const n = 1 + Math.floor(w / 15);
       budget *= 0.55;
-      for (let i = 0; i < n; i++) {
-        const at = t + 3 + i * 14, ln = lane();
-        items.push({ t: at, type: 'boss', lane: ln });
-        // from wave WHEEL_ESCORT on, Gyres roll in with each Colossus (paid for out of the wave's budget)
-        if (w >= WHEEL_ESCORT) for (let k = 0; k < WHEEL_ESCORTS; k++) { items.push({ t: at + 1.5 + k * GAPS.wheel, type: 'wheel', lane: ln }); budget -= ENEMIES.wheel.cost; }
-      }
+      for (let i = 0; i < n; i++) items.push({ t: t + 3 + i * 14, type: 'boss', lane: lane() });
+    } else if (gyreCount(w)) {
+      // the Gyre is a mini-boss: it rolls in on its own (two from wave GYRE_PAIR), with a thinner wave around it
+      budget *= GYRE_WAVE;
+      for (let i = 0; i < gyreCount(w); i++) items.push({ t: t + 4 + i * GAPS.wheel, type: 'wheel', lane: lane() });
     }
-    const avail = ENEMY_TYPES.filter((e) => e !== 'boss' && ENEMIES[e].from <= w);
+    const avail = WAVE_POOL.filter((e) => ENEMIES[e].from <= w);
+    let broods = broodCap(w);
     while (budget > 0.5 && items.length < 500) {
       // biased toward the newest enemy types, with grunts always in the mix
       const type = avail[avail.length - 1 - Math.floor(r() * r() * avail.length * 0.999)];
-      const pick: EnemyType = r() < 0.35 ? 'grunt' : type;
+      let pick: EnemyType = r() < 0.35 ? 'grunt' : type;
+      if (pick === 'brood' && broods <= 0) pick = 'grunt'; // only so many Broodcarriers per wave
       const def = ENEMIES[pick];
-      const n = Math.max(1, Math.min(14, Math.round((3 + r() * 6) / Math.pow(def.cost, 0.7))));
+      let n = Math.max(1, Math.min(14, Math.round((3 + r() * 6) / Math.pow(def.cost, 0.7))));
+      if (pick === 'brood') { n = Math.min(n, broods); broods -= n; }
       const ln = lane();
       for (let i = 0; i < n && budget > 0; i++) {
         items.push({ t, type: pick, lane: ln });
@@ -469,27 +543,37 @@ export class Sim {
   }
   /** Credits paid for calling the next wave right now (two per second saved, counting at most NEXT_WAVE_IN seconds; also before the first wave). */
   callBonus(): number {
-    if (this.queue.length || this.over || this.nextWaveIn <= 0.5 || (this.campaign && this.wave >= this.winWave)) return 0;
+    if (this.queue.length || this.over || this.titanBusy || this.nextWaveIn <= 0.5 || (this.campaign && this.wave >= this.winWave)) return 0;
     return Math.round(Math.min(NEXT_WAVE_IN, this.nextWaveIn) * 2);
   }
   startWave() {
     if (this.queue.length || this.over || this.replica) return;
+    if (this.titanBusy) return; // nothing else comes while the Titan is on the field
     if (this.wave >= this.winWave && this.campaign) return; // the final wave must be cleared, not skipped
+    const T = this.titan;
+    if (T.phase === 'dead' && !this.campaign) {
+      // no last wave: another Titan takes up the roaming (a campaign that plays on after its win gets its next one here)
+      while (T.wave <= this.wave + 1) T.wave += TITAN_AGAIN;
+      T.phase = 'far'; T.t = 0; T.danger = 0;
+    }
     this.planAhead();
     if (!this.next) return;
     this.gold += this.callBonus(); // early-call bonus
     this.wave++;
-    this.waveActive = true; this.cleared = false; this.nextWaveIn = NEXT_WAVE_IN;
+    this.waveActive = true; this.cleared = false; this.nextWaveIn = NEXT_WAVE_IN; this.waveT0 = this.time;
     const w = this.wave, mul = waveHpMul(w);
-    for (const q of this.next.items) this.queue.push({ t: this.time + q.t, type: q.type, mul, lane: q.lane });
-    if (w % 5 === 0) this.events.push({ k: 'boss' });
+    for (const q of this.next.items) {
+      if (q.type === 'titan') this.titanLeap(q.lane);
+      else this.queue.push({ t: this.time + q.t, type: q.type, mul, lane: q.lane });
+    }
+    if (w % 5 === 0 && this.queue.some((q) => q.type === 'boss')) this.events.push({ k: 'boss' });
     this.next = null;
     this.planAhead();
     this.events.push({ k: 'wave', n: w });
   }
   /** Versus: enemies sent by the rival. */
   injectSquad(type: EnemyType, n: number) {
-    if (!Object.hasOwn(ENEMIES, type) || type === 'boss' || this.over) return;
+    if (!Object.hasOwn(ENEMIES, type) || type === 'boss' || type === 'titan' || type === 'mite' || this.over) return;
     if (this.queue.length + this.enemies.length > 400) return;
     const mul = waveHpMul(Math.max(1, this.wave));
     for (let i = 0; i < Math.min(n, 20); i++) this.queue.push({ t: this.time + 1 + i * GAPS[type] * 0.7, type, mul, lane: Math.floor(this.rand() * this.map.lanes.length * 0.999) });
@@ -498,16 +582,97 @@ export class Sim {
   }
   private spawn(type: EnemyType, mul: number, lane: number) {
     const d = ENEMIES[type];
-    const hp = d.hp * mul * this.diff.hp * this.mapMul * (this.opts.mode === 'coop' ? coopScale(TUNE.coopHp, Math.max(1, this.wave)) : 1) * (type === 'boss' ? TUNE.boss : 1);
-    const e: Enemy = {
-      id: this.nid++, type, x: 0, z: 0, y: d.y, yaw: 0, dist: 0, lane, off: type === 'boss' ? 0 : (this.rand() - 0.5) * 1.3,
-      hp, maxHp: hp, shield: d.shield * mul * this.mapMul, maxShield: d.shield * mul * this.mapMul, shieldCd: 0,
-      speed: d.speed * (0.94 + this.rand() * 0.12), slowT: 0, slowF: 0, sing: 0, alive: true, r: d.r, armor: d.armor * (1 + this.wave * 0.04),
-      gy: 0, frz: 0, burnT: 0, burnD: 0, burnAcc: 0, vulnT: 0, pull: 0, pullCd: 0, burn2T: 0, burn2D: 0, breach: 0, crackT: 0,
-      spin: type === 'wheel' ? 1 : 0, spinCd: 0, stalled: false, deflAt: 0,
-    };
+    const e = newEnemy(this.nid++, type);
+    e.lane = lane;
+    if (type === 'titan') {
+      // its health is its own (titanHp), and it paces itself to take about TITAN_WALK seconds for the road
+      e.hp = e.maxHp = this.titanHp();
+      e.speed = clamp(this.map.lanes[lane].len / TITAN_WALK, TITAN_PACE[0], TITAN_PACE[1]);
+    } else {
+      const hp = d.hp * mul * this.diff.hp * this.mapMul * (this.opts.mode === 'coop' ? coopScale(TUNE.coopHp, Math.max(1, this.wave)) : 1) * (type === 'boss' ? TUNE.boss : 1);
+      e.off = type === 'boss' ? 0 : (this.rand() - 0.5) * 1.3;
+      e.hp = e.maxHp = hp; e.shield = e.maxShield = d.shield * mul * this.mapMul;
+      e.speed = d.speed * (0.94 + this.rand() * 0.12); e.armor = d.armor * (1 + this.wave * 0.04);
+      if (type === 'wheel') e.spin = 1;
+      if (type === 'brood') e.ttl = BROOD_FIRST;
+    }
     this.place(e);
     this.enemies.push(e);
+  }
+  /** A mite leaves its Broodcarrier for a tower. It is a real enemy, but it runs across the deck instead of along a road. */
+  private spawnMite(mom: Enemy, prey: Tower, i: number) {
+    const e = newEnemy(this.nid++, 'mite'), a = mom.yaw + 1.2 + i * 1.3;
+    // the lane and distance of the carrier are only there for target priority: the towers take a mite as if it stood where it was let go
+    e.lane = mom.lane; e.dist = mom.dist;
+    e.x = mom.x + Math.sin(a) * 0.6; e.z = mom.z + Math.cos(a) * 0.6; e.gy = mom.gy; e.y = e.gy + ENEMIES.mite.y;
+    e.yaw = Math.atan2(prey.x - e.x, prey.z - e.z);
+    e.speed = ENEMIES.mite.speed * (0.85 + 0.1 * i);
+    e.prey = prey.id; e.mom = mom.id; e.ttl = MITE_LIFE;
+    this.enemies.push(e);
+  }
+
+  // ---------- the Titan ----------
+  /** The leap: the Titan's wave has begun. It lands on the gate of its lane TITAN_LAND seconds later (see titanImpact). */
+  private titanLeap(lane: number) {
+    const T = this.titan;
+    T.lane = clamp(lane | 0, 0, this.map.lanes.length - 1);
+    T.phase = 'landing'; T.t = 0; T.danger = 1;
+    this.map.pos(T.lane, 0, tmp);
+    this.events.push({ k: 'titanLand', x: tmp.x, z: tmp.z, lane: T.lane });
+  }
+  /** The impact: every enemy on the field is destroyed (no rewards), every tower is stunned, and the Titan starts down its road. */
+  private titanImpact() {
+    const T = this.titan;
+    let shown = 0;
+    for (const e of this.enemies) {
+      if (!e.alive) continue;
+      e.alive = false;
+      if (shown++ < 40) this.events.push({ k: 'die', x: e.x, y: e.y, z: e.z, t: e.type, h: 0 });
+    }
+    this.enemies = [];
+    for (const t of this.towers) t.stun = TITAN_STUN;
+    this.recomputeBuffs();
+    this.spawn('titan', 1, T.lane);
+    T.phase = 'walk'; T.t = 0; this.overlink = true;
+    this.map.pos(T.lane, 0, tmp);
+    this.events.push({ k: 'titanImpact', x: tmp.x, z: tmp.z });
+  }
+  /** The Titan at the core: a blow for TITAN_STRIKE of the core's maximum, and the next one TITAN_STRIKE_EVERY seconds later. */
+  private titanStrike(e: Enemy) {
+    const n = Math.max(1, Math.ceil(this.maxLives * TITAN_STRIKE));
+    e.breach = TITAN_STRIKE_EVERY;
+    this.lives -= n; this.leaked++;
+    this.events.push({ k: 'leak', n, x: e.x, y: e.gy + 2, z: e.z });
+    this.events.push({ k: 'titanStrike', id: e.id, x: e.x, z: e.z, n });
+    if (this.lives <= 0) { this.lives = 0; this.over = true; this.events.push({ k: 'lose' }); }
+  }
+  private titanDown(e: Enemy, owner: number) {
+    const T = this.titan;
+    T.phase = 'dead'; T.t = 0; T.danger = 0; this.overlink = false; this.titanN++;
+    if (!this.campaign) T.wave += TITAN_AGAIN; // no last wave: the next one is already on its way
+    this.kills++;
+    const p = this.players[owner];
+    if (p) p.kills++;
+    this.gold += TITAN_GOLD * this.diff.gold;
+    this.events.push({ k: 'titanDie', x: e.x, y: e.y, z: e.z });
+    this.levelUp();
+  }
+  /** The Titan off the field: it wrecks a building now and then, and its danger fills over the last waves before it comes. */
+  private stepTitan(dt: number) {
+    const T = this.titan;
+    if (T.phase === 'none') return;
+    T.t += dt;
+    if (T.phase === 'landing') { if (T.t >= TITAN_LAND) this.titanImpact(); return; }
+    if (T.phase !== 'far' && T.phase !== 'warn') return;
+    this.smashIn -= dt;
+    if (this.smashIn <= 0) { this.smashIn = TITAN_SMASH[0] + this.trand() * (TITAN_SMASH[1] - TITAN_SMASH[0]); this.events.push({ k: 'titanSmash' }); }
+    const from = this.campaign ? this.winWave - TITAN_LEAD : T.wave - TITAN_LEAD;
+    if (T.phase === 'far' && this.wave >= from && this.wave < T.wave) { T.phase = 'warn'; T.t = 0; }
+    if (T.phase === 'warn') {
+      // each wave of the warning fills its share, over the first 45 seconds of the wave; the last step to 1 is the leap itself
+      const f = Math.min(1, (this.time - this.waveT0) / 45);
+      T.danger = Math.max(T.danger, clamp(((this.wave - from + f) / Math.max(1, T.wave - from)) * 0.96, 0, 0.96));
+    }
   }
   private place(e: Enemy) {
     this.map.pos(e.lane, e.dist, tmp);
@@ -521,6 +686,8 @@ export class Sim {
   /** Returns the damage that got through to the hull. `cut` is the share of a Gyre's guard the hit ignores. */
   damage(e: Enemy, amt: number, owner: number, raw = false, cut = 0): number {
     if (!e.alive) return 0;
+    if (e.type === 'mite') { if (!(amt > 0)) return 0; e.hp = 0; this.kill(e, owner); return 1; } // a sliver of health: any hit destroys it
+    if (e.type === 'titan') { if (!this.sp) return 0; if (owner < 0) amt *= TUNE.titanSpec; } // only weak-point hits and tower specials get through
     if ((e.slowT > 0 || e.frz > 0) && this.mods.shatter) amt *= 1 + this.mods.shatter;
     if (e.vulnT > 0) amt *= 1 + this.mods.gravVuln;
     if (e.type === 'boss' && owner < 0) amt *= e.crackT > 0 ? TUNE.cracked : TUNE.plate; // plated: towers are blunted until Kestrel cracks a weak point open
@@ -570,28 +737,41 @@ export class Sim {
   private kill(e: Enemy, owner: number) {
     e.alive = false;
     const d = ENEMIES[e.type];
+    if (e.type === 'titan') { this.titanDown(e, owner); return; }
+    if (e.type === 'mite') { // no reward and no kill count: only a little charge
+      for (const p of this.players) if (!p.heroActive) p.energy = Math.min(MAX_ENERGY, p.energy + d.energy * TUNE.energy * p.stats.charge);
+      this.events.push({ k: 'die', x: e.x, y: e.y, z: e.z, t: e.type, h: owner >= 0 ? 1 : 0 });
+      return;
+    }
     this.kills++;
     this.gold += d.bounty * TUNE.bounty * this.mods.gold * this.diff.gold;
-    this.xp += d.xp * this.mods.xp;
+    this.xp += d.xp * TUNE.xp * this.mods.xp;
     for (let i = 0; i < this.players.length; i++) {
       const p = this.players[i];
       if (p.heroActive) { if (i === owner) { p.heroTime = Math.min(p.heroDur, p.heroTime + 0.12); p.kills++; } }
       else p.energy = Math.min(MAX_ENERGY, p.energy + d.energy * TUNE.energy * p.stats.charge);
     }
     this.events.push({ k: 'die', x: e.x, y: e.y, z: e.z, t: e.type, h: owner >= 0 ? 1 : 0 });
-    while (this.xp >= this.xpNext) {
-      this.xp -= this.xpNext; this.level++; this.xpNext = xpNeed(this.level);
-      // co-op: one player per level (taking turns) is offered the shared tower / economy cards; the others get hero cards only
-      const np = this.players.length;
-      for (let i = 0; i < np; i++) { const o = this.rollCards(i, np > 1 && i !== this.level % np); if (o.length) this.players[i].pending.push(o); }
-      this.events.push({ k: 'levelup', n: this.level });
-    }
+    while (this.xp >= this.xpNext) { this.xp -= this.xpNext; this.levelUp(); }
+  }
+  private levelUp() {
+    this.level++; this.xpNext = xpNeed(this.level);
+    // co-op: one player per level (taking turns) is offered the shared tower / economy cards; the others get hero cards only
+    const np = this.players.length;
+    for (let i = 0; i < np; i++) { const o = this.rollCards(i, np > 1 && i !== this.level % np); if (o.length) this.players[i].pending.push(o); }
+    this.events.push({ k: 'levelup', n: this.level });
+  }
+  /** An arrow or a Rail Shot that meets the Titan anywhere but on a weak point glances off (at most four reports a second). */
+  private glance(e: Enemy, x: number, y: number, z: number) {
+    if (this.time < e.deflAt) return;
+    e.deflAt = this.time + 0.25;
+    this.events.push({ k: 'deflect', x, y, z });
   }
   /** Area damage. With `gy` (ground height of the blast) enemies on a road more than DECK_GAP above or below are shielded by the deck. */
   private aoe(x: number, z: number, r: number, dmg: number, owner: number, ground = false, gy?: number) {
     for (const e of this.enemies) {
       if (!e.alive || (ground && ENEMIES[e.type].fly)) continue;
-      if (gy !== undefined && Math.abs(e.gy - gy) > DECK_GAP) continue;
+      if (gy !== undefined && e.type !== 'mite' && Math.abs(e.gy - gy) > DECK_GAP) continue; // (a mite's height is its perch on a tower, not a deck)
       if (Math.hypot(e.x - x, e.z - z) <= r + e.r) this.damage(e, dmg, owner);
     }
   }
@@ -627,7 +807,7 @@ export class Sim {
     const out: string[] = [];
     const bps = pool.filter((c) => c.kind === 'blueprint');
     if (bps.length && [2, 3, 5, 7, 9, 11, 13].includes(this.level)) out.push(bps[Math.floor(this.rand() * bps.length)].id);
-    const W = [10, 5, 2];
+    const W = [10, TUNE.rare, TUNE.epic];
     // dedicated upgrades are only useful once that tower is on the field, so they are offered less often until it is
     const built = new Set(this.towers.map((t) => t.type));
     const wt = (c: Card) => (c.kind === 'blueprint' ? 5 : W[c.rar] * (c.needs && !built.has(c.needs) ? 0.3 : 1));
@@ -669,10 +849,10 @@ export class Sim {
   /** Uplink. Kestrel can only stand on an Uplink Spire: any other tower id resolves to the Spire nearest to it. */
   activateHero(pi: number, towerId: number) {
     const p = this.players[pi];
-    if (!p || p.heroActive || p.energy < MAX_ENERGY || this.over) return false;
+    if (!p || p.heroActive || (p.energy < MAX_ENERGY && !this.overlink) || this.over) return false;
     const t = this.nearestSpire(towerId);
     if (!t) return false;
-    p.heroActive = true; p.heroTower = t.id; p.energy = 0;
+    p.heroActive = true; p.heroTower = t.id; p.energy = this.overlink ? MAX_ENERGY : 0;
     p.heroDur = HERO_DUR + p.stats.dur + p.stats.relay * Math.min(3, this.spires); p.heroTime = p.heroDur; p.fireCd = 0.4;
     p.draw = 0; p.drawing = false;
     this.events.push({ k: 'heroOn', p: pi, x: t.x, y: standY(t), z: t.z });
@@ -682,7 +862,7 @@ export class Sim {
     const p = this.players[pi];
     if (!p || !p.heroActive) return;
     p.heroActive = false; p.draw = 0; p.drawing = false;
-    p.energy = Math.max(0, Math.min(80, (p.heroTime / p.heroDur) * 80));
+    p.energy = this.overlink ? MAX_ENERGY : Math.max(0, Math.min(80, (p.heroTime / p.heroDur) * 80)); // free to come back while the Titan walks
     p.heroTime = 0;
     const t = this.towerById(p.heroTower);
     this.events.push({ k: 'heroOff', p: pi, x: t ? t.x : 0, y: t ? standY(t) : 0, z: t ? t.z : 0 });
@@ -784,22 +964,27 @@ export class Sim {
         const ex = e.x - o.x, ey = e.y - o.y, ez = e.z - o.z;
         const u = ex * dx + ey * dy + ez * dz;
         if (u < 0 || u > R) continue;
-        if (Math.hypot(ex - dx * u, ey - dy * u, ez - dz * u) >= e.r + 1.0) continue;
-        // the ray pierces, so any weak point it passes through counts
+        const miss = Math.hypot(ex - dx * u, ey - dy * u, ez - dz * u) >= e.r + 1.0;
+        // the ray pierces, so any weak point it passes through counts (also one that stands clear of the hull, like the Titan's eye)
         let mul = 1, wi = -1;
         const wk = ENEMIES[e.type].weak;
         if (wk) for (let i = 0; i < wk.length; i++) {
+          if (!weakOpen(e, i, dx, dz)) continue;
           weakPos(e, i, W3);
           const wx = W3.x - o.x, wy = W3.y - o.y, wz = W3.z - o.z, wu = wx * dx + wy * dy + wz * dz;
           if (wu >= 0 && wu <= R && Math.hypot(wx - dx * wu, wy - dy * wu, wz - dz * wu) <= wk[i].r * ENEMY_SCALE[e.type] + 0.25 && wk[i].mul > mul) { mul = wk[i].mul; wi = i; }
         }
+        if (wi < 0 && miss) continue;
         if (wi >= 0) {
           weakPos(e, wi, W3);
           const cx = W3.x, cy = W3.y, cz = W3.z;
+          this.sp = true;
           const n = this.damage(e, dmg * 8 * mul * p.stats.weak, pi);
+          this.sp = false;
           this.events.push({ k: 'crit', x: cx, y: cy, z: cz, n: Math.round(n) });
           this.crack(e, cx, cy, cz);
-        } else this.damage(e, dmg * 8, pi, false, WHEEL_PIERCE);
+        } else if (e.type === 'titan') this.glance(e, o.x + dx * u, o.y + dy * u, o.z + dz * u);
+        else this.damage(e, dmg * 8, pi, false, WHEEL_PIERCE);
       }
       // charged power nodes on the ray fire their specials
       for (const t of this.towers) {
@@ -823,7 +1008,8 @@ export class Sim {
       if (d > 48) { tx = o.x + ((tx - o.x) / d) * 48; tz = o.z + ((tz - o.z) / d) * 48; }
       const y = this.deckAt(tx, ty, tz); // on a bridge or viaduct the zone sits on the deck that was aimed at
       if (skill === 1) {
-        this.zones.push({ id: this.nid++, kind: 'rain', x: tx, z: tz, r: 4.5 * Math.sqrt(p.stats.rain), life: 3.5, tick: 0, dmg: dmg * 0.75 * p.stats.rain, owner: pi, pd: 0, y });
+        // the volley is in the air first: the hits start RAIN_DELAY seconds after the cast and then fall for 3.5 seconds as before
+        this.zones.push({ id: this.nid++, kind: 'rain', x: tx, z: tz, r: 4.5 * Math.sqrt(p.stats.rain), life: 3.5 + RAIN_DELAY, tick: RAIN_DELAY, dmg: dmg * 0.75 * p.stats.rain, owner: pi, pd: 0, y });
       } else {
         this.zones.push({ id: this.nid++, kind: 'sing', x: tx, z: tz, r: 5.5 * Math.sqrt(p.stats.sing), life: 2.6, tick: 0, dmg: dmg * p.stats.sing, owner: pi, pd: 0, y });
       }
@@ -866,6 +1052,12 @@ export class Sim {
     return !linked && this.anyIn(t, FIRE_RING * 1.5 + pad);
   }
   private fireSpecial(t: Tower, owner: number): boolean {
+    this.sp = true; // a special hurts the Titan
+    const fired = this.runSpecial(t, owner);
+    this.sp = false;
+    return fired;
+  }
+  private runSpecial(t: Tower, owner: number): boolean {
     const range = this.range(t), pow = this.mods.specPow, dmg = this.towerDmg(t), c = TOWERS[t.type].color;
     let dur = 0.5;
     switch (t.type) {
@@ -959,10 +1151,13 @@ export class Sim {
 
     // waves: the next one is called 12s after the last spawn, or sooner once the field is clear
     while (this.queue.length && this.queue[0].t <= this.time) { const q = this.queue.shift()!; this.spawn(q.type, q.mul, q.lane); }
-    this.waveActive = this.queue.length > 0 || this.enemies.length > 0;
-    if (!this.queue.length) {
+    this.stepTitan(dt);
+    // stray mites do not hold a wave open; the Titan does, from its leap until it is destroyed
+    const busy = this.titanBusy, left = busy || this.enemies.some((e) => e.type !== 'mite');
+    this.waveActive = this.queue.length > 0 || left;
+    if (!this.queue.length && !busy) {
       const last = this.campaign && this.wave >= this.winWave;
-      if (!this.cleared && !this.enemies.length) {
+      if (!this.cleared && !left) {
         this.cleared = true;
         this.nextWaveIn = Math.min(this.nextWaveIn, 5);
         const bonus = TUNE.clear0 + this.wave * TUNE.clear1 + Math.min(60, this.gold * this.mods.interest);
@@ -979,7 +1174,7 @@ export class Sim {
       if (z.kind === 'sing') {
         for (const e of this.enemies) {
           if (!e.alive || Math.hypot(e.x - z.x, e.z - z.z) > z.r) continue;
-          const boss = e.type === 'boss';
+          const boss = e.type === 'boss' || e.type === 'titan' || e.type === 'mite'; // too heavy to drag, or not on a road
           e.sing = 0.2; // held by the singularity (tracked apart from cryo/arc slows)
           if (!boss && e.breach <= 0) {
             const len = this.map.lanes[e.lane].len, pd = Math.min(this.map.nearest(e.lane, z.x, z.z), len - 4);
@@ -989,16 +1184,21 @@ export class Sim {
           }
         }
       }
+      this.sp = z.kind === 'sing' && z.owner < 0; // a Collapse is a tower special: it hurts the Titan (Kestrel's own Singularity only holds it)
       if (z.tick <= 0) {
         z.tick = 0.25;
         if (z.kind === 'burn') this.aoe(z.x, z.z, z.r, z.dmg * 0.25, -1, true, z.y);
-        else if (z.kind === 'rain') { this.aoe(z.x, z.z, z.r, z.dmg, z.owner); }
-        else this.aoe(z.x, z.z, z.r, z.dmg * 0.3, z.owner);
+        else if (z.kind === 'rain') {
+          this.aoe(z.x, z.z, z.r, z.dmg, z.owner);
+          // the Titan shrugs the arrows off, but the hail slows it
+          for (const e of this.enemies) if (e.alive && e.type === 'titan' && Math.hypot(e.x - z.x, e.z - z.z) <= z.r + e.r) { e.slowT = Math.max(e.slowT, 0.6); e.slowF = Math.max(e.slowF, 0.5); }
+        } else this.aoe(z.x, z.z, z.r, z.dmg * 0.3, z.owner);
       }
       if (z.life <= 0 && z.kind === 'sing') {
         this.aoe(z.x, z.z, z.r, z.dmg * 7, z.owner);
         this.events.push({ k: 'boom', x: z.x, y: z.y + 1, z: z.z, r: z.r, c: SING_COLOR });
       }
+      this.sp = false;
     }
     if (this.zones.length) this.zones = this.zones.filter((z) => z.life > 0);
 
@@ -1010,7 +1210,9 @@ export class Sim {
       if (e.slowT > 0) { e.slowT -= dt; slow = e.slowF; if (e.slowT <= 0) e.slowF = 0; }
       if (e.sing > 0) { e.sing -= dt; slow = Math.max(slow, e.type === 'boss' ? 0.4 : 0.9); }
       if (e.frz > 0) { e.frz -= dt; slow = Math.max(slow, e.type === 'boss' ? 0.6 : 1); }
+      if (e.type === 'titan') slow *= TITAN_SLOW; // slowing effects only work at part strength on the Titan
       v *= 1 - slow;
+      if (e.type === 'mite') { this.stepMite(e, dt, slow); continue; }
       if (e.type === 'wheel') {
         // the rim: a freeze stops it dead, a well or a singularity drags it down fast, a slow steadily; left alone it spins back up
         if (e.spinCd > 0) e.spinCd -= dt;
@@ -1035,7 +1237,7 @@ export class Sim {
       if (e.maxShield > 0 && e.shield < e.maxShield) { e.shieldCd -= dt; if (e.shieldCd <= 0) e.shield = Math.min(e.maxShield, e.shield + e.maxShield * 0.25 * dt); }
       if (e.breach > 0) { // at the core: its attack lands when the timer runs out (slows and freezes delay it) unless it is destroyed first
         e.breach -= dt * (1 - slow);
-        if (e.breach <= 0) this.breachHit(e);
+        if (e.breach <= 0) { if (e.type === 'titan') this.titanStrike(e); else this.breachHit(e); }
         continue;
       }
       e.dist += v * dt;
@@ -1043,14 +1245,15 @@ export class Sim {
       const len = this.map.lanes[e.lane].len;
       // enemies pull up at the edge of the core's plinth (the view draws them there too), not at its centre
       const stand = Math.max(0, len - (CORE_STAND + 0.6 * e.r));
-      if (e.dist >= stand) { e.dist = stand; e.pull = 0; e.breach = e.type === 'boss' ? BREACH_TIME_BOSS : BREACH_TIME; }
+      if (e.dist >= stand) { e.dist = stand; e.pull = 0; e.breach = e.type === 'titan' ? TITAN_WINDUP : e.type === 'boss' ? BREACH_TIME_BOSS : BREACH_TIME; }
       this.place(e);
+      if (e.type === 'brood') this.stepBrood(e, dt);
     }
 
     // walls of fire follow their pylons: off while one of them reboots, hot while an Inferno runs
     for (let i = 0; i < this.walls.length; i++) {
       const w = this.walls[i], tw = this.wallTw[i];
-      w.on = tw[0].down <= 0 && tw[1].down <= 0; w.hot = w.on && (tw[0].spec > 0 || tw[1].spec > 0);
+      w.on = !towerOff(tw[0]) && !towerOff(tw[1]); w.hot = w.on && (tw[0].spec > 0 || tw[1].spec > 0);
     }
 
     // towers
@@ -1068,7 +1271,10 @@ export class Sim {
       if (!p.heroActive || !p.drawing) p.draw = 0;
       else if (p.fireCd <= 0) p.draw = Math.min(1, p.draw + (dt * Math.max(0.2, p.stats.rate)) / DRAW_TIME);
       for (let s = 0; s < 3; s++) if (p.cds[s] > 0) p.cds[s] -= dt;
-      if (p.heroActive) {
+      if (this.overlink) { // the Titan walks: the Uplink is held open
+        p.energy = MAX_ENERGY;
+        if (p.heroActive && !this.towerById(p.heroTower)) this.exitHero(i);
+      } else if (p.heroActive) {
         p.heroTime -= dt;
         if (p.heroTime <= 0 || !this.towerById(p.heroTower)) { p.heroTime = 0; this.exitHero(i); p.energy = 0; }
       } else if (this.waveActive) p.energy = Math.min(MAX_ENERGY, p.energy + (TUNE.energyT + 0.3 * this.mods.beaconFeed * Math.min(4, this.beacons)) * p.stats.charge * dt);
@@ -1085,6 +1291,50 @@ export class Sim {
     if (this.lives <= 0) { this.lives = 0; this.over = true; this.events.push({ k: 'lose' }); }
   }
 
+  /** A Broodcarrier lets a swarm of mites loose on the nearest tower that is still working, once its last swarm is gone. */
+  private stepBrood(e: Enemy, dt: number) {
+    if (e.frz > 0) return; // frozen solid: nothing gets out
+    e.ttl -= dt;
+    if (e.ttl > 0) return;
+    const taken = new Set<number>();
+    for (const o of this.enemies) {
+      if (!o.alive || o.type !== 'mite') continue;
+      if (o.mom === e.id) { e.ttl = 0.3; return; } // its last swarm is still out
+      taken.add(o.prey);
+    }
+    // never a Spire, and never a tower that is already offline, jammed or spoken for
+    let best: Tower | null = null, bd = BROOD_REACH;
+    for (const t of this.towers) {
+      if (t.type === 'spire' || towerOff(t) || taken.has(t.id)) continue;
+      const d = Math.hypot(t.x - e.x, t.z - e.z);
+      if (d < bd) { bd = d; best = t; }
+    }
+    if (!best) { e.ttl = 0.4; return; }
+    e.ttl = BROOD_EVERY;
+    for (let i = 0; i < BROOD_SIZE; i++) this.spawnMite(e, best, i);
+    this.events.push({ k: 'brood', id: e.id, x: e.x, y: e.y, z: e.z, prey: best.id });
+  }
+  /** A mite runs straight across the deck to its tower, climbs it and jams it for as long as it sits there. It burns out after MITE_HOLD seconds on the tower. */
+  private stepMite(e: Enemy, dt: number, slow: number) {
+    e.ttl -= dt;
+    const t = this.towerById(e.prey);
+    if (!t || e.ttl <= 0) { e.alive = false; this.events.push({ k: 'die', x: e.x, y: e.y, z: e.z, t: 'mite', h: 0 }); return; }
+    if (!e.latched) {
+      const dx = t.x - e.x, dz = t.z - e.z, d = Math.hypot(dx, dz), v = e.speed * (1 - slow) * dt;
+      if (d <= 0.55 + v) { e.latched = true; e.ttl = Math.min(e.ttl, MITE_HOLD); }
+      else { e.x += (dx / d) * v; e.z += (dz / d) * v; e.yaw = Math.atan2(dx, dz); e.gy = Math.max(0, e.gy - 6 * dt); }
+    }
+    if (e.latched) {
+      // each mite of a swarm has a perch of its own around the tower, so they can be shot off one by one
+      const k = e.id % 4, a = k * 1.5708 + 0.6;
+      e.x = t.x + Math.sin(a) * 0.5; e.z = t.z + Math.cos(a) * 0.5; e.yaw = a + Math.PI;
+      e.gy = Math.min(t.h * (0.34 + 0.14 * k), e.gy + 3.5 * dt);
+      if (t.jam <= 0) { this.events.push({ k: 'jam', id: t.id, x: t.x, z: t.z }); t.jam = JAM_LINGER; if (t.type === 'beacon') this.recomputeBuffs(); }
+      t.jam = Math.max(t.jam, JAM_LINGER);
+    }
+    e.y = e.gy + ENEMIES.mite.y;
+  }
+
   private turn(t: Tower, x: number, z: number, dt: number) {
     let d = Math.atan2(x - t.x, z - t.z) - t.yaw;
     while (d > Math.PI) d -= Math.PI * 2;
@@ -1094,6 +1344,11 @@ export class Sim {
 
   private stepTower(t: Tower, dt: number) {
     const def = TOWERS[t.type], sp = def.special;
+    if (t.stun > 0) { t.stun -= dt; if (t.stun <= 0) { t.stun = 0; if (t.type === 'beacon') this.recomputeBuffs(); } }
+    if (t.jam > 0) {
+      t.jam -= dt;
+      if (t.jam <= 0) { t.jam = 0; this.events.push({ k: 'unjam', id: t.id, x: t.x, z: t.z }); if (t.type === 'beacon') this.recomputeBuffs(); }
+    }
     if (t.down > 0) { // rebooting after a special: does nothing and does not charge
       t.down -= dt;
       if (t.down <= 0) {
@@ -1103,6 +1358,7 @@ export class Sim {
       }
       return;
     }
+    if (t.stun > 0 || t.jam > 0) return; // stunned or jammed: idle, and the special neither runs nor charges
     if (sp) {
       if (t.spec > 0) { t.spec -= dt; if (t.spec <= 0) { this.endSpecial(t); return; } }
       else if (t.charge < 1) t.charge = Math.min(1, t.charge + (dt * this.mods.specCharge) / sp.charge);
@@ -1172,7 +1428,9 @@ export class Sim {
       for (const e of this.enemies) {
         if (!e.alive || segDist(e.x, e.z, w.ax, w.az, w.bx, w.bz) > half + e.r) continue;
         const f = k * (ENEMIES[e.type].fly ? 0.5 : 1);
+        this.sp = w.hot; // an Inferno is a special
         for (let n = 0; n < shots && e.alive; n++) this.damage(e, dmg * 0.5 * f, -1);
+        this.sp = false;
         if (e.alive) this.burn(e, bD * f, bT);
       }
     }
@@ -1181,7 +1439,9 @@ export class Sim {
     for (const e of this.enemies) {
       if (!e.alive || Math.hypot(e.x - t.x, e.z - t.z) > R + e.r) continue;
       const f = RING_SHARE * (inferno ? hot : 1) * (ENEMIES[e.type].fly ? 0.5 : 1);
+      this.sp = inferno;
       for (let n = 0; n < shots && e.alive; n++) this.damage(e, dmg * f, -1);
+      this.sp = false;
       if (e.alive) this.burn(e, bD * f, bT);
     }
   }
@@ -1205,6 +1465,7 @@ export class Sim {
     const dmg = this.towerDmg(t) * (1 + (TUNE.lanceHeat + LANCE_FOCUS * this.mods.lanceHeat) * t.heat) * (over ? OVERLOAD * this.mods.specPow : 1) * this.shots(t);
     const y = t.h * 0.85;
     let tx = e.x, tz = e.z;
+    this.sp = over;
     if (over) { // Overload: the beam pierces everything along its line
       let dx = e.x - t.x, dz = e.z - t.z;
       const L = Math.hypot(dx, dz) || 1;
@@ -1216,6 +1477,7 @@ export class Sim {
       }
       tx = t.x + dx * (range + 1); tz = t.z + dz * (range + 1);
     } else this.damage(e, dmg, -1);
+    this.sp = false;
     this.events.push({ k: 'lance', id: t.id, x: t.x, y, z: t.z, tx, ty: e.y, tz, heat: t.heat, o: over ? 1 : 0 });
   }
 
@@ -1232,7 +1494,7 @@ export class Sim {
       if (!e.alive || Math.hypot(e.x - t.x, e.z - t.z) > range + e.r) continue;
       const boss = e.type === 'boss', ff = boss ? f * 0.5 : f;
       if (ff >= e.slowF || e.slowT <= 0) { e.slowF = ff; e.slowT = Math.max(e.slowT, 1.6); }
-      if (e.pullCd <= 0) {
+      if (e.pullCd <= 0 && e.type !== 'titan' && e.type !== 'mite') { // the Titan is too heavy to drag, and a mite is not on a road
         const slow = Math.max(e.slowT > 0 ? e.slowF : 0, e.sing > 0 ? (boss ? 0.4 : 0.9) : 0, e.frz > 0 ? (boss ? 0.6 : 1) : 0);
         e.pull += paceOf(e) * (1 - slow) * 1.8 * k * (boss ? 0.3 : 1); e.pullCd = 1.8;
       }
@@ -1245,24 +1507,24 @@ export class Sim {
     let best: Enemy | null = null, bv = -Infinity;
     const strongest = t.type === 'rail' || t.type === 'lance', ground = t.type === 'mortar';
     for (const e of this.enemies) {
-      if (!e.alive || (ground && ENEMIES[e.type].fly)) continue;
+      if (!e.alive || (ground && (ENEMIES[e.type].fly || e.type === 'mite'))) continue; // a mortar cannot shell a mite off a tower
       const d = Math.hypot(e.x - t.x, e.z - t.z);
       if (d > range || d < minRange) continue;
-      const prog = e.dist - this.map.lanes[e.lane].len; // 0 = at the core
+      const prog = e.dist - this.map.lanes[e.lane].len; // 0 = at the core (a mite counts as standing where its carrier let it go)
       const v = strongest ? e.hp + e.shield + prog * 0.01 : prog;
       if (v > bv) { bv = v; best = e; }
     }
     return best;
   }
 
-  private shell(t: Tower, tx: number, ty: number, tz: number, dmg: number, T: number) {
-    this.projs.push({ id: this.nid++, kind: 'shell', owner: -1, hit: [], tier: 0, chain: 0, pierce: 0, x: t.x, y: t.h * 0.8, z: t.z, vx: 0, vy: 0, vz: 0, dmg, target: 0, life: T + 0.1, aoe: TOWERS.mortar.aoe! * (1 + 0.1 * (t.lvl - 1)) * (1 + 0.25 * this.mods.mortarAoe), sx: t.x, sz: t.z, tx, ty, tz, t: 0, T });
+  private shell(t: Tower, tx: number, ty: number, tz: number, dmg: number, T: number, sp = false) {
+    this.projs.push({ sp, id: this.nid++, kind: 'shell', owner: -1, hit: [], tier: 0, chain: 0, pierce: 0, x: t.x, y: t.h * 0.8, z: t.z, vx: 0, vy: 0, vz: 0, dmg, target: 0, life: T + 0.1, aoe: TOWERS.mortar.aoe! * (1 + 0.1 * (t.lvl - 1)) * (1 + 0.25 * this.mods.mortarAoe), sx: t.x, sz: t.z, tx, ty, tz, t: 0, T });
     this.events.push({ k: 'shot', t: 'mortar', id: t.id, d: Math.hypot(tx - t.x, tz - t.z), x: t.x, y: t.h * 0.8, z: t.z });
   }
   private barrageShell(t: Tower, range: number) {
     const dmg = this.towerDmg(t) * 2 * this.mods.specPow;
     const list: Enemy[] = [];
-    for (const e of this.enemies) if (e.alive && !ENEMIES[e.type].fly && Math.hypot(e.x - t.x, e.z - t.z) <= range + e.r) list.push(e);
+    for (const e of this.enemies) if (e.alive && !ENEMIES[e.type].fly && e.type !== 'mite' && Math.hypot(e.x - t.x, e.z - t.z) <= range + e.r) list.push(e);
     const T = 0.85;
     if (list.length) {
       const e = list[(t.aux * 3) % list.length];
@@ -1276,12 +1538,12 @@ export class Sim {
       }
       if (!ok) return;
     }
-    this.shell(t, tmp.x, tmp.y || 0, tmp.z, dmg, T);
+    this.shell(t, tmp.x, tmp.y || 0, tmp.z, dmg, T, true);
   }
-  private missile(t: Tower, e: Enemy, dmg: number, i: number) {
+  private missile(t: Tower, e: Enemy, dmg: number, i: number, sp = false) {
     const a = t.yaw + (i % 2 ? 1 : -1) * (0.45 + 0.3 * ((i >> 1) % 4)) + (this.rand() - 0.5) * 0.2;
     this.projs.push({
-      id: this.nid++, kind: 'missile', owner: -1, hit: [], tier: 0, chain: 0, pierce: 0,
+      sp, id: this.nid++, kind: 'missile', owner: -1, hit: [], tier: 0, chain: 0, pierce: 0,
       x: t.x, y: t.h * 0.9, z: t.z, vx: Math.sin(a) * 5, vy: 9 + (i % 3), vz: Math.cos(a) * 5,
       dmg, target: e.id, life: 5, aoe: TOWERS.missile.aoe! * (1 + 0.3 * this.mods.missileAoe), sx: t.x, sz: t.z, tx: e.x, ty: e.y, tz: e.z, t: 0, T: 0,
     });
@@ -1290,13 +1552,13 @@ export class Sim {
     const list = this.enemies.filter((e) => e.alive);
     if (!list.length) return;
     list.sort((a, b) => (b.dist - this.map.lanes[b.lane].len) - (a.dist - this.map.lanes[a.lane].len));
-    this.missile(t, list[t.aux % list.length], this.towerDmg(t) * 1.5 * this.mods.specPow, t.aux);
+    this.missile(t, list[t.aux % list.length], this.towerDmg(t) * 1.5 * this.mods.specPow, t.aux, true);
     if (t.aux % 4 === 0) this.events.push({ k: 'shot', t: 'missile', id: t.id, x: t.x, y: t.h * 0.9, z: t.z });
   }
 
   private fire(t: Tower, e: Enemy, dmg: number, range: number) {
     const c = TOWERS[t.type].color, y = t.h * 0.8;
-    const blank = { owner: -1, hit: [], tier: 0, chain: 0, pierce: 0 };
+    const blank = { owner: -1, hit: [], tier: 0, chain: 0, pierce: 0, sp: t.type === 'pulse' && t.spec > 0 }; // Bullet Storm bolts count as a special
     switch (t.type) {
       case 'pulse': {
         const n = 1 + this.mods.twin;
@@ -1357,7 +1619,7 @@ export class Sim {
       case 'missile': {
         // up to three different targets, flyers first, then whoever is closest to the core
         const list: Enemy[] = [];
-        for (const o of this.enemies) if (o.alive && Math.hypot(o.x - t.x, o.z - t.z) <= range) list.push(o);
+        for (const o of this.enemies) if (o.alive && o.type !== 'mite' && Math.hypot(o.x - t.x, o.z - t.z) <= range) list.push(o);
         const val = (o: Enemy) => (ENEMIES[o.type].fly ? 1000 : 0) + o.dist - this.map.lanes[o.lane].len;
         list.sort((a, b) => val(b) - val(a));
         const k = Math.min(3, list.length), n = 3 + this.mods.missilePods;
@@ -1376,7 +1638,7 @@ export class Sim {
       const dx = p.tx - p.x, dy = p.ty - p.y, dz = p.tz - p.z, L = Math.hypot(dx, dy, dz);
       const s = 34 * dt;
       if (L <= s + (e ? e.r : 0.2)) {
-        if (e) { this.damage(e, p.dmg, -1); this.events.push({ k: 'hit', x: e.x, y: e.y, z: e.z, c: TOWERS.pulse.color }); }
+        if (e) { this.sp = !!p.sp; this.damage(e, p.dmg, -1); this.sp = false; this.events.push({ k: 'hit', x: e.x, y: e.y, z: e.z, c: TOWERS.pulse.color }); }
         p.life = 0;
       } else { p.vx = (dx / L) * 34; p.vy = (dy / L) * 34; p.vz = (dz / L) * 34; p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; }
     } else if (p.kind === 'shell') {
@@ -1386,7 +1648,9 @@ export class Sim {
       p.vx = (nx - p.x) / dt; p.vy = (ny - p.y) / dt; p.vz = (nz - p.z) / dt;
       p.x = nx; p.y = ny; p.z = nz;
       if (u >= 1) {
+        this.sp = !!p.sp;
         this.aoe(p.tx, p.tz, p.aoe, p.dmg, -1, true, p.ty);
+        this.sp = false;
         this.events.push({ k: 'boom', x: p.tx, y: p.ty + 0.3, z: p.tz, r: p.aoe, c: TOWERS.mortar.color });
         if (this.mods.napalm) this.zones.push({ id: this.nid++, kind: 'burn', x: p.tx, z: p.tz, r: p.aoe * 0.9, life: 2 + this.mods.napalm, tick: 0.25, dmg: p.dmg * 0.5 * this.mods.napalm, owner: -1, pd: 0, y: p.ty });
         p.life = 0;
@@ -1407,9 +1671,11 @@ export class Sim {
       p.vx += ((dx / L) * sp - p.vx) * k; p.vy += ((dy / L) * sp - p.vy) * k; p.vz += ((dz / L) * sp - p.vz) * k;
       p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
       if (Math.hypot(p.tx - p.x, p.ty - p.y, p.tz - p.z) <= sp * dt + (e ? e.r : 0.2) + 0.3 || p.life <= 0) {
-        const near = Math.hypot(p.tx - p.x, p.tz - p.z) < 3;
+        const near = Math.hypot(p.tx - p.x, p.tz - p.z) < 3 + (e ? e.r : 0);
+        this.sp = !!p.sp;
         if (e && near) this.damage(e, p.dmg, -1);
         if (near) for (const o of this.enemies) if (o.alive && o !== e && Math.hypot(o.x - p.x, o.z - p.z) <= p.aoe + o.r && Math.abs(o.y - p.y) < 3) this.damage(o, p.dmg * 0.5, -1);
+        this.sp = false;
         this.events.push({ k: 'boom', x: p.x, y: p.y, z: p.z, r: p.aoe, c: TOWERS.missile.color, s: 1 });
         p.life = 0;
       }
@@ -1427,6 +1693,7 @@ export class Sim {
         let uw = -1, wi = -1;
         const wk = ENEMIES[e.type].weak;
         if (wk) for (let i = 0; i < wk.length; i++) {
+          if (!weakOpen(e, i, dx, dz)) continue;
           weakPos(e, i, W3);
           const u = raySphere(ox, oy, oz, dx, dy, dz, W3.x, W3.y, W3.z, wk[i].r * ENEMY_SCALE[e.type] + 0.1);
           if (u >= 0 && u <= L + 0.35 && (wi < 0 || u < uw)) { uw = u; wi = i; }
@@ -1467,6 +1734,7 @@ export class Sim {
         if (swallowed(h.u)) { p.life = 0; break; }
         p.hit.push(e.id);
         if (h.w >= 0 && weakPos(e, h.w, W3)) this.arrowHit(p, W3.x, W3.y, W3.z, e, ENEMIES[e.type].weak![h.w].mul);
+        else if (e.type === 'titan') this.arrowHit(p, ox + dx * h.u, oy + dy * h.u, oz + dz * h.u, e, 1); // where it glances off the hull
         else this.arrowHit(p, e.x, e.y, e.z, e, 1);
         if (p.pierce-- <= 0) { p.life = 0; break; }
       }
@@ -1483,10 +1751,13 @@ export class Sim {
     if (e) {
       if (mul > 1) {
         const pl = this.players[p.owner];
+        this.sp = true;
         const n = this.damage(e, p.dmg * mul * (pl ? pl.stats.weak : 1), p.owner);
+        this.sp = false;
         this.events.push({ k: 'crit', x, y, z, n: Math.round(n) });
         this.crack(e, x, y, z);
-      } else this.damage(e, p.dmg, p.owner, false, p.cut);
+      } else if (e.type === 'titan') this.glance(e, x, y, z);
+      else this.damage(e, p.dmg, p.owner, false, p.cut);
     }
     if (p.aoe > 0) {
       const gy = e ? e.gy : 0; // the blast stays on its own deck
@@ -1515,10 +1786,11 @@ export class Sim {
     const sendMods = sig !== this.modsSig || this.snapN % 20 === 0;
     this.modsSig = sig; this.snapN++;
     return {
-      a: [r(this.time), this.wave, this.lives, Math.floor(this.gold), this.level, Math.floor(this.xp), this.xpNext, this.waveActive ? 1 : 0, r(this.queue.length ? -1 : this.nextWaveIn), this.over ? 1 : 0, this.won ? 1 : 0, this.kills, this.mods.cheap, this.winWave, this.endless ? 1 : 0, this.maxLives],
+      a: [r(this.time), this.wave, this.lives, Math.floor(this.gold), this.level, Math.floor(this.xp), this.xpNext, this.waveActive ? 1 : 0, r(this.queue.length ? -1 : this.nextWaveIn), this.over ? 1 : 0, this.won ? 1 : 0, this.kills, this.mods.cheap, this.winWave, this.endless ? 1 : 0, this.maxLives, this.overlink ? 1 : 0],
+      ti: [TITAN_PHASES.indexOf(this.titan.phase), r(this.titan.danger), this.titan.wave, r(this.titan.t), this.titan.lane],
       u: [...this.unlocked].map((t) => TOWER_TYPES.indexOf(t)),
-      e: this.enemies.map((e) => [e.id, ENEMY_TYPES.indexOf(e.type), r(e.x), r(e.z), r(e.yaw), Math.ceil(e.hp), Math.ceil(e.maxHp), Math.ceil(e.shield), e.slowT > 0 ? 1 : 0, r(e.gy), (e.burnT > 0 ? 1 : 0) | (e.frz > 0 ? 2 : 0) | (e.vulnT > 0 ? 4 : 0) | (e.crackT > 0 ? 16 : 0), r(e.breach), r(e.spin)]),
-      t: this.towers.map((t) => [t.id, TOWER_TYPES.indexOf(t.type), t.cx, t.cz, t.lvl, r(t.yaw), r(t.buff), t.spent, r(t.charge), r(t.down), r(t.spec), r(t.heat)]),
+      e: this.enemies.map((e) => [e.id, ENEMY_TYPES.indexOf(e.type), r(e.x), r(e.z), r(e.yaw), Math.ceil(e.hp), Math.ceil(e.maxHp), Math.ceil(e.shield), e.slowT > 0 ? 1 : 0, r(e.gy), (e.burnT > 0 ? 1 : 0) | (e.frz > 0 ? 2 : 0) | (e.vulnT > 0 ? 4 : 0) | (e.crackT > 0 ? 16 : 0) | (e.latched ? 32 : 0), r(e.breach), r(e.spin), e.prey]),
+      t: this.towers.map((t) => [t.id, TOWER_TYPES.indexOf(t.type), t.cx, t.cz, t.lvl, r(t.yaw), r(t.buff), t.spent, r(t.charge), r(t.down), r(t.spec), r(t.heat), r(t.jam), r(t.stun)]),
       p: this.projs.map((p) => [p.id, PROJ_KINDS.indexOf(p.kind), r(p.x), r(p.y), r(p.z), r(p.vx), r(p.vy), r(p.vz), p.tier]),
       z: this.zones.map((z) => [z.id, ZONE_KINDS.indexOf(z.kind), r(z.x), r(z.z), r(z.r), r(z.life), r(z.y)]),
       pl: this.players.map((p) => [r(p.energy), p.heroActive ? 1 : 0, p.heroTower, r(p.yaw), r(p.pitch), r(p.heroTime), r(p.heroDur), p.cds.map(r), p.pending[0] || [], p.pending.length, p.stats.cdr, r(p.draw), p.drawing ? 1 : 0]),
@@ -1538,6 +1810,13 @@ export class Sim {
     this.over = !!a[9]; this.won = !!a[10]; this.kills = num(a[11]) | 0; this.mods.cheap = Math.max(0.3, Math.min(1, num(a[12], 1)));
     if (a.length > 13) { this.winWave = clamp(num(a[13], this.winWave) | 0, 1, 1000); this.endless = !!a[14]; }
     if (a.length > 15) this.maxLives = clamp(num(a[15], this.maxLives) | 0, 1, 1000);
+    this.overlink = a[16] === 1;
+    if (Array.isArray(s.ti)) {
+      const T = this.titan, ph = TITAN_PHASES[num(s.ti[0], -1) | 0];
+      if (ph) T.phase = ph;
+      T.danger = clamp(num(s.ti[1]), 0, 1); T.wave = clamp(num(s.ti[2]) | 0, 0, 100000); T.t = clamp(num(s.ti[3]), 0, 1e6);
+      T.lane = clamp(num(s.ti[4]) | 0, 0, this.map.lanes.length - 1);
+    }
     if (Array.isArray(s.m) && s.m.length >= 4 + 3 * TOWER_TYPES.length) {
       const m = this.mods, mv = (i: number) => clamp(num(s.m[i], 1), 0.1, 100);
       m.tDmg = mv(0); m.tRate = mv(1); m.tRange = mv(2); m.beacon = clamp(num(s.m[3]), 0, 10);
@@ -1556,13 +1835,14 @@ export class Sim {
       seen.add(num(v[0]));
       const d = ENEMIES[type];
       let e = em.get(v[0]);
-      if (!e || e.type !== type) e = { id: num(v[0]), type, x: 0, z: 0, y: d.y, yaw: 0, dist: 0, lane: 0, off: 0, hp: 1, maxHp: 1, shield: 0, maxShield: d.shield ? 1 : 0, shieldCd: 0, speed: d.speed, slowT: 0, slowF: 0, sing: 0, alive: true, r: d.r, armor: 0, gy: 0, frz: 0, burnT: 0, burnD: 0, burnAcc: 0, vulnT: 0, pull: 0, pullCd: 0, burn2T: 0, burn2D: 0, breach: 0, crackT: 0, spin: 0, spinCd: 0, stalled: false, deflAt: 0 };
+      if (!e || e.type !== type) { e = newEnemy(num(v[0]), type); e.maxShield = d.shield ? 1 : 0; }
       e.x = clamp(num(v[2]), -200, 200); e.z = clamp(num(v[3]), -200, 200); e.yaw = num(v[4]); e.hp = num(v[5]); e.maxHp = num(v[6], 1) || 1; e.shield = num(v[7]); e.slowT = v[8] ? 1 : 0;
       e.gy = clamp(num(v[9]), 0, 20); e.y = e.gy + d.y;
       const fl = num(v[10]) | 0;
       e.burnT = fl & 1 ? 1 : 0; e.frz = fl & 2 ? 1 : 0; e.vulnT = fl & 4 ? 1 : 0; e.crackT = fl & 16 ? 1 : 0;
       e.breach = clamp(num(v[11]), 0, 10);
       e.spin = type === 'wheel' ? clamp(num(v[12], 1), 0, 1) : 0; // a host that does not send it yet: full spin
+      e.prey = type === 'mite' ? clamp(num(v[13]) | 0, 0, 1e9) : 0; e.latched = type === 'mite' && !!(fl & 32);
       this.enemies.push(e);
     }
     const tm = new Map(this.towers.map((t) => [t.id, t]));
@@ -1581,6 +1861,7 @@ export class Sim {
       if (!t || t.type !== type || t.cx !== cx || t.cz !== cz) t = newTower(num(v[0]), type, cx, cz, 0);
       t.lvl = Math.max(1, Math.min(3, num(v[4], 1) | 0)); t.yaw = num(v[5]); t.buff = clamp(num(v[6]), 0, 10); t.spent = num(v[7]);
       t.charge = clamp(num(v[8]), 0, 1); t.down = clamp(num(v[9]), 0, 120); t.spec = clamp(num(v[10]), 0, 120); t.heat = clamp(num(v[11]), 0, 1);
+      t.jam = clamp(num(v[12]), 0, 60); t.stun = clamp(num(v[13]), 0, 60);
       this.grid[cz * GW + cx] = 2;
       this.towers.push(t);
     }

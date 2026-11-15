@@ -99,6 +99,9 @@
       <div id="hero-hint"></div>
     </div>
 
+    <!-- the Titan: danger while it approaches, its hull once it walks -->
+    <div id="titan" class="hidden"><span id="titan-label">Titan</span><small id="titan-sub"></small><div class="bar big"><i id="titan-bar"></i></div></div>
+
     <div id="marks"></div>
     <div id="intel"></div>
     <div id="hints"></div>
@@ -125,7 +128,7 @@
   <div id="menu" class="overlay hidden">
     <div class="cover">
       <span class="kicker">Nyx-9 garrison / field console</span>
-      <div class="logo"><span>VOLT</span><span class="alt">SPIRE</span></div>
+      <div class="logo"><span>BEAT</span><span class="alt">SPIRE</span></div>
       <p class="tag">Build the grid. Become the storm.</p>
       <div class="menu-buttons">
         <button class="btn" id="m-solo">Play solo</button>
@@ -192,9 +195,17 @@
       </div>
       <div class="field">
         <span class="lab">Map</span>
-        <div class="seg" id="setup-src">
-          <button class="chip" data-v="premade">Pre-made</button>
-          <button class="chip" data-v="generated">Generated</button>
+        <div class="map-head">
+          <div class="seg" id="setup-src">
+            <button class="chip" data-v="premade">Pre-made</button>
+            <button class="chip" data-v="generated">Generated</button>
+          </div>
+          <div class="seg" id="map-tier" role="group" aria-label="Show maps of one layout">
+            <button class="chip" type="button" data-v="0">All<small></small></button>
+            <button class="chip" type="button" data-v="1">Simple<small></small></button>
+            <button class="chip" type="button" data-v="2">Tricky<small></small></button>
+            <button class="chip" type="button" data-v="3">Complex<small></small></button>
+          </div>
         </div>
       </div>
       <div class="field">
@@ -243,9 +254,9 @@
           <p class="kbd-only">Pick a tower from the bar (<kbd>1</kbd> to <kbd>9</kbd>, <kbd>0</kbd>, <kbd>T</kbd>), then click a free hex to build. <kbd>Shift</kbd> keeps building.</p>
           <p class="kbd-only">Click a tower to upgrade (<kbd>U</kbd>) or sell (<kbd>X</kbd>). The tags over the spawn gates show what the next wave sends down each road.</p>
           <p class="kbd-only"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or right-drag to pan, wheel to zoom. <kbd>Q</kbd> <kbd>E</kbd> or middle-drag turns the view, <kbd>R</kbd> resets it.</p>
-          <p class="kbd-only"><kbd>N</kbd> calls the next wave early for bonus credits. <kbd>G</kbd> switches the game speed, <kbd>P</kbd> or <kbd>Esc</kbd> pauses.</p>
+          <p class="kbd-only"><kbd>N</kbd> calls the next wave early for bonus credits. <kbd>G</kbd> switches the game speed, <kbd>P</kbd> or <kbd>Esc</kbd> pauses. <kbd>F3</kbd> shows frame and mouse diagnostics.</p>
           <p class="tap-only lead">Tap a tower in the bar, then tap a hex. Hold and drag to move the preview first. Tap a tower on the board to upgrade or sell it.</p>
-          <p class="tap-only">Drag to pan, pinch to zoom, twist two fingers to turn the view. The tags over the spawn gates show what the next wave sends down each road.</p>
+          <p class="tap-only">Drag with one finger to pan. Two fingers either pinch to zoom or twist to turn the view. The tags over the spawn gates show what the next wave sends down each road.</p>
         </div>
         <div class="panel uplink"><h3>Uplink</h3>
           <p>Kills charge the Uplink. When it is full <span class="kbd-only">press <kbd>Space</kbd></span><span class="tap-only">tap the Uplink button</span> to stand on an Uplink Spire as Kestrel. She can only use Spires, so keep at least one.</p>
@@ -259,6 +270,7 @@
           <p>Your bow changes every 4 waves: pierce, extra arrows, explosions, chain lightning.</p>
           <p>A campaign lasts 20, 25 or 30 waves depending on the threat level. A Colossus arrives every 5th wave. Survival has no last wave.</p>
           <p>A machine that reaches the Heart stops and attacks it. Destroy it before it strikes and the core takes no damage.</p>
+          <p>Broodcarriers let mites loose that climb a tower and jam it: shoot the mites off. Late in a campaign the Titan lands. Only its weak points and tower specials hurt it, and the Uplink stays open while it stands.</p>
         </div>
       </div>
       <div class="menu-buttons row">
@@ -280,6 +292,7 @@
           <label>Built-in music <input type="range" id="set-mus" min="0" max="100" /></label>
           <label>Look sensitivity <input type="range" id="set-sens" min="20" max="200" /></label>
           <label class="touch-row">Touch aim friction <input type="checkbox" id="set-friction" /></label>
+          <div class="set-row kbd-only"><span>Raw mouse input</span><span id="raw-state" class="muted"></span></div>
           <label>Graphics <select id="set-q"><option value="high">High (glow and shadows)</option><option value="low">Low (faster)</option></select></label>
         </div>
         <div class="panel settings">
@@ -326,7 +339,7 @@
       <header class="sheet-head">
         <span class="kicker">Deck radio</span>
         <h2>Music</h2>
-        <p>Play your own playlist. The built-in score goes quiet while it plays.</p>
+        <p>Pick a built-in track, or play your own playlist. The built-in score goes quiet while your own music plays.</p>
       </header>
       <div id="music-root"></div>
       <div class="menu-buttons row">
@@ -370,6 +383,7 @@
   </div>
 
   <div id="notes" aria-live="polite"></div>
+  <pre id="diag" class="hidden" aria-hidden="true"></pre>
 
   <!-- phones held upright: the game is laid out for a wide screen -->
   <div id="rotate" class="overlay hidden">
@@ -388,7 +402,7 @@
   <div id="loading" class="overlay">
     <div class="sheet narrow boot">
       <span class="kicker">Nyx-9 garrison / field console</span>
-      <div class="logo"><span>VOLT</span><span class="alt">SPIRE</span></div>
+      <div class="logo"><span>BEAT</span><span class="alt">SPIRE</span></div>
       <div class="bar big load"><i id="loadbar"></i></div>
       <p class="muted" id="load-text">Booting the grid...</p>
     </div>

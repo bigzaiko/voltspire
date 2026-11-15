@@ -1,4 +1,4 @@
-// The player's own music: a small playlist of YouTube and Spotify links next to the built-in soundtrack.
+// The Music sheet: the built-in tracks, and the player's own playlist of YouTube and Spotify links next to them.
 // Only a service kind and an id are ever kept from a pasted link. The embed address is always
 // rebuilt from those two, and an embed is only created when the player presses play on an entry.
 
@@ -7,6 +7,12 @@ export interface MusicHost {
   root: HTMLElement;
   /** mute or unmute the built-in soundtrack while external music plays */
   setScoreMuted(muted: boolean): void;
+  /** the built-in tracks: id, name and a short line about each (key and tempo) */
+  tracks: { id: string; name: string; meta: string }[];
+  /** choose a built-in track by id, or 'shuffle' for a different one every run */
+  setTrack(id: string): void;
+  /** id of the built-in track that plays right now, or '' while the soundtrack is not running */
+  nowPlaying(): string;
   toast(text: string): void;
   click(): void;
 }
@@ -181,6 +187,7 @@ function button(cls: string, text: string, run: () => void): HTMLButtonElement {
 export function initMusic(host: MusicHost): MusicApi {
   let list: MusicEntry[] = [];
   let sel = -1; // index into list, -1 is the built-in soundtrack
+  let builtin = 'shuffle'; // a built-in track id, or 'shuffle'
   let vol = 70;
   let min = false; // remembered preference
   let folded = false; // what the dock shows right now
@@ -212,9 +219,11 @@ export function initMusic(host: MusicHost): MusicApi {
     if (typeof s === 'number' && Number.isInteger(s) && s >= 0 && s < list.length) sel = s;
     if (typeof v === 'number' && isFinite(v)) vol = Math.max(0, Math.min(100, Math.round(v)));
     min = own(data, 'min') === true;
+    const b = own(data, 'builtin');
+    if (typeof b === 'string' && host.tracks.some((t) => t.id === b)) builtin = b;
   }
   function save(): void {
-    try { localStorage.setItem(KEY, JSON.stringify({ v: 1, list, sel, vol, min })); } catch { /* storage full or blocked */ }
+    try { localStorage.setItem(KEY, JSON.stringify({ v: 1, list, sel, vol, min, builtin })); } catch { /* storage full or blocked */ }
   }
 
   // ---------- YouTube control, postMessage only ----------
@@ -380,18 +389,29 @@ export function initMusic(host: MusicHost): MusicApi {
     setBpm(e, Math.max(BPM_MIN, Math.min(BPM_MAX, 60000 / avg)), input);
   }
 
-  function row(e: MusicEntry | null): HTMLElement {
-    const on = e ? active === e : active === null;
-    const r = el('li', 'mu-row' + (on ? ' on' : '') + (e && sel === list.indexOf(e) && !on ? ' last' : ''));
+  /** A row for the built-in soundtrack: the shuffle entry (id 'shuffle') or one track. */
+  function builtRow(id: string, name: string, meta: string): HTMLElement {
+    const chosen = builtin === id, on = active === null && chosen, now = active === null ? host.nowPlaying() : '';
+    const r = el('li', 'mu-row' + (on ? ' on' : now === id ? ' last' : ''));
     const main = el('div', 'mu-main');
-    if (!e) {
-      main.append(el('span', 'mu-name', 'BEATSPIRE soundtrack'), el('span', 'mu-meta', 'Built in'));
-      r.append(main);
-      const b = button('btn small' + (on ? '' : ' ghost'), on ? 'Playing' : 'Play', () => { host.click(); sel = -1; save(); stop(); });
-      b.disabled = on;
-      r.append(b);
-      return r;
-    }
+    main.append(el('span', 'mu-name', name), el('span', 'mu-meta', meta + (now === id && !chosen ? ' / playing now' : '')));
+    r.append(main);
+    const b = button('btn small' + (on ? '' : ' ghost'), on ? (id === 'shuffle' ? 'On' : 'Chosen') : id === 'shuffle' ? 'Shuffle' : 'Play', () => {
+      host.click();
+      builtin = id; sel = -1;
+      save();
+      host.setTrack(id);
+      stop();
+    });
+    b.disabled = on;
+    r.append(b);
+    return r;
+  }
+
+  function row(e: MusicEntry): HTMLElement {
+    const on = active === e;
+    const r = el('li', 'mu-row' + (on ? ' on' : '') + (sel === list.indexOf(e) && !on ? ' last' : ''));
+    const main = el('div', 'mu-main');
     main.append(el('span', 'mu-name', e.label || kindName(e)), el('span', 'mu-meta', kindName(e) + ' / ' + e.id));
     r.append(main);
 
@@ -436,7 +456,8 @@ export function initMusic(host: MusicHost): MusicApi {
 
   function renderList(): void {
     if (!listEl) return;
-    const rows: HTMLElement[] = [row(null)];
+    const rows: HTMLElement[] = [builtRow('shuffle', 'BEATSPIRE soundtrack', 'Built in / a different track every run')];
+    for (const t of host.tracks) rows.push(builtRow(t.id, t.name, 'Built in / ' + t.meta));
     for (const e of list) rows.push(row(e));
     listEl.replaceChildren(...rows);
   }
@@ -562,6 +583,7 @@ export function initMusic(host: MusicHost): MusicApi {
   }
 
   load();
+  host.setTrack(builtin);
   return {
     open,
     isExternalPlaying: () => active !== null,

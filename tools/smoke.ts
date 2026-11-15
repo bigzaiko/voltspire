@@ -1,10 +1,12 @@
 // Quick headless checks: node tools/smoke.ts
-import { Sim, standY, nodePos, weakPos, raySphere, spireTarget, computeWalls, drawPower, arrowSpeed, paceOf, NODE_R, SPIRE_R, ARROW_PAD, ARROW_SPEED, FULL_DRAW, TOWER_H, DECK_GAP, MUST_EVENTS, SNAP_EVENTS_MAX, CORE_STAND } from '../src/game/sim.ts';
+import { Sim, standY, nodePos, weakPos, weakOpen, towerOff, RAIN_DELAY, TITAN_PHASES, raySphere, spireTarget, computeWalls, drawPower, arrowSpeed, paceOf, NODE_R, SPIRE_R, ARROW_PAD, ARROW_SPEED, FULL_DRAW, TOWER_H, DECK_GAP, MUST_EVENTS, SNAP_EVENTS_MAX, CORE_STAND } from '../src/game/sim.ts';
 import type { Ev, Enemy } from '../src/game/sim.ts';
 import {
-  ENEMIES, ENEMY_SCALE, ENEMY_TYPES, WHEEL_GUARD, WHEEL_CRAWL, WHEEL_BLEED, WHEEL_DRAG, WHEEL_SINK, WHEEL_REST, WHEEL_SPINUP, WHEEL_PIERCE, WHEEL_ESCORT, WHEEL_ESCORTS, TOWERS, TOWER_TYPES, MAX_ENERGY, CARDS, CARD_BY_ID, GW, GH, TWIN_BOLT, TUNE, COOP_HP, coopScale, BOW_TIERS,
+  ENEMIES, ENEMY_SCALE, ENEMY_TYPES, WAVE_POOL, gyreCount, broodCap, GYRE_FIRST, GYRE_PAIR, BROOD_EVERY, BROOD_SIZE, BROOD_REACH, MITE_HOLD, JAM_LINGER,
+  TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY, TITAN_STRIKE, TITAN_SLOW, TITAN_GOLD, TITAN_SURVIVAL, TITAN_AGAIN, TITAN_TOUGHER, TITAN_SMASH, TITAN_LEAD, WHEEL_GUARD, WHEEL_CRAWL, WHEEL_BLEED, WHEEL_DRAG, WHEEL_SINK, WHEEL_REST, WHEEL_SPINUP, WHEEL_PIERCE, TOWERS, TOWER_TYPES, MAX_ENERGY, CARDS, CARD_BY_ID, GW, GH, TWIN_BOLT, TUNE, COOP_HP, coopScale, BOW_TIERS,
   BREACH_TIME, BREACH_TIME_BOSS, BREACH_SHARE, FIRST_WAVE_IN, NEXT_WAVE_IN, DRAW_TIME, MIN_DRAW, NOCK_TIME, FULL_DRAW_MUL, HERO_DUR, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR,
 } from '../src/game/data.ts';
+import { bowTier as bowTierOf } from '../src/game/data.ts';
 import { hexDist } from '../src/game/hex.ts';
 import type { MapDef } from '../src/game/map.ts';
 import { Bot } from '../src/game/bot.ts';
@@ -579,9 +581,10 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
   }
   {
     // ---------- the Gyre: a spinning rim that deflects hits ----------
-    ok(ENEMY_TYPES.join() === 'grunt,runner,drone,shield,brute,boss,wheel', 'the Gyre is appended to the enemy types: ' + ENEMY_TYPES.join());
+    ok(ENEMY_TYPES.join() === 'grunt,runner,drone,shield,brute,boss,wheel,brood,mite,titan', 'new enemy types are appended, the old indices stay: ' + ENEMY_TYPES.join());
     const d = ENEMIES.wheel;
-    ok(d.name === 'Gyre' && !d.fly && d.from === 9 && d.leak === 2 && Math.abs(d.r - 1.05) < 0.1 && Math.abs(d.y - 1.1) < 0.1 && ENEMY_SCALE.wheel === 1 && WHEEL_GUARD === 0.8, 'Gyre data follows the contract');
+    ok(d.name === 'Gyre' && !d.fly && d.from === GYRE_FIRST && GYRE_FIRST === 8 && d.leak === 4 && d.hp === 520 && d.bounty >= 44 && d.xp >= 20 && ENEMY_SCALE.wheel === 1.35 && Math.abs(d.r - 1.05 * 1.35) < 0.1 && Math.abs(d.y - 1.1 * 1.35) < 0.1 && WHEEL_GUARD === 0.8, 'Gyre data follows the contract: a mini-boss with four times the health, leak 4, a larger reward, scale 1.35');
+    ok(WHEEL_SPINUP <= 0.15 && WHEEL_REST >= 2, 'the rim recovers slowly');
     const near = (a: number, b: number, eps = 1e-9) => Math.abs(a - b) < eps;
     const gyre = (sim: Sim, dist = 10, hp = 1000, speed = 0) => { const e = put(sim, 'wheel', dist, 0, speed); e.hp = e.maxHp = hp; return e; };
     const count = (evs: Ev[], k: string, id?: number) => evs.filter((e) => e.k === k && (id === undefined || e.id === id)).length;
@@ -613,9 +616,9 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       ok(g5.spin === 0, 'no recovery right after a hit');
       run(s5, 0.1 + 1, tally);
       ok(near(g5.spin, WHEEL_SPINUP, 0.02) && up === 0, `left alone it spins back up (${g5.spin.toFixed(3)} after a second)`);
-      run(s5, 1.5, tally);
+      run(s5, 0.6 / WHEEL_SPINUP - 0.5, tally);
       ok(up === 1 && down === 0 && g5.spin > 0.6, 'spinup is reported once when it recovers above 0.6');
-      run(s5, 2, tally);
+      run(s5, 0.4 / WHEEL_SPINUP, tally);
       ok(g5.spin === 1 && up === 1, 'and it reaches full spin again');
       // chip damage: half a percent of its health twice a second barely scratches the spin
       for (let i = 0; i < 20; i++) { s5.damage(g5, 5, -1); run(s5, 0.5); }
@@ -678,24 +681,25 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       ok(near(hp0 - g.hp, s.arrowDmg(p) * 8 * (1 - WHEEL_GUARD * (1 - WHEEL_PIERCE)), 0.01), 'Rail Shot ignores half of the guard');
     }
     {
-      // waves: in the pool from its first wave, escorting each Colossus from wave WHEEL_ESCORT, listed in the wave preview
-      let early = 0, late = 0, escorted = true, listed = true, plain = 0;
+      // waves: a mini-boss on its own. One on waves 8, 13, 18, ... (two from wave 18), never in the normal pool, never beside a Colossus, listed in the wave preview
+      let wrong = 0, listed = true, escorts = 0, seenOne = 0, seenTwo = 0;
       for (let seed = 1; seed <= 6; seed++) {
-        const s = mk({ seed, map: MAPS[2] });
-        for (let w = 1; w <= 30; w++) {
+        const s = mk({ seed, map: MAPS[2], survival: true });
+        for (let w = 1; w <= 40; w++) {
+          if (w === s.titan.wave) continue; // the Titan's wave has nothing else
           priv(s).planWave(w);
           const items: { t: number; type: string; lane: number }[] = priv(s).next.items;
-          const n = items.filter((q) => q.type === 'wheel').length;
-          if (w < d.from) early += n; else if (n) late++;
-          if (w % 5 === 0) for (const b of items.filter((q) => q.type === 'boss')) {
-            const esc = items.filter((q) => q.type === 'wheel' && q.lane === b.lane && q.t > b.t && q.t < b.t + 5).length;
-            if (w >= WHEEL_ESCORT) { if (esc < WHEEL_ESCORTS) escorted = false; } else plain++;
-          }
+          const n = items.filter((q) => q.type === 'wheel').length, want = gyreCount(w);
+          if (n !== want) wrong++;
+          if (n === 1) seenOne++; else if (n === 2) seenTwo++;
+          if (n && items.some((q) => q.type === 'boss')) escorts++;
           if (n && s.preview.lanes.reduce((a, l) => a + (l.find((o) => o.type === 'wheel')?.n || 0), 0) !== n) listed = false;
+          if (n && items.length < 5) wrong++; // the rest of the wave still comes, a little thinner
         }
       }
-      ok(early === 0 && late >= 6 * (30 - d.from + 1) * 0.6, `Gyres join the waves from wave ${d.from} on (${late} of ${6 * (30 - d.from + 1)} later waves, ${early} before)`);
-      ok(escorted && plain > 0 && WHEEL_ESCORT === 15, 'Gyres escort every Colossus from wave 15');
+      ok([8, 13, 18, 23, 28].every((w) => gyreCount(w) === (w >= 18 ? 2 : 1)) && [1, 7, 9, 10, 12, 14, 15, 20, 25].every((w) => gyreCount(w) === 0) && GYRE_PAIR === 18, 'the Gyre comes on waves 8, 13, 18, 23, 28, two from wave 18');
+      ok(wrong === 0 && seenOne > 0 && seenTwo > 0 && !WAVE_POOL.includes('wheel'), `the waves hold exactly the planned Gyres and none from the pool (${wrong} wrong)`);
+      ok(escorts === 0, 'no Gyre rolls in beside a Colossus any more');
       ok(listed, 'the wave preview counts the Gyres');
     }
     {
@@ -715,6 +719,456 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       const old = JSON.parse(JSON.stringify(snap)); old.e = [[1, wi, 0, 0, 0, 5, 5, 0, 0, 0, 0, 0]]; c.applySnapshot(old);
       ok(c.enemies.length === 1 && c.enemies[0].spin === 1, 'a row without the spin field reads as full spin');
     }
+  }
+  {
+    // ---------- Broodcarrier and mites ----------
+    const near = (a: number, b: number, eps = 1e-9) => Math.abs(a - b) < eps;
+    const count = (evs: Ev[], k: string, id?: number) => evs.filter((e) => e.k === k && (id === undefined || e.id === id)).length;
+    const mitesOf = (s: Sim) => s.enemies.filter((e) => e.type === 'mite');
+    const d = ENEMIES.brood, m = ENEMIES.mite;
+    ok(d.name === 'Broodcarrier' && d.from === 6 && d.speed < ENEMIES.grunt.speed && d.hp > ENEMIES.brute.hp && WAVE_POOL.includes('brood') && !WAVE_POOL.includes('mite') && m.leak === 0 && m.bounty === 0 && m.xp === 0 && m.hp <= 1
+      && BROOD_SIZE === 4 && BROOD_EVERY === 7 && MITE_HOLD + JAM_LINGER <= 5.2 && broodCap(6) === 1 && broodCap(30) >= 3, 'Broodcarrier and mite data');
+    {
+      // a carrier beside a turret: a swarm of four runs across the deck, climbs the turret and jams it
+      const s = mk(), t = s.build('pulse', 3, 5)!, c = put(s, 'brood', 10);
+      const evs: Ev[] = [], each = (e: Ev[]) => { evs.push(...e); };
+      t.charge = 0.2; c.ttl = 0;
+      run(s, 0.05, each);
+      const born = s.time - 0.05 + 1 / 60, runTo = (at: number) => run(s, Math.max(0, at - s.time), each);
+      const first = mitesOf(s), b = evs.find((e) => e.k === 'brood');
+      ok(first.length === BROOD_SIZE && first.every((q) => q.prey === t.id && q.mom === c.id && !q.latched && q.hp <= 1 && q.alive), 'a swarm of four mites leaves the carrier for the nearest tower');
+      ok(!!b && b.id === c.id && b.prey === t.id && near(b.x, c.x) && near(b.y, c.y) && near(b.z, c.z), 'the brood event names the carrier, where it is and the tower');
+      const d0 = first.map((q) => Math.hypot(q.x - t.x, q.z - t.z)), road = first.map((q) => q.dist);
+      run(s, 0.1, each);
+      ok(first.every((q, i) => q.latched || Math.hypot(q.x - t.x, q.z - t.z) < d0[i] - 0.3) && first.every((q, i) => q.dist === road[i]), 'mites run straight at the tower, not along the road');
+      run(s, 1, each);
+      const jam = evs.find((e) => e.k === 'jam');
+      ok(first.every((q) => q.latched && Math.hypot(q.x - t.x, q.z - t.z) < 0.8 && q.gy > 0.3 && near(q.y, q.gy + m.y)) && new Set(first.map((q) => q.gy.toFixed(2))).size === BROOD_SIZE, 'the mites climb the tower, each to a perch of its own');
+      ok(t.jam > 0 && towerOff(t) && !!jam && jam.id === t.id && jam.x === t.x && jam.z === t.z && count(evs, 'jam') === 1, 'the tower is jammed (jam event)');
+      evs.length = 0; const charge = t.charge;
+      run(s, 2.5, each);
+      ok(count(evs, 'shot', t.id) === 0 && t.charge === charge && !s.specialReady(t) && t.jam > 0, 'a jammed tower neither fires nor charges');
+      t.charge = 1; ok(!s.triggerSpecial(t.id, 0) && t.charge === 1, 'and its special cannot be fired'); t.charge = charge;
+      run(s, 2.4, each);
+      const un = evs.find((e) => e.k === 'unjam');
+      ok(first.every((q) => !q.alive) && mitesOf(s).length === 0 && t.jam === 0 && !!un && un.id === t.id && un.x === t.x, 'the mites burn out and the jam ends (unjam event)');
+      ok(s.time - born < 1.2 + 5.1 && s.leaked === 0 && count(evs, 'breach') === 0, 'a jam lasts about five seconds at most, and mites never go for the core');
+      evs.length = 0; run(s, 0.6, each);
+      ok(count(evs, 'shot', t.id) > 0 && t.charge > charge, 'the tower fires and charges again');
+      // the next swarm leaves BROOD_EVERY seconds after the first
+      runTo(born + BROOD_EVERY - 0.15);
+      ok(count(evs, 'brood') === 0, 'no second swarm before its time');
+      run(s, 0.5, each);
+      ok(count(evs, 'brood') === 1 && mitesOf(s).length === BROOD_SIZE, 'the next swarm leaves about seven seconds after the last');
+      // one hit destroys a mite, and it pays nothing
+      const gold = s.gold, xp = s.xp, kills = s.kills, second = mitesOf(s);
+      ok(s.damage(second[0], 0.01, -1) > 0 && !second[0].alive && s.gold === gold && s.xp === xp && s.kills === kills && s.events.some((e) => e.k === 'die' && e.t === 'mite'), 'any hit destroys a mite, for no reward');
+      ok(s.damage(second[1], 0, -1) === 0 && second[1].alive, 'a hit without damage does not');
+      // Kestrel shoots the rest off: the tower is free again at once
+      run(s, 1.2, each);
+      const p = s.players[0]; p.energy = MAX_ENERGY; s.activateHero(0, 0); p.heroTime = p.heroDur = 600; p.stats.pierce = 6;
+      evs.length = 0; const t0 = s.time;
+      run(s, 3, () => { const q = mitesOf(s).find((o) => o.latched); if (q && p.fireCd <= 0) s.heroFire(0, q.x, q.y, q.z); });
+      run(s, JAM_LINGER + 0.1, each);
+      ok(mitesOf(s).length === 0 && t.jam === 0 && s.time - t0 < MITE_HOLD - 0.5, 'Kestrel can shoot the mites off a tower and end the jam early');
+    }
+    {
+      // a neighbour may shoot them: tower B covers tower A but not the carrier
+      const s = mk(), a = s.build('pulse', 3, 5)!, c = put(s, 'brood', 10);
+      for (let dd = 10; dd > 0 && Math.hypot(c.x - a.x, c.z - a.z) < 6.5; dd -= 0.5) { c.dist = dd; priv(s).place(c); }
+      ok(Math.hypot(c.x - a.x, c.z - a.z) < BROOD_REACH - 0.5, 'the carrier stands away from tower A, still within reach');
+      let spot: [number, number] | null = null;
+      for (let i = 0; i < GW * GH && !spot; i++) {
+        if (s.grid[i] !== 0) continue;
+        const cx = i % GW, cz = Math.floor(i / GW), probe = s.build('pulse', cx, cz)!;
+        const da = Math.hypot(probe.x - a.x, probe.z - a.z), dc = Math.hypot(probe.x - c.x, probe.z - c.z);
+        s.sell(probe.id);
+        if (da > 3 && da < 6.5 && dc > 9) spot = [cx, cz];
+      }
+      ok(!!spot, 'found a tile that covers tower A but not the carrier');
+      const bT = s.build('pulse', spot![0], spot![1])!;
+      c.ttl = 0;
+      let jamAt = -1, unAt = -1, shotOff = 0;
+      run(s, 5.5, (evs) => { for (const e of evs) { if (e.k === 'jam' && e.id === a.id) jamAt = s.time; if (e.k === 'unjam' && e.id === a.id && unAt < 0) unAt = s.time; if (e.k === 'die' && e.t === 'mite') shotOff++; } });
+      ok(jamAt > 0 && unAt > jamAt && unAt - jamAt < 3.5 && shotOff === BROOD_SIZE && bT.jam === 0, `a tower beside the jammed one shoots the mites off (jam ${(unAt - jamAt).toFixed(1)} s)`);
+    }
+    {
+      // never a Spire, never a tower that is offline
+      const s = mk(), sp = s.towers.find((t) => t.type === 'spire')!;
+      const c = put(s, 'brood', s.map.nearest(0, sp.x, sp.z));
+      ok(Math.hypot(c.x - sp.x, c.z - sp.z) < BROOD_REACH, 'the carrier stands within reach of the Spire');
+      c.ttl = 0; run(s, 1);
+      ok(mitesOf(s).length === 0, 'mites never go for a Spire');
+      let cell: [number, number] = [0, 0], bd = 1e9;
+      for (let i = 0; i < GW * GH; i++) if (s.grid[i] === 0) { const probe = s.build('pulse', i % GW, Math.floor(i / GW))!, dd = Math.hypot(probe.x - c.x, probe.z - c.z); s.sell(probe.id); if (dd < bd) { bd = dd; cell = [i % GW, Math.floor(i / GW)]; } }
+      const t = s.build('pulse', cell[0], cell[1])!;
+      t.down = 3; run(s, 1);
+      ok(bd < BROOD_REACH && mitesOf(s).length === 0, 'nor for a tower that is offline');
+      run(s, 2.6);
+      ok(mitesOf(s).length === BROOD_SIZE && mitesOf(s).every((q) => q.prey === t.id), 'they go for it once it is back');
+      // a frozen carrier lets nothing out, and a carrier holds the wave open while stray mites do not
+      const evs: Ev[] = [];
+      s.wave = 3; s.cleared = false;
+      run(s, 0.5, (e) => { evs.push(...e); });
+      ok(!s.cleared && !evs.some((e) => e.k === 'clear'), 'a wave is not cleared while a carrier lives');
+      s.damage(c, 1e12, -1, true);
+      run(s, 0.1, (e) => { evs.push(...e); });
+      ok(mitesOf(s).length > 0 && s.cleared && evs.some((e) => e.k === 'clear' && e.n === 3), 'stray mites alone do not hold a wave open');
+      const s2 = mk(), t2 = s2.build('pulse', 3, 5)!, c2 = put(s2, 'brood', 10); c2.ttl = 0; c2.frz = 2;
+      run(s2, 1.5); ok(mitesOf(s2).length === 0 && !!t2, 'a frozen carrier lets nothing out');
+    }
+    {
+      // mites among every kind of tower, slow, pull and blast: nothing breaks, nothing but road enemies reaches the core
+      const s = mk({ seed: 8 });
+      const cells: [number, number][] = [[3, 5], [4, 5], [6, 5], [7, 7], [8, 9], [6, 11], [8, 12], [8, 14], [11, 14], [13, 9]];
+      (['gravity', 'cryo', 'mortar', 'missile', 'rail', 'lance', 'arc', 'flame', 'beacon', 'pulse'] as const).forEach((t, i) => s.build(t, cells[i][0], cells[i][1]));
+      let jams = 0, bad = 0, miteBreach = 0;
+      for (let k = 0; k < 4; k++) { priv(s).spawn('brood', 30, 0); s.enemies[s.enemies.length - 1].dist = 4 + k * 9; for (let g = 0; g < 4; g++) { priv(s).spawn('grunt', 30, 0); s.enemies[s.enemies.length - 1].dist = k * 9 + g; } }
+      const p = s.players[0]; p.energy = MAX_ENERGY; s.activateHero(0, 0); p.heroTime = p.heroDur = 600;
+      run(s, 40, (evs) => {
+        for (const e of evs) { if (e.k === 'jam') jams++; if (e.k === 'breach' && e.t === 'mite') miteBreach++; }
+        for (const e of s.enemies) if (!Number.isFinite(e.x + e.z + e.y + e.gy + e.hp + e.dist + e.yaw)) bad++;
+        if (s.time % 6 < 0.02) { const e = s.enemies[0]; if (e) { p.cds[1] = p.cds[2] = 0; s.heroSkill(0, 1, e.x, e.gy, e.z); s.heroSkill(0, 2, e.x, e.gy, e.z); } }
+        if (s.time % 9 < 0.02) for (const t of s.towers) { t.charge = 1; s.triggerSpecial(t.id, 0); }
+      });
+      ok(jams >= 3 && bad === 0 && miteBreach === 0 && s.towers.every((t) => t.jam >= 0 && Number.isFinite(t.jam)), `mites among all the towers and skills: ${jams} jams, state stays finite`);
+    }
+    {
+      // co-op: prey, latched and the jam reach the guest; hostile values are clamped
+      const h = mk({ mode: 'coop', players: 2 }), c = mk({ mode: 'coop', players: 2 }); c.replica = true;
+      const t = h.build('pulse', 3, 5)!, car = put(h, 'brood', 10); car.ttl = 0;
+      run(h, 1.5);
+      const snap = JSON.parse(JSON.stringify(h.snapshot([{ k: 'brood', id: car.id, x: 1, y: 2, z: 3, prey: t.id }, { k: 'jam', id: t.id, x: 1, z: 3 }, { k: 'unjam', id: t.id, x: 1, z: 3 }])));
+      c.applySnapshot(snap);
+      const cm = c.enemies.filter((e) => e.type === 'mite'), ct = c.towerById(t.id)!, cc = c.enemies.find((e) => e.id === car.id)!;
+      ok(cm.length === BROOD_SIZE && cm.every((q) => q.prey === t.id && q.latched && q.gy > 0.3) && cc.type === 'brood' && cc.prey === 0 && !cc.latched, 'mites, their prey and whether they sit on it reach the guest');
+      ok(!!ct && Math.abs(ct.jam - t.jam) < 0.011 && ct.jam > 0 && towerOff(ct) && ct.stun === 0, 'the jam reaches the guest');
+      ok(['brood', 'jam', 'unjam'].every((k) => c.events.some((e) => e.k === k)) && c.events.some((e) => e.k === 'brood' && e.prey === t.id), 'the brood and jam events reach the guest');
+      const mi = ENEMY_TYPES.indexOf('mite');
+      for (const v of [99.7, -5, NaN, 'x', {}, 1e99, null]) {
+        const o = JSON.parse(JSON.stringify(snap));
+        o.e = [[1, mi, 0, 0, 0, 1, 1, 0, 0, 0, 32, 0, 0, v], [2, 0, 0, 0, 0, 5, 5, 0, 0, 0, 32, 0, 0, 7]];
+        o.t = o.t.map((r: unknown[]) => { const q = r.slice(); q[12] = v; q[13] = v; return q; });
+        c.applySnapshot(o);
+        ok(c.enemies.length === 2 && Number.isInteger(c.enemies[0].prey) && c.enemies[0].prey >= 0 && c.enemies[0].prey <= 1e9 && c.enemies[0].latched && c.enemies[1].prey === 0 && !c.enemies[1].latched
+          && c.towers.every((x) => x.jam >= 0 && x.jam <= 60 && x.stun >= 0 && x.stun <= 60), 'hostile prey / jam / stun values are clamped: ' + JSON.stringify(v));
+      }
+      const old = JSON.parse(JSON.stringify(snap)); old.t = old.t.map((r: unknown[]) => r.slice(0, 12)); old.e = old.e.map((r: unknown[]) => r.slice(0, 13)); delete old.ti; old.a = old.a.slice(0, 16);
+      c.applySnapshot(old);
+      ok(c.towers.every((x) => x.jam === 0 && x.stun === 0) && c.enemies.every((e) => e.prey === 0) && !c.overlink, 'a snapshot without the new fields reads as not jammed, not stunned, no overlink');
+    }
+  }
+  {
+    // ---------- the Titan ----------
+    const near = (a: number, b: number, eps = 1e-9) => Math.abs(a - b) < eps;
+    const count = (evs: Ev[], k: string, id?: number) => evs.filter((e) => e.k === k && (id === undefined || e.id === id)).length;
+    const dT = ENEMIES.titan, wk = dT.weak!;
+    ok(ENEMY_SCALE.titan === 1 && dT.r === 3.2 && dT.y === 9 && wk.length === 4 && JSON.stringify(wk.map((w) => [w.x, w.y, w.z, w.r])) === JSON.stringify([[0, 13.4, 2.2, 0.9], [0, 10.2, -2.0, 1.1], [2.4, 6.4, 0, 0.8], [-2.4, 6.4, 0, 0.8]])
+      && TITAN_LAND === 2.5 && TITAN_STUN === 6 && TITAN_WINDUP === 4 && TITAN_STRIKE_EVERY === 5 && TITAN_STRIKE === 0.4 && TITAN_SLOW === 0.4 && TITAN_SURVIVAL === 22 && TITAN_AGAIN === 12 && TITAN_SMASH[0] === 20 && TITAN_SMASH[1] === 40 && TITAN_LEAD === 5
+      && TITAN_PHASES.join() === 'none,far,warn,landing,walk,dead' && !WAVE_POOL.includes('titan'), 'Titan data follows the contract');
+    /** Start the Titan's wave and (unless `leap` is set) run to just after the impact. Returns the Titan. */
+    const land = (s: Sim, leap = false, evs?: Ev[]): Enemy => {
+      s.wave = s.titan.wave - 1; priv(s).next = null; s.queue.length = 0; s.nextWaveIn = 1e9;
+      s.startWave();
+      if (evs) evs.push(...s.events);
+      if (!leap) run(s, TITAN_LAND + 0.05, (e) => { if (evs) evs.push(...e); });
+      return s.enemies.find((e) => e.type === 'titan')!;
+    };
+    /** Hold the Titan still at a lane distance. */
+    const hold = (s: Sim, ti: Enemy, dist: number) => { ti.speed = 0; ti.dist = dist; priv(s).place(ti); };
+    /** A weak point an arrow from `o` reaches by the rules of the sim, or -1. */
+    const openWeak = (ti: Enemy, o: { x: number; y: number; z: number }) => {
+      for (let i = 0; i < wk.length; i++) {
+        const w = weakPos(ti, i, { x: 0, y: 0, z: 0 })!, dx = w.x - o.x, dy = w.y - o.y, dz = w.z - o.z, L = Math.hypot(dx, dy, dz);
+        if (!weakOpen(ti, i, dx, dz)) continue;
+        const ub = raySphere(o.x, o.y, o.z, dx / L, dy / L, dz / L, ti.x, ti.y, ti.z, ti.r + ARROW_PAD), uw = raySphere(o.x, o.y, o.z, dx / L, dy / L, dz / L, w.x, w.y, w.z, wk[i].r);
+        if (ub < 0 || uw <= ub + 0.2) return i;
+      }
+      return -1;
+    };
+    /** A point on the hull with no weak point anywhere near the line of fire. */
+    const hullAim = (ti: Enemy, o: { x: number; y: number; z: number }) => {
+      const vx = ti.x - o.x, vz = ti.z - o.z, vl = Math.hypot(vx, vz);
+      for (const k of [0, 1, -1, 2, -2]) for (const dy of [0, 1.5, -1.5, 2.5, -2.5]) {
+        const q = { x: ti.x + (vz / vl) * k, y: ti.y + dy, z: ti.z - (vx / vl) * k };
+        const dx = q.x - o.x, dy2 = q.y - o.y, dz = q.z - o.z, L = Math.hypot(dx, dy2, dz);
+        if (raySphere(o.x, o.y, o.z, dx / L, dy2 / L, dz / L, ti.x, ti.y, ti.z, ti.r) < 0) continue;
+        if (wk.every((w, i) => { const c = weakPos(ti, i, { x: 0, y: 0, z: 0 })!; return raySphere(o.x, o.y, o.z, dx / L, dy2 / L, dz / L, c.x, c.y, c.z, w.r + 0.7) < 0; })) return q;
+      }
+      return null;
+    };
+    {
+      // when it comes: one per campaign, on a wave picked by the seed out of the four before the last; wave 22 in Survival; never in Versus
+      for (const [diff, last] of [['easy', 20], ['normal', 25], ['hard', 30]] as const) {
+        const seen = new Set<number>(); let far = true;
+        for (let seed = 1; seed <= 80; seed++) { const q = new Sim({ seed, map: bare, diff }); seen.add(q.titan.wave); if (q.titan.phase !== 'far' || q.titan.danger !== 0 || q.overlink) far = false; if (new Sim({ seed, map: bare, diff }).titan.wave !== q.titan.wave) far = false; }
+        ok(far && [...seen].sort((a, b) => a - b).join() === [last - 4, last - 3, last - 2, last - 1].join(), `${diff}: the Titan arrives on a wave from ${last - 4} to ${last - 1}, picked by the seed (${[...seen].sort((a, b) => a - b).join()})`);
+      }
+      ok(new Sim({ seed: 3, map: bare, mode: 'versus', players: 1 }).titan.phase === 'none', 'no Titan in Versus');
+      const sv = new Sim({ seed: 3, map: bare, survival: true });
+      ok(sv.titan.phase === 'far' && sv.titan.wave === TITAN_SURVIVAL, 'in Survival it comes on wave 22');
+      const tri = new Sim({ seed: 3, map: MAPS.find((q) => q.id === 'highline')! });
+      ok(tri.map.lanes[tri.titan.lane].len === Math.max(...tri.map.lanes.map((l) => l.len)), 'it takes the longest road');
+      // far: it wrecks a building every 20 to 40 seconds
+      const s = mk(); const at: number[] = [];
+      run(s, 200, (evs) => { for (const e of evs) if (e.k === 'titanSmash') at.push(s.time); });
+      const gaps = at.map((t, i) => t - (i ? at[i - 1] : 0));
+      ok(at.length >= 5 && gaps.every((g) => g >= TITAN_SMASH[0] - 0.02 && g <= TITAN_SMASH[1] + 0.02) && s.titan.phase === 'far' && s.titan.danger === 0, `titanSmash every 20 to 40 s while it roams (${gaps.map((g) => g.toFixed(0)).join(' ')})`);
+      // warn: from wave winWave - 5 the danger fills, and it is full only when it leaps
+      const from = s.winWave - TITAN_LEAD;
+      s.wave = from - 1; run(s, 1);
+      ok(s.titan.phase === 'far', 'still far before the warning');
+      let last = 0, mono = true;
+      for (let w = from; w < s.titan.wave; w++) { s.wave = w; priv(s).waveT0 = s.time; run(s, 60, () => { if (s.titan.danger < last) mono = false; last = s.titan.danger; }); }
+      ok(s.titan.phase === 'warn' && mono && last > 0.9 && last < 1, `warn: the danger fills toward the arrival (${last.toFixed(2)})`);
+      // the wave preview lists it, alone, on its lane
+      s.wave = s.titan.wave - 1; priv(s).next = null; priv(s).planAhead();
+      ok(s.preview.wave === s.titan.wave && s.preview.lanes.every((l, i) => (i === s.titan.lane ? JSON.stringify(l) === JSON.stringify([{ type: 'titan', n: 1 }]) : l.length === 0)), 'the wave preview lists the Titan, and nothing else, for its wave');
+    }
+    {
+      // the leap, the impact, the stun, the overlink
+      const s = mk(), turret = s.build('pulse', 3, 5)!, rail = s.build('rail', 4, 5)!;
+      const g1 = put(s, 'grunt', 20), g2 = put(s, 'brute', 30);
+      const evs: Ev[] = [];
+      land(s, true, evs);
+      const gold = s.gold, xp = s.xp, kills = s.kills;
+      const gate = s.map.pos(s.titan.lane, 0, { x: 0, z: 0, dx: 0, dz: 0, y: 0 });
+      const leap = evs.find((e) => e.k === 'titanLand');
+      ok(s.wave === s.titan.wave && s.titan.phase === 'landing' && s.titan.danger === 1 && !!leap && leap.x === gate.x && leap.z === gate.z && leap.lane === s.titan.lane && s.queue.length === 0 && s.titanBusy && !s.overlink, 'its wave begins with the leap (titanLand at the gate of its lane), and nothing else is queued');
+      run(s, TITAN_LAND - 0.1, (e) => { evs.push(...e); });
+      ok(s.titan.phase === 'landing' && g1.alive && g2.alive && !s.enemies.some((e) => e.type === 'titan') && count(evs, 'titanImpact') === 0, 'it is in the air for TITAN_LAND seconds');
+      run(s, 0.15, (e) => { evs.push(...e); });
+      const ti = s.enemies.find((e) => e.type === 'titan')!, hit = evs.find((e) => e.k === 'titanImpact');
+      ok(s.titan.phase === 'walk' && !!hit && hit.x === gate.x && hit.z === gate.z && s.overlink, 'the impact (titanImpact) puts it on the road and opens the overlink');
+      ok(!g1.alive && !g2.alive && s.enemies.length === 1 && s.gold === gold && s.xp === xp && s.kills === kills, 'the impact destroys every enemy on the field, for no reward');
+      ok(s.towers.length >= 3 && s.towers.every((t) => t.stun > TITAN_STUN - 0.2 && t.stun <= TITAN_STUN && towerOff(t)), 'and stuns every tower for TITAN_STUN seconds');
+      const len = s.map.lanes[s.titan.lane].len;
+      ok(!!ti && ti.lane === s.titan.lane && ti.dist < 0.5 && ti.r === 3.2 && near(ti.y, ti.gy + 9) && ti.maxHp === s.titanHp() && near(ti.speed, Math.max(0.9, Math.min(1.7, len / 70))) && MUST_EVENTS.has('titanLand') && MUST_EVENTS.has('titanImpact') && MUST_EVENTS.has('titanDie'), 'the Titan is an enemy of type titan on its lane, pacing itself to the road');
+      ok(near(s.titanHp(), TUNE.titan * BOW_TIERS[4].mul) && near(mk({ diff: 'hard' }).titanHp() / mk({ diff: 'easy', seed: 4 }).titanHp(), Math.sqrt(1.3 / 0.72) * (BOW_TIERS[4].mul / BOW_TIERS[bowTierOf(mk({ diff: 'easy', seed: 4 }).titan.wave)].mul), 1e-6) && near(mk({ mode: 'coop', players: 2 }).titanHp(), s.titanHp() * 1.75), 'its health follows the bow tier of its wave, the difficulty and the number of players');
+      // stunned towers are idle and dark: no shots, no charge, no special
+      hold(s, ti, 10); evs.length = 0;
+      turret.charge = 0.3; rail.charge = 1;
+      ok(!s.specialReady(rail) && !s.triggerSpecial(rail.id, 0) && rail.charge === 1, 'a stunned tower cannot fire its special');
+      run(s, TITAN_STUN - 0.4, (e) => { evs.push(...e); });
+      ok(count(evs, 'shot') === 0 && turret.charge === 0.3 && turret.stun > 0, 'stunned towers neither fire nor charge');
+      // nothing else comes while it walks
+      const wave = s.wave, wait = s.nextWaveIn;
+      s.startWave();
+      ok(s.wave === wave && s.callBonus() === 0 && s.nextWaveIn === wait && s.waveActive && !s.cleared && s.queue.length === 0, 'no wave can start while the Titan walks');
+      run(s, 1.2, (e) => { evs.push(...e); });
+      // regular tower fire does not hurt it; slows work at 40%
+      evs.length = 0; const hp = ti.hp;
+      run(s, 3, (e) => { evs.push(...e); });
+      ok(count(evs, 'shot', turret.id) > 3 && count(evs, 'shot', rail.id) >= 1 && ti.hp === hp && turret.charge > 0.3 && turret.stun === 0, 'after the stun the towers fire again, and regular fire does not hurt the Titan');
+      ok(s.damage(ti, 1e6, -1) === 0 && s.damage(ti, 1e6, 0) === 0 && s.damage(ti, 1e6, -1, true) === 0 && ti.hp === hp, 'plain damage does nothing to it');
+      // tower specials do
+      ok(s.triggerSpecial(rail.id, 0), 'Overcharge fires at the Titan');
+      ok(near(hp - ti.hp, s.towerDmg(rail) * 8 * TUNE.titanSpec, 1e-6), `a tower special hurts it (${(hp - ti.hp).toFixed(0)})`);
+      const hp2 = ti.hp; turret.charge = 1;
+      ok(s.triggerSpecial(turret.id, 0), 'Bullet Storm fires at the Titan');
+      run(s, 3);
+      ok(ti.hp < hp2 - s.towerDmg(turret) * 20, `Bullet Storm bolts hurt it too (${(hp2 - ti.hp).toFixed(0)})`);
+      run(s, 3.5); const hp3 = ti.hp; run(s, 8);
+      ok(turret.spec === 0 && ti.hp === hp3, 'once the storm is over the bolts do nothing again');
+      // slowing effects at 40% strength
+      ti.speed = 1; const d0 = ti.dist; run(s, 1); const free = ti.dist - d0;
+      ti.slowT = 5; ti.slowF = 0.5; const d1 = ti.dist; run(s, 1);
+      ok(near(free, 1, 0.01) && near(ti.dist - d1, 1 - 0.5 * TITAN_SLOW, 0.01), `a 50% slow takes ${(100 * (1 - (ti.dist - d1))).toFixed(0)}% off its pace`);
+      ti.slowT = 0; ti.frz = 5; const d2 = ti.dist; run(s, 1);
+      ok(near(ti.dist - d2, 1 - TITAN_SLOW, 0.01), 'a freeze only slows it');
+      ti.frz = 0; ti.speed = 0;
+      // the overlink: charge pinned at full, the Uplink does not run down, leaving and coming back is free
+      const p = s.players[0];
+      p.energy = 0; run(s, 0.05);
+      ok(p.energy === MAX_ENERGY, 'overlink: the charge is pinned at full');
+      p.energy = 0;
+      ok(s.activateHero(0, 0) && p.energy === MAX_ENERGY, 'the Uplink opens');
+      const left = p.heroTime; run(s, 4);
+      ok(p.heroActive && p.heroTime === left && left === p.heroDur, 'the Uplink timer does not run down');
+      s.exitHero(0);
+      ok(!p.heroActive && p.energy === MAX_ENERGY && s.activateHero(0, 0) && p.heroActive, 'leaving and coming back is free');
+      // arrows and the Rail Shot: weak points only
+      const o = s.heroOrigin(0)!;
+      let wi = -1, at = 10;
+      for (const dd of [10, 14, 18, 24, 30, 6]) { hold(s, ti, dd); wi = openWeak(ti, o); if (wi >= 0) { at = dd; break; } }
+      ok(wi >= 0, 'a weak point shows from the Spire (at lane distance ' + at + ')');
+      p.fireCd = 0; p.stats.arrows = 1; s.wave = 1; // (wave 1: a plain bow, one arrow, no blast)
+      run(s, 1); evs.length = 0; const hp4 = ti.hp;
+      const w = weakPos(ti, wi, { x: 0, y: 0, z: 0 })!;
+      s.heroFire(0, w.x, w.y, w.z); run(s, 1.2, (e) => { evs.push(...e); });
+      const crit = evs.find((e) => e.k === 'crit'), want = s.arrowDmg(p) * FULL_DRAW_MUL * wk[wi].mul;
+      ok(!!crit && near(hp4 - ti.hp, want, 1e-6) && Math.abs(crit.n - want) <= 0.5 && count(evs, 'deflect') === 0, `an arrow on a weak point hurts it (${(hp4 - ti.hp).toFixed(1)} of ${want.toFixed(1)})`);
+      const aim = hullAim(ti, o)!; evs.length = 0; const hp5 = ti.hp;
+      ok(!!aim, 'found a clear line to its hull');
+      s.heroFire(0, aim.x, aim.y, aim.z); run(s, 1.2, (e) => { evs.push(...e); });
+      const defl = evs.find((e) => e.k === 'deflect');
+      ok(!!defl && ti.hp === hp5 && count(evs, 'crit') === 0 && count(evs, 'dmg') === 0 && Math.abs(Math.hypot(defl.x - ti.x, defl.y - ti.y, defl.z - ti.z) - (ti.r + ARROW_PAD)) < 0.05, 'an arrow anywhere else glances off (deflect, where it met the hull)');
+      p.cds[0] = 0; evs.length = 0; s.heroSkill(0, 0, aim.x, aim.y, aim.z); evs.push(...s.events.splice(0));
+      ok(ti.hp === hp5 && count(evs, 'deflect') === 1 && count(evs, 'crit') === 0, 'a Rail Shot on the hull glances off as well');
+      p.cds[0] = 0; evs.length = 0; s.heroSkill(0, 0, w.x, w.y, w.z); evs.push(...s.events.splice(0));
+      ok(near(hp5 - ti.hp, s.arrowDmg(p) * 8 * wk[wi].mul, 1e-6) && count(evs, 'crit') === 1, `a Rail Shot through a weak point hurts it (${(hp5 - ti.hp).toFixed(1)} of ${(s.arrowDmg(p) * 8 * wk[wi].mul).toFixed(1)}, weak point ${wi}, ${count(evs, 'crit')} crits)`);
+      // the eye only shows from in front
+      const fx = Math.sin(ti.yaw), fz = Math.cos(ti.yaw);
+      ok(wk[0].front === true && weakOpen(ti, 0, -fx, -fz) && weakOpen(ti, 0, fz, -fx) && !weakOpen(ti, 0, fx, fz) && [1, 2, 3].every((i) => weakOpen(ti, i, fx, fz) && weakOpen(ti, i, -fx, -fz)) && !weakOpen(ti, 9, fx, fz), 'the eye can be hit from in front and from the side, not from behind');
+      // Arrow Rain and Singularity only slow it
+      run(s, 1); const hp6 = ti.hp; ti.speed = 1; ti.slowT = 0; ti.slowF = 0;
+      p.cds[1] = 0; s.heroSkill(0, 1, ti.x, ti.gy, ti.z); run(s, RAIN_DELAY + 0.3);
+      const d3 = ti.dist; run(s, 1);
+      ok(ti.hp === hp6 && near(ti.dist - d3, 1 - 0.5 * TITAN_SLOW, 0.02), `Arrow Rain does not hurt the Titan, it slows it (${(ti.dist - d3).toFixed(2)} a second)`);
+      run(s, 4); ti.slowT = 0; ti.slowF = 0;
+      p.cds[2] = 0; s.heroSkill(0, 2, ti.x, ti.gy, ti.z); run(s, 0.3);
+      const d4 = ti.dist; run(s, 1);
+      ok(near(ti.dist - d4, 1 - 0.9 * TITAN_SLOW, 0.02), 'a Singularity holds it at part strength and does not drag it');
+      run(s, 3);
+      ok(ti.hp === hp6, 'and its collapse does not hurt it');
+    }
+    {
+      // at the core: four seconds of wind-up, then 40% of the core's maximum, again every five seconds until the core falls
+      const s = mk(), evs: Ev[] = [], each = (e: Ev[]) => { evs.push(...e); };
+      const ti = land(s), len = s.map.lanes[ti.lane].len, start = s.lives, blow = Math.ceil(s.maxLives * TITAN_STRIKE);
+      ti.speed = 2; ti.dist = len - 5; priv(s).place(ti);
+      run(s, 1, each);
+      ok(near(ti.dist, len - (CORE_STAND + 0.6 * ti.r)) && ti.breach > TITAN_WINDUP - 0.5 && ti.breach <= TITAN_WINDUP && s.lives === start, 'at the core it winds up');
+      run(s, TITAN_WINDUP - 0.6, each);
+      ok(s.lives === start && count(evs, 'titanStrike') === 0, 'no damage during the wind-up');
+      run(s, 0.4, each);
+      const st = evs.find((e) => e.k === 'titanStrike'), lk = evs.find((e) => e.k === 'leak');
+      ok(s.lives === start - blow && blow === 8 && !!st && st.n === blow && st.id === ti.id && !!lk && lk.n === blow && ti.alive && s.enemies.includes(ti) && !s.over, `its blow takes 40% of the core's maximum (${blow} of ${s.maxLives}) and it stays`);
+      ok(ti.breach > TITAN_STRIKE_EVERY - 0.5 && ti.breach <= TITAN_STRIKE_EVERY, 'the next blow is five seconds away');
+      run(s, TITAN_STRIKE_EVERY, each);
+      ok(s.lives === start - 2 * blow && count(evs, 'titanStrike') === 2 && !s.over, 'it strikes again');
+      run(s, TITAN_STRIKE_EVERY + 0.1, each);
+      ok(s.lives === 0 && s.over && !s.won && count(evs, 'lose') === 1 && count(evs, 'titanStrike') === 3, 'until the core falls');
+    }
+    {
+      // destroyed: titanDie, credits and a level, the overlink closes, the wave clears and the remaining waves follow
+      const s = mk(), evs: Ev[] = [], each = (e: Ev[]) => { evs.push(...e); };
+      const ti = land(s), p = s.players[0];
+      s.activateHero(0, 0); run(s, 2, each);
+      const gold = s.gold, level = s.level, kills = s.kills, wave = s.wave;
+      priv(s).sp = true; s.damage(ti, 1e12, 0); priv(s).sp = false;
+      evs.push(...s.events.splice(0));
+      const die = evs.find((e) => e.k === 'titanDie');
+      ok(!ti.alive && s.titan.phase === 'dead' && !s.overlink && !s.titanBusy && !!die && near(die.x, ti.x) && near(die.y, ti.y) && near(die.z, ti.z) && count(evs, 'die') === 0, 'titanDie: the Titan is destroyed and the overlink closes');
+      ok(near(s.gold, gold + TITAN_GOLD) && s.level === level + 1 && count(evs, 'levelup') === 1 && p.pending.length === 1 && s.kills === kills + 1 && p.kills === 1, 'its reward: credits and a level-up');
+      p.pending.length = 0;
+      const left = p.heroTime; run(s, 1, each);
+      ok(p.heroActive && p.heroTime < left - 0.9 && count(evs, 'clear') === 1 && s.cleared && s.nextWaveIn <= 5, 'normal rules resume: the Uplink runs down again and the wave is cleared');
+      run(s, 5, each);
+      ok(s.wave === wave + 1 && s.wave <= s.winWave && s.queue.length + s.enemies.length > 0 && s.titan.phase === 'dead' && !s.queue.some((q) => q.type === 'titan'), 'the remaining waves follow');
+      let again = 0;
+      for (let w = s.wave + 1; w <= s.winWave + 20; w++) { priv(s).planWave(w); if (priv(s).next.items.some((q: { type: string }) => q.type === 'titan')) again++; }
+      ok(again === 0, 'one Titan per campaign');
+    }
+    {
+      // Survival: wave 22, then every 12 waves, tougher each time
+      const s = mk({ survival: true });
+      const ti = land(s), hp1 = ti.maxHp;
+      ok(s.wave === TITAN_SURVIVAL && !!ti, 'the Survival Titan lands on wave 22');
+      priv(s).sp = true; s.damage(ti, 1e12, 0); priv(s).sp = false; s.players[0].pending.length = 0;
+      ok(s.titan.phase === 'dead' && s.titan.wave === TITAN_SURVIVAL + TITAN_AGAIN, 'the next one is due twelve waves later');
+      run(s, 6.5, () => { for (const e of s.enemies) s.damage(e, 1e12, -1, true); });
+      ok(s.wave === TITAN_SURVIVAL + 1 && s.titan.phase === 'far' && s.titan.danger === 0, 'and roams the district again');
+      s.enemies.length = 0;
+      const t2 = land(s);
+      ok(s.wave === TITAN_SURVIVAL + TITAN_AGAIN && !!t2 && near(t2.maxHp, hp1 * TITAN_TOUGHER, 1e-6), `the second Titan is tougher (${Math.round(hp1)} then ${Math.round(t2.maxHp)})`);
+      // a campaign that plays on after its win gets one as well
+      const c = mk(); const t3 = land(c);
+      priv(c).sp = true; c.damage(t3, 1e12, 0); priv(c).sp = false; c.players[0].pending.length = 0;
+      c.wave = c.winWave; c.endless = true; c.queue.length = 0; c.enemies.length = 0; priv(c).next = null;
+      c.startWave();
+      ok(c.titan.phase === 'far' && c.titan.wave > c.wave && (c.titan.wave - (c.winWave - 4)) % 1 === 0, 'an endless run after a win gets its next Titan');
+    }
+    {
+      // co-op: the Titan's state, the overlink and the stun reach the guest; hostile values are clamped
+      const h = mk({ mode: 'coop', players: 2 }), c = mk({ mode: 'coop', players: 2, seed: 99 }); c.replica = true;
+      h.build('pulse', 3, 5);
+      const ti = land(h); run(h, 0.5);
+      const snap = JSON.parse(JSON.stringify(h.snapshot([{ k: 'titanLand', x: 1, z: 2, lane: 0 }, { k: 'titanImpact', x: 1, z: 2 }, { k: 'titanSmash' }, { k: 'titanDie', x: 1, y: 2, z: 3 }, { k: 'titanStrike', id: ti.id, x: 1, z: 2, n: 8 }])));
+      c.applySnapshot(snap);
+      const ct = c.enemies.find((e) => e.id === ti.id)!;
+      ok(c.titan.phase === 'walk' && c.titan.wave === h.titan.wave && c.titan.lane === h.titan.lane && c.titan.danger === 1 && Math.abs(c.titan.t - h.titan.t) < 0.011 && c.overlink, 'the Titan state and the overlink reach the guest');
+      ok(!!ct && ct.type === 'titan' && ct.r === 3.2 && near(ct.y, ct.gy + 9) && Math.abs(ct.hp - ti.hp) <= 1 && c.towers.length === h.towers.length && c.towers.every((t, i) => Math.abs(t.stun - h.towers[i].stun) < 0.011 && t.stun > 0), 'the Titan itself and the stunned towers reach the guest');
+      ok(['titanLand', 'titanImpact', 'titanSmash', 'titanDie', 'titanStrike'].every((k) => c.events.some((e) => e.k === k)) && c.events.some((e) => e.k === 'titanLand' && e.lane === 0 && e.x === 1), 'the Titan events reach the guest');
+      h.preview = { wave: 22, lanes: [[{ type: 'titan', n: 1 }]] };
+      c.applySnapshot(JSON.parse(JSON.stringify(h.snapshot([]))));
+      ok(c.preview.lanes[0].length === 1 && c.preview.lanes[0][0].type === 'titan', 'the guest sees the Titan in the wave preview');
+      for (const bad of [[99, 5, 'x', -1, 1e9], ['walk', NaN, 1e99, {}, -4], [-1, -1, -1, -1, -1], [2.7, 0.5, 23.9, 1e99, 0.4], 'x', null, [[]]]) {
+        const o = JSON.parse(JSON.stringify(snap)); o.ti = bad; o.a[16] = bad;
+        try { c.applySnapshot(o); } catch (e) { ok(false, 'hostile Titan state threw ' + e); }
+        ok(TITAN_PHASES.includes(c.titan.phase) && c.titan.danger >= 0 && c.titan.danger <= 1 && Number.isInteger(c.titan.wave) && c.titan.wave >= 0 && c.titan.t >= 0 && Number.isFinite(c.titan.t) && Number.isInteger(c.titan.lane) && c.titan.lane >= 0 && c.titan.lane < c.map.lanes.length && c.overlink === false, 'hostile Titan state is clamped: ' + JSON.stringify(bad));
+      }
+    }
+    {
+      // the bot: uplinks when the overlink is on (also in the runs without the hero), goes for the weak points and fires charged specials at it
+      const s = mk(), rail = s.build('rail', 4, 5)!, bot = new Bot(s, 0);
+      bot.useHero = false;
+      const ti = land(s), p = s.players[0];
+      let crits = 0, specials = 0, on = -1;
+      const hp = ti.hp;
+      for (let i = 0; i < 60 * 14; i++) {
+        p.energy = 0; // the no-hero balance runs do this every step
+        if (i === 60) { for (const t of s.towers) t.stun = 0; rail.charge = 1; }
+        bot.step(1 / 60); s.step(1 / 60);
+        if (p.heroActive && on < 0) on = s.time;
+        for (const e of s.events.splice(0)) { if (e.k === 'crit') crits++; if (e.k === 'special' && e.id === rail.id) specials++; }
+        p.pending.length = 0;
+      }
+      ok(on >= 0 && on - (s.time - 14) < 1.2, 'the bot uplinks as soon as the overlink is on, even when it plays without the hero');
+      ok(crits >= 8 && ti.hp < hp - s.arrowDmg(p) * FULL_DRAW_MUL * 8, `the bot hits the Titan's weak points (${crits} crits)`);
+      ok(specials === 1, 'and fires a charged special at it');
+      // mites on a tower: the bot shoots them off during the Uplink
+      const q = mk(), t = q.build('pulse', 3, 5)!, c = put(q, 'brood', 10), b2 = new Bot(q, 0), p2 = q.players[0];
+      c.ttl = 0; p2.energy = MAX_ENERGY; q.activateHero(0, 0); p2.heroTime = p2.heroDur = 600;
+      let shotOff = 0, jamT = 0;
+      for (let i = 0; i < 60 * 14; i++) { b2.step(1 / 60); q.step(1 / 60); if (t.jam > 0) jamT += 1 / 60; for (const e of q.events.splice(0)) if (e.k === 'die' && e.t === 'mite' && e.h === 1) shotOff++; p2.pending.length = 0; }
+      ok(shotOff >= 4 && jamT < 2 * (MITE_HOLD + JAM_LINGER) * 0.85, `the bot shoots mites off a jammed tower (${shotOff} shot off, jammed ${jamT.toFixed(1)} s of 14)`);
+    }
+    {
+      // a whole campaign with the bot: the Titan comes, is destroyed, and the final waves still play
+      const s = new Sim({ seed: 7, map: MAPS[0], diff: 'easy', pauseOnCards: false }), bot = new Bot(s, 0);
+      let dieWave = 0, landWave = 0, wavesAfter = 0, wonWhileAlive = false, spawnsDuring = 0;
+      for (let i = 0; i < 60 * 60 * 40 && !s.over; i++) {
+        bot.step(1 / 60); s.step(1 / 60);
+        if (s.titanBusy && (s.queue.length > 0 || s.enemies.some((e) => e.type !== 'titan'))) spawnsDuring++;
+        for (const e of s.events.splice(0)) {
+          if (e.k === 'titanImpact') landWave = s.wave;
+          if (e.k === 'titanDie') dieWave = s.wave;
+          if (e.k === 'wave' && dieWave) wavesAfter++;
+          if (e.k === 'win' && s.titanBusy) wonWhileAlive = true;
+        }
+      }
+      ok(landWave === s.titan.wave && landWave >= s.winWave - 4 && landWave < s.winWave && spawnsDuring <= 60 * TITAN_LAND + 1, `the Titan landed on wave ${landWave} of ${s.winWave}, alone`);
+      ok(dieWave === landWave && wavesAfter === s.winWave - landWave && s.won && !wonWhileAlive && s.wave === s.winWave, `the bot destroyed it, the last ${wavesAfter} waves were played and the campaign was won`);
+    }
+  }
+  {
+    // ---------- Arrow Rain: the volley is in the air for RAIN_DELAY seconds ----------
+    const s = mk(), p = s.players[0], e = put(s, 'grunt', 10);
+    p.energy = MAX_ENERGY; s.activateHero(0, 0); p.heroTime = p.heroDur = 600;
+    s.heroSkill(0, 1, e.x, e.gy, e.z);
+    const z = s.zones.find((q) => q.kind === 'rain')!, tick = s.arrowDmg(p) * 0.75;
+    ok(RAIN_DELAY === 0.8 && !!z && Math.abs(z.life - (3.5 + RAIN_DELAY)) < 1e-9 && z.tick === RAIN_DELAY, 'the rain zone exists from the cast and lasts the delay longer');
+    run(s, RAIN_DELAY - 0.05);
+    ok(e.hp === e.maxHp, 'no damage while the volley is in the air');
+    run(s, 0.1);
+    ok(Math.abs(e.maxHp - e.hp - tick) < 1e-6, `the first hits land about 0.8 s after the cast (${(e.maxHp - e.hp).toFixed(1)})`);
+    run(s, 4);
+    ok(Math.abs(e.maxHp - e.hp - tick * 14) < 1e-6 && !s.zones.length, 'and it deals the same fourteen ticks as before');
+  }
+  {
+    // ---------- the balance pass: tower damage, credits, xp and rare cards ----------
+    const s = mk(), t = s.build('pulse', 3, 5)!;
+    ok(TUNE.tdmg === 0.92 && Math.abs(s.towerDmg(t) - TOWERS.pulse.dmg * 0.92) < 1e-9, 'towers deal 8% less');
+    const e = put(s, 'grunt', 30), gold = s.gold, xp = s.xp;
+    s.damage(e, 1e12, -1, true);
+    ok(Math.abs(s.gold - gold - ENEMIES.grunt.bounty * 0.92) < 1e-9 && Math.abs(s.xp - xp - ENEMIES.grunt.xp * 0.92) < 1e-9 && TUNE.bounty === 0.92 && TUNE.xp === 0.92, 'kills pay 8% less credits and xp');
+    ok(Math.abs(TUNE.clear0 / 15 - 0.92) < 1e-9 && Math.abs(TUNE.clear1 / 3 - 0.92) < 1e-9, 'the wave bonus is 8% smaller');
+    ok(Math.abs(TUNE.rare / 5 - 0.85) < 1e-9 && Math.abs(TUNE.epic / 2 - 0.85) < 1e-9, 'rare and epic cards weigh 15% less');
+    const share = () => { const q = new Sim({ seed: 12, map: bare }); q.level = 4; let n = 0, all = 0; for (let i = 0; i < 4000; i++) for (const id of q.rollCards(0)) { const c = CARD_BY_ID[id]; if (c.kind === 'blueprint') continue; all++; if (c.rar > 0) n++; } return n / all; };
+    const now = share(), rare = TUNE.rare, epic = TUNE.epic;
+    TUNE.rare = 5; TUNE.epic = 2; const was = share(); TUNE.rare = rare; TUNE.epic = epic;
+    ok(now / was > 0.8 && now / was < 0.94, `rare and epic cards are offered less often (${(100 * was).toFixed(1)}% of the offers before, ${(100 * now).toFixed(1)}% now)`);
   }
 }
 
