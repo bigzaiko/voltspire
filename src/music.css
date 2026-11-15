@@ -54,6 +54,13 @@
   .mu-frame.yt { min-height: 0; height: 120px; aspect-ratio: auto; }
   .mu-frame.sp { height: 80px; }
 }
+/* The dock and the match toasts share the top left corner: the toasts move below a folded dock and beside an open one. */
+body:has(.mu-dock.min) #toasts { top: calc(var(--top-h) + 66px); }
+body:has(.mu-dock:not(.min)) #toasts { left: calc(344px + var(--safe-l)); }
+@media (max-width: 700px) { body:has(.mu-dock:not(.min)) #toasts { left: calc(12px + var(--safe-l)); top: auto; bottom: calc(var(--console-h) + 12px); } }
+/* Narrow screens cannot move the sheet aside, so it starts below the open dock instead. */
+@media (max-width: 899px) { body:has(.mu-dock:not(.min)) .overlay:has(.mu):not(#mu-none) { padding-top: 300px; } }
+@media (max-width: 899px) and (max-height: 520px) { body:has(.mu-dock:not(.min)) .overlay:has(.mu):not(#mu-none) { padding-top: 14px; padding-left: calc(344px + var(--safe-l)); } }
 /* Wide screens: an open sheet moves aside so the dock does not cover the list.
    The :not(#mu-none) only adds weight, so this wins over the overlay padding rules in style.css. */
 @media (min-width: 900px) {

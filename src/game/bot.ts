@@ -1,20 +1,34 @@
 // Autoplayer: drives the menu attract mode, the trailer, and headless balance tests.
-import { GW, GH, TOWERS, ENEMIES, ENEMY_SCALE, MAX_ENERGY, CARD_BY_ID, cellX, cellZ } from './data.ts';
+import { GW, GH, TOWERS, ENEMIES, ENEMY_SCALE, MAX_ENERGY, CARD_BY_ID, LINK_RANGE, WALL_HALF, FIRE_RING, cellX, cellZ } from './data.ts';
 import type { TowerType } from './data.ts';
-import { Sim, nodePos, weakPos, raySphere, ARROW_PAD } from './sim.ts';
+import { Sim, nodePos, weakPos, raySphere, linkRange, segDist, ARROW_PAD, ARROW_SPEED } from './sim.ts';
 import type { Enemy, Tower } from './sim.ts';
+import { hexDist } from './hex.ts';
 
 const P = { x: 0, z: 0, dx: 0, dz: 0, y: 0 };
 const V = { x: 0, y: 0, z: 0 };
 
-/** Buildable cells ranked by how much road they cover. */
+/** Buildable cells ranked by how much road they cover. On maps with several roads, the road with the thinnest defence so far counts for more. */
 function rankSpots(sim: Sim, range: number, spread = 4.5) {
   const out: { cx: number; cz: number; s: number }[] = [];
+  const L = sim.map.lanes.length;
+  // how well each road is already covered: metres of it inside the reach of the combat towers
+  const need: number[] = [];
+  if (L > 1) {
+    let top = 0;
+    for (let l = 0; l < L; l++) {
+      const len = sim.map.lanes[l].len;
+      let c = 0;
+      for (let d = Math.min(8, len * 0.2); d < len; d += 1.5) { sim.map.pos(l, d, P); for (const t of sim.towers) if (t.type !== 'spire' && t.type !== 'beacon' && Math.hypot(P.x - t.x, P.z - t.z) <= 7.5) c++; }
+      need.push(c); top = Math.max(top, c);
+    }
+    for (let l = 0; l < L; l++) need[l] = (top + 12) / (need[l] + 12);
+  }
   for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) {
     if (sim.grid[cz * GW + cx] !== 0) continue;
     const x = cellX(cx, cz), z = cellZ(cz);
     let s = 0;
-    for (let l = 0; l < sim.map.lanes.length; l++) { const len = sim.map.lanes[l].len; for (let d = Math.min(8, len * 0.2); d < len; d += 1.5) { sim.map.pos(l, d, P); if (Math.hypot(P.x - x, P.z - z) <= range) s += (1 + d / len) / sim.map.lanes.length; } }
+    for (let l = 0; l < L; l++) { const len = sim.map.lanes[l].len, w = (L > 1 ? need[l] : 1) / L; for (let d = Math.min(8, len * 0.2); d < len; d += 1.5) { sim.map.pos(l, d, P); if (Math.hypot(P.x - x, P.z - z) <= range) s += (1 + d / len) * w; } }
     if (s > 0) { for (const t of sim.towers) if (Math.hypot(t.x - x, t.z - z) < spread) s -= 2.2; out.push({ cx, cz, s }); }
   }
   return out.sort((a, b) => b.s - a.s);
@@ -29,13 +43,17 @@ export class Bot {
   private teleCd = 0;
   private nodeHold = new Map<number, number>();
   private seed: number;
-  /** Where the bow is pointing (eased, for the camera); arrows are loosed once it has settled on the target. */
+  /** Where the bow is pointing (eased, for the camera); the bot draws while it aims and looses at full draw once the aim has settled on the target. */
   aim = { x: 0, y: 0.8, z: 0 };
   skill = 1;
   /** Focused build (balance tests): only these tower types, in these shares, and only the cards that feed them. The Uplink is never used. */
   mix: Partial<Record<TowerType, number>> | null = null;
   /** With a focused build: use the Uplink as well (and value hero cards). */
   mixHero = false;
+  /** Fire tower specials during the Uplink (balance tests switch this off to measure what the specials are worth). */
+  useSpecials = true;
+  /** Use the Uplink at all. Off: no extra Spires, no Spire upgrades, and hero and special cards are passed over (the no-hero balance runs). */
+  useHero = true;
   constructor(sim: Sim, pi = 0, skill = 1) { this.sim = sim; this.pi = pi; this.skill = skill; this.seed = ((sim.opts.seed | 0) ^ (0x9e3779b9 * (pi + 1))) >>> 0; }
 
   private rnd() { let t = (this.seed = (this.seed + 0x6d2b79f5) >>> 0); t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
@@ -93,10 +111,56 @@ export class Bot {
       }
       return best >= 0 && !!s.build('spire', best % GW, Math.floor(best / GW));
     }
-    const short = type === 'flame' || type === 'gravity';
+    if (type === 'flame') { if (this.placePylon()) return true; type = 'pulse'; }
+    const short = type === 'gravity';
     const spots = rankSpots(s, Math.min(TOWERS[type].range * (short ? 0.85 : 1), 9), short ? 3.2 : 4.5);
     const pick = spots[Math.min(spots.length - 1, Math.floor(this.rnd() * 3))];
     return !!pick && !!s.build(type, pick.cx, pick.cz);
+  }
+
+  /**
+   * Firewall Pylons go down in linked pairs with the wall across as much road as possible: first a partner for a pylon
+   * that stands alone, otherwise whichever is worth more per pylon, extending a pylon that has a link to spare or starting a new pair.
+   */
+  private placePylon(): boolean {
+    const s = this.sim, L = s.map.lanes.length, bonus = s.mods.flameLink, reach = WALL_HALF + 0.45;
+    // the road as weighted samples, leaving out what an existing wall already covers
+    const pts: { x: number; z: number; w: number }[] = [];
+    for (let l = 0; l < L; l++) {
+      const len = s.map.lanes[l].len;
+      for (let d = Math.min(8, len * 0.2); d < len - 1; d += 1) {
+        s.map.pos(l, d, P);
+        if (!s.walls.some((w) => segDist(P.x, P.z, w.ax, w.az, w.bx, w.bz) <= reach)) pts.push({ x: P.x, z: P.z, w: (1 + d / len) / L });
+      }
+    }
+    const cover = (ax: number, az: number, bx: number, bz: number) => { let v = 0; for (const q of pts) if (segDist(q.x, q.z, ax, az, bx, bz) <= reach) v += q.w; return v; };
+    const free: { cx: number; cz: number; x: number; z: number }[] = [];
+    for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) {
+      if (s.grid[cz * GW + cx] !== 0) continue;
+      const x = cellX(cx, cz), z = cellZ(cz);
+      if (pts.some((q) => Math.hypot(q.x - x, q.z - z) <= 7)) free.push({ cx, cz, x, z });
+    }
+    const links = new Map<number, number>();
+    for (const w of s.walls) { links.set(w.a, (links.get(w.a) || 0) + 1); links.set(w.b, (links.get(w.b) || 0) + 1); }
+    let best: { cx: number; cz: number } | null = null, bv = 0.5;
+    const pylons = s.towers.filter((t) => t.type === 'flame');
+    const alone = pylons.filter((t) => !links.get(t.id));
+    for (const t of alone.length ? alone : pylons.filter((o) => links.get(o.id)! < 2)) {
+      const r = linkRange(t, bonus);
+      for (const c of free) {
+        const d = hexDist(t.cx, t.cz, c.cx, c.cz);
+        if (d < 2 || d > r) continue;
+        const v = cover(t.x, t.z, c.x, c.z);
+        if (v > bv) { bv = v; best = c; }
+      }
+    }
+    if (!(alone.length && best)) for (let i = 0; i < free.length; i++) for (let k = i + 1; k < free.length; k++) {
+      const a = free[i], b = free[k], d = hexDist(a.cx, a.cz, b.cx, b.cz);
+      if (d < 2 || d > LINK_RANGE + bonus) continue;
+      const v = cover(a.x, a.z, b.x, b.z) * 0.55; // two pylons for one wall
+      if (v > bv) { bv = v; best = a; }
+    }
+    return !!best && !!s.build('flame', best.cx, best.cz);
   }
 
   private cardValue(id: string) {
@@ -110,6 +174,7 @@ export class Bot {
       return c.kind === 'eco' ? 1 : 2 + c.rar;
     }
     if (c.kind === 'blueprint') return 10;
+    if (!this.useHero && (c.kind === 'hero' || id === 'capbank' || id === 'reboot' || id === 'aftershock' || id === 'b_feed')) return 0.1;
     if (id === 'repair') return s.lives < 12 ? 7 : 0.3;
     let v = c.rar * 2 + (c.kind === 'tower' ? 2 : c.kind === 'hero' ? 1.6 : 0.8);
     if (c.needs) { const n = this.count(c.needs); v = n ? v + Math.min(2, n * 0.5) : 0.6; }
@@ -121,6 +186,16 @@ export class Bot {
     const s = this.sim, r = s.range(t);
     if (t.type === 'beacon') return s.enemies.length >= 8 && s.towers.some((o) => o !== t && o.buff > 0 && Math.hypot(o.x - t.x, o.z - t.z) <= r);
     let n = 0, heavy = false;
+    if (t.type === 'flame') { // Inferno: what stands in or right before its walls (or its ring when it has no partner)
+      const walls = s.walls.filter((w) => w.a === t.id || w.b === t.id);
+      for (const e of s.enemies) {
+        const near = walls.length ? walls.some((w) => w.on && segDist(e.x, e.z, w.ax, w.az, w.bx, w.bz) <= s.wallHalf(w) * 2 + 1 + e.r) : Math.hypot(e.x - t.x, e.z - t.z) <= FIRE_RING * 1.5 + 1 + e.r;
+        if (!near) continue;
+        n++;
+        if (e.type === 'boss' || e.type === 'brute') heavy = true;
+      }
+      return n >= 4 || heavy;
+    }
     const all = t.type === 'rail' || t.type === 'missile';
     for (const e of s.enemies) {
       if (!all && Math.hypot(e.x - t.x, e.z - t.z) > r) continue;
@@ -146,11 +221,11 @@ export class Bot {
       const combat = s.towers.length - s.spires;
       // a second Spire mid-game (a third on the big multi-lane maps), so Kestrel can follow the fight
       const wantSpires = s.wave >= 18 && s.map.lanes.length > 1 ? 3 : s.wave >= (s.map.lanes.length > 1 ? 6 : 9) ? 2 : 1;
-      if ((!this.mix || this.mixHero) && s.spires < wantSpires && combat >= 6 && s.unlocked.has('spire') && s.gold >= s.cost('spire') + 60) this.place('spire');
+      if (this.useHero && (!this.mix || this.mixHero) && s.spires < wantSpires && combat >= 6 && s.unlocked.has('spire') && s.gold >= s.cost('spire') + 60) this.place('spire');
       else {
         // upgrade or build
         const type = this.wanted();
-        const up = s.towers.filter((t) => t.lvl < 3 && t.type !== 'beacon' && (t.type !== 'spire' || s.wave >= 14)).sort((a, b) => s.upCost(a) - s.upCost(b))[0];
+        const up = s.towers.filter((t) => t.lvl < 3 && t.type !== 'beacon' && (t.type !== 'spire' || (this.useHero && s.wave >= 14))).sort((a, b) => s.upCost(a) - s.upCost(b))[0];
         if (up && combat >= 6 && s.gold >= s.upCost(up) && (s.upCost(up) < s.cost(type) * 1.4 || combat > 26)) s.upgrade(up.id);
         else if (s.gold >= s.cost(type) && combat < 40) this.place(type);
       }
@@ -158,7 +233,7 @@ export class Bot {
       // (a full charge is kept for a Colossus when the wave intel shows one coming and the field is quiet)
       const bossNow = s.enemies.some((e) => e.type === 'boss');
       const bossSoon = !bossNow && (s.queue.some((q) => q.type === 'boss') || (s.preview.lanes.some((l) => l.some((o) => o.type === 'boss')) && s.enemies.length < 12));
-      if ((!this.mix || this.mixHero) && !p.heroActive && p.energy >= MAX_ENERGY && s.spires > 0 && !bossSoon && (s.enemies.length > 5 || bossNow)) {
+      if (this.useHero && (!this.mix || this.mixHero) && !p.heroActive && p.energy >= MAX_ENERGY && s.spires > 0 && !bossSoon && (s.enemies.length > 5 || bossNow)) {
         const sp = this.bestSpire();
         if (sp) { s.activateHero(this.pi, sp.id); const o = s.heroOrigin(this.pi); if (o) { this.aim.x = o.x; this.aim.y = 1; this.aim.z = o.z + 6; } }
       }
@@ -190,7 +265,7 @@ export class Bot {
     // 1. a charged power node whose special is worth firing
     let want: { x: number; y: number; z: number } | null = null, tol = 0.03, node = 0;
     let tgt: Enemy | null = null;
-    for (const t of s.towers) {
+    if (this.useSpecials) for (const t of s.towers) {
       if (!s.specialReady(t) || (this.nodeHold.get(t.id) || 0) > s.time || !this.specialWorth(t)) continue;
       nodePos(t, V);
       if (Math.hypot(V.x - o.x, V.z - o.z) > 60) continue;
@@ -204,7 +279,7 @@ export class Bot {
       if (d < bd) { bd = d; tgt = e; }
     }
     if (!want && tgt) {
-      const dist = Math.hypot(tgt.x - o.x, tgt.y - o.y, tgt.z - o.z), T = dist / 85;
+      const dist = Math.hypot(tgt.x - o.x, tgt.y - o.y, tgt.z - o.z), T = dist / ARROW_SPEED;
       const v = tgt.speed * (tgt.slowT > 0 ? 1 - tgt.slowF : 1) * (tgt.frz > 0 || tgt.sing > 0 ? 0 : 1) * T;
       const lx = Math.sin(tgt.yaw) * v, lz = Math.cos(tgt.yaw) * v;
       want = { x: tgt.x + lx, y: tgt.y, z: tgt.z + lz };
@@ -219,16 +294,19 @@ export class Bot {
         break;
       }
     }
-    if (!want) return;
-    // ease the bow onto the target; loose once it has settled
+    // nothing to shoot at: keep whatever draw there is on the string
+    if (!want) { if (p.drawing) s.heroAim(this.pi, true, this.aim.x, this.aim.y, this.aim.z); return; }
+    // ease the bow onto the target while drawing; loose at full draw once the aim has settled
     const k = Math.min(1, dt * 14);
     this.aim.x += (want.x - this.aim.x) * k; this.aim.y += (want.y - this.aim.y) * k; this.aim.z += (want.z - this.aim.z) * k;
     p.yaw = Math.atan2(this.aim.x - o.x, this.aim.z - o.z);
     p.pitch = Math.atan2(this.aim.y - o.y, Math.hypot(this.aim.x - o.x, this.aim.z - o.z));
     const wl = Math.hypot(want.x - o.x, want.y - o.y, want.z - o.z) || 1;
     const settled = Math.hypot(this.aim.x - want.x, this.aim.y - want.y, this.aim.z - want.z) / wl < tol * 3;
+    const ready = settled && p.drawing && p.draw >= 1;
     if (node) {
-      if (settled && p.fireCd <= 0) { s.heroFire(this.pi, want.x, want.y, want.z); this.nodeHold.set(node, s.time + 1.2); }
+      s.heroAim(this.pi, !ready, want.x, want.y, want.z);
+      if (ready) this.nodeHold.set(node, s.time + 1.2);
       return;
     }
     if (!tgt) return;
@@ -239,9 +317,11 @@ export class Bot {
       for (const t of s.towers) { if (t.type !== 'spire' || t.id === p.heroTower) continue; const d = Math.hypot(t.x - tgt.x, t.z - tgt.z); if (d < bdist) { bdist = d; best = t; } }
       if (best && s.heroTeleport(this.pi, best.id)) { this.teleCd = 2.5; return; }
     }
-    if (dist < 60 && settled) {
-      s.heroFire(this.pi, want.x, want.y, want.z);
-      if (s.enemies.length > 6) { s.heroSkill(this.pi, 1, tgt.x, 0, tgt.z); s.heroSkill(this.pi, 2, tgt.x, 0, tgt.z); }
+    const loose = ready && dist < 60;
+    s.heroAim(this.pi, !loose, want.x, want.y, want.z);
+    if (loose) {
+      // skills go right after an arrow has left, so they never cost a draw in progress
+      if (s.enemies.length > 6) { s.heroSkill(this.pi, 1, tgt.x, tgt.gy, tgt.z); s.heroSkill(this.pi, 2, tgt.x, tgt.gy, tgt.z); }
       s.heroSkill(this.pi, 0, want.x, want.y, want.z);
     }
   }

@@ -4,10 +4,10 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, ENEMY_SCALE, BOW_TIERS, cellX, cellZ } from './data.ts';
 import type { TowerType, EnemyType } from './data.ts';
 import { HEX_SIZE, BOARD_W, BOARD_D, HEX_CORNERS } from './hex.ts';
-import { Sim, TOWER_SCALE, TOWER_H, HERO_SCALE, SKILL_CAST, NODE_R, ARROW_PAD, standY, nodePos, weakPos, raySphere } from './sim.ts';
+import { Sim, TOWER_SCALE, TOWER_H, HERO_SCALE, SKILL_CAST, NODE_R, ARROW_PAD, FIRE_RING, SPIRE_R, standY, nodePos, weakPos, spireTarget, raySphere } from './sim.ts';
 import type { Ev, Tower, Enemy } from './sim.ts';
 import type { GameMap } from './map.ts';
-import { Fx, makeBeam, placeBeam } from './fx.ts';
+import { Fx, makeBeam, placeBeam, fireMat, reticleMat, FIRE_CLOCK } from './fx.ts';
 import { buildWorld, noAO, FX_LAYER } from './world.ts';
 import { Post } from './post.ts';
 import { lightPool, glowTexture, POOL_GEO } from './tex.ts';
@@ -20,12 +20,14 @@ const MODEL_NAMES = [...TOWER_TYPES.map((t) => 'tower_' + t), ...ENEMY_TYPES.map
 const SAND = 0xe3dc92, APRICOT = 0xf68b56, RUST = 0xce6b44, UPLINK = 0x6fe0c8;
 const STATIC = 0x8fd0ff, VIOLET = 0x8a7dff, FROST = 0xdff0ff;
 const HEAT = 0xffa24a; // hot metal sparks
+const SINGC = 0xa99cff; // a singularity is cold violet and white, whoever throws it
 const HSL = { h: 0, s: 0, l: 0 };
 const V = new THREE.Vector3(), V2 = new THREE.Vector3(), RO = new THREE.Vector3(), RD = new THREE.Vector3();
-const C1 = new THREE.Color(), C2 = new THREE.Color();
+const C1 = new THREE.Color(), C2 = new THREE.Color(), Q1 = new THREE.Quaternion();
 const W3 = { x: 0, y: 0, z: 0 };
 const ST: TowerState = { down: false, spec: false, power: 1, heat: 0 };
 const TAU = Math.PI * 2;
+const DMG = new Float64Array(96);
 const sat = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const ease = (u: number) => { u = sat(u); return u * u * (3 - 2 * u); };
 const damp = (cur: number, to: number, rate: number, dt: number) => cur + (to - cur) * (1 - Math.exp(-rate * dt));
@@ -48,6 +50,8 @@ interface WorldApi {
 
 // Third-person camera: an orbit round a point above and to the right of Kestrel's head.
 const CAM_BACK = 3.0, CAM_SIDE = 0.85, CAM_UP = 1.5;
+/** Enemies are drawn no closer to the core's centre than this plus 0.6 of their radius: its plinth is in the way. */
+const CORE_STAND = 1.6;
 /** How far the aim ray reaches when it hits nothing. */
 const AIM_FAR = 150;
 
@@ -60,11 +64,24 @@ const G_BAR = new THREE.PlaneGeometry(HEX_SIZE * 1.1, 0.12).rotateX(-Math.PI / 2
 const G_DISC = hexFlat(new THREE.CircleGeometry(1, 48));
 const G_RING = hexFlat(new THREE.RingGeometry(0.975, 1, 72));
 const G_SPH = new THREE.SphereGeometry(1, 16, 12);
-const G_HALO = new THREE.TorusGeometry(1.5, 0.09, 6, 40);
 const G_ICE = new THREE.IcosahedronGeometry(1, 0);
 const G_OCTA = new THREE.OctahedronGeometry(1);
-const G_NODE_RING = new THREE.RingGeometry(0.78, 1, 48);
-const G_WEAK_RING = new THREE.RingGeometry(0.86, 1, 32);
+const G_QUAD = new THREE.PlaneGeometry(2, 2);
+// a wall of fire in local space: x 0..1 along the wall, y 0..1 up; one upright sheet and two that lean out, so it has body from above
+const G_WALL = (() => {
+  const pos: number[] = [], uv: number[] = [], idx: number[] = [];
+  for (const lean of [0, 0.5, -0.5]) {
+    const o = pos.length / 3, h = lean ? 0.8 : 1;
+    pos.push(0, 0, 0, 1, 0, 0, 1, h, lean, 0, h, lean); uv.push(0, 0, 1, 0, 1, 1, 0, 1); idx.push(o, o + 1, o + 2, o, o + 2, o + 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx);
+  return g;
+})();
+// the ring of fire round a lone pylon: an open cylinder, uv.x once round
+const G_FIRE_RING = new THREE.CylinderGeometry(1, 1.06, 1, 40, 1, true).translate(0, 0.5, 0);
+const G_GLOW_STRIP = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+const G_ACC = hexFlat(new THREE.RingGeometry(0.42, 1, 56, 1));
 /** Painted frame on a tower's tile, the level cue that reads from the bird view: the two near edges at level 2, closed at level 3. */
 function levelFrame(edges: number[], trim: number, r0: number, r1: number) {
   const pos: number[] = [];
@@ -92,24 +109,44 @@ const M_ADD_TRIM = new THREE.MeshStandardMaterial({ color: 0x70675c, roughness: 
 const M_ICE = new THREE.MeshStandardMaterial({ color: 0xcfeaf2, roughness: 0.25, metalness: 0.1, transparent: true, opacity: 0.42, flatShading: true, emissive: 0x3a6a80, emissiveIntensity: 0.4, depthWrite: false });
 const M_BUFF = new THREE.MeshBasicMaterial({ color: new THREE.Color(TOWERS.beacon.color).multiplyScalar(0.9), transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
 
-const NODE_RING_FRAG = `uniform vec3 color; uniform float fill; uniform float gain; varying vec2 vP;
-  void main(){ float a = fract(atan(vP.x, vP.y) / 6.2831853);
-    vec3 c = color * mix(0.1, 1.0, step(a, fill)) * gain;
-    gl_FragColor = vec4(c, 1.0);
-    #include <tonemapping_fragment>
-    #include <colorspace_fragment>
-  }`;
-const nodeRingMat = () => new THREE.ShaderMaterial({
-  uniforms: { color: { value: new THREE.Color() }, fill: { value: 0 }, gain: { value: 1 } },
-  vertexShader: 'varying vec2 vP; void main(){ vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-  fragmentShader: NODE_RING_FRAG, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, side: THREE.DoubleSide,
+// accretion disc of a singularity: streaks that wind inward, white at the inner edge
+const accMat = () => new THREE.ShaderMaterial({
+  uniforms: { time: FIRE_CLOCK, color: { value: new THREE.Color(SINGC) }, gain: { value: 1 } },
+  vertexShader: 'varying vec2 vP; void main(){ vP = position.xz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: `uniform float time, gain; uniform vec3 color; varying vec2 vP;
+    void main(){ float r = length(vP), a = atan(vP.y, vP.x);
+      float k = (r - 0.42) / 0.58;
+      float s1 = 0.5 + 0.5 * sin(a * 3.0 + r * 9.0 + time * 7.0), s2 = 0.5 + 0.5 * sin(a * 7.0 - r * 17.0 + time * 11.0);
+      float v = (0.25 + 0.75 * s1 * s1) * (0.55 + 0.45 * s2) * smoothstep(0.0, 0.08, k) * (1.0 - k) * (1.0 - k);
+      vec3 c = mix(vec3(1.0), color, smoothstep(0.0, 0.45, k));
+      gl_FragColor = vec4(c * v * gain * 1.6, 1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
+  blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, side: THREE.DoubleSide,
+});
+// the lensed rim round its dark core, on a quad that faces the camera: black inside, a hard white ring, a violet falloff
+const lensMat = () => new THREE.ShaderMaterial({
+  uniforms: { color: { value: new THREE.Color(SINGC) }, gain: { value: 1 } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: `uniform float gain; uniform vec3 color; varying vec2 vUv;
+    void main(){ vec2 p = vUv * 2.0 - 1.0; float r = length(p);
+      float ring = exp(-(r - 0.4) * (r - 0.4) * 900.0);
+      float halo = smoothstep(0.37, 0.4, r) * exp(-(r - 0.4) * 5.5) * (1.0 - smoothstep(0.8, 1.0, r));
+      gl_FragColor = vec4((vec3(1.0) * ring * 1.5 + color * halo * 0.55) * gain, 1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
+  blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false,
 });
 
 interface Glow { m: THREE.MeshStandardMaterial; i0: number }
-interface WeakVis { core: THREE.Mesh; ring: THREE.Mesh; mat: THREE.MeshBasicMaterial; rmat: THREE.MeshBasicMaterial }
+interface WeakVis { core: THREE.Mesh; ring: THREE.Mesh; mat: THREE.MeshBasicMaterial; rmat: THREE.ShaderMaterial }
 interface EVis {
   obj: THREE.Object3D; rig: EnemyRig; sx: number; sz: number; glow: THREE.Mesh; back: THREE.Sprite; bar: THREE.Sprite; sbar: THREE.Sprite | null; bubble: THREE.Mesh | null;
   ice: THREE.Mesh | null; weak: WeakVis[]; wglow: Glow[]; type: EnemyType; phase: number; seen: number; fresh: boolean; lx: number; lz: number; lgy: number; tilt: number; em: number;
+  /** hit flash: the meshes and their own materials, and the seconds the flash still has to run */
+  meshes: THREE.Mesh[]; mats: (THREE.Material | THREE.Material[])[]; hitT: number;
 }
 interface TVis {
   obj: THREE.Object3D; rig: TowerRig; type: TowerType; lvl: number; grow: number; s: number; seen: number;
@@ -119,14 +156,20 @@ interface TVis {
   /** power node: emblem group (null for towers without a special), its materials, and the model's own node lights */
   node: THREE.Group | null; core: THREE.Mesh | null; nodeMat: THREE.MeshBasicMaterial | null; ringMat: THREE.ShaderMaterial | null; halo: THREE.Sprite | null; mnode: Glow[];
   power: number; boot: number; fired: number; em: number; em2: number; tick: number; downMax: number; deny: number;
-  /** flame stream and lance beam, both fed by sim events and kept alive between them */
-  flT: number; flYaw: number; flR: number; flFull: boolean; flY: number;
+  /** Firewall Pylon: heading of its emitter head, how hard its walls burn (0 none, 1 on, 2 hot), frame it was last linked, and the ring of fire it burns when it stands alone */
+  wYaw: number; wTo: number; wHeat: number; wSeen: number; ring: THREE.Group | null; ringMats: THREE.Material[]; ringOn: number;
+  /** lance beam, fed by sim events and kept alive between them */
   beam: THREE.Mesh | null; lnT: number; lnX: number; lnY: number; lnZ: number; lnY0: number; lnHeat: number; lnOver: boolean;
 }
 interface PVis { mesh: THREE.Mesh; kind: string; seen: number; fresh: boolean; em: number }
 /** tele > 0: still dissolving at the spire she is leaving; out: playing the uplink-end animation at `pos` */
 interface HVis { obj: THREE.Object3D; rig: HeroRig | null; pos: THREE.Vector3; tele: number; out: boolean; shown: boolean; tiers: { n: number; o: THREE.Object3D }[] }
-interface ZVis { obj: THREE.Group; kind: string; seen: number; t: number; mats: THREE.Material[]; halo: THREE.Object3D | null; c: number; tick: number }
+interface ZVis { obj: THREE.Group; kind: string; seen: number; t: number; mats: THREE.Material[]; halo: THREE.Object3D | null; c: number; tick: number; x: number; y: number; z: number; r: number; core: THREE.Object3D | null; lens: THREE.Mesh | null; life: number }
+/** A wall of fire between two Firewall Pylons (sim.walls). */
+interface WallLike { a: number; b: number; ax: number; az: number; bx: number; bz: number; on: boolean; hot: boolean }
+interface WVis { obj: THREE.Group; sheet: THREE.Mesh; mat: THREE.ShaderMaterial; glow: THREE.Mesh; gmat: THREE.MeshBasicMaterial; seen: number; on: number; heat: number; em: number; len: number }
+/** Jump target above a Spire. */
+interface BVis { obj: THREE.Group; ret: THREE.Mesh; mat: THREE.ShaderMaterial; dia: THREE.Mesh; key: THREE.Sprite; hot: number }
 /** An effect held back until the hero's pose reaches its release beat. */
 interface Later { t: number; fn: () => void }
 
@@ -278,7 +321,8 @@ export class View {
   models: Record<string, THREE.Object3D> = {};
   sim: Sim | null = null;
   me = 0;
-  cam = { x: 0, z: 1.5, dist: 48, tilt: 1.0 };
+  /** Bird camera: look target on the deck, distance from it, and the angle it has been turned round it (radians). The tilt follows the distance. */
+  cam = { x: 0, z: 1.5, dist: 48, rot: 0 };
   orbit = false;
   yaw = 0; pitch = -0.25;
   heroBlend = 0;
@@ -292,6 +336,17 @@ export class View {
   private tv = new Map<number, TVis>();
   private pv = new Map<number, PVis>(); private ppool: Record<string, PVis[]> = {};
   private zv = new Map<number, ZVis>();
+  private wv = new Map<string, WVis>();
+  private beacons: BVis[] = [];
+  private teleId = 0;
+  private dmgN = 0;
+  private keyTex: THREE.Texture | null = null;
+  private coreGlows: Glow[] = [];
+  /** seconds since the core last took a hit (it flinches), and since it last fired its discharge */
+  private coreHit = 9; private coreZap = 9;
+  // one shared flash for a model that was just hit by an arrow: pale and brief, white for a weak point
+  private hitMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xbfe0ff).multiplyScalar(0.8) });
+  private critMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xffffff).multiplyScalar(0.92) });
   private heroes: HVis[] = [];
   private coreSpins: THREE.Object3D[] = [];
   private coreObj: THREE.Object3D | null = null;
@@ -371,10 +426,9 @@ export class View {
     // placement ghost: pale, lit, and it writes depth so the model keeps its form instead of stacking into a blob
     this.ghostMat = new THREE.MeshStandardMaterial({ color: 0xcfc8a4, roughness: 0.75, metalness: 0.05, transparent: true, opacity: 0.62, emissive: SAND, emissiveIntensity: 0.1, envMapIntensity: 0.4 });
     this.ghost.visible = false; this.scene.add(this.ghost);
-    // teleport target: verdigris, shown on other spires only
+    // where a jump will land her: a verdigris column and a ring on the platform of the Spire the controller has picked
     this.teleMark = new THREE.Group();
     const tm = new THREE.MeshBasicMaterial({ color: new THREE.Color(UPLINK).multiplyScalar(1.7), transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
-    const dia = new THREE.Mesh(new THREE.OctahedronGeometry(0.4), tm); dia.position.y = 1.7; this.teleMark.add(dia);
     const col = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 30, 6), tm); col.position.y = 17; this.teleMark.add(col);
     const tr = new THREE.Mesh(new THREE.TorusGeometry(1.15, 0.04, 6, 6), tm); tr.rotation.x = Math.PI / 2; tr.position.y = 0.12; this.teleMark.add(tr);
     this.teleMark.visible = false; this.scene.add(noAO(this.teleMark));
@@ -444,7 +498,11 @@ export class View {
     // core + props are static scenery
     const core = this.models.core.clone();
     this.scene.add(this.scenery);
-    core.traverse((o) => { if (o.name.startsWith('spin')) this.coreSpins.push(o); });
+    core.traverse((o) => {
+      if (o.name.startsWith('spin')) this.coreSpins.push(o);
+      const m = o as THREE.Mesh, mat = m.isMesh ? (m.material as THREE.MeshStandardMaterial) : null;
+      if (mat && !Array.isArray(mat) && mat.name.startsWith('glow') && !this.coreGlows.some((g) => g.m === mat)) this.coreGlows.push({ m: mat, i0: mat.emissiveIntensity });
+    });
     this.coreObj = core;
     this.scene.add(core);
     // lamp posts along the two long edges of the deck, every other one lit
@@ -466,7 +524,10 @@ export class View {
     for (const [id, v] of this.ev) { this.poolEnemy(v); this.ev.delete(id); }
     for (const [id, v] of this.tv) { this.dropTower(v); this.tv.delete(id); }
     for (const [id, v] of this.pv) { v.mesh.visible = false; (this.ppool[v.kind] ||= []).push(v); this.pv.delete(id); }
-    for (const [id, v] of this.zv) { this.dropZone(v); this.zv.delete(id); }
+    for (const [id, v] of this.zv) { this.dropZone(v, false); this.zv.delete(id); }
+    for (const [id, v] of this.wv) { this.dropWall(v); this.wv.delete(id); }
+    for (const b of this.beacons) b.obj.visible = false;
+    this.coreHit = this.coreZap = 9;
     for (const h of this.heroes) { h.obj.visible = false; h.out = false; h.shown = false; h.tele = 0; if (h.rig) resetHero(h.rig); }
     this.later.length = 0; this.zoneWait.length = 0;
     this.heroBlend = 0; this.thunder = 0; this.swarm = 0;
@@ -499,22 +560,37 @@ export class View {
     this.intro = true; // one more pass over the reveal scales, whatever the world says
   }
 
+  /** Tilt of the bird camera above the horizon for a zoom distance: low and flat up close, steep from far away. */
+  tiltOf(dist: number) { return 0.74 + 0.36 * ease((dist - 20) / 45); }
+
   /**
-   * Bird camera that frames the road and the core of the current map instead of the board centre: { x, z, dist }.
-   * bottom = share of the screen height the HUD bar covers.
+   * Bird camera that shows the whole board of the current map, gates included, for the current cam.rot: { x, z, dist }.
+   * Nothing is moved: the caller writes the values to view.cam. bottom = share of the screen height the HUD bar covers.
    */
   frameMap(bottom = 0.1) {
     const out = { x: 0, z: 1.5, dist: 48 }, sim = this.sim;
     if (!sim) return out;
-    let x0 = sim.map.core.x - 2.5, x1 = sim.map.core.x + 2.5, z0 = sim.map.core.z - 2.5, z1 = sim.map.core.z + 2.5;
-    for (const L of sim.map.lanes) for (const p of L.pts) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); z0 = Math.min(z0, p[1]); z1 = Math.max(z1, p[1]); }
-    // gates sit past the first road point; never frame tighter than the default view
-    x0 = Math.max(x0 - 3, -BOARD_W / 2 - 3); x1 = Math.min(x1 + 3, BOARD_W / 2 + 3); z0 = Math.max(z0 - 3, -BOARD_D / 2 - 3); z1 = Math.min(z1 + 3, BOARD_D / 2 + 3);
-    const w = Math.max(x1 - x0, 30), d = Math.max(z1 - z0, 20);
-    out.dist = Math.max(40, Math.min(60, Math.max(w / (1.1 * this.camera.aspect) * 1.6, d * 1.4)));
-    out.x = Math.max(-8, Math.min(8, (x0 + x1) / 2));
-    // shift the look point toward the camera so the bottom gate clears the HUD bar
-    out.z = Math.max(-6, Math.min(8, (z0 + z1) / 2 + out.dist * (0.03 + bottom * 0.5)));
+    // everything that has to be on screen: the board, the core pad, and each gate with the bunker behind it
+    const pts: number[] = [], hx = BOARD_W / 2, hz = BOARD_D / 2;
+    pts.push(-hx, 0, -hz, hx, 0, -hz, hx, 0, hz, -hx, 0, hz, sim.map.core.x, 5, sim.map.core.z);
+    for (const L of sim.map.lanes) {
+      const a = L.pts[0], b = L.pts[1] || a, l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, dx = (b[0] - a[0]) / l, dz = (b[1] - a[1]) / l, y = L.ys[0] || 0;
+      for (const s of [-1, 1]) pts.push(a[0] - dx * 4.6 - dz * 2.4 * s, y + 4.5, a[1] - dz * 4.6 + dx * 2.4 * s, a[0] - dz * 2.4 * s, y, a[1] + dx * 2.4 * s);
+    }
+    const rot = this.cam.rot, cam = this.dummy, lo = Math.min(0.6, -1 + 2 * bottom + 0.05), hi = 0.84, wide = 0.95;
+    cam.fov = 42; cam.aspect = this.camera.aspect; cam.updateProjectionMatrix();
+    let x = 0, z = 0, dist = 48;
+    for (let it = 0; it < 10; it++) {
+      const tl = this.tiltOf(dist), h = dist * Math.cos(tl);
+      cam.position.set(x + Math.sin(rot) * h, dist * Math.sin(tl), z + Math.cos(rot) * h); cam.lookAt(x, 0, z); cam.updateMatrixWorld();
+      let x0 = 9, x1 = -9, y0 = 9, y1 = -9;
+      for (let i = 0; i < pts.length; i += 3) { V.set(pts[i], pts[i + 1], pts[i + 2]).project(cam); x0 = Math.min(x0, V.x); x1 = Math.max(x1, V.x); y0 = Math.min(y0, V.y); y1 = Math.max(y1, V.y); }
+      // slide the look target until the picture is centred in the free part of the screen, then zoom until it fills it
+      const tx = Math.tan((42 * Math.PI) / 360), ex = ((x0 + x1) / 2) * dist * tx * cam.aspect, ey = ((y0 + y1) / 2 - (lo + hi) / 2) * dist * tx / Math.sin(tl);
+      x += Math.cos(rot) * ex - Math.sin(rot) * ey; z += -Math.sin(rot) * ex - Math.cos(rot) * ey;
+      dist = Math.max(26, Math.min(120, dist * Math.max((x1 - x0) / (2 * wide), (y1 - y0) / (hi - lo))));
+    }
+    out.x = x; out.z = z; out.dist = dist;
     return out;
   }
 
@@ -610,7 +686,12 @@ export class View {
         const wk = ENEMIES[e.type].weak;
         if (wk) for (let i = 0; i < wk.length; i++) if (weakPos(e, i, W3)) hit(W3.x, W3.y, W3.z, wk[i].r * ENEMY_SCALE[e.type]);
       }
-      for (const t of sim.towers) if (TOWERS[t.type].special) { nodePos(t, W3); hit(W3.x, W3.y, W3.z, NODE_R); }
+      const me = sim.players[this.me];
+      for (const t of sim.towers) {
+        if (TOWERS[t.type].special) { nodePos(t, W3); hit(W3.x, W3.y, W3.z, NODE_R); }
+        // the jump target above every other Spire: an arrow through it carries her over
+        else if (t.type === 'spire' && me && me.heroActive && t.id !== me.heroTower) { spireTarget(t, W3); hit(W3.x, W3.y, W3.z, SPIRE_R); }
+      }
     }
     return out.copy(o).addScaledVector(d, best);
   }
@@ -676,19 +757,63 @@ export class View {
     this.hoverMark.visible = show;
     if (show) this.hoverMark.position.set(cellX(cx, cz), 0.05, cellZ(cz));
   }
+  /** Mark a Spire as the jump target the controller has picked (its beacon lights up, a column shows where she will land). */
   setTele(t: Tower | null) {
     this.teleMark.visible = !!t && t.type === 'spire';
+    this.teleId = t && t.type === 'spire' ? t.id : 0;
     if (t) this.teleMark.position.set(t.x, standY(t), t.z);
   }
 
   // ---------- events to effects ----------
   /** Route a sim event to player p's hero rig. */
-  private heroAnim(p: unknown, ev: HeroEvent) {
+  private heroAnim(p: unknown, ev: HeroEvent, pw = 1) {
     const h = this.heroes[p as number];
-    if (h && h.rig) heroTrigger(h.rig, ev);
+    if (h && h.rig) heroTrigger(h.rig, ev, pw);
   }
-  /** Camera shake that falls off with distance from the camera, so far blasts do not rattle the aim. */
-  private bump(a: number, x: number, z: number) {
+  /** The enemy a player damaged at (x, z) in the batch of events being handled, or -1. tol = how far off the spot may be (squared). */
+  private dmgId(x: number, z: number, tol: number) {
+    let id = -1;
+    for (let i = 0; i < this.dmgN; i++) { const d = (DMG[i * 3 + 1] - x) * (DMG[i * 3 + 1] - x) + (DMG[i * 3 + 2] - z) * (DMG[i * 3 + 2] - z); if (d < tol) { tol = d; id = DMG[i * 3]; } }
+    return id;
+  }
+  /**
+   * An arrow struck at (x, y, z): the model it hit flashes for an instant and sparks leave along the arrow's path.
+   * crit = a weak point. id = the enemy it hit, or -1 for the deck.
+   */
+  private arrowHit(x: number, y: number, z: number, color: number, crit: boolean, id: number) {
+    const sim = this.sim, fx = this.fx;
+    if (!sim) return;
+    const v = id >= 0 ? this.ev.get(id) : undefined;
+    if (v) this.flashEnemy(v, crit);
+    // direction of travel: from the bow of whoever is linked (her own first)
+    let o = sim.players[this.me]?.heroActive ? sim.heroOrigin(this.me) : null;
+    for (let i = 0; !o && i < sim.players.length; i++) if (sim.players[i].heroActive) o = sim.heroOrigin(i);
+    let dx = 0, dy = 0.4, dz = 0;
+    if (o) { dx = x - o.x; dy = y - o.y; dz = z - o.z; const l = Math.hypot(dx, dy, dz) || 1; dx /= l; dy /= l; dz /= l; }
+    if (crit) {
+      // weak point: a hard cold star, and the far side of the hull comes out with it
+      fx.star(x, y, z, 1.5, FROST, 7, 0.2);
+      fx.flash(x, y, z, 0.9, 0xffffff, 0.12);
+      fx.spray(x, y, z, dx, dy, dz, 16, 13, SINGC, 0.5, 0.26, 0.35);
+      fx.spray(x, y, z, -dx, -dy, -dz, 6, 6, HEAT, 0.5, 0.18, 0.6);
+    } else {
+      fx.flash(x, y, z, v ? 0.55 : 0.35, color, 0.09);
+      fx.spray(x, y, z, dx, dy, dz, v ? 6 : 3, 9, color, 0.3, 0.2, 0.35);
+      fx.spray(x, y, z, -dx * 0.6, 0.5, -dz * 0.6, v ? 4 : 3, 5, HEAT, 0.35, 0.14, 0.6);
+    }
+  }
+  private flashEnemy(v: EVis, crit: boolean) {
+    const m = crit ? this.critMat : this.hitMat;
+    if (v.hitT <= 0) for (const o of v.meshes) o.material = m;
+    else if (crit) for (const o of v.meshes) o.material = m;
+    v.hitT = crit ? 0.085 : 0.05;
+  }
+  /**
+   * Camera shake that falls off with distance from the camera. In the Uplink only big events (a special going off, the
+   * core being hit) reach the camera at all: her own arrows, hits and ordinary blasts never move the picture she aims with.
+   */
+  private bump(a: number, x: number, z: number, big = false) {
+    if (this.heroBlend > 0.5 && !big) return;
     const d = Math.hypot(x - this.camera.position.x, z - this.camera.position.z);
     this.shake = Math.max(this.shake, a * Math.max(0.12, Math.min(1, 1.5 - d / 30)));
   }
@@ -696,7 +821,12 @@ export class View {
   handle(evs: Ev[]) {
     const fx = this.fx, sim = this.sim;
     // a special's own effects (the chain of a Thunderhead, the first missiles of a Swarm) sit in the same batch ahead of its event
-    for (const e of evs) if (e.k === 'special') { if (e.t === 'arc') this.thunder = 0.2; else if (e.t === 'missile') this.swarm = 5; }
+    this.dmgN = 0;
+    for (const e of evs) {
+      if (e.k === 'special') { if (e.t === 'arc') this.thunder = 0.2; else if (e.t === 'missile') this.swarm = 5; }
+      // who a player hurt in this batch: lets an arrow's 'hit' find the model it struck
+      else if (e.k === 'dmg' && e.p >= 0 && typeof e.id === 'number' && this.dmgN < 32) { DMG[this.dmgN * 3] = e.id; DMG[this.dmgN * 3 + 1] = e.x; DMG[this.dmgN * 3 + 2] = e.z; this.dmgN++; }
+    }
     for (const e of evs) {
       switch (e.k) {
         case 'shot': {
@@ -715,7 +845,14 @@ export class View {
           }
           break;
         }
-        case 'hit': fx.burst(e.x, e.y, e.z, 3, 4, e.c, 0.2, 0.22, 6); fx.burst(e.x, e.y, e.z, 2, 5, HEAT, 0.3, 0.14, 12); break;
+        case 'hit':
+          // a turret bolt: a couple of sparks. An arrow: the model answers (see arrowHit)
+          {
+            const id = this.dmgId(e.x, e.z, 1e-4);
+            if (id >= 0 || e.y <= 0.11) this.arrowHit(e.x, e.y, e.z, e.c, false, id);
+            else { fx.burst(e.x, e.y, e.z, 3, 4, e.c, 0.2, 0.22, 6); fx.burst(e.x, e.y, e.z, 2, 5, HEAT, 0.3, 0.14, 12); }
+          }
+          break;
         case 'cryo': {
           const tv = this.tv.get(e.id); if (tv) towerShot(tv.rig);
           const gy = this.deckY(e.tx, e.tz);
@@ -749,24 +886,22 @@ export class View {
           fx.flash(e.x, e.y, e.z, big ? 5 : mid ? 1.5 : 0.9, STATIC, big ? 0.45 : 0.16);
           fx.smoke(e.x, e.y + 0.2, e.z, big ? 12 : mid ? 3 : 1, big ? 2.6 : mid ? 1.2 : 0.8, big ? 3 : 0.6);
           if (e.y - gy < 2 && (big || mid || Math.random() < 0.35)) fx.scorch(e.x, e.z, big ? 5 : mid ? 1.7 : 1.1, APRICOT, big ? 10 : 5, gy);
-          if (big) { fx.ring(e.x, gy + 0.15, e.z, 9, VIOLET, 0.9); fx.column(e.x, gy, e.z, FROST); this.shake = Math.max(this.shake, 0.8); this.pulse(e.x, e.z, STATIC, 14, 1); }
+          if (big) { fx.ring(e.x, gy + 0.15, e.z, 9, VIOLET, 0.9); fx.column(e.x, gy, e.z, FROST); this.bump(0.8, e.x, e.z, true); this.pulse(e.x, e.z, STATIC, 14, 1); }
           break;
         }
-        case 'crit': {
-          // weak-point hit: a hard cold star, nothing like an ordinary spark
-          fx.star(e.x, e.y, e.z, 1.5, FROST, 7, 0.2);
-          fx.flash(e.x, e.y, e.z, 1.1, 0xffffff, 0.16);
-          fx.burst(e.x, e.y, e.z, 14, 9, VIOLET, 0.5, 0.26, 4);
-          fx.burst(e.x, e.y, e.z, 8, 5, HEAT, 0.6, 0.18, 12);
-          break;
-        }
+        case 'crit': this.arrowHit(e.x, e.y, e.z, FROST, true, this.dmgId(e.x, e.z, 16)); break;
         case 'crack': fx.star(e.x, e.y, e.z, 2.6, VIOLET, 9, 0.35); fx.burst(e.x, e.y, e.z, 26, 8, VIOLET, 0.8, 0.3, 9); fx.smoke(e.x, e.y, e.z, 3, 1.2, 1); break;
-        case 'siege': fx.burst(this.core.x, 2, this.core.z, 16, 8, RUST, 0.7, 0.28, 8); this.bump(0.25, this.core.x, this.core.z); this.pulse(this.core.x, this.core.z, RUST, 6, 0.8); break;
+
         case 'shieldbreak': fx.burst(e.x, e.y, e.z, 14, 7, STATIC, 0.5, 0.24, 3); fx.flash(e.x, e.y, e.z, 1.5, STATIC, 0.18); break;
         case 'build': if (this.reveal(e.x, e.z) < 0.5) break; // placed before its tile has arrived (a bot at second zero)
           fx.ring(e.x, 0.1, e.z, 2.0, e.c, 0.5); fx.burst(e.x, 0.3, e.z, 12, 4, e.c, 0.6, 0.24, -3, 1); fx.smoke(e.x, 0.2, e.z, 3, 1, 1.6, 0.35); this.pulse(e.x, e.z, e.c, 3.5, 0.6); break;
         case 'sell': fx.burst(e.x, 0.8, e.z, 12, 5, SAND, 0.6, 0.24, 9); fx.smoke(e.x, 0.4, e.z, 3, 1.1, 1.2, 0.5); break;
-        case 'arrow': this.heroAnim(e.p, 'arrow'); break;
+        case 'arrow': {
+          // the release is as strong as the draw was: a weak loose is a twitch of the string, a full one cracks
+          // (no flash at the bow: nothing of her own shot may get between the player and the target)
+          this.heroAnim(e.p, 'arrow', typeof e.pw === 'number' ? sat(e.pw) : 1);
+          break;
+        }
         case 'heroOn': { const h = this.hero(+e.p); h.out = false; h.tele = 0; h.pos.set(e.x, e.y, e.z); this.heroAnim(e.p, 'on'); }
           // a slim shaft of light: a wide column would hide the whole materialise animation from the camera behind her
           fx.beam(e.x, e.y, e.z, e.x, e.y + 30, e.z, UPLINK, 0.2, 0.45); this.shake = Math.max(this.shake, 0.3); this.pulse(e.x, e.z, UPLINK, 9, 1); break;
@@ -780,13 +915,6 @@ export class View {
           this.zoneWait.push([e.x, e.z, wait]);
           this.later.push({ t: wait, fn: () => { fx.ring(e.x, this.deckY(e.x, e.z) + 0.15, e.z, 5, sc, 0.5, 1.4, 0.6); this.pulse(e.x, e.z, sc, rain ? 8 : -10, 1); } });
           if (rain) for (let i = 0; i < 3; i++) this.later.push({ t: wait + i * RAIN_GAP, fn: () => this.rainTracer(+e.p, e.c) });
-          break;
-        }
-        case 'flame': {
-          const v = this.tv.get(e.id);
-          if (!v) break;
-          v.flT = 0.26; v.flYaw = e.yaw; v.flR = e.r; v.flFull = !!e.full; v.flY = e.y;
-          towerShot(v.rig);
           break;
         }
         case 'lance': {
@@ -806,7 +934,13 @@ export class View {
           break;
         }
         case 'special': this.specialFx(e); break;
-        case 'nospec': { const v = this.tv.get(e.id), t = sim && sim.towerById(e.id); if (v) v.deny = 0.35; if (t) fx.burst(t.x, t.h + 0.55, t.z, 5, 2, 0x8a8478, 0.3, 0.14, 6); break; }
+        case 'nospec': {
+          // the node was hit but its special has nothing to reach: a dull fizzle, the charge stays
+          const v = this.tv.get(e.id), t = sim && sim.towerById(e.id);
+          if (v) v.deny = 0.45;
+          if (t) { nodePos(t, W3); fx.burst(W3.x, W3.y, W3.z, 7, 2.2, 0x8a8478, 0.35, 0.14, 7); fx.puff(W3.x, W3.y, W3.z, 0.45, 0.6, 0.5); fx.ring(W3.x, W3.y - 0.5, W3.z, 0.9, 0x6a655c, 0.3, 0.5, 0.8); }
+          break;
+        }
         case 'down': {
           const t = sim && sim.towerById(e.id), y = t ? t.h : 2;
           fx.burst(e.x, y * 0.8, e.z, 12, 4, HEAT, 0.7, 0.2, 10);
@@ -822,7 +956,32 @@ export class View {
           this.pulse(e.x, e.z, c, 4.5, 0.9);
           break;
         }
-        case 'leak': fx.ring(this.core.x, 0.2, this.core.z, 6, RUST, 0.7); fx.burst(this.core.x, 2, this.core.z, 24, 9, RUST, 0.8, 0.3, 8); this.bump(0.3, this.core.x, this.core.z); this.pulse(this.core.x, this.core.z, RUST, 8, 1); break;
+        case 'leak': {
+          // the core takes the blow: it flinches, its light stutters, the hit shows on the side it came from
+          const hx = typeof e.x === 'number' ? e.x : this.core.x, hz = typeof e.z === 'number' ? e.z : this.core.z, l = Math.hypot(hx - this.core.x, hz - this.core.z);
+          const sx = l > 0.3 ? this.core.x + ((hx - this.core.x) / l) * Math.min(l, 1.6) : this.core.x, sz = l > 0.3 ? this.core.z + ((hz - this.core.z) / l) * Math.min(l, 1.6) : this.core.z;
+          this.coreHit = 0;
+          fx.ring(this.core.x, 0.2, this.core.z, 6, RUST, 0.7); fx.burst(sx, 2, sz, 24, 9, RUST, 0.8, 0.3, 8); fx.flash(sx, 2, sz, 1.6, RUST, 0.18);
+          this.bump(0.3, this.core.x, this.core.z, true); this.pulse(this.core.x, this.core.z, RUST, 8, 1);
+          break;
+        }
+        case 'breach': {
+          // the core answers: a discharge from its heart into the machine that struck it, and nothing is left standing there
+          const v = this.ev.get(e.id), big = e.t === 'boss', mid = e.t === 'brute' || e.t === 'shield';
+          const x = v ? v.obj.position.x : e.x, z = v ? v.obj.position.z : e.z, y = typeof e.y === 'number' ? e.y : 1, gy = this.deckY(x, z);
+          const cx = this.core.x, cz = this.core.z, cy = 2.7;
+          this.coreZap = 0;
+          fx.arc([cx, cy, cz, (cx + x) / 2, (cy + y) / 2 + 0.9, (cz + z) / 2, x, y, z], SAND, 0.26);
+          fx.arc([cx, cy, cz, (cx + x) / 2, (cy + y) / 2 + 0.5, (cz + z) / 2, x, y, z], 0xffffff, 0.08);
+          fx.flash(cx, cy, cz, 2.2, SAND, 0.2); fx.flash(x, y, z, big ? 4 : mid ? 2 : 1.4, SAND, 0.22);
+          fx.burst(x, y, z, big ? 60 : mid ? 18 : 10, big ? 13 : 7, STATIC, big ? 1 : 0.5, big ? 0.45 : 0.28, 10);
+          fx.burst(x, y, z, big ? 30 : mid ? 10 : 6, big ? 10 : 6, HEAT, 0.8, 0.2, 14);
+          fx.smoke(x, y + 0.2, z, big ? 10 : mid ? 3 : 2, big ? 2.4 : mid ? 1.2 : 0.8, big ? 2.6 : 0.6);
+          fx.ring(x, gy + 0.12, z, big ? 6 : 2.2, SAND, 0.4);
+          this.pulse(cx, cz, SAND, big ? 14 : 7, 1);
+          if (big) this.bump(0.5, x, z, true);
+          break;
+        }
         case 'lose': fx.column(this.core.x, 0, this.core.z, RUST, 40); fx.boom(this.core.x, 2.5, this.core.z, 12, APRICOT); this.shake = 1.2; this.pulse(this.core.x, this.core.z, RUST, 30, 1); break;
       }
     }
@@ -840,7 +999,7 @@ export class View {
       fx.beam(x, y, z, e.tx, e.ty, e.tz, e.c, over ? 0.9 : e.big ? 0.3 : 0.2, over ? 0.9 : e.big ? 0.5 : 0.32);
       fx.burst(e.tx, e.ty, e.tz, e.big ? 14 : 5, 6, HEAT, 0.45, 0.2, 10);
       if (!e.big) return;
-      this.bump(over ? 0.6 : 0.3, x, z);
+      this.bump(over ? 0.6 : 0.3, x, z, !!over);
       for (let i = 0; i < 12; i++) { const u = Math.random(); fx.burst(x + dx * u, y + dy * u, z + dz * u, 2, 2.5, e.c, 0.45, 0.22, 0); }
       if (over) {
         // Overcharge: a white core inside the slug, shock rings and a ripple in the deck all along its path
@@ -888,14 +1047,14 @@ export class View {
         fx.arc([t.x + ox, 34, t.z + oz, t.x + ox * 0.4, 16, t.z + oz * 0.4, t.x, t.h, t.z], c, 0.3);
         fx.arc([t.x + ox, 34, t.z + oz, t.x + ox * 0.4, 16, t.z + oz * 0.4, t.x, t.h, t.z], 0xffffff, 0.08);
         fx.flash(t.x, t.h, t.z, 3, c, 0.3);
-        this.bump(0.4, t.x, t.z);
+        this.bump(0.4, t.x, t.z, true);
         this.pulse(t.x, t.z, c, 6, 1);
         break;
       }
       case 'mortar': fx.smoke(t.x, t.h, t.z, 5, 1.1, 0.8, 1.6); this.pulse(t.x, t.z, c, 4, 0.7); break;
       case 'rail': this.pulse(t.x, t.z, c, 4, 0.7); break;
       case 'beacon': fx.column(t.x, t.h, t.z, c, 16); this.pulse(t.x, t.z, c, R * 1.3, 1); break;
-      case 'flame': this.pulse(t.x, t.z, c, R * 1.4, 1); break;
+      case 'flame': fx.flash(t.x, t.h * 0.8, t.z, 2.4, APRICOT, 0.3); fx.burst(t.x, t.h * 0.8, t.z, 24, 7, APRICOT, 0.7, 0.3, -2, 1); this.pulse(t.x, t.z, c, 7, 1); break;
       case 'lance': fx.star(e.x, t.h * 0.85, e.z, 1.6, 0xffffff, 6, 0.25); this.pulse(t.x, t.z, c, 4, 0.8); break;
       case 'missile': fx.smoke(t.x, t.h, t.z, 8, 1.2, 1.2, 2); fx.burst(t.x, t.h, t.z, 20, 8, HEAT, 0.6, 0.24, 6, 1.6); this.pulse(t.x, t.z, c, 5, 0.9); break;
       case 'gravity': this.pulse(t.x, t.z, c, 5, 0.8); break;
@@ -951,14 +1110,14 @@ export class View {
       obj, rig, type: t.type, lvl: 0, grow: 0, s: -1, seen: 0, glows, acc, pad, buff, lv, addons: [],
       node: null, core: null, nodeMat: null, ringMat: null, halo: null, mnode,
       power: 1, boot: 9, fired: 9, em: 0, em2: 0, tick: 0, downMax: 0, deny: 0,
-      flT: 0, flYaw: 0, flR: 0, flFull: false, flY: 0, beam: null, lnT: 0, lnX: 0, lnY: 0, lnZ: 0, lnY0: 0, lnHeat: 0, lnOver: false,
+      wYaw: t.yaw || 0, wTo: NaN, wHeat: 0, wSeen: -9, ring: null, ringMats: [], ringOn: 0, beam: null, lnT: 0, lnX: 0, lnY: 0, lnZ: 0, lnY0: 0, lnHeat: 0, lnOver: false,
     };
     if (def.special) {
       // power node emblem at the exact spot the sim tests (nodePos): a ring that fills with the charge round a core
       const node = new THREE.Group(), k = NODE_R / TOWER_SCALE;
       node.position.y = (t.h + 0.55) / TOWER_SCALE;
-      v.ringMat = nodeRingMat();
-      const ring = new THREE.Mesh(G_NODE_RING, v.ringMat); ring.scale.setScalar(k * 0.95); node.add(ring);
+      v.ringMat = reticleMat(4);
+      const ring = new THREE.Mesh(G_QUAD, v.ringMat); ring.scale.setScalar(k * 1.2); node.add(ring);
       if (!nodeObj) {
         v.nodeMat = new THREE.MeshBasicMaterial({ color: def.color, fog: false });
         v.core = new THREE.Mesh(G_OCTA, v.nodeMat); v.core.scale.setScalar(k * 0.42); node.add(v.core);
@@ -982,6 +1141,7 @@ export class View {
     for (const g of v.mnode) g.m.dispose();
     (v.pad.material as THREE.Material).dispose();
     v.nodeMat?.dispose(); v.ringMat?.dispose();
+    if (v.ring) { this.dyn.remove(v.ring); for (const m of v.ringMats) m.dispose(); }
     if (v.beam) { this.dyn.remove(v.beam); (v.beam.material as THREE.Material).dispose(); }
   }
 
@@ -1046,11 +1206,23 @@ export class View {
     if (!off && v.boot < 0.9) pw = v.boot < 0.6 ? (Math.sin(v.boot * 52) > 0.1 ? 1.6 : 0.08) : 1 + (0.9 - v.boot) * 2.5;
     v.power = off ? damp(v.power, 0.03, 9, dt) : pw;
     let mul = v.power;
-    if (this.fxOptions.towers) mul *= 1 + 0.16 * this.beatLevel;
+    if (this.fxOptions.towers && this.fxOptions.beat) mul *= 1 + 0.16 * this.beatLevel;
     if (linked) mul *= 1.5;
     if (spec) mul *= 1.35 + 0.15 * Math.sin(this.time * 24);
+    let yaw = t.yaw;
+    if (t.type === 'flame') {
+      // Firewall Pylon: the head turns its emitter fins along the wall (it has four, so the nearest quarter turn will do);
+      // a pylon with no partner sweeps slowly and burns a ring round itself instead
+      const linked = v.wSeen >= this.frame - 1;
+      if (linked && v.wTo === v.wTo) { let d = v.wTo - v.wYaw; d -= Math.round(d / (Math.PI / 2)) * (Math.PI / 2); v.wYaw += d * (1 - Math.exp(-7 * dt)); }
+      else if (!off) v.wYaw += dt * 0.5;
+      if (!linked) v.wHeat = 0;
+      yaw = v.wYaw;
+      if (v.wHeat > 0 && !off) mul *= v.wHeat > 1 ? 1.9 + 0.3 * Math.sin(this.time * 31 + t.id) : 1.35 + 0.08 * Math.sin(this.time * 9 + t.id);
+      this.syncFireRing(t, v, dt, !linked && !off && v.grow >= 1, spec);
+    }
     ST.down = off; ST.spec = spec; ST.power = mul; ST.heat = t.heat;
-    updateTower(v.rig, t.yaw, t.cd, t.type === 'beacon' || t.type === 'spire' ? 0 : sim.towerRate(t), dt, ST);
+    updateTower(v.rig, yaw, t.cd, t.type === 'beacon' || t.type === 'spire' ? 0 : sim.towerRate(t), dt, ST);
     for (const g of v.glows) if (g.m !== v.rig.glow) g.m.emissiveIntensity = g.i0 * mul;
     // offline: the pool on the deck turns to a slow rust warning light
     if (off) (v.pad.material as THREE.MeshBasicMaterial).color.setHex(RUST).multiplyScalar(0.1 + 0.08 * Math.sin(this.time * 5 + t.id));
@@ -1089,22 +1261,6 @@ export class View {
     }
     if (t.type === 'beacon' && !off && t.buff === 0 && spec) v.buff.visible = false;
 
-    // flame stream (kept burning between the sim's flame events)
-    if (v.flT > 0) {
-      v.flT -= dt;
-      v.em2 += dt * (v.flFull ? 200 : 70);
-      const n = Math.floor(v.em2); v.em2 -= n;
-      if (v.flFull) {
-        // Inferno: fire in every direction, and the ground at the rim catches
-        fx.flame(t.x, v.flY, t.z, 0, Math.PI, v.flR * 0.95, n, APRICOT);
-        if (Math.random() < dt * 14) { const a = Math.random() * TAU; fx.scorch(t.x + Math.cos(a) * v.flR * 0.8, t.z + Math.sin(a) * v.flR * 0.8, 1.2, APRICOT, 2.5); }
-        v.tick -= dt; if (v.tick <= 0) { v.tick = 0.6; this.pulse(t.x, t.z, c, v.flR * 1.2, 0.5); }
-      } else {
-        fx.flame(t.x, v.flY, t.z, t.yaw, 0.4, v.flR * 0.92, n, APRICOT);
-        if (Math.random() < dt * 5) fx.puff(t.x + Math.sin(t.yaw) * v.flR * 0.9, v.flY + 0.4, t.z + Math.cos(t.yaw) * v.flR * 0.9, 0.9, 1.1, 1.2);
-      }
-    }
-
     // lance beam
     if (v.lnT > 0) {
       v.lnT -= dt;
@@ -1125,7 +1281,87 @@ export class View {
     } else if (v.beam) v.beam.visible = false;
   }
 
-  /** Power node: seen in the Uplink view only. Dim and filling while it charges, lit and pulsing when ready, dark when offline. */
+  /** The ring of fire a Firewall Pylon burns round itself while it has no partner to throw a wall to. */
+  private syncFireRing(t: Tower, v: TVis, dt: number, on: boolean, hot: boolean) {
+    v.ringOn = damp(v.ringOn, on ? 1 : 0, on ? 5 : 9, dt);
+    if (v.ringOn < 0.01) { if (v.ring) v.ring.visible = false; return; }
+    if (!v.ring) {
+      const g = new THREE.Group(), fm = fireMat(), gm = new THREE.MeshBasicMaterial({ map: glowTexture(), color: 0x000000, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
+      fm.uniforms.len.value = TAU * FIRE_RING; fm.uniforms.ends.value = 0;
+      const fire = new THREE.Mesh(G_FIRE_RING, fm), glow = new THREE.Mesh(POOL_GEO, gm);
+      glow.scale.setScalar(FIRE_RING * 1.5); glow.position.y = 0.045;
+      g.add(glow, fire); g.position.set(t.x, 0, t.z);
+      this.dyn.add(noAO(g));
+      v.ring = g; v.ringMats = [fm, gm];
+    }
+    const fm = v.ringMats[0] as THREE.ShaderMaterial, gm = v.ringMats[1] as THREE.MeshBasicMaterial, fire = v.ring.children[1], k = v.ringOn;
+    v.ring.visible = true;
+    fm.uniforms.on.value = k; fm.uniforms.heat.value = damp(fm.uniforms.heat.value, hot ? 1 : 0, 6, dt);
+    const heat = fm.uniforms.heat.value as number;
+    fire.scale.set(FIRE_RING, 0.95 + 0.9 * heat, FIRE_RING);
+    gm.color.setHex(APRICOT).multiplyScalar((0.07 + 0.12 * heat) * k * (1 + 0.08 * Math.sin(this.time * 13 + t.id)));
+    v.em2 += dt * (10 + 40 * heat) * k;
+    while (v.em2 >= 1) {
+      v.em2 -= 1;
+      const a = Math.random() * TAU, r = FIRE_RING * (0.96 + Math.random() * 0.1);
+      this.fx.spark(t.x + Math.cos(a) * r, 0.15 + Math.random() * 0.5, t.z + Math.sin(a) * r, (Math.random() - 0.5) * 0.6, 1.4 + Math.random() * 1.8, (Math.random() - 0.5) * 0.6, 0.5 + Math.random() * 0.4, 0.13 + Math.random() * 0.08, APRICOT, -1.5, 0.6);
+    }
+  }
+
+  private makeWall(): WVis {
+    const obj = new THREE.Group(), mat = fireMat();
+    const sheet = new THREE.Mesh(G_WALL, mat); sheet.frustumCulled = false;
+    const gmat = new THREE.MeshBasicMaterial({ map: glowTexture(), color: 0x000000, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
+    const glow = new THREE.Mesh(G_GLOW_STRIP, gmat); glow.position.y = 0.045;
+    obj.add(glow, sheet);
+    this.dyn.add(noAO(obj));
+    return { obj, sheet, mat, glow, gmat, seen: 0, on: 0, heat: 0, em: 0, len: 1 };
+  }
+  private dropWall(v: WVis) { this.dyn.remove(v.obj); v.mat.dispose(); v.gmat.dispose(); }
+
+  /** Walls of fire between linked Firewall Pylons (sim.walls): a low dense sheet, embers and a glow on the deck; taller and whiter when hot. */
+  private syncWalls(dt: number, f: number) {
+    const sim = this.sim!, fx = this.fx, walls = (sim as unknown as { walls?: WallLike[] }).walls;
+    if (walls) for (const w of walls) {
+      const key = w.a + ':' + w.b, dx = w.bx - w.ax, dz = w.bz - w.az, len = Math.hypot(dx, dz) || 1, ux = dx / len, uz = dz / len;
+      let v = this.wv.get(key);
+      if (!v) { v = this.makeWall(); this.wv.set(key, v); }
+      v.seen = f;
+      // both pylons must have finished rising before fire runs between them
+      const ta = this.tv.get(w.a), tb = this.tv.get(w.b), up = !!ta && !!tb && ta.grow >= 1 && tb.grow >= 1;
+      for (const [tv, sg] of [[ta, 1], [tb, -1]] as [TVis | undefined, number][]) {
+        if (!tv) continue;
+        if (tv.wSeen !== f) { tv.wSeen = f; tv.wHeat = 0; tv.wTo = Math.atan2(ux * sg, uz * sg); }
+        tv.wHeat = Math.max(tv.wHeat, w.on ? (w.hot ? 2 : 1) : 0);
+      }
+      v.on = damp(v.on, w.on && up ? 1 : 0, w.on ? 5 : 10, dt);
+      v.heat = damp(v.heat, w.hot ? 1 : 0, 5, dt);
+      v.obj.visible = v.on > 0.01;
+      if (!v.obj.visible) continue;
+      // the sheet runs from emitter head to emitter head, a little inside each pylon
+      const in0 = 0.45, L = Math.max(0.2, len - in0 * 2), h = 1.5 + 1.1 * v.heat;
+      v.obj.position.set(w.ax + ux * in0, 0.02, w.az + uz * in0); v.obj.rotation.y = Math.atan2(-uz, ux);
+      v.sheet.scale.set(L, h, 0.8 + 0.5 * v.heat);
+      v.mat.uniforms.len.value = L; v.mat.uniforms.heat.value = v.heat; v.mat.uniforms.on.value = v.on;
+      v.glow.position.x = L / 2; v.glow.scale.set(L + 2.2, 1, 3 + 1.6 * v.heat);
+      v.gmat.color.setHex(APRICOT).multiplyScalar((0.1 + 0.14 * v.heat) * v.on * (1 + 0.07 * Math.sin(this.time * 11 + w.a)));
+      v.em += dt * L * (4 + 13 * v.heat) * v.on;
+      while (v.em >= 1) {
+        v.em -= 1;
+        const u = in0 + Math.random() * L, j = (Math.random() - 0.5) * 0.4;
+        fx.spark(w.ax + ux * u - uz * j, 0.2 + Math.random() * h * 0.7, w.az + uz * u + ux * j, (Math.random() - 0.5) * 0.8, 1.4 + Math.random() * (2 + 2 * v.heat), (Math.random() - 0.5) * 0.8,
+          0.5 + Math.random() * 0.5, 0.12 + Math.random() * 0.1, v.heat > 0.5 && Math.random() < 0.4 ? SAND : APRICOT, -1.5, 0.6);
+      }
+      if (v.heat > 0.5 && Math.random() < dt * 5) { const u = in0 + Math.random() * L; fx.scorch(w.ax + ux * u, w.az + uz * u, 0.9, APRICOT, 3); if (Math.random() < 0.4) fx.puff(w.ax + ux * u, h, w.az + uz * u, 0.8, 1.1, 1.3); }
+    }
+    for (const [id, v] of this.wv) if (v.seen !== f) { this.dropWall(v); this.wv.delete(id); }
+  }
+
+  /**
+   * Power node: a target reticle, seen in the Uplink view only. The ring fills with the charge; ready, it is bright,
+   * breathes and shows its brackets; it flashes when it is hit and fires, fizzles when it is hit with nothing to reach,
+   * and is a dead rust arc while the tower is offline.
+   */
   private syncNode(t: Tower, v: TVis, b: number) {
     const c = TOWERS[t.type].color, off = t.down > 0, spec = t.spec > 0, ready = t.charge >= 1 && !off && !spec;
     const beat = 0.5 + 0.5 * Math.sin(this.time * 4.2 + t.id);
@@ -1135,20 +1371,24 @@ export class View {
     node.visible = b > 0.02 && v.grow >= 1;
     if (!node.visible) return;
     node.quaternion.copy(this.camera.quaternion);
-    const flash = Math.max(0, 1 - v.fired / 0.35);
-    node.scale.setScalar(b * (ready ? 1 + 0.06 * beat : 1) * (1 + 0.5 * flash));
+    const flash = Math.max(0, 1 - v.fired / 0.35), deny = v.deny > 0 ? v.deny / 0.45 : 0;
+    node.scale.setScalar(b * (ready ? 1 + 0.07 * beat : 0.9) * (1 + 0.6 * flash));
+    node.position.x = deny > 0 ? Math.sin(v.deny * 80) * 0.07 * deny : 0;
     const u = v.ringMat!.uniforms;
     (u.color.value as THREE.Color).setHex(c);
     // offline: a rust arc that drains as the reboot runs down
     if (off) v.downMax = Math.max(v.downMax, t.down); else v.downMax = 0;
     if (off) (u.color.value as THREE.Color).setHex(RUST);
+    else if (deny > 0) (u.color.value as THREE.Color).lerp(C1.setHex(0x8a8478), Math.min(1, deny * 1.5));
     u.fill.value = ready ? 1 : off ? t.down / (v.downMax || 1) : spec ? 0 : t.charge;
-    const deny = v.deny > 0 ? (Math.sin(v.deny * 60) > 0 ? 0.25 : 1) : 1;
-    u.gain.value = (off ? 0.7 : spec ? 0.2 + 1.5 * flash : ready ? 0.62 + 0.2 * beat : 0.5) * deny;
+    const dk = deny > 0 ? (Math.sin(v.deny * 60) > 0 ? 0.3 : 0.9) : 1;
+    u.gain.value = (off ? 0.4 : spec ? 0.2 + 2.2 * flash : ready ? 0.85 + 0.3 * beat : 0.5) * dk;
+    u.mark.value = ready ? 1 : spec ? flash : 0;
+    u.spin.value = ready ? this.time * 0.7 + t.id : 0;
     if (v.nodeMat && v.core) {
       if (off) v.nodeMat.color.setHex(RUST).multiplyScalar(0.22);
       else if (spec) v.nodeMat.color.setHex(c).multiplyScalar(0.1 + 3 * flash);
-      else if (ready) v.nodeMat.color.setHex(c).multiplyScalar((0.8 + 0.15 * beat) * deny);
+      else if (ready) v.nodeMat.color.setHex(c).multiplyScalar((0.8 + 0.15 * beat) * dk);
       else v.nodeMat.color.setHex(c).multiplyScalar(0.14 + 0.12 * t.charge);
       v.core.rotation.y = ready ? this.time * 1.6 : 0;
     }
@@ -1165,9 +1405,10 @@ export class View {
     obj.rotation.order = 'YXZ';
     const sc = ENEMY_SCALE[type];
     // weak-point parts of the model get their own lights
-    const wglow: Glow[] = [];
+    const wglow: Glow[] = [], meshes: THREE.Mesh[] = [];
     obj.traverse((o) => {
       const m = o as THREE.Mesh;
+      if (m.isMesh) meshes.push(m);
       if (!m.isMesh || Array.isArray(m.material)) return;
       let under = false;
       for (let p: THREE.Object3D | null = o; p && !under; p = p.parent) under = p.name.startsWith('weak_');
@@ -1193,16 +1434,21 @@ export class View {
     for (const w of d.weak || []) {
       const r = w.r * sc;
       const mat = new THREE.MeshBasicMaterial({ color: FROST, fog: false });
-      const rmat = new THREE.MeshBasicMaterial({ color: FROST, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, fog: false, side: THREE.DoubleSide });
+      // a three-bracket reticle that is drawn over the hull, so the target reads from any side it can be hit from
+      const rmat = reticleMat(3, false);
+      rmat.uniforms.mark.value = 1;
       const core = new THREE.Mesh(G_OCTA, mat); core.scale.setScalar(r * 0.5);
-      const ring = new THREE.Mesh(G_WEAK_RING, rmat); ring.scale.setScalar(r);
+      const ring = new THREE.Mesh(G_QUAD, rmat); ring.scale.setScalar(r); ring.renderOrder = 3;
       for (const m of [core, ring]) { m.layers.set(FX_LAYER); m.visible = false; this.dyn.add(m); }
       weak.push({ core, ring, mat, rmat });
     }
     this.dyn.add(obj);
-    return { obj, rig, sx: 0, sz: 0, back, bar, sbar, bubble, glow, ice: null, weak, wglow, type, phase: Math.random() * 6.28, seen: 0, fresh: true, lx: 0, lz: 0, lgy: 0, tilt: 0, em: 0 };
+    // the hp bars, glow and bubble were added after the traverse: only the model's own meshes flash
+    return { obj, rig, sx: 0, sz: 0, back, bar, sbar, bubble, glow, ice: null, weak, wglow, type, phase: Math.random() * 6.28, seen: 0, fresh: true, lx: 0, lz: 0, lgy: 0, tilt: 0, em: 0,
+      meshes, mats: meshes.map((m) => m.material), hitT: 0 };
   }
   private poolEnemy(v: EVis) {
+    if (v.hitT > 0) { v.hitT = 0; for (let i = 0; i < v.meshes.length; i++) v.meshes[i].material = v.mats[i]; }
     v.obj.visible = false;
     for (const w of v.weak) w.core.visible = w.ring.visible = false;
     (this.epool[v.type] ||= []).push(v);
@@ -1212,6 +1458,7 @@ export class View {
     const sim = this.sim!, d = ENEMIES[e.type], sc = ENEMY_SCALE[e.type];
     // visual pose: the sim walks hard-cornered lanes; the view rounds every corner into an arc and limits the turn rate
     let dist = e.dist, lane = e.lane, off = e.off;
+    if (v.hitT > 0 && (v.hitT -= dt) <= 0) for (let i = 0; i < v.meshes.length; i++) v.meshes[i].material = v.mats[i];
     if (sim.replica) { // replicas only know x / z: recover the lane position from them
       if (v.fresh) { v.sx = e.x; v.sz = e.z; } else { v.sx += (e.x - v.sx) * k; v.sz += (e.z - v.sz) * k; }
       let bd = 1e9;
@@ -1222,6 +1469,9 @@ export class View {
         if (dd < bd - 1e-6) { bd = dd; dist = nd; lane = l; off = -(v.sx - PO.x) * PO.dz + (v.sz - PO.z) * PO.dx; }
       }
     }
+    // nobody walks into the core itself: they pull up at its plinth and batter it from there
+    const stand = (sim.map.lanes[lane] || sim.map.lanes[0]).len - (CORE_STAND + 0.6 * e.r), atCore = dist > stand;
+    if (atCore) dist = stand;
     roundedPose(sim.map, lane, dist, off, TURN_A[e.type], PO);
     const gy = e.gy || 0, fly = e.type === 'drone', y = fly ? e.y : gy;
     if (v.fresh) { v.obj.position.set(PO.x, y, PO.z); v.obj.rotation.set(0, PO.yaw, 0); v.fresh = false; v.tilt = 0; v.lx = PO.x; v.lz = PO.z; v.lgy = gy; resetEnemy(v.rig); }
@@ -1243,8 +1493,15 @@ export class View {
       let bd = 400;
       for (const t of sim.towers) { const dd = (t.x - e.x) * (t.x - e.x) + (t.z - e.z) * (t.z - e.z); if (dd < bd) { bd = dd; look = Math.atan2(t.x - e.x, t.z - e.z); } }
     }
-    const frozen = e.frz > 0;
-    updateEnemy(v.rig, dt, e.hp / e.maxHp, e.sing > 0, frozen && e.type !== 'boss', look);
+    const frozen = e.frz > 0, strike = atCore || (e.breach || 0) > 0;
+    updateEnemy(v.rig, dt, e.hp / e.maxHp, e.sing > 0, frozen && e.type !== 'boss', look, strike);
+    if (v.rig.hit) {
+      // a blow lands on the core: sparks where the machine meets it
+      const l = Math.hypot(this.core.x - PO.x, this.core.z - PO.z) || 1, reach = Math.min(l, e.r + 0.5), hx = PO.x + ((this.core.x - PO.x) / l) * reach, hz = PO.z + ((this.core.z - PO.z) / l) * reach;
+      this.fx.burst(hx, gy + d.y, hz, e.type === 'boss' ? 14 : 6, 5, SAND, 0.35, 0.2, 9);
+      this.fx.flash(hx, gy + d.y, hz, e.type === 'boss' ? 1.4 : 0.6, APRICOT, 0.1);
+      this.coreHit = Math.min(this.coreHit, 0.22);
+    }
     v.glow.position.y = (gy + 0.05 - y) / sc;
 
     // hp bar: thin, flat, drains to the left
@@ -1295,11 +1552,15 @@ export class View {
         const rad = wk[i].r * sc;
         w.core.position.set(W3.x, W3.y, W3.z); w.ring.position.copy(w.core.position);
         w.core.rotation.set(this.time * 2, this.time * 2.6, 0);
-        w.core.scale.setScalar(rad * (0.42 + 0.1 * beat + 0.16 * near) * b);
+        w.core.scale.setScalar(rad * (0.3 + 0.07 * beat + 0.12 * near) * b);
         w.ring.quaternion.copy(this.camera.quaternion);
-        w.ring.scale.setScalar(rad * (1.15 - 0.15 * near) * b);
+        // the brackets close on the point and stop turning as the crosshair comes onto it
+        w.ring.scale.setScalar(rad * (1.5 - 0.3 * near) * b);
         w.mat.color.setHex(FROST).multiplyScalar(0.8 + 0.3 * beat + 0.9 * near);
-        w.rmat.color.setHex(near > 0.6 ? 0xffffff : STATIC).multiplyScalar(0.4 + 0.2 * beat + 0.6 * near);
+        const ru = w.rmat.uniforms;
+        (ru.color.value as THREE.Color).setHex(near > 0.6 ? 0xffffff : STATIC);
+        ru.gain.value = 0.55 + 0.2 * beat + 0.8 * near;
+        ru.spin.value = w.ring.userData.s = (w.ring.userData.s || v.phase) + dt * 1.4 * (1 - near);
       }
       for (const g of v.wglow) g.m.emissiveIntensity = g.i0 * (0.7 + 0.4 * beat + 0.8 * hot * b);
     }
@@ -1315,9 +1576,18 @@ export class View {
     return ub < 0 || L - r - 0.1 <= ub + 0.35;
   }
 
-  private dropZone(v: ZVis) {
+  /** collapse = the zone ran out in play (a singularity goes with a hard flash), false when the match is cleared away. */
+  private dropZone(v: ZVis, collapse = true) {
     this.dyn.remove(v.obj);
     for (const m of v.mats) m.dispose();
+    if (!collapse || v.kind !== 'sing' || v.t < 0) return;
+    const fx = this.fx, y = v.y + 1.7;
+    fx.flash(v.x, y, v.z, 3.4, 0xffffff, 0.16); fx.flash(v.x, y, v.z, 5.5, SINGC, 0.34);
+    fx.star(v.x, y, v.z, 3.2, 0xffffff, 10, 0.22);
+    fx.ring(v.x, v.y + 0.14, v.z, v.r * 1.25, SINGC, 0.5, 0.05, 1.3); fx.ring(v.x, v.y + 0.14, v.z, v.r * 0.7, 0xffffff, 0.3, 0.05);
+    fx.burst(v.x, y, v.z, 40, 12, SINGC, 0.7, 0.3, 3); fx.burst(v.x, y, v.z, 16, 7, FROST, 0.5, 0.2, 1);
+    this.pulse(v.x, v.z, SINGC, v.r * 2, 1);
+    this.bump(0.3, v.x, v.z, true);
   }
 
   // ---------- per-frame sync ----------
@@ -1385,66 +1655,88 @@ export class View {
     }
     for (const [id, v] of this.pv) if (v.seen !== f) { v.mesh.visible = false; (this.ppool[v.kind] ||= []).push(v); this.pv.delete(id); }
 
-    // zones
+    // walls of fire (after the towers: they mark the pylons they join)
+    this.syncWalls(dt, f);
+
+    // zones. They sit at Zone.y: the deck or the raised road they were thrown onto
     for (const z of sim.zones) {
       let v = this.zv.get(z.id);
+      const zy = z.y || 0;
       if (!v) {
         const obj = new THREE.Group();
-        // Kestrel's own singularity is verdigris like everything else of the Uplink
-        const c = z.kind === 'burn' ? APRICOT : z.owner < 0 ? TOWERS.gravity.color : z.kind === 'rain' ? BOW_TIERS[sim.tier].color : UPLINK;
+        const c = z.kind === 'burn' ? APRICOT : z.kind === 'rain' ? BOW_TIERS[sim.tier].color : SINGC;
         const mats: THREE.Material[] = [];
-        let halo: THREE.Object3D | null = null;
-        const rim = new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(z.kind === 'sing' ? 0.45 : 0.7), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
+        let halo: THREE.Object3D | null = null, core: THREE.Object3D | null = null, lens: THREE.Mesh | null = null;
+        const rim = new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(z.kind === 'sing' ? 0.5 : 0.7), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
         const ring = new THREE.Mesh(G_RING, rim); ring.scale.setScalar(z.r); obj.add(ring);
         mats.push(rim);
         if (z.kind === 'sing') {
-          // no light comes out of it: the deck goes dark toward the middle and the seams carry the pull inward
-          const shade = new THREE.MeshBasicMaterial({ color: 0x000000, alphaMap: glowTexture(), transparent: true, opacity: 0.5, depthWrite: false, fog: false });
-          const m3 = new THREE.MeshBasicMaterial({ color: 0x000000 }), m4 = new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(0.9) });
-          const dark = new THREE.Mesh(POOL_GEO, shade); dark.scale.setScalar(z.r * 0.9); obj.add(dark);
-          const hole = new THREE.Mesh(G_SPH, m3); hole.scale.setScalar(0.8); hole.position.y = 2; obj.add(hole);
-          halo = new THREE.Mesh(G_HALO, m4); halo.scale.setScalar(0.72); halo.position.y = 2; halo.rotation.x = 1.2; obj.add(halo);
-          mats.push(shade, m3, m4);
+          // no light comes out of the middle: the deck goes dark under it, a black core hangs above with a hard white
+          // rim where the light bends round it, and a disc of matter winds in
+          const shade = new THREE.MeshBasicMaterial({ color: 0x000000, alphaMap: glowTexture(), transparent: true, opacity: 0.62, depthWrite: false, fog: false });
+          const m3 = new THREE.MeshBasicMaterial({ color: 0x000000, fog: false }), m4 = accMat(), m5 = lensMat();
+          const dark = new THREE.Mesh(POOL_GEO, shade); dark.scale.setScalar(z.r * 0.95); obj.add(dark);
+          core = new THREE.Group(); core.position.y = 1.7;
+          const hole = new THREE.Mesh(G_SPH, m3); hole.scale.setScalar(0.62); core.add(hole);
+          halo = new THREE.Mesh(G_ACC, m4); halo.scale.setScalar(2.1); halo.rotation.set(0.42, 0, 0.16); core.add(halo);
+          lens = new THREE.Mesh(G_QUAD, m5); lens.scale.setScalar(1.6); lens.renderOrder = 2; core.add(lens);
+          obj.add(core);
+          mats.push(shade, m3, m4, m5);
         } else {
           const m1 = new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: z.kind === 'burn' ? 0.1 : 0.06, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
           const disc = new THREE.Mesh(G_DISC, m1); disc.scale.setScalar(z.r); obj.add(disc);
           mats.push(m1);
         }
-        obj.position.set(z.x, (z.y || 0) + 0.07, z.z);
+        obj.position.set(z.x, zy + 0.07, z.z);
         this.dyn.add(noAO(obj));
-        v = { obj, kind: z.kind, seen: f, t: 0, mats, halo, c, tick: 0 };
+        v = { obj, kind: z.kind, seen: f, t: 0, mats, halo, c, tick: 0, x: z.x, y: zy, z: z.z, r: z.r, core, lens, life: z.life };
         // a zone thrown by the hero shows up when her pose releases it
         for (let i = this.zoneWait.length - 1; i >= 0; i--) { const w = this.zoneWait[i]; if (Math.abs(w[0] - z.x) < 0.01 && Math.abs(w[1] - z.z) < 0.01) { v.t = -w[2]; this.zoneWait.splice(i, 1); break; } }
         if (z.kind === 'sing' && z.owner < 0) {
           // Collapse: the well reaches out to its victim and the space round it folds in
           let src: Tower | null = null;
           for (const t of sim.towers) if (t.type === 'gravity' && t.spec > 0 && (!src || Math.hypot(t.x - z.x, t.z - z.z) < Math.hypot(src.x - z.x, src.z - z.z))) src = t;
-          if (src) { nodePos(src, W3); fx.beam(W3.x, W3.y, W3.z, z.x, (z.y || 0) + 2, z.z, c, 0.3, 0.6); fx.beam(W3.x, W3.y, W3.z, z.x, (z.y || 0) + 2, z.z, 0xffffff, 0.08, 0.7); }
-          fx.flash(z.x, (z.y || 0) + 2, z.z, 2.4, c, 0.35);
-          this.bump(0.3, z.x, z.z);
+          if (src) { nodePos(src, W3); fx.beam(W3.x, W3.y, W3.z, z.x, zy + 1.7, z.z, c, 0.3, 0.6); fx.beam(W3.x, W3.y, W3.z, z.x, zy + 1.7, z.z, 0xffffff, 0.08, 0.7); }
+          fx.flash(z.x, zy + 1.7, z.z, 2.4, c, 0.35);
+          this.bump(0.3, z.x, z.z, true);
         }
         this.zv.set(z.id, v);
       }
-      v.seen = f; v.t += dt;
+      v.seen = f; v.t += dt; v.life = z.life;
       v.obj.visible = v.t >= 0;
       if (v.t < 0) continue;
-      const zy = z.y || 0;
       if (z.kind === 'rain') {
         for (let i = 0; i < 2; i++) {
-          const a = Math.random() * 6.28, r = Math.sqrt(Math.random()) * z.r, x = z.x + Math.cos(a) * r, zz = z.z + Math.sin(a) * r, gy = this.elev ? this.deckY(x, zz) : 0;
-          fx.beam(x + 1.5, gy + 14, zz + 0.8, x, gy, zz, v.c, 0.035, 0.12);
-          fx.burst(x, gy + 0.1, zz, 2, 3, v.c, 0.25, 0.25, 6);
+          const a = Math.random() * 6.28, r = Math.sqrt(Math.random()) * z.r, x = z.x + Math.cos(a) * r, zz = z.z + Math.sin(a) * r;
+          fx.beam(x + 1.5, zy + 14, zz + 0.8, x, zy, zz, v.c, 0.035, 0.12);
+          fx.burst(x, zy + 0.1, zz, 2, 3, v.c, 0.25, 0.25, 6);
         }
-      } else if (z.kind === 'sing') {
-        if (v.halo) { v.halo.rotation.z += dt * 6; v.halo.rotation.x = 1.2 + Math.sin(v.t * 3) * 0.4; }
-        if ((v.tick -= dt) <= 0) { v.tick = 0.55; this.pulse(z.x, z.z, v.c, -z.r * 1.3, 0.6); }
-        for (let i = 0; i < 4; i++) { const a = Math.random() * 6.28, r = z.r * (0.6 + Math.random() * 0.4); fx.spark(z.x + Math.cos(a) * r, zy + 0.3 + Math.random() * 3, z.z + Math.sin(a) * r, -Math.cos(a) * r * 2.2, 0.5, -Math.sin(a) * r * 2.2, 0.45, 0.4, v.c); }
-      } else if (Math.random() < 0.6) {
+      } else if (z.kind === 'sing' && v.core) {
+        // it opens fast, feeds for as long as it lives and shrinks to a point just before it goes
+        const open = ease(v.t / 0.18) * (z.life < 0.22 ? Math.max(0.05, z.life / 0.22) : 1), cy = zy + 1.7;
+        v.core.scale.setScalar(open * (1 + 0.04 * Math.sin(v.t * 23)));
+        if (v.halo) { v.halo.rotation.y -= dt * 2.4; v.halo.rotation.x = 0.42 + Math.sin(v.t * 1.7) * 0.12; }
+        if (v.lens) v.lens.quaternion.copy(this.camera.quaternion).premultiply(Q1.copy(v.core.quaternion).invert());
+        // hex borders: ripples that run inward, one after the other
+        if ((v.tick -= dt) <= 0) { v.tick = 0.42; this.pulse(z.x, z.z, v.c, -z.r * 1.3, 0.7); fx.ring(z.x, zy + 0.12, z.z, z.r * 0.12, v.c, 0.5, 8.5, 0.45); }
+        // matter pulled in: dust that spirals to the core, and now and then a long streak
+        for (let i = 0; i < 3; i++) {
+          const a = Math.random() * 6.28, r = z.r * (0.45 + Math.random() * 0.55), px = z.x + Math.cos(a) * r, pz = z.z + Math.sin(a) * r, py = zy + 0.2 + Math.random() * 2.6, T = 0.4 + Math.random() * 0.2;
+          fx.spark(px, py, pz, (-Math.cos(a) * r * 1.5 - Math.sin(a) * r * 0.9) / T, ((cy - py) * 1.5) / T, (-Math.sin(a) * r * 1.5 + Math.cos(a) * r * 0.9) / T, T, 0.3, Math.random() < 0.3 ? 0xffffff : v.c, 0, 0.5);
+        }
+        if (Math.random() < dt * 22) {
+          const a = Math.random() * 6.28, r = z.r * (0.5 + Math.random() * 0.5), y0 = zy + 0.15 + Math.random() * 1.2;
+          fx.beam(z.x + Math.cos(a) * r, y0, z.z + Math.sin(a) * r, z.x + Math.cos(a + 0.35) * r * 0.3, cy + (y0 - cy) * 0.3, z.z + Math.sin(a + 0.35) * r * 0.3, Math.random() < 0.4 ? 0xffffff : v.c, 0.05, 0.16);
+        }
+      } else if (z.kind === 'burn' && Math.random() < 0.6) {
         const a = Math.random() * 6.28, r = Math.sqrt(Math.random()) * z.r;
         fx.spark(z.x + Math.cos(a) * r, zy + 0.1, z.z + Math.sin(a) * r, 0, 2 + Math.random() * 2, 0, 0.6, 0.45, APRICOT, -1);
       }
     }
-    for (const [id, v] of this.zv) if (v.seen !== f) { this.dropZone(v); this.zv.delete(id); }
+    for (const [id, v] of this.zv) if (v.seen !== f) { this.dropZone(v, v.life < 0.3); this.zv.delete(id); }
+
+    // jump targets above the other Spires
+    this.syncBeacons(dt, aim);
 
     // heroes
     const tier = BOW_TIERS[sim.tier];
@@ -1463,7 +1755,9 @@ export class View {
       h.obj.position.copy(h.pos);
       h.obj.rotation.y = yaw;
       // the rig owns scale (squash / materialise) and the teleport flicker
-      if (h.rig) { if (!updateHero(h.rig, yaw, pitch, dt, HERO_SCALE)) { h.out = false; h.obj.visible = h.shown = false; } }
+      // and the bow shows the tension the player holds in it
+      const pull = p.heroActive && typeof p.draw === 'number' ? p.draw : -1;
+      if (h.rig) { if (!updateHero(h.rig, yaw, pitch, dt, HERO_SCALE, pull)) { h.out = false; h.obj.visible = h.shown = false; } }
     });
   }
 
@@ -1478,6 +1772,61 @@ export class View {
       h = this.heroes[i] = { obj, rig: makeHeroRig(obj), pos: new THREE.Vector3(), tele: 0, out: false, shown: false, tiers };
     }
     return h;
+  }
+
+  /**
+   * In the Uplink every other Spire carries a jump target at spireTarget(): a verdigris reticle with the F key under it
+   * (shoot it or press F). The one under the crosshair, or picked by the controller, lights up and closes its brackets.
+   */
+  private syncBeacons(dt: number, aim: boolean) {
+    const sim = this.sim!, me = sim.players[this.me], b = this.heroBlend;
+    let n = 0;
+    if (aim && me) for (const t of sim.towers) {
+      if (t.type !== 'spire' || t.id === me.heroTower || t.down > 0) continue;
+      let v = this.beacons[n];
+      if (!v) {
+        const obj = new THREE.Group(), mat = reticleMat(4);
+        const ret = new THREE.Mesh(G_QUAD, mat); ret.scale.setScalar(SPIRE_R * 1.2);
+        const dia = new THREE.Mesh(G_OCTA, new THREE.MeshBasicMaterial({ color: new THREE.Color(UPLINK).multiplyScalar(1.4), fog: false })); dia.scale.set(0.13, 0.2, 0.13);
+        const key = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.keyTexture(), color: UPLINK, transparent: true, depthWrite: false, fog: false })); key.center.set(0.5, 1);
+        obj.add(ret, dia, key);
+        this.dyn.add(noAO(obj));
+        v = this.beacons[n] = { obj, ret, mat, dia, key, hot: 0 };
+      }
+      n++;
+      spireTarget(t, W3);
+      const u = raySphere(RO.x, RO.y, RO.z, RD.x, RD.y, RD.z, W3.x, W3.y, W3.z, SPIRE_R), on = u > 0 || t.id === this.teleId;
+      v.hot = damp(v.hot, on ? 1 : 0, 16, dt);
+      const hot = v.hot, d = Math.hypot(W3.x - RO.x, W3.y - RO.y, W3.z - RO.z);
+      v.obj.visible = true;
+      v.obj.position.set(W3.x, W3.y, W3.z);
+      v.obj.scale.setScalar(Math.max(0.01, b));
+      v.ret.quaternion.copy(this.camera.quaternion);
+      v.ret.scale.setScalar(SPIRE_R * (1.2 - 0.12 * hot));
+      const uu = v.mat.uniforms;
+      (uu.color.value as THREE.Color).setHex(UPLINK).lerp(C1.setHex(0xffffff), 0.35 * hot);
+      uu.gain.value = 0.6 + 0.12 * Math.sin(this.time * 3 + t.id) + 1.0 * hot;
+      uu.mark.value = 0.45 + 0.55 * hot;
+      uu.spin.value = v.ret.userData.s = (v.ret.userData.s || 0) + dt * (0.5 + 2.5 * hot);
+      v.dia.rotation.y += dt * (1.5 + 4 * hot);
+      (v.dia.material as THREE.MeshBasicMaterial).color.setHex(UPLINK).multiplyScalar(1.1 + 1.2 * hot);
+      // the key cap keeps a readable size at any distance
+      const ks = Math.max(0.5, d * 0.032) * (1 + 0.15 * hot);
+      v.key.scale.set(ks, ks, 1); v.key.position.y = -SPIRE_R * 1.15;
+      (v.key.material as THREE.SpriteMaterial).opacity = 0.6 + 0.4 * hot;
+    }
+    for (let i = n; i < this.beacons.length; i++) this.beacons[i].obj.visible = false;
+  }
+  /** A small key cap with an F on it, drawn once. */
+  private keyTexture() {
+    if (this.keyTex) return this.keyTex;
+    const c = document.createElement('canvas'); c.width = c.height = 64;
+    const g = c.getContext('2d')!;
+    g.strokeStyle = '#ffffff'; g.fillStyle = 'rgba(8,14,13,0.75)'; g.lineWidth = 4;
+    g.beginPath(); g.roundRect(8, 8, 48, 48, 9); g.fill(); g.stroke();
+    g.fillStyle = '#ffffff'; g.font = '700 32px monospace'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('F', 32, 34);
+    this.keyTex = new THREE.CanvasTexture(c); this.keyTex.colorSpace = THREE.SRGBColorSpace;
+    return this.keyTex;
   }
 
   /** One shaft of Arrow Rain leaving the bow for the sky (the sim only knows the zone it lands in). */
@@ -1497,7 +1846,7 @@ export class View {
     this.heroBlend += Math.max(-dt * 2.4, Math.min(dt * 2.4, target - this.heroBlend));
     // bird view
     if (this.orbit) { const a = this.time * 0.06; this.topPos.set(Math.sin(a) * 46, 30 + Math.sin(a * 1.7) * 4, Math.cos(a) * 40 + 4); V.set(2, 0, 0); }
-    else { const c = this.cam; this.topPos.set(c.x, c.dist * Math.sin(c.tilt), c.z + c.dist * Math.cos(c.tilt)); V.set(c.x, 0, c.z); }
+    else { const c = this.cam, tl = this.tiltOf(c.dist), h = c.dist * Math.cos(tl); this.topPos.set(c.x + Math.sin(c.rot) * h, c.dist * Math.sin(tl), c.z + Math.cos(c.rot) * h); V.set(c.x, 0, c.z); }
     this.dummy.position.copy(this.topPos); this.dummy.lookAt(V); this.topQ.copy(this.dummy.quaternion);
     // third person: the anchor glides only when she changes spire; the look angles are used as they are, unsmoothed
     if (t) this.lastHeroAnchor.lerp(V.set(t.x, standY(t), t.z), this.heroBlend < 0.05 ? 1 : 1 - Math.exp(-dt * 14));
@@ -1511,7 +1860,7 @@ export class View {
     if (Math.abs(fov - this.camera.fov) > 0.01) { this.camera.fov = fov; this.camera.updateProjectionMatrix(); }
     if (this.shake > 0.001) {
       // a nudge of the camera position only: the view direction, and with it the aim, never moves
-      const a = this.shake * (0.3 - 0.18 * s);
+      const a = this.shake * (0.3 - 0.22 * s);
       this.camera.position.x += (Math.random() - 0.5) * a; this.camera.position.y += (Math.random() - 0.5) * a; this.camera.position.z += (Math.random() - 0.5) * a;
       this.shake *= Math.exp(-dt * 7);
     }
@@ -1521,9 +1870,18 @@ export class View {
     this.time += dt;
     this.sync(dt);
     this.updateCamera(dt);
-    for (let i = 0; i < this.coreSpins.length; i++) this.coreSpins[i].rotateY(dt * (i % 2 ? -1.1 : 0.8));
+    FIRE_CLOCK.value = this.time;
+    // the core: hit, it drops and shudders and its light stutters; when it discharges, its rings spin up and it flares
+    this.coreHit += dt; this.coreZap += dt;
+    const flinch = Math.max(0, 1 - this.coreHit / 0.45), zap = Math.max(0, 1 - this.coreZap / 0.5);
+    if (this.coreObj && !this.intro) {
+      this.coreObj.position.set(this.core.x + Math.sin(this.time * 71) * 0.05 * flinch, -0.1 * flinch * flinch, this.core.z + Math.cos(this.time * 83) * 0.05 * flinch);
+      this.coreObj.scale.set(1 + 0.035 * flinch, 1 - 0.05 * flinch, 1 + 0.035 * flinch);
+    }
+    const cg = (flinch > 0 ? (Math.sin(this.time * 90) > 0 ? 0.35 : 1.15) * flinch + (1 - flinch) : 1) + 1.6 * zap;
+    for (const g of this.coreGlows) g.m.emissiveIntensity = g.i0 * cg;
+    for (let i = 0; i < this.coreSpins.length; i++) this.coreSpins[i].rotateY(dt * (i % 2 ? -1.1 : 0.8) * (1 + 7 * zap));
     if (this.coreObj && this.sim) { const hurt = this.sim.lives <= 6; if (hurt && Math.random() < 0.3) this.fx.spark(this.core.x + (Math.random() - 0.5) * 3, 1 + Math.random() * 3, this.core.z + (Math.random() - 0.5) * 3, 0, 2, 0, 0.5, 0.4, RUST); }
-    if (this.teleMark.visible) this.teleMark.children[0].rotation.y += dt * 3;
     if (this.selRing.visible) (this.selRing.material as THREE.MeshBasicMaterial).opacity = 0.7 + 0.2 * Math.sin(this.time * 5);
     this.fx.update(dt, this.camera, this.renderer.domElement.height);
     this.world.update(this.time, dt);

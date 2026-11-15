@@ -1,8 +1,7 @@
 // Map editor on the hex board: draw roads along the hex lines, set their height levels, place the core,
 // scenery and starting towers, set starting conditions, then save / share / test-play the result.
 // DOM is built with createElement + textContent only; anything read from storage or a share code goes
-// through sanitizeMap / decodeMap.
-import './editor.css';
+// through sanitizeMap / decodeMap. The styles (editor.css) are linked from play.html.
 import { GW, GH, TOWERS, TOWER_TYPES } from './game/data.ts';
 import type { TowerType } from './game/data.ts';
 import { CELL, HEX_SIZE, cellX, cellZ, worldToCell, neighbor, hexDist, lineDir, lineCells, disc, inBoard } from './game/hex.ts';
@@ -88,6 +87,40 @@ const sigOf = (m?: MapDef | null) => { try { return m ? encodeMap(m) : ''; } cat
 function slug(name: string) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 17).replace(/-+$/, '') || 'map';
 }
+// The draft being worked on is also written to storage, so a reload or a closed tab does not throw it away.
+const DRAFT_KEY = 'voltspire-draft';
+let draftTimer = 0;
+function storeDraft(d: Draft): void {
+  clearTimeout(draftTimer); draftTimer = 0;
+  try {
+    if (!hasContent(d)) { localStorage.removeItem(DRAFT_KEY); return; }
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ name: d.name, tier: d.tier, gold: d.gold, lives: d.lives, core: d.core, lanes: d.lanes, blocked: [...d.blocked], towers: [...d.towers] }));
+  } catch { /* storage unavailable: the draft still lives for this visit */ }
+}
+/** The stored draft, or null. Storage is outside input like any other: shapes are checked here, values are clamped by draftFrom. */
+function readDraft(): Draft | null {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null');
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const o = raw as Record<string, unknown>;
+    const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+    const tile = (v: unknown): v is number => num(v) && Number.isInteger(v) && v >= 0 && v < GW * GH;
+    const point = (v: unknown): v is number[] => Array.isArray(v) && v.length >= 2 && v.length <= 3 && v.every(num);
+    if (!point(o.core) || !Array.isArray(o.lanes)) return null;
+    const lanes = o.lanes.slice(0, 3).map((l: unknown) => (Array.isArray(l) ? l.slice(0, MAX_PTS).filter(point).map((q): LanePoint => [q[0], q[1], q[2] || 0]) : []));
+    const blocked = (Array.isArray(o.blocked) ? o.blocked : []).slice(0, MAX_BLOCKED).filter(tile).map((k): [number, number] => [k % GW, Math.floor(k / GW)]);
+    const towers: MapDef['towers'] = [];
+    for (const t of (Array.isArray(o.towers) ? o.towers : []).slice(0, MAX_TOWERS)) {
+      if (Array.isArray(t) && tile(t[0]) && typeof t[1] === 'string' && (TOWER_TYPES as readonly string[]).includes(t[1])) towers.push({ t: t[1] as TowerType, cx: t[0] % GW, cz: Math.floor(t[0] / GW) });
+    }
+    const d = draftFrom({
+      id: 'draft', name: typeof o.name === 'string' ? filterName(o.name) : '', desc: '', tier: num(o.tier) ? o.tier : 2,
+      lanes, core: [o.core[0], o.core[1]], gold: num(o.gold) ? o.gold : 220, lives: num(o.lives) ? o.lives : 20, towers, blocked,
+    });
+    if (!d.name.trim()) d.name = 'Untitled sector';
+    return hasContent(d) ? d : null;
+  } catch { return null; }
+}
 const linked = (l: RP[], core: Pt) => l.length > 1 && hexDist(l[l.length - 1][0], l[l.length - 1][1], core[0], core[1]) <= END_R;
 /** Levels as the game will see them: a road that reaches the core arrives on deck level. */
 function shown(l: RP[], core: Pt): RP[] {
@@ -151,14 +184,19 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   const ac = new AbortController();
   const sig = { signal: ac.signal };
   let flashTimer = 0;
+  let statusNote: { text: string; bad: boolean } | null = null; // a flash message shown in the status bar (see flash)
 
   // Reopening without a map, or with the map this draft came from / was test-played as, resumes the draft.
   const from = sigOf(initial);
   let d: Draft;
   let resumed = false;
+  // On the first visit after a page load the draft comes back from storage, unless another map was asked for.
+  const kept = lastDraft ? null : readDraft();
   if (lastDraft && (!initial || from === lastFrom)) { d = lastDraft; resumed = hasContent(d); }
+  else if (kept && (!initial || kept.name === initial.name.slice(0, 28))) { d = kept; resumed = true; }
   else {
-    if (lastDraft && hasContent(lastDraft)) prevDraft = lastDraft;
+    const old = lastDraft || kept;
+    if (old && hasContent(old)) prevDraft = old;
     d = initial ? draftFrom(initial) : blankDraft();
   }
   lastDraft = d; lastFrom = from;
@@ -224,6 +262,11 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   function validate(lanes: RP[][]) {
     clean = null;
     if (!lanes.length) { problem = 'Draw Road 1: pick a tile in the dim margin outside the board for the spawn, then work towards the core.'; return; }
+    // The spawn gate is a large building. On the board it would stand on tiles the player can build on.
+    for (let i = 0; i < 3; i++) {
+      const l = d.lanes[i];
+      if (l.length && inBoard(l[0][0], l[0][1])) { problem = `Road ${i + 1} must start in the dim margin outside the board, where its spawn gate has room.`; return; }
+    }
     const bare = { ...d, blocked: new Set<number>(), towers: new Map<number, TowerType>() };
     const each = d.lanes.map((l) => (l.length ? validateMap(draftToDef(bare, [l])) : null));
     const say = (i: number, msg: string) => {
@@ -258,6 +301,7 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     const l = d.lanes[li];
     if (l.length >= MAX_PTS) { flash(`A road can have at most ${MAX_PTS} corners.`, true); return; }
     let p: RP = [cx, cz, 0];
+    if (!l.length && inBoard(cx, cz)) { flash('Start the road in the dim margin outside the board.', true); return; }
     if (l.length) {
       const prev = l[l.length - 1], s = snap(prev, cx, cz);
       if (same(s, prev)) return;
@@ -605,8 +649,14 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   function flash(text: string, bad = false) {
     if (bad) sfx('error');
     hint.textContent = text; hint.classList.toggle('bad', bad); hint.classList.add('flash');
+    // A phone in landscape has no room for the foot line. The message borrows the status bar for as long instead.
+    statusNote = foot.offsetParent === null ? { text, bad } : null;
+    if (statusNote) refresh();
     clearTimeout(flashTimer);
-    flashTimer = window.setTimeout(() => { hint.classList.remove('flash', 'bad'); hint.textContent = toolHint(); }, 2600);
+    flashTimer = window.setTimeout(() => {
+      hint.classList.remove('flash', 'bad'); hint.textContent = toolHint();
+      if (statusNote) { statusNote = null; refresh(); }
+    }, 2600);
   }
   function toolHint() {
     const li = laneOf(tool);
@@ -724,6 +774,10 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
       : note ? 'Ready to play. No Uplink Spire placed - one will be added automatically'
       : ok ? 'Ready to play' : problem;
     status.classList.toggle('ok', ok && !ask && !note); status.classList.toggle('note', note); status.classList.toggle('bad', !ok || ask);
+    if (statusNote && !ask) {
+      status.textContent = statusNote.text;
+      status.classList.remove('ok'); status.classList.toggle('note', !statusNote.bad); status.classList.toggle('bad', statusNote.bad);
+    }
     playBtn.disabled = !ok; saveBtn.disabled = !ok; copyBtn.disabled = !ok;
     saveBtn.classList.toggle('hidden', confirmSave);
     overwrite.classList.toggle('hidden', !confirmSave);
@@ -773,6 +827,8 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     if (sel && !d.lanes[sel.l][sel.i]) sel = null;
     if (!outTa.classList.contains('hidden') || shareMsg.textContent) { outTa.value = ''; outTa.classList.add('hidden'); setShareMsg('', false); }
     recompute(); refresh(); draw();
+    clearTimeout(draftTimer);
+    draftTimer = window.setTimeout(() => storeDraft(d), 400);
   }
 
   // ---------- canvas ----------
@@ -1075,7 +1131,9 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   window.addEventListener('resize', resize, sig);
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (!ac.signal.aborted) draw(); }).catch(() => { /* fonts are cosmetic */ });
 
-  dispose = () => { ac.abort(); ro.disconnect(); clearTimeout(flashTimer); dispose = null; };
+  dispose = () => { ac.abort(); ro.disconnect(); clearTimeout(flashTimer); if (draftTimer) storeDraft(d); dispose = null; };
+  // a closed tab or a reload must not lose the last edits either
+  window.addEventListener('pagehide', () => { if (draftTimer) storeDraft(d); }, sig);
 
   changed();
   renderSaved();

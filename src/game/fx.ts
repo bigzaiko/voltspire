@@ -47,6 +47,64 @@ export function placeBeam(m: THREE.Mesh, ax: number, ay: number, az: number, bx:
   m.visible = true;
 }
 
+// ---------- fire, reticles ----------
+/** One clock for every sheet of fire (the view advances it). */
+export const FIRE_CLOCK = { value: 0 };
+const UV_VERT = 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }';
+/**
+ * A sheet of fire. uv.x runs along the sheet, uv.y up it. len = its length in world units (keeps the tongues the same
+ * size on a short and a long wall), heat 0..1 = how hot it burns (an Inferno), on 0..1 fades the whole sheet,
+ * ends = 1 lets it die away toward both ends (a wall), 0 keeps it whole (a closed ring).
+ */
+export const fireMat = () => new THREE.ShaderMaterial({
+  uniforms: { time: FIRE_CLOCK, len: { value: 4 }, heat: { value: 0 }, on: { value: 1 }, ends: { value: 1 }, seed: { value: Math.random() * 40 } },
+  vertexShader: UV_VERT,
+  fragmentShader: `uniform float time, len, heat, on, ends, seed; varying vec2 vUv;
+    float hash(vec2 p){ p = fract(p * vec2(0.1031, 0.1030)); p += dot(p, p.yx + 33.33); return fract((p.x + p.y) * p.x); }
+    float vn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+    void main(){
+      float x = vUv.x * len + seed, y = vUv.y;
+      float n = vn(vec2(x * 2.1, y * 2.2 - time * 2.9)) * 0.6 + vn(vec2(x * 4.7 + 7.0, y * 4.6 - time * 5.2)) * 0.4;
+      // solid at the foot, torn into tongues toward the top; a hot wall stands taller
+      float f = n * (1.2 + 0.4 * heat) + 0.22 - y * (1.5 - 0.4 * heat);
+      float edge = mix(1.0, smoothstep(0.0, 0.3, vUv.x * len) * smoothstep(0.0, 0.3, (1.0 - vUv.x) * len), ends);
+      float a = smoothstep(0.0, 0.16, f) * edge * on;
+      // deep rust at the tips, apricot in the body, pale sand only in the hottest part of the foot
+      vec3 c = mix(vec3(0.75, 0.16, 0.03), vec3(1.0, 0.36, 0.07), smoothstep(0.0, 0.4, f));
+      c = mix(c, vec3(1.25, 0.8, 0.34), smoothstep(0.55, 1.1, f) * (0.45 + 0.35 * heat));
+      gl_FragColor = vec4(c * a * (1.0 + 0.2 * heat), 1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
+  blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, side: THREE.DoubleSide,
+});
+/**
+ * A target reticle on a unit quad (PlaneGeometry(2, 2), facing the camera): a ring that fills clockwise with `fill`,
+ * a fine inner ring, a centre pip and `ticks` bracket marks outside the ring that turn with `spin` and fade with `mark`.
+ */
+export const reticleMat = (ticks = 4, depthTest = true) => new THREE.ShaderMaterial({
+  uniforms: { color: { value: new THREE.Color() }, fill: { value: 1 }, gain: { value: 1 }, mark: { value: 0 }, spin: { value: 0 }, ticks: { value: ticks } },
+  vertexShader: UV_VERT,
+  fragmentShader: `uniform vec3 color; uniform float fill, gain, mark, spin, ticks; varying vec2 vUv;
+    void main(){
+      vec2 p = vUv * 2.0 - 1.0; float r = length(p) * 1.25, w = fwidth(r) * 1.2;
+      float ang = atan(p.x, p.y);
+      float a = fract(ang / 6.2831853);
+      float band = smoothstep(0.76 - w, 0.76, r) * (1.0 - smoothstep(0.9, 0.9 + w, r));
+      float v = band * mix(0.1, 1.0, step(a, fill));
+      v += smoothstep(0.5 - w, 0.5, r) * (1.0 - smoothstep(0.535, 0.535 + w, r)) * (0.16 + 0.5 * mark);
+      v += (1.0 - smoothstep(0.1, 0.1 + w, r)) * (0.25 + 0.75 * mark);
+      // bracket marks: short bars pointing at the centre
+      float t = abs(fract((ang + spin) / 6.2831853 * ticks) - 0.5) * 2.0;
+      v += mark * step(0.86, t) * smoothstep(0.97 - w, 0.97, r) * (1.0 - smoothstep(1.2, 1.2 + w, r));
+      gl_FragColor = vec4(color * v * gain, 1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
+  blending: THREE.AdditiveBlending, depthWrite: false, depthTest, transparent: true, fog: false, side: THREE.DoubleSide,
+});
+
 export class Fx {
   group = new THREE.Group();
   private N = 6000;
@@ -190,11 +248,12 @@ export class Fx {
     this.sdat[j + 2] = 0.7 + Math.random() * 0.5;
     this.sactive = this.SN;
   }
-  /** A gout of fire: fat sparks thrown along (dx, dz) that rise as they burn out. spread = half angle in radians. */
-  flame(x: number, y: number, z: number, yaw: number, spread: number, reach: number, n: number, color: number) {
+  /** Sparks thrown in a cone round a direction (what an arrow knocks out of the far side of a hull). */
+  spray(x: number, y: number, z: number, dx: number, dy: number, dz: number, n: number, speed: number, color: number, life = 0.35, size = 0.2, spread = 0.4) {
     for (let i = 0; i < n; i++) {
-      const a = yaw + (Math.random() - 0.5) * 2 * spread, life = 0.28 + Math.random() * 0.22, sp = (reach / life) * (0.55 + Math.random() * 0.5);
-      this.spark(x + Math.sin(a) * 0.5, y + (Math.random() - 0.5) * 0.15, z + Math.cos(a) * 0.5, Math.sin(a) * sp, (Math.random() - 0.65) * 2.2, Math.cos(a) * sp, life, 0.7 + Math.random() * 0.7, color, -5, 0.25);
+      const sp = speed * (0.35 + Math.random() * 0.65);
+      this.spark(x, y, z, (dx + (Math.random() - 0.5) * 2 * spread) * sp, (dy + (Math.random() - 0.5) * 2 * spread) * sp + 0.8, (dz + (Math.random() - 0.5) * 2 * spread) * sp,
+        life * (0.5 + Math.random() * 0.6), size * (0.6 + Math.random() * 0.8), color, 9);
     }
   }
   /** Short straight rays out of one point (a weak-point hit). */

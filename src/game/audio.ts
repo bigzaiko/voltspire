@@ -157,6 +157,12 @@ export class Sound {
       case 'up': this.v({ f: 160, to: 320, dur: 0.3, vol: 0.06, type: 'triangle' }); this.n({ dur: 0.05, vol: 0.05, freq: 3000, q: 2, when: 0.26 }); break;
       case 'crit': this.n({ dur: 0.05, vol: 0.12, freq: 3600, type: 'highpass' }); this.v({ f: 880, to: 1320, dur: 0.12, vol: 0.06, type: 'triangle' }); this.thump(120, 0.18, 0.22); break;
       case 'shield': this.v({ f: 1400, to: 620, dur: 0.25, vol: 0.05 }); this.n({ dur: 0.2, vol: 0.06, freq: 5200, type: 'highpass' }); break;
+      // the core's discharge that destroys a machine attacking it
+      case 'breach': this.n({ dur: 0.12, vol: 0.14, freq: 5200, to: 1400, q: 1.4, type: 'highpass' }); this.thump(96, 0.35, 0.4); this.v({ f: 660, to: 180, dur: 0.3, vol: 0.06, type: 'sawtooth', lp: 1600, lpTo: 300 }); break;
+      // a power node was hit but its special had nothing to do: a dull click
+      case 'nospec': this.n({ dur: 0.04, vol: 0.06, freq: 620, q: 1.6 }); this.v({ f: 150, to: 110, dur: 0.07, vol: 0.06 }); break;
+      // the bow has reached full draw
+      case 'drawfull': this.n({ dur: 0.022, vol: 0.05, freq: 4600, q: 2.5 }); this.v({ f: 1320, dur: 0.06, vol: 0.02, type: 'triangle' }); break;
     }
   }
 

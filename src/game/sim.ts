@@ -3,11 +3,16 @@ import {
   CELL, GW, GH, MAX_ENERGY, WIN_WAVE, cellX, cellZ,
   TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, ENEMY_SCALE, CARDS, CARD_BY_ID, BOW_TIERS, bowTier,
   LVL_DMG, LVL_RANGE, LVL_RATE, upgradeCost, waveHpMul, waveBudget, baseMods, baseHero, TUNE,
-  TWIN_BOLT, PULSE_CRIT, RAIL_CAP, LANCE_FOCUS, SIEGE_TICK, SIEGE_SHARE, coopScale,
+  TWIN_BOLT, PULSE_CRIT, RAIL_CAP, LANCE_FOCUS, BREACH_TIME, BREACH_TIME_BOSS, BREACH_SHARE, coopScale,
+  FIRST_WAVE_IN, NEXT_WAVE_IN, DRAW_TIME, MIN_DRAW, NOCK_TIME, FULL_DRAW_MUL, HERO_DUR, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR,
 } from './data.ts';
 import type { TowerType, EnemyType, Mods, HeroStats, Card } from './data.ts';
 import { GameMap, DEFAULT_MAP, diffById } from './map.ts';
 import type { MapDef, Difficulty, PathOut } from './map.ts';
+import { hexDist } from './hex.ts';
+export { DRAW_TIME, MIN_DRAW, NOCK_TIME, HERO_DUR, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR, BREACH_TIME, BREACH_TIME_BOSS };
+/** How far from the end of its road an enemy stops to attack the core (plus 0.6 of its radius). */
+export const CORE_STAND = 1.6;
 
 export interface Enemy {
   id: number; type: EnemyType; x: number; z: number; y: number; yaw: number;
@@ -21,8 +26,8 @@ export interface Enemy {
   pull: number; pullCd: number;
   /** a weaker burn waiting underneath the current one (takes over when the stronger burn runs out) */
   burn2T: number; burn2D: number;
-  /** Colossus at the core: integrity it will still take (0 = not there yet) and seconds until its next blow */
-  siege: number; siegeT: number;
+  /** At the core: seconds left until its attack lands (0 = not there yet). The core then takes the damage and its discharge destroys the enemy. */
+  breach: number;
   /** Colossus plating: seconds left cracked open (towers deal full damage while it is > 0, see TUNE.plate) */
   crackT: number;
 }
@@ -45,13 +50,17 @@ export type ZoneKind = 'burn' | 'rain' | 'sing';
 const ZONE_KINDS: ZoneKind[] = ['burn', 'rain', 'sing'];
 export interface Zone {
   id: number; kind: ZoneKind; x: number; z: number; r: number; life: number; tick: number; dmg: number; owner: number; pd: number;
-  /** ground height of a burn zone (blasts do not reach through a bridge deck) */
+  /** deck height under the zone (roads can be raised). Burning ground does not reach through a bridge deck. */
   y: number;
 }
+/** A wall of fire between two linked Firewall Pylons (a, b = tower ids). `on`: both pylons are online. `hot`: an Inferno is running on it. */
+export interface Wall { a: number; b: number; ax: number; az: number; bx: number; bz: number; on: boolean; hot: boolean }
 export interface Player {
   energy: number; heroActive: boolean; heroTower: number; yaw: number; pitch: number;
   heroTime: number; heroDur: number; stats: HeroStats; pending: string[][];
   fireCd: number; cds: number[]; stacks: Record<string, number>; kills: number;
+  /** The bow: `drawing` mirrors the fire button, `draw` is the tension 0..1 (see heroAim). */
+  draw: number; drawing: boolean;
 }
 /** What the next startWave() will release, per lane (index = lane index). */
 export interface WavePreview { wave: number; lanes: { type: EnemyType; n: number }[][] }
@@ -73,19 +82,62 @@ export const SKILL_LOCK = [0.62, 0.86, 0.62];
 export const NODE_R = 0.6;
 /** Extra radius an arrow gets against an enemy body. There is no other aim assistance. */
 export const ARROW_PAD = 0.3;
+/** Speed of an arrow loosed at full draw. */
+export const ARROW_SPEED = 85;
+/** Damage of an arrow loosed at draw d (0..1), as a share of a full draw. Clearly worse than proportional: half a draw is worth about a third. */
+export const drawPower = (d: number) => Math.pow(Math.max(0, Math.min(1, d)), 1.5);
+/** Speed of an arrow loosed at draw d. */
+export const arrowSpeed = (d: number) => ARROW_SPEED * (0.55 + 0.45 * Math.max(0, Math.min(1, d)));
+/** From this draw on an arrow counts as fully drawn and pierces one more target. */
+export const FULL_DRAW = 0.9;
+/** Radius of the jump target above an Uplink Spire (see spireTarget). */
+export const SPIRE_R = 0.75;
 /** Blasts and burning ground only reach enemies whose road is within this height of the blast (a bridge deck shields what is under or over it). */
 export const DECK_GAP = 1.2;
 /** Snapshot event budget: one-shot state events are always sent, cosmetic ones fill what is left of SNAP_EVENTS. */
 export const SNAP_EVENTS = 90;
 export const SNAP_EVENTS_MAX = 120;
 /** Events a co-op guest must never miss (everything else is cosmetic and may be dropped under load). */
-export const MUST_EVENTS: ReadonlySet<string> = new Set(['heroOn', 'heroOff', 'tele', 'special', 'down', 'up', 'wave', 'boss', 'clear', 'levelup', 'card', 'win', 'lose', 'leak', 'siege', 'build', 'sell', 'incoming']);
+export const MUST_EVENTS: ReadonlySet<string> = new Set(['heroOn', 'heroOff', 'tele', 'special', 'down', 'up', 'wave', 'boss', 'clear', 'levelup', 'card', 'win', 'lose', 'leak', 'build', 'sell', 'incoming']);
 
 interface P3 { x: number; y: number; z: number }
 /** Height Kestrel's feet are at when she stands on this tower. */
 export function standY(t: Tower): number { return t.h; }
 /** The power node the player shoots to fire a tower's special. */
 export function nodePos<T extends P3>(t: Tower, out: T): T { out.x = t.x; out.y = t.h + 0.55; out.z = t.z; return out; }
+/** The jump target above an Uplink Spire: an arrow or a Rail Shot from another Spire that passes through it carries Kestrel over. */
+export function spireTarget<T extends P3>(t: Tower, out: T): T { out.x = t.x; out.y = t.h + 1.7; out.z = t.z; return out; }
+/** How far apart (in tiles) a Firewall Pylon links: one tile further at level 3, plus the Long Conduits card. */
+export function linkRange(t: Tower, bonus = 0): number { return LINK_RANGE + (t.lvl >= 3 ? 1 : 0) + Math.max(0, Math.min(4, bonus | 0)); }
+/**
+ * The walls of fire between Firewall Pylons. Two pylons link when either reaches the other; the closest pairs link first
+ * and every pylon keeps at most two links. Deterministic, so a co-op replica gets the same walls from the same towers.
+ */
+export function computeWalls(towers: Tower[], linkBonus = 0): Wall[] {
+  const py = towers.filter((t) => t.type === 'flame');
+  const pairs: { a: Tower; b: Tower; d: number; w: number }[] = [];
+  for (let i = 0; i < py.length; i++) for (let k = i + 1; k < py.length; k++) {
+    const a = py[i].id < py[k].id ? py[i] : py[k], b = a === py[i] ? py[k] : py[i];
+    const d = hexDist(a.cx, a.cz, b.cx, b.cz);
+    if (d >= 1 && d <= Math.max(linkRange(a, linkBonus), linkRange(b, linkBonus))) pairs.push({ a, b, d, w: Math.hypot(a.x - b.x, a.z - b.z) });
+  }
+  pairs.sort((p, q) => p.d - q.d || p.w - q.w || p.a.id - q.a.id || p.b.id - q.b.id);
+  const links = new Map<number, number>(), out: Wall[] = [];
+  for (const p of pairs) {
+    const na = links.get(p.a.id) || 0, nb = links.get(p.b.id) || 0;
+    if (na >= 2 || nb >= 2) continue;
+    links.set(p.a.id, na + 1); links.set(p.b.id, nb + 1);
+    const on = p.a.down <= 0 && p.b.down <= 0;
+    out.push({ a: p.a.id, b: p.b.id, ax: p.a.x, az: p.a.z, bx: p.b.x, bz: p.b.z, on, hot: on && (p.a.spec > 0 || p.b.spec > 0) });
+  }
+  return out;
+}
+/** Distance from a point to the segment a-b on the ground. */
+export function segDist(x: number, z: number, ax: number, az: number, bx: number, bz: number) {
+  const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz;
+  const u = l2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2)) : 0;
+  return Math.hypot(ax + dx * u - x, az + dz * u - z);
+}
 /** World position of an enemy's i-th weak point, or null if it has none. */
 export function weakPos<T extends P3>(e: Enemy, i: number, out: T): T | null {
   const list = ENEMIES[e.type].weak, w = list && list[i];
@@ -135,10 +187,15 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 const MAX_SHOTS = 4;
 /** Lance Overload damage multiplier. */
 const OVERLOAD = 3.5;
+/** Firewall: Inferno heat multiplier and how much wider a hot wall burns; the burn left on whatever crosses, as a share of the pylon's damage per second; a lone pylon's ring as a share of a wall. */
+const INFERNO = 2.5;
+const INFERNO_WIDE = 1.8;
+const BURN_SHARE = 0.4;
+const RING_SHARE = 0.5;
 
 /**
- * How forgiving a map's layout is, as an enemy health multiplier (about 1 for the first map, Switchback): long roads and
- * tiles that overlook a lot of road give the towers more time on each enemy; short or split roads give them less.
+ * How forgiving a map's layout is, as an enemy health multiplier: long roads and tiles that overlook a lot of road give
+ * the towers more time on each enemy; short or split roads give them less. The first map gets an extra ease (TUNE.starter).
  */
 export function mapEase(map: GameMap): number {
   const L = map.lanes.length;
@@ -156,7 +213,8 @@ export function mapEase(map: GameMap): number {
   let top = 0;
   const n = Math.min(16, cover.length);
   for (let i = 0; i < n; i++) top += cover[i] / n;
-  return clamp(Math.pow(len / L / TUNE.mapLen, TUNE.mapPow) * Math.pow(Math.max(1, top) / TUNE.mapCov, TUNE.mapCovPow), 0.45, 1.1);
+  const starter = map.def.id === DEFAULT_MAP.id ? TUNE.starter : 1;
+  return clamp(Math.pow(len / L / TUNE.mapLen, TUNE.mapPow) * Math.pow(Math.max(1, top) / TUNE.mapCov, TUNE.mapCovPow) * starter, 0.3, 1.1);
 }
 
 function newTower(id: number, type: TowerType, cx: number, cz: number, spent: number): Tower {
@@ -170,12 +228,14 @@ export class Sim {
   unlocked = new Set<TowerType>(['pulse', 'cryo', 'spire']);
   stacks: Record<string, number> = {};
   enemies: Enemy[] = []; towers: Tower[] = []; projs: Proj[] = []; zones: Zone[] = [];
+  /** Walls of fire between linked Firewall Pylons (rebuilt whenever the towers change, see computeWalls). */
+  walls: Wall[] = [];
   players: Player[] = [];
   events: Ev[] = [];
   map: GameMap; diff: Difficulty;
   grid: Uint8Array;
   queue: { t: number; type: EnemyType; mul: number; lane: number }[] = [];
-  waveActive = false; nextWaveIn = 12; cleared = true;
+  waveActive = false; nextWaveIn = FIRST_WAVE_IN; cleared = true;
   over = false; won = false; endless = false; replica = false;
   kills = 0; leaked = 0; sent = 0; beacons = 0; spires = 0;
   /** The campaign's final wave (from the difficulty). Survival and Versus ignore it. */
@@ -187,6 +247,8 @@ export class Sim {
   private next: { wave: number; items: { t: number; type: EnemyType; lane: number }[] } | null = null;
   private nid = 1;
   private snapN = 0; private modsSig = '';
+  private wallTw: [Tower, Tower][] = [];
+  private nospecAt = new Map<number, number>();
   private rand: () => number;
 
   constructor(opts: Partial<SimOpts> = {}) {
@@ -211,8 +273,8 @@ export class Sim {
     this.recomputeBuffs();
     for (let i = 0; i < this.opts.players; i++) {
       this.players.push({
-        energy: 0, heroActive: false, heroTower: 0, yaw: 0, pitch: -0.25, heroTime: 0, heroDur: 14,
-        stats: baseHero(), pending: [], fireCd: 0, cds: [0, 0, 0], stacks: {}, kills: 0,
+        energy: 0, heroActive: false, heroTower: 0, yaw: 0, pitch: -0.25, heroTime: 0, heroDur: HERO_DUR,
+        stats: baseHero(), pending: [], fireCd: 0, cds: [0, 0, 0], stacks: {}, kills: 0, draw: 0, drawing: false,
       });
     }
     this.planWave(1);
@@ -226,7 +288,13 @@ export class Sim {
   upCost(t: Tower) { return Math.round(upgradeCost(t.type, t.lvl) * this.mods.cheap); }
   sellValue(t: Tower) { return Math.round(t.spent * 0.6); }
   towerById(id: number) { return this.towers.find((t) => t.id === id); }
-  range(t: Tower) { return TOWERS[t.type].range * LVL_RANGE[t.lvl - 1] * this.mods.tw[t.type].range * (t.type === 'beacon' ? 1 : this.mods.tRange); }
+  /** A tower's reach. For a Firewall Pylon this is how far away it links to another pylon (whole tiles, see linkRange). */
+  range(t: Tower) {
+    if (t.type === 'flame') return linkRange(t, this.mods.flameLink) * CELL;
+    return TOWERS[t.type].range * LVL_RANGE[t.lvl - 1] * this.mods.tw[t.type].range * (t.type === 'beacon' ? 1 : this.mods.tRange);
+  }
+  /** Half the thickness of a wall of fire (wider while an Inferno runs on it, and with Slag Curtain). */
+  wallHalf(w: Wall) { return WALL_HALF * (1 + 0.3 * this.mods.flameMelt) * (w.hot ? INFERNO_WIDE : 1); }
   towerDmg(t: Tower) { return TOWERS[t.type].dmg * LVL_DMG[t.lvl - 1] * this.mods.tDmg * this.mods.tw[t.type].dmg * (1 + t.buff); }
   towerRate(t: Tower) { return TOWERS[t.type].rate * LVL_RATE[t.lvl - 1] * this.mods.tRate * this.mods.tw[t.type].rate * (1 + t.buff * 0.6); }
   /** Arrow damage. An upgraded Spire amplifies the arrows fired from it (+15% per level). */
@@ -294,6 +362,11 @@ export class Sim {
         if (Math.hypot(b.x - t.x, b.z - t.z) <= this.range(b)) t.buff = Math.max(t.buff, this.beaconBoost(b));
       }
     }
+    this.rebuildWalls();
+  }
+  private rebuildWalls() {
+    this.walls = computeWalls(this.towers, this.mods.flameLink);
+    this.wallTw = this.walls.map((w) => [this.towerById(w.a)!, this.towerById(w.b)!]);
   }
   /** Every map has at least one Uplink Spire: if the map defines none, one is placed for free on a good cell. */
   private ensureSpire() {
@@ -382,14 +455,19 @@ export class Sim {
     if (this.campaign && this.wave >= this.winWave) { if (this.next || this.preview.wave) { this.next = null; this.preview = { wave: 0, lanes: this.map.lanes.map(() => []) }; } }
     else if (!this.next || this.next.wave !== this.wave + 1) this.planWave(this.wave + 1);
   }
+  /** Credits paid for calling the next wave right now (two per second saved, counting at most NEXT_WAVE_IN seconds; also before the first wave). */
+  callBonus(): number {
+    if (this.queue.length || this.over || this.nextWaveIn <= 0.5 || (this.campaign && this.wave >= this.winWave)) return 0;
+    return Math.round(Math.min(NEXT_WAVE_IN, this.nextWaveIn) * 2);
+  }
   startWave() {
     if (this.queue.length || this.over || this.replica) return;
     if (this.wave >= this.winWave && this.campaign) return; // the final wave must be cleared, not skipped
     this.planAhead();
     if (!this.next) return;
-    if (this.nextWaveIn > 0.5 && this.wave > 0) this.gold += Math.round(this.nextWaveIn * 2); // early-call bonus
+    this.gold += this.callBonus(); // early-call bonus
     this.wave++;
-    this.waveActive = true; this.cleared = false; this.nextWaveIn = 12;
+    this.waveActive = true; this.cleared = false; this.nextWaveIn = NEXT_WAVE_IN;
     const w = this.wave, mul = waveHpMul(w);
     for (const q of this.next.items) this.queue.push({ t: this.time + q.t, type: q.type, mul, lane: q.lane });
     if (w % 5 === 0) this.events.push({ k: 'boss' });
@@ -413,7 +491,7 @@ export class Sim {
       id: this.nid++, type, x: 0, z: 0, y: d.y, yaw: 0, dist: 0, lane, off: type === 'boss' ? 0 : (this.rand() - 0.5) * 1.3,
       hp, maxHp: hp, shield: d.shield * mul * this.mapMul, maxShield: d.shield * mul * this.mapMul, shieldCd: 0,
       speed: d.speed * (0.94 + this.rand() * 0.12), slowT: 0, slowF: 0, sing: 0, alive: true, r: d.r, armor: d.armor * (1 + this.wave * 0.04),
-      gy: 0, frz: 0, burnT: 0, burnD: 0, burnAcc: 0, vulnT: 0, pull: 0, pullCd: 0, burn2T: 0, burn2D: 0, siege: 0, siegeT: 0, crackT: 0,
+      gy: 0, frz: 0, burnT: 0, burnD: 0, burnAcc: 0, vulnT: 0, pull: 0, pullCd: 0, burn2T: 0, burn2D: 0, breach: 0, crackT: 0,
     };
     this.place(e);
     this.enemies.push(e);
@@ -561,14 +639,15 @@ export class Sim {
     const t = this.nearestSpire(towerId);
     if (!t) return false;
     p.heroActive = true; p.heroTower = t.id; p.energy = 0;
-    p.heroDur = 14 + p.stats.dur + p.stats.relay * Math.min(3, this.spires); p.heroTime = p.heroDur; p.fireCd = 0.4;
+    p.heroDur = HERO_DUR + p.stats.dur + p.stats.relay * Math.min(3, this.spires); p.heroTime = p.heroDur; p.fireCd = 0.4;
+    p.draw = 0; p.drawing = false;
     this.events.push({ k: 'heroOn', p: pi, x: t.x, y: standY(t), z: t.z });
     return true;
   }
   exitHero(pi: number) {
     const p = this.players[pi];
     if (!p || !p.heroActive) return;
-    p.heroActive = false;
+    p.heroActive = false; p.draw = 0; p.drawing = false;
     p.energy = Math.max(0, Math.min(80, (p.heroTime / p.heroDur) * 80));
     p.heroTime = 0;
     const t = this.towerById(p.heroTower);
@@ -587,32 +666,70 @@ export class Sim {
     this.events.push({ k: 'tele', p: pi, x: t.x, y: standY(t), z: t.z, fx: o ? o.x : t.x, fy: o ? standY(o) : standY(t), fz: o ? o.z : t.z });
     return true;
   }
-  /** Fire the bow at a world point. No aim assistance: the first arrow flies exactly at the point given. */
+  /**
+   * The bow. Called every frame during the Uplink with whether the fire button is held and the current aim point.
+   * While it is held the draw rises from 0 to 1 over DRAW_TIME seconds (in step(); Quick Draw shortens it) and may be held at full.
+   * Letting go looses the arrow at that point if the draw reached MIN_DRAW; a shorter pull is cancelled. Nothing fires on its own.
+   */
+  heroAim(pi: number, drawing: boolean, tx: number, ty: number, tz: number) {
+    const p = this.players[pi];
+    if (!p) return;
+    if (!p.heroActive || this.over) { p.drawing = false; p.draw = 0; return; }
+    const held = drawing === true;
+    if (!held && p.drawing) {
+      const d = p.draw;
+      p.draw = 0;
+      if (d >= MIN_DRAW && p.fireCd <= 0) this.loose(pi, d, tx, ty, tz);
+    }
+    p.drawing = held;
+    if (!held) p.draw = 0;
+  }
+  /** An instant full-power loose at a world point (tests and scripted shots). The bow then needs its nock and draw time again, so it is never faster than a real full draw. */
   heroFire(pi: number, tx: number, ty: number, tz: number) {
     const p = this.players[pi];
     if (!p || !p.heroActive || p.fireCd > 0 || this.over) return;
+    p.draw = 0;
+    if (this.loose(pi, 1, tx, ty, tz)) p.fireCd = NOCK_TIME + DRAW_TIME / Math.max(0.2, p.stats.rate);
+  }
+  /** Loose a volley at a world point with the given draw. No aim assistance: the first arrow flies exactly at the point given. */
+  private loose(pi: number, draw: number, tx: number, ty: number, tz: number): boolean {
+    const p = this.players[pi];
+    if (!p || !p.heroActive || this.over || this.replica) return false;
     const o = this.heroOrigin(pi);
-    if (!o || ![tx, ty, tz].every(Number.isFinite)) return;
+    if (!o || ![tx, ty, tz].every(Number.isFinite)) return false;
     let dx = tx - o.x, dy = ty - o.y, dz = tz - o.z;
     const L = Math.hypot(dx, dy, dz) || 1;
     dx /= L; dy /= L; dz /= L;
-    const tier = this.tier, s = p.stats;
+    const tier = this.tier, s = p.stats, pw = clamp(draw, 0, 1);
     const n = Math.min(9, s.arrows + (tier >= 2 ? 1 : 0));
-    const dmg = this.arrowDmg(p);
+    // a full draw is worth FULL_DRAW_MUL of the old stream arrows and pierces one more target; a weak draw is worth much less than its share
+    const dmg = this.arrowDmg(p) * FULL_DRAW_MUL * drawPower(pw), SP = arrowSpeed(pw);
     const yaw = Math.atan2(dx, dz), hl = Math.hypot(dx, dz);
     for (let i = 0; i < n; i++) {
       // arrow 0 is dead centre; extra arrows fan out alternately right and left
       const a = yaw + (i % 2 ? (i + 1) / 2 : -i / 2) * 0.055;
-      const SP = 85;
       this.projs.push({
         id: this.nid++, kind: 'arrow', x: o.x + dx * 0.8, y: o.y + dy * 0.8, z: o.z + dz * 0.8,
         vx: Math.sin(a) * hl * SP, vy: dy * SP, vz: Math.cos(a) * hl * SP,
-        dmg, owner: pi, target: 0, life: 1.6, pierce: s.pierce + (tier >= 1 ? 1 : 0), hit: [], tier,
+        dmg, owner: pi, target: 0, life: 1.6, pierce: s.pierce + (tier >= 1 ? 1 : 0) + (pw >= FULL_DRAW ? 1 : 0), hit: [], tier,
         aoe: s.explode * 1.5 + (tier >= 3 ? 1.6 : 0), chain: s.chain + (tier >= 4 ? 2 : 0), sx: 0, sz: 0, tx: 0, ty: 0, tz: 0, t: 0, T: 0,
       });
     }
-    p.fireCd = 1 / (5.5 * s.rate);
-    this.events.push({ k: 'arrow', p: pi, x: o.x, y: o.y, z: o.z });
+    p.fireCd = NOCK_TIME;
+    this.events.push({ k: 'arrow', p: pi, x: o.x, y: o.y, z: o.z, pw });
+    return true;
+  }
+  /** Height of the road deck under a point: of the roads passing within 2.5 of it, the one closest to height y (0 when there is none). */
+  private deckAt(x: number, y: number, z: number): number {
+    let best = 0, bd = Infinity;
+    for (const L of this.map.lanes) for (let i = 1; i < L.pts.length; i++) {
+      const a = L.pts[i - 1], b = L.pts[i];
+      if (segDist(x, z, a[0], a[1], b[0], b[1]) > 2.5) continue;
+      const u = clamp(((x - a[0]) * (b[0] - a[0]) + (z - a[1]) * (b[1] - a[1])) / ((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2 || 1), 0, 1);
+      const h = L.ys[i - 1] + (L.ys[i] - L.ys[i - 1]) * u, d = Math.abs(h - y);
+      if (d < bd) { bd = d; best = h; }
+    }
+    return best;
   }
   heroSkill(pi: number, skill: number, tx: number, ty: number, tz: number) {
     const p = this.players[pi];
@@ -621,7 +738,7 @@ export class Sim {
     if (!o || ![tx, ty, tz].every(Number.isFinite)) return;
     const dmg = this.arrowDmg(p), c = BOW_TIERS[this.tier].color;
     p.cds[skill] = SKILL_CD[skill] * p.stats.cdr;
-    p.fireCd = Math.max(p.fireCd, SKILL_LOCK[skill]);
+    p.fireCd = Math.max(p.fireCd, SKILL_LOCK[skill]); p.draw = 0; // the skill takes the string: a draw in progress starts over
     if (skill === 0) {
       let dx = tx - o.x, dy = ty - o.y, dz = tz - o.z;
       const L = Math.hypot(dx, dy, dz) || 1;
@@ -657,15 +774,25 @@ export class Sim {
         if (wu >= 0 && wu <= R && Math.hypot(wx - dx * wu, wy - dy * wu, wz - dz * wu) <= NODE_R + 0.25) this.triggerSpecial(t.id, pi);
       }
       this.events.push({ k: 'rail', x: o.x, y: o.y, z: o.z, tx: o.x + dx * R, ty: Math.max(0, o.y + dy * R), tz: o.z + dz * R, c, big: 1, p: pi });
+      // a ray through the jump target of another Spire carries Kestrel over (the nearest one on the ray)
+      let jump: Tower | null = null, ju = R;
+      for (const t of this.towers) {
+        if (t.type !== 'spire' || t.id === p.heroTower) continue;
+        spireTarget(t, W3);
+        const wx = W3.x - o.x, wy = W3.y - o.y, wz = W3.z - o.z, wu = wx * dx + wy * dy + wz * dz;
+        if (wu >= 0 && wu <= ju && Math.hypot(wx - dx * wu, wy - dy * wu, wz - dz * wu) <= SPIRE_R + 0.25) { ju = wu; jump = t; }
+      }
+      if (jump) this.heroTeleport(pi, jump.id);
     } else {
       const d = Math.hypot(tx - o.x, tz - o.z);
       if (d > 48) { tx = o.x + ((tx - o.x) / d) * 48; tz = o.z + ((tz - o.z) / d) * 48; }
+      const y = this.deckAt(tx, ty, tz); // on a bridge or viaduct the zone sits on the deck that was aimed at
       if (skill === 1) {
-        this.zones.push({ id: this.nid++, kind: 'rain', x: tx, z: tz, r: 4.5 * Math.sqrt(p.stats.rain), life: 3.5, tick: 0, dmg: dmg * 0.75 * p.stats.rain, owner: pi, pd: 0, y: 0 });
+        this.zones.push({ id: this.nid++, kind: 'rain', x: tx, z: tz, r: 4.5 * Math.sqrt(p.stats.rain), life: 3.5, tick: 0, dmg: dmg * 0.75 * p.stats.rain, owner: pi, pd: 0, y });
       } else {
-        this.zones.push({ id: this.nid++, kind: 'sing', x: tx, z: tz, r: 5.5 * Math.sqrt(p.stats.sing), life: 2.6, tick: 0, dmg: dmg * p.stats.sing, owner: pi, pd: 0, y: 0 });
+        this.zones.push({ id: this.nid++, kind: 'sing', x: tx, z: tz, r: 5.5 * Math.sqrt(p.stats.sing), life: 2.6, tick: 0, dmg: dmg * p.stats.sing, owner: pi, pd: 0, y });
       }
-      this.events.push({ k: 'skill', s: skill, p: pi, x: tx, z: tz, c });
+      this.events.push({ k: 'skill', s: skill, p: pi, x: tx, y, z: tz, c });
     }
   }
 
@@ -676,11 +803,34 @@ export class Sim {
   }
   /**
    * Fire a tower's special (normally by an arrow through its power node). Needs a full charge and an online tower,
-   * and something for the special to hit. Otherwise nothing happens and false is returned (the charge is kept).
+   * and something for the special to hit. Otherwise false is returned and the charge is kept; a charged tower with
+   * nothing to hit answers with a 'nospec' event.
    */
   triggerSpecial(towerId: number, owner: number): boolean {
     const t = this.towerById(towerId);
     if (!t || this.over || this.replica || !this.specialReady(t)) return false;
+    if (this.fireSpecial(t, owner)) return true;
+    // charged but with nothing to hit: the charge is kept, and the node says so (at most twice a second per tower)
+    if ((this.nospecAt.get(t.id) ?? -1) <= this.time) {
+      this.nospecAt.set(t.id, this.time + 0.5);
+      nodePos(t, W3);
+      this.events.push({ k: 'nospec', id: t.id, x: W3.x, y: W3.y, z: W3.z });
+    }
+    return false;
+  }
+  /** True if something stands within `pad` of the fire this pylon would make during an Inferno: its live walls, or its ring when it has no partner. */
+  private flameReach(t: Tower, pad: number): boolean {
+    let linked = false;
+    for (const w of this.walls) {
+      if (w.a !== t.id && w.b !== t.id) continue;
+      linked = true;
+      if (!w.on) continue;
+      const half = WALL_HALF * (1 + 0.3 * this.mods.flameMelt) * INFERNO_WIDE + pad;
+      for (const e of this.enemies) if (e.alive && segDist(e.x, e.z, w.ax, w.az, w.bx, w.bz) <= half + e.r) return true;
+    }
+    return !linked && this.anyIn(t, FIRE_RING * 1.5 + pad);
+  }
+  private fireSpecial(t: Tower, owner: number): boolean {
     const range = this.range(t), pow = this.mods.specPow, dmg = this.towerDmg(t), c = TOWERS[t.type].color;
     let dur = 0.5;
     switch (t.type) {
@@ -728,7 +878,7 @@ export class Sim {
       }
       case 'beacon': dur = 8 * pow; break; // Surge
       case 'flame': // Inferno
-        if (!this.pickTarget(t, range * 1.25, 0)) return false;
+        if (!this.flameReach(t, 2.5)) return false;
         dur = 5; t.cd = 0;
         break;
       case 'lance': // Overload
@@ -795,7 +945,7 @@ export class Sim {
           if (!e.alive || Math.hypot(e.x - z.x, e.z - z.z) > z.r) continue;
           const boss = e.type === 'boss';
           e.sing = 0.2; // held by the singularity (tracked apart from cryo/arc slows)
-          if (!boss) {
+          if (!boss && e.breach <= 0) {
             const len = this.map.lanes[e.lane].len, pd = Math.min(this.map.nearest(e.lane, z.x, z.z), len - 4);
             // only ever backward: enemies behind the centre are held (e.sing), never hurried along the road
             e.dist = Math.min(len - 0.5, e.dist + Math.max(-1, Math.min(0, pd - e.dist)) * 5 * dt);
@@ -811,7 +961,7 @@ export class Sim {
       }
       if (z.life <= 0 && z.kind === 'sing') {
         this.aoe(z.x, z.z, z.r, z.dmg * 7, z.owner);
-        this.events.push({ k: 'boom', x: z.x, y: 1, z: z.z, r: z.r, c: 0xff2bd6 });
+        this.events.push({ k: 'boom', x: z.x, y: z.y + 1, z: z.z, r: z.r, c: SING_COLOR });
       }
     }
     if (this.zones.length) this.zones = this.zones.filter((z) => z.life > 0);
@@ -838,34 +988,24 @@ export class Sim {
         }
       }
       if (e.maxShield > 0 && e.shield < e.maxShield) { e.shieldCd -= dt; if (e.shieldCd <= 0) e.shield = Math.min(e.maxShield, e.shield + e.maxShield * 0.25 * dt); }
-      if (e.siege > 0) { // a Colossus at the core batters it blow by blow (slows and freezes delay the blows) until it is destroyed or spent
-        e.siegeT -= dt * (1 - slow);
-        if (e.siegeT <= 0) {
-          e.siegeT += SIEGE_TICK; e.siege--;
-          this.lives--;
-          this.events.push({ k: 'leak', n: 1, boss: 1, x: e.x, z: e.z });
-          if (e.siege <= 0) { e.alive = false; this.leaked++; this.events.push({ k: 'boom', x: e.x, y: e.y, z: e.z, r: 4, c: 0x8a7dff }); }
-          if (this.lives <= 0) { this.lives = 0; this.over = true; this.events.push({ k: 'lose' }); }
-        }
+      if (e.breach > 0) { // at the core: its attack lands when the timer runs out (slows and freezes delay it) unless it is destroyed first
+        e.breach -= dt * (1 - slow);
+        if (e.breach <= 0) this.breachHit(e);
         continue;
       }
       e.dist += v * dt;
       if (e.pull > 0) { const d = Math.min(e.pull, 6 * dt); e.pull -= d; e.dist = Math.max(0, e.dist - d); }
       const len = this.map.lanes[e.lane].len;
-      if (e.dist >= len) {
-        if (e.type === 'boss') {
-          e.dist = len; e.pull = 0;
-          e.siege = Math.max(1, Math.min(ENEMIES.boss.leak, Math.ceil(this.maxLives * SIEGE_SHARE))); e.siegeT = SIEGE_TICK;
-          this.place(e);
-          this.events.push({ k: 'siege', id: e.id, x: e.x, z: e.z, n: e.siege });
-          continue;
-        }
-        e.alive = false;
-        const l = ENEMIES[e.type].leak;
-        this.lives -= l; this.leaked++;
-        this.events.push({ k: 'leak', n: l });
-        if (this.lives <= 0) { this.lives = 0; this.over = true; this.events.push({ k: 'lose' }); }
-      } else this.place(e);
+      // enemies pull up at the edge of the core's plinth (the view draws them there too), not at its centre
+      const stand = Math.max(0, len - (CORE_STAND + 0.6 * e.r));
+      if (e.dist >= stand) { e.dist = stand; e.pull = 0; e.breach = e.type === 'boss' ? BREACH_TIME_BOSS : BREACH_TIME; }
+      this.place(e);
+    }
+
+    // walls of fire follow their pylons: off while one of them reboots, hot while an Inferno runs
+    for (let i = 0; i < this.walls.length; i++) {
+      const w = this.walls[i], tw = this.wallTw[i];
+      w.on = tw[0].down <= 0 && tw[1].down <= 0; w.hot = w.on && (tw[0].spec > 0 || tw[1].spec > 0);
     }
 
     // towers
@@ -880,12 +1020,24 @@ export class Sim {
     for (let i = 0; i < this.players.length; i++) {
       const p = this.players[i];
       p.fireCd -= dt;
+      if (!p.heroActive || !p.drawing) p.draw = 0;
+      else if (p.fireCd <= 0) p.draw = Math.min(1, p.draw + (dt * Math.max(0.2, p.stats.rate)) / DRAW_TIME);
       for (let s = 0; s < 3; s++) if (p.cds[s] > 0) p.cds[s] -= dt;
       if (p.heroActive) {
         p.heroTime -= dt;
         if (p.heroTime <= 0 || !this.towerById(p.heroTower)) { p.heroTime = 0; this.exitHero(i); p.energy = 0; }
       } else if (this.waveActive) p.energy = Math.min(MAX_ENERGY, p.energy + (TUNE.energyT + 0.3 * this.mods.beaconFeed * Math.min(4, this.beacons)) * p.stats.charge * dt);
     }
+  }
+
+  /** The attack of an enemy at the core lands: the core takes the damage and its discharge destroys the attacker. */
+  private breachHit(e: Enemy) {
+    e.breach = 0; e.alive = false;
+    const n = e.type === 'boss' ? Math.max(1, Math.min(ENEMIES.boss.leak, Math.ceil(this.maxLives * BREACH_SHARE))) : ENEMIES[e.type].leak;
+    this.lives -= n; this.leaked++;
+    this.events.push({ k: 'leak', n, x: e.x, y: e.y, z: e.z });
+    this.events.push({ k: 'breach', id: e.id, x: e.x, y: e.y, z: e.z, t: e.type });
+    if (this.lives <= 0) { this.lives = 0; this.over = true; this.events.push({ k: 'lose' }); }
   }
 
   private turn(t: Tower, x: number, z: number, dt: number) {
@@ -921,7 +1073,7 @@ export class Sim {
       }
       return;
     }
-    if (t.type === 'flame') { this.stepFlame(t, dt, range); return; }
+    if (t.type === 'flame') { this.stepFlame(t, dt); return; }
     if (t.type === 'lance') { this.stepLance(t, dt, range); return; }
     if (t.type === 'gravity') { this.stepGravity(t, dt, range); return; }
     t.cd -= dt;
@@ -954,27 +1106,38 @@ export class Sim {
     else { e.burn2D = e.burn2T > 0 ? Math.max(e.burn2D, d) : d; e.burn2T = Math.max(e.burn2T, T); }
   }
 
-  /** Flame Projector: a short cone that hits everything in it several times a second and sets it burning. */
-  private stepFlame(t: Tower, dt: number, range: number) {
-    const inferno = t.spec > 0, R = inferno ? range * 1.25 : range;
-    t.cd -= dt; t.fxT -= dt;
-    const tgt = this.pickTarget(t, R, 0);
-    if (!tgt) { if (t.cd < 0) t.cd = 0; return; }
-    if (!inferno) this.turn(t, tgt.x, tgt.z, dt);
-    const y = t.h * 0.7;
-    if (t.fxT <= 0) { t.fxT = 0.2; this.events.push({ k: 'flame', id: t.id, x: t.x, y, z: t.z, yaw: t.yaw, r: R, full: inferno ? 1 : 0 }); }
+  /**
+   * Firewall Pylon. On every tick it burns whatever stands in its walls and sets it alight; each of a wall's two pylons brings
+   * half of the heat, so a wall deals the mean of their damage per second. Flyers take half. A pylon without a partner burns
+   * a small ring around itself at RING_SHARE of that.
+   */
+  private stepFlame(t: Tower, dt: number) {
+    t.cd -= dt;
     if (t.cd > 0) return;
-    const shots = this.shots(t);
-    const dmg = this.towerDmg(t) * (inferno ? 2.5 * this.mods.specPow : 1);
-    const fx = Math.sin(t.yaw), fz = Math.cos(t.yaw), cosH = Math.cos(0.52), fb = this.mods.flameBurn;
+    if (!this.enemies.length) { t.cd = 0; return; }
+    const shots = this.shots(t), fb = this.mods.flameBurn;
+    const dmg = this.towerDmg(t), hot = INFERNO * this.mods.specPow;
+    const bD = dmg * this.towerRate(t) * BURN_SHARE * (1 + 0.4 * fb), bT = 2.5 + 1.5 * fb;
+    let linked = false;
+    for (const w of this.walls) {
+      if (w.a !== t.id && w.b !== t.id) continue;
+      linked = true;
+      if (!w.on) continue;
+      const half = this.wallHalf(w), k = w.hot ? hot : 1;
+      for (const e of this.enemies) {
+        if (!e.alive || segDist(e.x, e.z, w.ax, w.az, w.bx, w.bz) > half + e.r) continue;
+        const f = k * (ENEMIES[e.type].fly ? 0.5 : 1);
+        for (let n = 0; n < shots && e.alive; n++) this.damage(e, dmg * 0.5 * f, -1);
+        if (e.alive) this.burn(e, bD * f, bT);
+      }
+    }
+    if (linked) return;
+    const inferno = t.spec > 0, R = FIRE_RING * (inferno ? 1.5 : 1);
     for (const e of this.enemies) {
-      if (!e.alive) continue;
-      const ex = e.x - t.x, ez = e.z - t.z, d = Math.hypot(ex, ez);
-      if (d > R + e.r) continue;
-      if (!inferno && d > 1 && (ex * fx + ez * fz) / d < cosH) continue;
-      for (let k = 0; k < shots && e.alive; k++) this.damage(e, dmg, -1);
-      if (!e.alive) continue;
-      this.burn(e, dmg * 1.6 * (1 + 0.4 * fb), 2.5 + 1.5 * fb);
+      if (!e.alive || Math.hypot(e.x - t.x, e.z - t.z) > R + e.r) continue;
+      const f = RING_SHARE * (inferno ? hot : 1) * (ENEMIES[e.type].fly ? 0.5 : 1);
+      for (let n = 0; n < shots && e.alive; n++) this.damage(e, dmg * f, -1);
+      if (e.alive) this.burn(e, bD * f, bT);
     }
   }
 
@@ -1234,17 +1397,35 @@ export class Sim {
         const u = raySphere(ox, oy, oz, dx, dy, dz, W3.x, W3.y, W3.z, NODE_R);
         if (u >= 0 && u <= L && u < nu) { nu = u; node = t; }
       }
+      // the jump target of another Spire in the flight path carries Kestrel over and swallows the arrow
+      let jump: Tower | null = null, ju = Infinity;
+      const pl = this.players[p.owner];
+      if (pl && pl.heroActive && this.spires > 1) for (const t of this.towers) {
+        if (t.type !== 'spire' || t.id === pl.heroTower) continue;
+        spireTarget(t, W3);
+        const u = raySphere(ox, oy, oz, dx, dy, dz, W3.x, W3.y, W3.z, SPIRE_R);
+        if (u >= 0 && u <= L && u < ju) { ju = u; jump = t; }
+      }
+      // the node and the jump target that lie before distance u, nearest first; true if one of them swallowed the arrow
+      const swallowed = (u: number): boolean => {
+        for (let k = 0; k < 2; k++) {
+          if (node && (!jump || nu <= ju)) { if (nu >= u) return false; const t: Tower = node; node = null; if (this.triggerSpecial(t.id, p.owner)) return true; }
+          else if (jump) { if (ju >= u) return false; const t: Tower = jump; jump = null; if (this.heroTeleport(p.owner, t.id)) return true; }
+          else return false;
+        }
+        return false;
+      };
       hits.sort((a, b) => a.u - b.u); // nearest along the flight path first
       for (const h of hits) {
         const e = h.e;
         if (!e.alive) continue;
-        if (node && nu < h.u) { if (this.triggerSpecial(node.id, p.owner)) { p.life = 0; break; } node = null; }
+        if (swallowed(h.u)) { p.life = 0; break; }
         p.hit.push(e.id);
         if (h.w >= 0 && weakPos(e, h.w, W3)) this.arrowHit(p, W3.x, W3.y, W3.z, e, ENEMIES[e.type].weak![h.w].mul);
         else this.arrowHit(p, e.x, e.y, e.z, e, 1);
         if (p.pierce-- <= 0) { p.life = 0; break; }
       }
-      if (p.life > 0 && node && this.triggerSpecial(node.id, p.owner)) p.life = 0;
+      if (p.life > 0 && swallowed(Infinity)) p.life = 0;
       if (p.life > 0 && p.y <= 0.05) {
         if (p.aoe > 0) this.arrowHit(p, p.x, 0.2, p.z, null, 1);
         else this.events.push({ k: 'hit', x: p.x, y: 0.1, z: p.z, c: BOW_TIERS[p.tier].color });
@@ -1271,10 +1452,11 @@ export class Sim {
   }
 
   // ---------- co-op replication ----------
-  /** Card modifiers the guest needs for its tower panel, range rings and build ghost: tDmg, tRate, tRange, beacon, then dmg/rate/range per tower type. */
+  /** Card modifiers the guest needs for its tower panel, range rings and build ghost: tDmg, tRate, tRange, beacon, then dmg/rate/range per tower type, then the firewall link and thickness stacks. */
   private modsRow(): number[] {
     const m = this.mods, a = [m.tDmg, m.tRate, m.tRange, m.beacon];
     for (const t of TOWER_TYPES) a.push(m.tw[t].dmg, m.tw[t].rate, m.tw[t].range);
+    a.push(m.flameLink, m.flameMelt); // the guest rebuilds the walls of fire from these
     return a.map((n) => Math.round(n * 1000) / 1000);
   }
   /**
@@ -1290,11 +1472,11 @@ export class Sim {
     return {
       a: [r(this.time), this.wave, this.lives, Math.floor(this.gold), this.level, Math.floor(this.xp), this.xpNext, this.waveActive ? 1 : 0, r(this.queue.length ? -1 : this.nextWaveIn), this.over ? 1 : 0, this.won ? 1 : 0, this.kills, this.mods.cheap, this.winWave, this.endless ? 1 : 0, this.maxLives],
       u: [...this.unlocked].map((t) => TOWER_TYPES.indexOf(t)),
-      e: this.enemies.map((e) => [e.id, ENEMY_TYPES.indexOf(e.type), r(e.x), r(e.z), r(e.yaw), Math.ceil(e.hp), Math.ceil(e.maxHp), Math.ceil(e.shield), e.slowT > 0 ? 1 : 0, r(e.gy), (e.burnT > 0 ? 1 : 0) | (e.frz > 0 ? 2 : 0) | (e.vulnT > 0 ? 4 : 0) | (e.siege > 0 ? 8 : 0) | (e.crackT > 0 ? 16 : 0)]),
+      e: this.enemies.map((e) => [e.id, ENEMY_TYPES.indexOf(e.type), r(e.x), r(e.z), r(e.yaw), Math.ceil(e.hp), Math.ceil(e.maxHp), Math.ceil(e.shield), e.slowT > 0 ? 1 : 0, r(e.gy), (e.burnT > 0 ? 1 : 0) | (e.frz > 0 ? 2 : 0) | (e.vulnT > 0 ? 4 : 0) | (e.crackT > 0 ? 16 : 0), r(e.breach)]),
       t: this.towers.map((t) => [t.id, TOWER_TYPES.indexOf(t.type), t.cx, t.cz, t.lvl, r(t.yaw), r(t.buff), t.spent, r(t.charge), r(t.down), r(t.spec), r(t.heat)]),
       p: this.projs.map((p) => [p.id, PROJ_KINDS.indexOf(p.kind), r(p.x), r(p.y), r(p.z), r(p.vx), r(p.vy), r(p.vz), p.tier]),
-      z: this.zones.map((z) => [z.id, ZONE_KINDS.indexOf(z.kind), r(z.x), r(z.z), r(z.r), r(z.life)]),
-      pl: this.players.map((p) => [r(p.energy), p.heroActive ? 1 : 0, p.heroTower, r(p.yaw), r(p.pitch), r(p.heroTime), r(p.heroDur), p.cds.map(r), p.pending[0] || [], p.pending.length, p.stats.cdr]),
+      z: this.zones.map((z) => [z.id, ZONE_KINDS.indexOf(z.kind), r(z.x), r(z.z), r(z.r), r(z.life), r(z.y)]),
+      pl: this.players.map((p) => [r(p.energy), p.heroActive ? 1 : 0, p.heroTower, r(p.yaw), r(p.pitch), r(p.heroTime), r(p.heroDur), p.cds.map(r), p.pending[0] || [], p.pending.length, p.stats.cdr, r(p.draw), p.drawing ? 1 : 0]),
       w: [this.preview.wave, this.preview.lanes.map((l) => l.map((o) => [ENEMY_TYPES.indexOf(o.type), o.n]))],
       m: sendMods ? row : undefined,
       ev: packEvents(evs).map((e) => { const o: Ev = { k: e.k }; for (const key in e) { const v = e[key]; o[key] = typeof v === 'number' ? r(v) : Array.isArray(v) ? v.map((n: unknown) => (typeof n === 'number' ? r(n) : n)) : v; } return o; }),
@@ -1315,6 +1497,8 @@ export class Sim {
       const m = this.mods, mv = (i: number) => clamp(num(s.m[i], 1), 0.1, 100);
       m.tDmg = mv(0); m.tRate = mv(1); m.tRange = mv(2); m.beacon = clamp(num(s.m[3]), 0, 10);
       TOWER_TYPES.forEach((t, i) => { const w = m.tw[t]; w.dmg = mv(4 + i * 3); w.rate = mv(5 + i * 3); w.range = mv(6 + i * 3); });
+      const k = 4 + 3 * TOWER_TYPES.length;
+      if (s.m.length >= k + 2) { m.flameLink = clamp(num(s.m[k]) | 0, 0, 4); m.flameMelt = clamp(num(s.m[k + 1]) | 0, 0, 4); }
     }
     if (Array.isArray(s.u)) { this.unlocked = new Set(s.u.slice(0, 64).map((i: unknown) => TOWER_TYPES[num(i, -1) | 0]).filter(Boolean)); }
     const em = new Map(this.enemies.map((e) => [e.id, e]));
@@ -1327,11 +1511,12 @@ export class Sim {
       seen.add(num(v[0]));
       const d = ENEMIES[type];
       let e = em.get(v[0]);
-      if (!e || e.type !== type) e = { id: num(v[0]), type, x: 0, z: 0, y: d.y, yaw: 0, dist: 0, lane: 0, off: 0, hp: 1, maxHp: 1, shield: 0, maxShield: d.shield ? 1 : 0, shieldCd: 0, speed: d.speed, slowT: 0, slowF: 0, sing: 0, alive: true, r: d.r, armor: 0, gy: 0, frz: 0, burnT: 0, burnD: 0, burnAcc: 0, vulnT: 0, pull: 0, pullCd: 0, burn2T: 0, burn2D: 0, siege: 0, siegeT: 0, crackT: 0 };
+      if (!e || e.type !== type) e = { id: num(v[0]), type, x: 0, z: 0, y: d.y, yaw: 0, dist: 0, lane: 0, off: 0, hp: 1, maxHp: 1, shield: 0, maxShield: d.shield ? 1 : 0, shieldCd: 0, speed: d.speed, slowT: 0, slowF: 0, sing: 0, alive: true, r: d.r, armor: 0, gy: 0, frz: 0, burnT: 0, burnD: 0, burnAcc: 0, vulnT: 0, pull: 0, pullCd: 0, burn2T: 0, burn2D: 0, breach: 0, crackT: 0 };
       e.x = clamp(num(v[2]), -200, 200); e.z = clamp(num(v[3]), -200, 200); e.yaw = num(v[4]); e.hp = num(v[5]); e.maxHp = num(v[6], 1) || 1; e.shield = num(v[7]); e.slowT = v[8] ? 1 : 0;
       e.gy = clamp(num(v[9]), 0, 20); e.y = e.gy + d.y;
       const fl = num(v[10]) | 0;
-      e.burnT = fl & 1 ? 1 : 0; e.frz = fl & 2 ? 1 : 0; e.vulnT = fl & 4 ? 1 : 0; e.siege = fl & 8 ? 1 : 0; e.crackT = fl & 16 ? 1 : 0;
+      e.burnT = fl & 1 ? 1 : 0; e.frz = fl & 2 ? 1 : 0; e.vulnT = fl & 4 ? 1 : 0; e.crackT = fl & 16 ? 1 : 0;
+      e.breach = clamp(num(v[11]), 0, 10);
       this.enemies.push(e);
     }
     const tm = new Map(this.towers.map((t) => [t.id, t]));
@@ -1355,6 +1540,7 @@ export class Sim {
     }
     this.beacons = 0; this.spires = 0;
     for (const t of this.towers) { if (t.type === 'beacon') this.beacons++; else if (t.type === 'spire') this.spires++; }
+    this.rebuildWalls(); // from the replicated towers (and their down / spec state), the same way the host builds them
     this.projs = [];
     for (const v of s.p.slice(0, 600)) {
       if (!Array.isArray(v)) continue;
@@ -1366,18 +1552,19 @@ export class Sim {
     for (const v of s.z.slice(0, 100)) {
       if (!Array.isArray(v)) continue;
       const kind = ZONE_KINDS[num(v[1], -1) | 0];
-      if (kind) this.zones.push({ id: num(v[0]), kind, x: num(v[2]), z: num(v[3]), r: clamp(num(v[4]), 0, 30), life: num(v[5]), tick: 0, dmg: 0, owner: -1, pd: 0, y: 0 });
+      if (kind) this.zones.push({ id: num(v[0]), kind, x: num(v[2]), z: num(v[3]), r: clamp(num(v[4]), 0, 30), life: num(v[5]), tick: 0, dmg: 0, owner: -1, pd: 0, y: clamp(num(v[6]), 0, 20) });
     }
     for (let i = 0; i < this.players.length && i < s.pl.length; i++) {
       const v = s.pl[i], p = this.players[i];
       if (!Array.isArray(v)) continue;
       p.energy = clamp(num(v[0]), 0, MAX_ENERGY); p.heroActive = !!v[1]; p.heroTower = num(v[2]); p.yaw = num(v[3]); p.pitch = num(v[4]);
-      p.heroTime = num(v[5]); p.heroDur = num(v[6], 14) || 14;
+      p.heroTime = num(v[5]); p.heroDur = num(v[6], HERO_DUR) || HERO_DUR;
       if (Array.isArray(v[7])) p.cds = [num(v[7][0]), num(v[7][1]), num(v[7][2])];
       const offer = Array.isArray(v[8]) ? v[8].slice(0, 8).filter((id: unknown) => typeof id === 'string' && Object.hasOwn(CARD_BY_ID, id as string)).slice(0, 3) : [];
       const n = Math.max(0, Math.min(50, num(v[9]) | 0));
       p.pending = offer.length && n ? [offer, ...Array(n - 1).fill(offer)] : [];
       p.stats.cdr = clamp(num(v[10], 1) || 1, 0.05, 1);
+      p.draw = clamp(num(v[11]), 0, 1); p.drawing = !!v[12] && p.heroActive;
     }
     if (Array.isArray(s.w)) {
       const rows: unknown = s.w[1];

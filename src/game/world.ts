@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GW, GH, CELL, HEX_SIZE, ROW_H, BOARD_W, BOARD_D, HEX_CORNERS, cellX, cellZ, neighbor, hexDist, disc } from './hex.ts';
 import { GameMap, DEFAULT_MAP } from './map.ts';
+import type { Lane } from './map.ts';
 import { rng, canvas, noiseCanvas, cloudCanvas, normalFromHeight, packRM, lightPool, glowTexture, hexPath } from './tex.ts';
 
 const grey = (v: number) => { const k = Math.round(Math.max(0, Math.min(1, v)) * 255); return `rgb(${k},${k},${k})`; };
@@ -24,15 +25,15 @@ const key = (cx: number, cz: number) => (cz + KO) * KW + cx + KO;
 const inKey = (cx: number, cz: number) => cx >= -KO && cx < KW - KO && cz >= -KO && cz < KH - KO;
 const ROAD_DROP = 0.06;      // road tiles sit this far below the plates
 const TILE_DEPTH = 0.62;
-const ROAD_HALF = 0.72;      // half width of a raised road (narrow enough that towers on the next tile clear the railing)
-const KERB_W = 0.12;         // width of its steel kerb
-const KERB_DECK = 0.73;      // lateral offset of the LED kerb strips on the deck
-const KERB_UP = 0.67;        // and on a raised road, inside the steel kerb
+const KERB = 0.47;           // side offset of the LED kerb strips from the middle of the road: inside the neck where two road tiles meet
+const SLAB = 0.3;            // thickness of a raised road tile
 /** Surface height of a road whose path height is y: the recess blends out as the road leaves the deck. */
 const surf = (y: number) => y - ROAD_DROP * Math.max(0, 1 - y / 0.5);
 
 interface Tile { cx: number; cz: number; x: number; z: number; kind: number; seed: number }
-interface Layout { tiles: Tile[]; lut: Int16Array; roadMin: Map<number, number>; x0: number; z0: number; w: number; d: number }
+interface Layout { tiles: Tile[]; lut: Int16Array; roadMin: Map<number, number>; slabs: Slab[]; sunk: Set<number>; x0: number; z0: number; w: number; d: number }
+/** One raised road tile: a hex slab on the tile grid whose top follows the road. d = path distance at its middle, lo / hi = lowest and highest road height on it. */
+interface Slab { cx: number; cz: number; x: number; z: number; lane: Lane; d: number; near: number; lo: number; hi: number; yc: number }
 
 // worldToCell without the array (revealAt runs every frame for every tower)
 let CX = 0, CZ = 0;
@@ -42,6 +43,56 @@ function cellOf(x: number, z: number) {
   const s = Math.round(sf), dq = Math.abs(q - qf), dr = Math.abs(r - rf), ds = Math.abs(s - sf);
   if (dq > dr && dq > ds) q = -r - s; else if (dr > ds) r = -q - s;
   CX = q + (r - (r & 1)) / 2; CZ = r;
+}
+
+const NP = { y: 0, d: 0, lat: 0, off: 0 };
+/** Closest point of a lane to (x, z), looking only at the stretch within `win` of path distance d0: road height there, path distance, signed side offset. */
+function nearLane(lane: Lane, x: number, z: number, d0: number, win = 2.6) {
+  let best = 1e9;
+  NP.y = 0; NP.d = d0; NP.lat = 0;
+  for (let i = 1; i < lane.pts.length; i++) {
+    if (lane.cum[i] < d0 - win || lane.cum[i - 1] > d0 + win) continue;
+    const a = lane.pts[i - 1], b = lane.pts[i], ex = b[0] - a[0], ez = b[1] - a[1], L = lane.cum[i] - lane.cum[i - 1] || 1;
+    const u0 = Math.max(0, (d0 - win - lane.cum[i - 1]) / L), u1 = Math.min(1, (d0 + win - lane.cum[i - 1]) / L);
+    const u = Math.max(u0, Math.min(u1, ((x - a[0]) * ex + (z - a[1]) * ez) / (L * L)));
+    const px = a[0] + ex * u, pz = a[1] + ez * u, dd = (x - px) * (x - px) + (z - pz) * (z - pz);
+    if (dd < best - 1e-9) { best = dd; NP.y = lane.ys[i - 1] + (lane.ys[i] - lane.ys[i - 1]) * u; NP.d = lane.cum[i - 1] + L * u; NP.lat = ((x - px) * -ez + (z - pz) * ex) / L; }
+  }
+  NP.off = Math.sqrt(best);
+  return NP;
+}
+/** The tiles a raised stretch of road rides on, in road order. A road that bridges over itself visits a tile twice. */
+function raisedTiles(map: GameMap): Slab[] {
+  const out: Slab[] = [];
+  for (const lane of map.lanes) {
+    if (!lane.ys.some((y) => y > 0.01)) continue;
+    const seen: Slab[] = [];
+    let i = 1;
+    for (let d = 0; d <= lane.len + 1e-6; d += 0.25) {
+      while (i < lane.cum.length - 1 && lane.cum[i] < d) i++;
+      const a = lane.pts[i - 1], b = lane.pts[i], u = (d - lane.cum[i - 1]) / (lane.cum[i] - lane.cum[i - 1] || 1);
+      const x = a[0] + (b[0] - a[0]) * u, z = a[1] + (b[1] - a[1]) * u;
+      cellOf(x, z);
+      const tx = cellX(CX, CZ), tz = cellZ(CZ), near = (x - tx) * (x - tx) + (z - tz) * (z - tz);
+      let s: Slab | undefined;
+      for (let k = seen.length - 1; k >= 0 && k >= seen.length - 3 && !s; k--) if (seen[k].cx === CX && seen[k].cz === CZ) s = seen[k];
+      if (!s) seen.push({ cx: CX, cz: CZ, x: tx, z: tz, lane, d, near, lo: 0, hi: 0, yc: 0 });
+      else if (near < s.near) { s.near = near; s.d = d; }
+    }
+    for (const s of seen) {
+      let lo = 1e9, hi = 0;
+      for (let k = 0; k < 13; k++) {
+        const c0 = HEX_CORNERS[k % 6], c1 = HEX_CORNERS[(k + 1) % 6];
+        const y = k === 12 ? nearLane(lane, s.x, s.z, s.d).y : k < 6 ? nearLane(lane, s.x + c0[0], s.z + c0[1], s.d).y : nearLane(lane, s.x + (c0[0] + c1[0]) / 2, s.z + (c0[1] + c1[1]) / 2, s.d).y;
+        lo = Math.min(lo, y); hi = Math.max(hi, y);
+        if (k === 12) s.yc = y;
+      }
+      s.lo = lo; s.hi = hi;
+      // two roads sharing a bridge get one deck
+      if (hi > 0.02 && !out.some((o) => o.cx === s.cx && o.cz === s.cz && Math.abs(o.yc - s.yc) < 0.3)) out.push(s);
+    }
+  }
+  return out;
 }
 
 function layout(map: GameMap): Layout {
@@ -84,7 +135,10 @@ function layout(map: GameMap): Layout {
   let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
   for (const t of tiles) { x0 = Math.min(x0, t.x); x1 = Math.max(x1, t.x); z0 = Math.min(z0, t.z); z1 = Math.max(z1, t.z); }
   x0 -= 1.2; z0 -= 1.3; x1 += 1.2; z1 += 1.3;
-  return { tiles, lut, roadMin, x0, z0, w: x1 - x0, d: z1 - z0 };
+  // a ramp tile that starts on the deck is a solid block: the plate under it is taken out
+  const slabs = raisedTiles(map), sunk = new Set<number>();
+  for (const s of slabs) if (s.lo < 0.6 && inKey(s.cx, s.cz)) sunk.add(key(s.cx, s.cz));
+  return { tiles, lut, roadMin, slabs, sunk, x0, z0, w: x1 - x0, d: z1 - z0 };
 }
 
 // ---------- deck textures ----------
@@ -123,9 +177,17 @@ function deckTextures(map: GameMap, lay: Layout) {
     const x = (t.x - lay.x0) * P, y = (t.z - lay.z0) * P, v = 0.92 + r() * 0.15, kind = r(), d = r();
     if (t.kind === ROAD) {
       const k = 0.85 + r() * 0.25;
-      fillHex(a, x, y, R + 1, `rgb(${(27 * k) | 0},${(25 * k) | 0},${(23 * k) | 0})`);
-      fillHex(hh, x, y, R + 1, grey(0.4)); fillHex(rr, x, y, R + 1, grey(0.74 + r() * 0.1)); fillHex(mm, x, y, R + 1, grey(0.3));
-      strokeHex(a, x, y, R * 0.9, 1.2 * S, 'rgba(0,0,0,0.35)'); strokeHex(hh, x, y, R * 0.9, 2 * S, grey(0.3));
+      // a road tile is a plate of its own: dark road surface, a machined edge, a panel line just inside it
+      fillHex(a, x, y, R + 1, `rgb(${(29 * k) | 0},${(27 * k) | 0},${(25 * k) | 0})`);
+      a.lineWidth = 1.3 * S;
+      for (let i = 0; i < 6; i++) {
+        const c0 = HEX_CORNERS[i], c1 = HEX_CORNERS[(i + 1) % 6], e = 0.925 * P;
+        a.strokeStyle = i >= 3 ? 'rgba(255,250,240,0.07)' : 'rgba(0,0,0,0.4)';
+        a.beginPath(); a.moveTo(x + c0[0] * e, y + c0[1] * e); a.lineTo(x + c1[0] * e, y + c1[1] * e); a.stroke();
+      }
+      fillHex(hh, x, y, R + 1, grey(0.36)); fillHex(hh, x, y, R * 0.925, grey(0.46));
+      fillHex(rr, x, y, R + 1, grey(0.76 + r() * 0.1)); fillHex(mm, x, y, R + 1, grey(0.3));
+      strokeHex(a, x, y, R * 0.84, 1.1 * S, 'rgba(0,0,0,0.3)'); strokeHex(hh, x, y, R * 0.84, 1.8 * S, grey(0.36));
       continue;
     }
     if (t.kind === SKIRT) {
@@ -140,7 +202,6 @@ function deckTextures(map: GameMap, lay: Layout) {
     if (kind < 0.09) { cr = 57; cg = 56; cb = 58; } else if (kind < 0.17) { cr = 76; cg = 67; cb = 57; metal = 0.45; } else if (kind < 0.23) { cr = 58; cg = 62; cb = 63; }
     if (t.kind === PAD) { cr = 84; cg = 79; cb = 72; metal = 0.85; }
     if (t.kind === BLOCKED) { cr = 27; cg = 24; cb = 22; metal = 0.3; }
-    if (t.kind === UNDER) { cr = 44; cg = 43; cb = 43; }
     fillHex(a, x, y, R + 1, `rgb(${(cr * v) | 0},${(cg * v) | 0},${(cb * v) | 0})`);
     // machined edge: lit on the faces that look toward the moon, dark on the others
     a.lineWidth = 1.4 * S;
@@ -178,10 +239,6 @@ function deckTextures(map: GameMap, lay: Layout) {
       }
       continue;
     }
-    if (t.kind === UNDER) { // no-build plate under a raised road: hazard collar
-      a.save(); hexPath(a, x, y, R * 0.86); a.lineWidth = 5 * S; a.strokeStyle = 'rgba(12,11,10,0.8)'; a.stroke(); a.setLineDash([6 * S, 6 * S]); a.strokeStyle = 'rgba(206,150,60,0.42)'; a.stroke(); a.restore();
-      continue;
-    }
     ring(x, y, R * 0.8, 6, 1.6 * S);
     if (d < 0.1) { // inset access hatch
       strokeHex(a, x, y, R * 0.46, 1.8 * S, 'rgba(0,0,0,0.6)'); strokeHex(hh, x, y, R * 0.46, 2.6 * S, grey(0.3));
@@ -207,14 +264,24 @@ function deckTextures(map: GameMap, lay: Layout) {
     }
   }
 
-  // ---- roadway on the deck (raised stretches are real geometry) ----
-  const runs: number[][][] = [];
+  // ---- lane markings on the road tiles (raised stretches are real geometry) ----
+  // The road is the tiles themselves. What makes it one lane is painted along the tile centres and never leaves them.
+  const runs: number[][][] = [], shade: number[][] = [];
   for (const lane of map.lanes) {
     let run: number[][] | null = null;
     for (let i = 1; i < lane.pts.length; i++) {
-      if (lane.ys[i - 1] > 0.01 || lane.ys[i] > 0.01) { run = null; continue; }
-      if (!run) { run = [[(lane.pts[i - 1][0] - lay.x0) * P, (lane.pts[i - 1][1] - lay.z0) * P]]; runs.push(run); }
-      run.push([(lane.pts[i][0] - lay.x0) * P, (lane.pts[i][1] - lay.z0) * P]);
+      const pa = lane.pts[i - 1], pb = lane.pts[i], ya = lane.ys[i - 1], yb = lane.ys[i];
+      const X = (u: number) => (pa[0] + (pb[0] - pa[0]) * u - lay.x0) * P, Y = (u: number) => (pa[1] + (pb[1] - pa[1]) * u - lay.z0) * P;
+      if (ya > 0.01 || yb > 0.01) {
+        run = null;
+        // the part of this stretch that is high enough to throw a shadow on the plates under it
+        let u0 = 0, u1 = 1;
+        if (ya < 0.5 && yb < 0.5) u1 = -1; else if (ya < 0.5) u0 = (0.5 - ya) / (yb - ya); else if (yb < 0.5) u1 = (0.5 - ya) / (yb - ya);
+        if (u1 > u0) shade.push([X(u0), Y(u0), X(u1), Y(u1)]);
+        continue;
+      }
+      if (!run) { run = [[X(0), Y(0)]]; runs.push(run); }
+      run.push([X(1), Y(1)]);
     }
   }
   const stroke = (g: Ctx, w: number, style: string, dash: number[] = []) => {
@@ -226,23 +293,35 @@ function deckTextures(map: GameMap, lay: Layout) {
     }
     g.setLineDash([]);
   };
-  const RW = 1.5 * P;
-  stroke(a, RW + 7 * S, '#4a4640'); stroke(hh, RW + 7 * S, grey(0.62)); stroke(rr, RW + 7 * S, grey(0.3)); stroke(mm, RW + 7 * S, grey(0.9)); // steel kerb
-  stroke(a, RW, '#1d1b19'); stroke(hh, RW, grey(0.3)); stroke(rr, RW, grey(0.8)); stroke(mm, RW, grey(0.05));
-  stroke(a, RW - 9 * S, '#232120');
-  stroke(a, P * 0.8, 'rgba(255,255,255,0.035)'); stroke(rr, P * 0.8, 'rgba(110,110,110,0.55)'); // worn centre track
-  a.lineCap = 'butt'; stroke(a, 2 * S, 'rgba(227,220,146,0.2)', [10 * S, 17 * S]);
+  // a soft shadow under bridges and viaducts: the plates there stay ordinary plates
+  a.lineCap = 'round';
+  for (const w of [2.1, 1.7, 1.3]) for (const q of shade) { a.strokeStyle = 'rgba(0,0,0,0.13)'; a.lineWidth = w * P; a.beginPath(); a.moveTo(q[0], q[1]); a.lineTo(q[2], q[3]); a.stroke(); }
+  for (const g of [a, hh, rr, mm]) {
+    g.save(); g.beginPath();
+    for (const t of lay.tiles) if (t.kind === ROAD) {
+      const x = (t.x - lay.x0) * P, y = (t.z - lay.z0) * P, e = 0.925 * P;
+      for (let i = 0; i < 6; i++) { const c = HEX_CORNERS[i]; if (i) g.lineTo(x + c[0] * e, y + c[1] * e); else g.moveTo(x + c[0] * e, y + c[1] * e); }
+      g.closePath();
+    }
+    g.clip();
+  }
+  const LW = KERB * 2 * P;
+  stroke(a, LW + 5 * S, '#121110'); stroke(hh, LW + 5 * S, grey(0.3));                                  // channel the kerb lights sit in
+  stroke(a, LW - 3 * S, '#22201e'); stroke(hh, LW - 3 * S, grey(0.41)); stroke(rr, LW - 3 * S, grey(0.7)); // the lane itself, worn smoother than the rest of the tile
+  stroke(a, LW * 0.55, 'rgba(255,255,255,0.03)'); stroke(rr, LW * 0.55, 'rgba(110,110,110,0.5)');
+  a.lineCap = 'butt'; stroke(a, 2 * S, 'rgba(227,220,146,0.24)', [10 * S, 17 * S]);
   // direction chevrons on the long stretches
-  a.lineWidth = 3.2 * S; a.strokeStyle = 'rgba(206,107,68,0.42)'; a.lineJoin = 'miter'; a.lineCap = 'butt';
+  a.lineWidth = 3 * S; a.strokeStyle = 'rgba(206,107,68,0.45)'; a.lineJoin = 'miter'; a.lineCap = 'butt';
   for (const pts of runs) for (let i = 1; i < pts.length; i++) {
     const [ax, ay] = pts[i - 1], [bx, by] = pts[i], L = Math.hypot(bx - ax, by - ay);
     if (L < P * 5.5) continue;
     const dx = (bx - ax) / L, dy = (by - ay) / L, mx = (ax + bx) / 2, my = (ay + by) / 2;
     for (let k = -1; k <= 1; k++) {
-      const px = mx + dx * k * 9 * S, py = my + dy * k * 9 * S;
-      a.beginPath(); a.moveTo(px - dx * 6 * S - dy * 11 * S, py - dy * 6 * S + dx * 11 * S); a.lineTo(px + dx * 6 * S, py + dy * 6 * S); a.lineTo(px - dx * 6 * S + dy * 11 * S, py - dy * 6 * S - dx * 11 * S); a.stroke();
+      const px = mx + dx * k * 8 * S, py = my + dy * k * 8 * S;
+      a.beginPath(); a.moveTo(px - dx * 5 * S - dy * 9 * S, py - dy * 5 * S + dx * 9 * S); a.lineTo(px + dx * 5 * S, py + dy * 5 * S); a.lineTo(px - dx * 5 * S + dy * 9 * S, py - dy * 5 * S - dx * 9 * S); a.stroke();
     }
   }
+  for (const g of [a, hh, rr, mm]) g.restore();
 
   // ---- core pad markings across the seven tiles ----
   const kx = (map.core.x - lay.x0) * P, ky = (map.core.z - lay.z0) * P;
@@ -331,12 +410,17 @@ function tileGeometry() {
 }
 
 // ---------- raised roads: ramps, bridge decks, pillars ----------
+// A raised road is made of the same hex tiles as the deck: every tile it rides on gets a slab in the tile's own
+// outline whose top follows the road, so ramps start and end exactly on a tile and nothing overlaps the plates beside it.
+/** Road surface for the slabs. u runs across the full tile (corner to corner), v along the road, one repeat per tile. */
 function roadTexture() {
   const S = 256, r = rng(77), [c, a] = canvas(S, S);
-  a.fillStyle = '#211f1d'; a.fillRect(0, 0, S, S);
-  a.fillStyle = 'rgba(255,255,255,0.03)'; a.fillRect(S * 0.25, 0, S * 0.5, S);
-  for (let i = 0; i < 4; i++) { a.fillStyle = 'rgba(0,0,0,0.5)'; a.fillRect(0, i * 64, S, 2); a.fillStyle = 'rgba(255,255,255,0.05)'; a.fillRect(0, i * 64 + 2, S, 1); } // plate joints
-  a.fillStyle = 'rgba(227,220,146,0.22)'; for (let i = 0; i < 4; i++) a.fillRect(S / 2 - 1.5, i * 64 + 16, 3, 26);
+  a.fillStyle = '#1d1b19'; a.fillRect(0, 0, S, S);
+  const half = (KERB / (2 * HEX_SIZE)) * S;
+  a.fillStyle = '#121110'; a.fillRect(S / 2 - half - 4, 0, half * 2 + 8, S);
+  a.fillStyle = '#22201e'; a.fillRect(S / 2 - half + 2, 0, half * 2 - 4, S);
+  a.fillStyle = 'rgba(255,255,255,0.03)'; a.fillRect(S / 2 - half * 0.55, 0, half * 1.1, S);
+  a.fillStyle = 'rgba(227,220,146,0.24)'; for (let i = 0; i < 2; i++) a.fillRect(S / 2 - 1.5, i * 128 + 40, 3, 48);
   for (let i = 0; i < 160; i++) { const x = r() * S, y = r() * S, L = 6 + r() * 50; a.strokeStyle = `rgba(210,205,195,${0.03 + r() * 0.07})`; a.lineWidth = 0.6 + r(); a.beginPath(); a.moveTo(x, y); a.lineTo(x + (r() - 0.5) * 8, y + L); a.stroke(); }
   a.globalCompositeOperation = 'overlay'; a.globalAlpha = 0.45; a.fillStyle = a.createPattern(noiseCanvas(128, 31), 'repeat')!; a.fillRect(0, 0, S, S);
   const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
@@ -344,6 +428,7 @@ function roadTexture() {
 }
 
 function buildStructures(map: GameMap, lay: Layout) {
+  if (!lay.slabs.length) return null;
   const top = new Soup(), st = new Soup(), parts: THREE.BufferGeometry[] = [];
   const UP = [0, 1, 0], DOWN = [0, -1, 0];
   const STEEL = 0x5e5a55, DARK = 0x3a3734;
@@ -353,72 +438,65 @@ function buildStructures(map: GameMap, lay: Layout) {
     q.setFromUnitVectors(X, dv.normalize());
     parts.push(paint(new THREE.BoxGeometry(L, h, w).applyQuaternion(q).translate((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2), color));
   };
-  const pillars = new Set<number>();
-  const pillar = (x: number, z: number, y: number) => {
-    cellOf(x, z);
-    const k = key(CX, CZ), low = lay.roadMin.get(k);
-    if (y < 0.9 || pillars.has(k) || (low !== undefined && low < y - 1)) return; // never stand a pillar on a road passing underneath
-    pillars.add(k);
-    const b = surf(y) - 0.3;
-    parts.push(paint(hexPrism(0.4, 0.46, b - 0.16, x, 0, z), STEEL), paint(hexPrism(0.82, 0.46, 0.18, x, b - 0.18, z), STEEL, 0.9), paint(hexPrism(0.6, 0.72, 0.14, x, 0, z), DARK));
-  };
-  for (const lane of map.lanes) {
-    let along = 0;
-    for (let i = 1; i < lane.pts.length; i++) {
-      const a = lane.pts[i - 1], b = lane.pts[i], ya = lane.ys[i - 1], yb = lane.ys[i], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
-      if (L < 1e-3) continue;
-      const v0 = along / (ROAD_HALF * 2); along += L; const v1 = along / (ROAD_HALF * 2);
-      if (ya < 0.01 && yb < 0.01) continue;
-      const dx = (b[0] - a[0]) / L, dz = (b[1] - a[1]) / L, nx = -dz, nz = dx;
-      const sa = surf(ya), sb = surf(yb), ba = Math.max(-0.1, sa - 0.3), bb = Math.max(-0.1, sb - 0.3);
-      const P = (end: number, l: number, y: number, u = 0, v = 0) => (end ? [b[0] + nx * l, y, b[1] + nz * l, u, v] : [a[0] + nx * l, y, a[1] + nz * l, u, v]);
-      top.quad(P(0, -ROAD_HALF, sa, 0, v0), P(0, ROAD_HALF, sa, 1, v0), P(1, ROAD_HALF, sb, 1, v1), P(1, -ROAD_HALF, sb, 0, v1), 1, UP);
-      for (const s of [-1, 1]) {
-        const li = ROAD_HALF * s, lo = (ROAD_HALF + KERB_W) * s, side = [nx * s, 0, nz * s];
-        st.quad(P(0, li, sa + 0.1), P(0, lo, sa + 0.1), P(1, lo, sb + 0.1), P(1, li, sb + 0.1), 0.4, UP);        // kerb top
-        st.quad(P(0, li, sa), P(0, li, sa + 0.1), P(1, li, sb + 0.1), P(1, li, sb), 0.3, [-side[0], 0, -side[2]]); // kerb inner face
-        st.quad(P(0, lo, sa + 0.1), P(0, lo, ba), P(1, lo, bb), P(1, lo, sb + 0.1), 0.33, side);                   // outer side
-      }
-      st.quad(P(0, -ROAD_HALF - KERB_W, ba), P(0, ROAD_HALF + KERB_W, ba), P(1, ROAD_HALF + KERB_W, bb), P(1, -ROAD_HALF - KERB_W, bb), 0.2, DOWN);
-      // railing and girders where the road is high enough to fall from
-      const yAt = (u: number) => ya + (yb - ya) * u;
-      let u0 = 0, u1 = 1;
-      if (ya < 0.7 && yb < 0.7) u1 = -1;
-      else if (ya < 0.7) u0 = (0.7 - ya) / (yb - ya);
-      else if (yb < 0.7) u1 = (0.7 - ya) / (yb - ya);
-      if (u1 > u0) {
-        const X0 = a[0] + (b[0] - a[0]) * u0, Z0 = a[1] + (b[1] - a[1]) * u0, X1 = a[0] + (b[0] - a[0]) * u1, Z1 = a[1] + (b[1] - a[1]) * u1, s0 = surf(yAt(u0)), s1 = surf(yAt(u1));
-        for (const s of [-1, 1]) {
-          const l = (ROAD_HALF + KERB_W * 0.5) * s;
-          beam(X0 + nx * l, s0 + 0.62, Z0 + nz * l, X1 + nx * l, s1 + 0.62, Z1 + nz * l, 0.06, 0.05, STEEL);
-          beam(X0 + nx * l, s0 + 0.36, Z0 + nz * l, X1 + nx * l, s1 + 0.36, Z1 + nz * l, 0.03, 0.03, DARK);
-          beam(X0 + nx * s * 0.5, s0 - 0.4, Z0 + nz * s * 0.5, X1 + nx * s * 0.5, s1 - 0.4, Z1 + nz * s * 0.5, 0.14, 0.2, DARK);
-          const n = Math.max(1, Math.round(((u1 - u0) * L) / 1)), tl = (u1 - u0) / n;
-          for (let k = 0; k <= n; k++) {
-            const u = u0 + tl * k, x = a[0] + (b[0] - a[0]) * u + nx * l, z = a[1] + (b[1] - a[1]) * u + nz * l, y = surf(yAt(u));
-            parts.push(paint(new THREE.BoxGeometry(0.05, 0.56, 0.05).translate(x, y + 0.36, z), STEEL));
-          }
-        }
-      }
-      const steps = Math.round(L / CELL);
-      for (let k = 0; k <= steps; k++) { const u = steps ? k / steps : 0; pillar(a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, yAt(u)); }
+  const RT = 0.955, RB = 0.985;
+  for (const s of lay.slabs) {
+    const lane = s.lane, solid = s.lo < 0.6;
+    // road height, path distance and side offset at a point of this tile; the top face is pulled in a little like a deck plate
+    const at = (dx: number, dz: number, k: number) => {
+      const n = nearLane(lane, s.x + dx, s.z + dz, s.d);
+      return [s.x + dx * k, surf(n.y), s.z + dz * k, 0.5 + n.lat / (2 * HEX_SIZE), n.d / CELL, n.y];
+    };
+    const C = at(0, 0, 1), K: number[][] = [], M: number[][] = [], B: number[][] = [], W: number[][] = [];
+    for (let i = 0; i < 6; i++) {
+      const c0 = HEX_CORNERS[i], c1 = HEX_CORNERS[(i + 1) % 6];
+      const k = at(c0[0], c0[1], RT), m = at((c0[0] + c1[0]) / 2, (c0[1] + c1[1]) / 2, RT);
+      // the heights were taken on the tile outline: bring them in with the face
+      k[1] = C[1] + (k[1] - C[1]) * RT; m[1] = C[1] + (m[1] - C[1]) * RT;
+      K.push(k); M.push(m);
+      B.push([s.x + c0[0] * RB, k[1] - 0.035, s.z + c0[1] * RB]);
+      W.push([s.x + c0[0] * RB, solid ? -0.3 : k[1] - SLAB, s.z + c0[1] * RB]);
     }
-    // hex landings where a raised road turns
-    for (let i = 0; i < lane.pts.length; i++) {
-      const y = lane.ys[i];
-      if (y < 0.05 || i === lane.pts.length - 1) continue;
-      const g = paint(hexPrism(HEX_SIZE * 0.98, HEX_SIZE * 0.9, 0.3, lane.pts[i][0], surf(y) - 0.312, lane.pts[i][1]), 0x211f1d);
-      parts.push(g);
-      if (i > 0) parts.push(paint(new THREE.TorusGeometry(HEX_SIZE * 0.93, 0.05, 4, 6).rotateX(Math.PI / 2).rotateY(Math.PI / 6).translate(lane.pts[i][0], surf(y) + 0.62, lane.pts[i][1]), STEEL));
+    for (let i = 0; i < 6; i++) {
+      const j = (i + 1) % 6, c0 = HEX_CORNERS[i], c1 = HEX_CORNERS[j], out = [c0[0] + c1[0], 0.4, c0[1] + c1[1]];
+      top.tri(C, K[i], M[i], 1, UP); top.tri(C, M[i], K[j], 1, UP);
+      st.quad(K[i], K[j], B[j], B[i], 0.5, out);
+      st.quad(B[i], B[j], W[j], W[i], 0.36, out);
+      if (!solid) st.tri([s.x, C[1] - SLAB, s.z], W[i], W[j], 0.2, DOWN);
+      // railing along the open sides of a tile that is high enough to fall from
+      if (K[i][5] < 0.7 || K[j][5] < 0.7) continue;
+      const nb = neighbor(s.cx, s.cz, (i + 5) % 6);
+      if (nearLane(lane, cellX(nb[0], nb[1]), cellZ(nb[1]), s.d).off < 0.4) continue;   // the road goes on that way
+      const e = 0.93, x0 = s.x + c0[0] * e, z0 = s.z + c0[1] * e, x1 = s.x + c1[0] * e, z1 = s.z + c1[1] * e;
+      beam(x0, K[i][1] + 0.6, z0, x1, K[j][1] + 0.6, z1, 0.05, 0.05, STEEL);
+      beam(x0, K[i][1] + 0.34, z0, x1, K[j][1] + 0.34, z1, 0.03, 0.03, DARK);
+      parts.push(paint(new THREE.BoxGeometry(0.05, 0.6, 0.05).translate(x0, K[i][1] + 0.3, z0), STEEL), paint(new THREE.BoxGeometry(0.05, 0.6, 0.05).translate(x1, K[j][1] + 0.3, z1), STEEL));
+    }
+    // a pillar under every high tile, never on a road passing underneath
+    const low = inKey(s.cx, s.cz) ? lay.roadMin.get(key(s.cx, s.cz)) : undefined;
+    if (s.yc >= 0.9 && !(low !== undefined && low < s.yc - 1)) {
+      const b = surf(s.yc) - SLAB;
+      parts.push(paint(hexPrism(0.4, 0.46, b - 0.16, s.x, 0, s.z), STEEL), paint(hexPrism(0.8, 0.46, 0.18, s.x, b - 0.18, s.z), STEEL, 0.9), paint(hexPrism(0.6, 0.72, 0.14, s.x, 0, s.z), DARK));
     }
   }
-  if (!top.pos.length) return null;
+  // two girders under the high stretches, inside the neck where the tiles meet
+  for (const lane of map.lanes) for (let i = 1; i < lane.pts.length; i++) {
+    const a = lane.pts[i - 1], b = lane.pts[i], ya = lane.ys[i - 1], yb = lane.ys[i], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (L < 1e-3 || (ya < 0.7 && yb < 0.7)) continue;
+    const nx = -(b[1] - a[1]) / L, nz = (b[0] - a[0]) / L;
+    const u0 = ya < 0.7 ? (0.7 - ya) / (yb - ya) : 0, u1 = yb < 0.7 ? (0.7 - ya) / (yb - ya) : 1;
+    const X0 = a[0] + (b[0] - a[0]) * u0, Z0 = a[1] + (b[1] - a[1]) * u0, X1 = a[0] + (b[0] - a[0]) * u1, Z1 = a[1] + (b[1] - a[1]) * u1;
+    const s0 = surf(ya + (yb - ya) * u0) - SLAB - 0.1, s1 = surf(ya + (yb - ya) * u1) - SLAB - 0.1;
+    for (const sd of [-1, 1]) beam(X0 + nx * sd * 0.4, s0, Z0 + nz * sd * 0.4, X1 + nx * sd * 0.4, s1, Z1 + nz * sd * 0.4, 0.14, 0.2, DARK);
+  }
   if (st.pos.length) { const g = st.geo(); const c = g.attributes.color as THREE.BufferAttribute; for (let i = 0; i < c.array.length; i++) (c.array as Float32Array)[i] *= 0.9; parts.push(g); }
   for (const g of parts) if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
   return { top: top.geo(), steel: mergeGeometries(parts) };
 }
 
-/** LED kerb strips along every road (deck level and raised), plus the outline of the core pad. aD = 0 at the gate, 1 at the core. */
+/**
+ * LED kerb strips along every road (deck level and raised), plus the outline of the core pad. They run beside the tile centres,
+ * close enough to stay on the road tiles all the way, and turn through the middle of a corner tile. aD = 0 at the gate, 1 at the core.
+ */
 function buildLeds(map: GameMap, lay: Layout) {
   const pos: number[] = [], aD: number[] = [], aS: number[] = [];
   const W = 0.03;
@@ -433,8 +511,7 @@ function buildLeds(map: GameMap, lay: Layout) {
       // offset path: [x, y, z, dist]; inner corners are mitred, outer corners rounded like the painted road
       const path: number[][] = [];
       for (let i = 0; i < n; i++) {
-        const p = lane.pts[i], y = surf(lane.ys[i]) + 0.012, d = lane.cum[i];
-        const up = lane.ys[i] > 0.01 || (i > 0 && lane.ys[i - 1] > 0.01) || (i < n - 1 && lane.ys[i + 1] > 0.01), KERB = up ? KERB_UP : KERB_DECK;
+        const p = lane.pts[i], y = surf(lane.ys[i]) + (lane.ys[i] > 0.01 ? 0.02 : 0.012), d = lane.cum[i];
         const dirIn = i > 0 ? Math.atan2(p[1] - lane.pts[i - 1][1], p[0] - lane.pts[i - 1][0]) : NaN;
         const dirOut = i < n - 1 ? Math.atan2(lane.pts[i + 1][1] - p[1], lane.pts[i + 1][0] - p[0]) : NaN;
         const a0 = Number.isNaN(dirIn) ? dirOut : dirIn, a1 = Number.isNaN(dirOut) ? dirIn : dirOut;
@@ -987,7 +1064,7 @@ export function buildWorld(scene: THREE.Scene, renderer?: THREE.WebGLRenderer) {
     fragmentShader: `uniform float uSweep, uGain; uniform vec3 uCol; varying float vD; varying float vS;
       #include <fog_pars_fragment>
       void main(){
-        float dash = step(0.07, fract(vS * 0.5));
+        float dash = step(0.07, fract(vS * 0.5 + 0.535)); // the gaps fall on the joints between the tiles
         float lit = smoothstep(0.0, 0.006, uSweep - vD);
         float front = exp(-abs(uSweep - vD) * 70.0) * step(uSweep, 1.2);
         gl_FragColor = vec4(uCol * (0.03 + (lit * uGain + front * 2.2) * dash), 1.0);
@@ -1084,7 +1161,7 @@ export function buildWorld(scene: THREE.Scene, renderer?: THREE.WebGLRenderer) {
     for (let i = 0; i < n; i++) far = Math.max(far, hexDist(lay.tiles[i].cx, lay.tiles[i].cz, kx, kz));
     for (let i = 0; i < n; i++) {
       const t = lay.tiles[i], blocked = t.kind === BLOCKED;
-      const y = t.kind === ROAD ? -ROAD_DROP : t.kind === SKIRT ? -0.34 : blocked ? -0.07 : 0;
+      const y = lay.sunk.has(key(t.cx, t.cz)) ? -0.5 : t.kind === ROAD ? -ROAD_DROP : t.kind === SKIRT ? -0.34 : blocked ? -0.07 : 0;
       EUL.set(blocked ? (t.seed - 0.5) * 0.05 : 0, 0, blocked ? (((t.seed * 7) % 1) - 0.5) * 0.05 : 0);
       M4.compose(PV.set(t.x, y, t.z), QT.setFromEuler(EUL), SC);
       M4.toArray(rest, i * 16);
@@ -1170,18 +1247,21 @@ export function buildWorld(scene: THREE.Scene, renderer?: THREE.WebGLRenderer) {
     U.uTime.value = time;
     const fx = fxOptions, I = Math.max(0, Math.min(2, fx.intensity));
     beatS += (beat - beatS) * Math.min(1, dt * 20);
-    const b = fx.beat ? beatS * I : 0, bs = fx.beat ? beatS * (0.1 + 0.3 * I) : 0; // the floor keeps the beat visible at a low effects setting
+    const bs = fx.beat ? beatS * (0.1 + 0.3 * I) : 0; // the floor keeps the beat visible at a low effects setting
     tmpC.set(fx.color === null ? SAND : fx.color);
+    // everything the deck shader lights sits on the tile borders: with that target off the deck stays dark
     U.uSeam.value.copy(tmpC).multiplyScalar(fx.borders ? 0.05 + 0.1 * I : 0);
-    U.uBeatC.value.copy(tmpC).multiplyScalar(bs);
-    U.uPulseGain.value = fx.impact ? I * 1.5 : 0;
-    const env = fx.env ? b : 0;
+    U.uBeatC.value.copy(tmpC).multiplyScalar(fx.borders ? bs : 0);
+    U.uPulseGain.value = fx.impact && fx.borders ? 0.25 + 1.3 * I : 0;
+    // environment: skyline signs, the light under the platform lip and the kerb lights along the roads
+    const env = fx.env ? (fx.beat ? beatS * (0.25 + 0.75 * I) : 0) : 0;
+    ledU.uGain.value = 1 + env * 0.9;
     for (const s of city.signs) {
       const f = 0.86 + Math.sin(time * 1.3 + s.phase) * 0.08 + (Math.sin(time * 23 + s.phase * 3) > 0.985 ? -0.35 : 0);
-      s.mat.color.copy(s.base).multiplyScalar(f * (1 + env * 0.45));
+      s.mat.color.copy(s.base).multiplyScalar(f * (1 + env * 0.7));
     }
     const fade = introT < 0 ? 1 : sat((introT - 1.7) / 0.7);
-    edgeMat.color.copy(edgeBase).multiplyScalar((0.9 + env * 0.6) * fade);
+    edgeMat.color.copy(edgeBase).multiplyScalar((0.9 + env * 1.1) * fade);
     coreLight.intensity = 70 * (0.92 + Math.sin(time * 2.1) * 0.08) * fade;
     corePool.scale.setScalar(8 * Math.max(fade, 1e-3));
     for (const g of gates) { g.light.intensity = (g.high ? 20 : 50) * (0.9 + Math.sin(time * 3) * 0.1) * gateK; g.pool.scale.setScalar(5.5 * Math.max(gateK, 1e-3)); g.arch.scale.setScalar(1 + Math.sin(time * 3) * 0.02); }

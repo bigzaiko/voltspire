@@ -1,4 +1,4 @@
-// VOLTSPIRE — static game data: map, towers, enemies, cards.
+// VOLTSPIRE: static game data: map, towers, enemies, cards.
 
 // The board is a hex grid: all grid geometry lives in hex.ts.
 export { CELL, GW, GH, cellX, cellZ, worldToCell } from './hex.ts';
@@ -32,7 +32,8 @@ export const TOWERS: Record<TowerType, TowerDef> = {
   mortar: { name: 'Plasma Mortar', cost: 140, dmg: 42, rate: 0.42, range: 12, minRange: 3, aoe: 2.8, color: 0xf68b56, desc: 'Long-range blast. Cannot hit flyers.', key: '4', special: { name: 'Barrage', desc: 'Drops eight heavy shells on the road in range.', charge: 45, down: 8 } },
   rail: { name: 'Railgun', cost: 190, dmg: 130, rate: 0.3, range: 17, color: 0xff5a3c, desc: 'Piercing beam. Targets the toughest.', key: '5', special: { name: 'Overcharge', desc: 'A map-long slug that pierces everything for eight times the damage.', charge: 50, down: 8 } },
   beacon: { name: 'Signal Beacon', cost: 120, dmg: 0, rate: 0, range: 5.5, color: 0x9ccf6a, desc: 'Boosts damage and speed of nearby towers.', key: '6', special: { name: 'Surge', desc: 'Triples its boost for 8 seconds.', charge: 45, down: 6 } },
-  flame: { name: 'Flame Projector', cost: 90, dmg: 5, rate: 5, range: 4.6, color: 0xffb02e, desc: 'Short-range cone of fire that leaves enemies burning.', key: '7', special: { name: 'Inferno', desc: 'A ring of white-hot fire in every direction for 5 seconds.', charge: 40, down: 6 } },
+  // Firewall Pylon: dmg x rate is what a wall deals per second to everything inside it; range is the link reach (4 tiles) in world units
+  flame: { name: 'Firewall Pylon', cost: 90, dmg: 15, rate: 2, range: 8, color: 0xffb02e, desc: 'Build two within 4 tiles of each other and a wall of fire burns between them. On its own it only burns a small ring.', key: '7', special: { name: 'Inferno', desc: 'Its walls burn 2.5 times as hard and wider for 5 seconds.', charge: 40, down: 6 } },
   lance: { name: 'Lance Emitter', cost: 160, dmg: 9, rate: 4, range: 9, color: 0xff8fa8, desc: 'A continuous beam that burns hotter the longer it holds a target.', key: '8', special: { name: 'Overload', desc: 'Instantly at full heat, far hotter and piercing for 5 seconds. Comes back online still hot.', charge: 45, down: 6 } },
   missile: { name: 'Missile Battery', cost: 170, dmg: 22, rate: 0.55, range: 13, aoe: 1.5, color: 0xd9a05b, desc: 'Salvos of homing missiles. Prefers flyers.', key: '9', special: { name: 'Swarm', desc: 'Launches two dozen missiles at targets anywhere on the map.', charge: 50, down: 7 } },
   gravity: { name: 'Graviton Well', cost: 120, dmg: 0, rate: 0.5, range: 5.5, color: 0x7a8cff, desc: 'Deals no damage. Drags enemies back and slows them.', key: '0', special: { name: 'Collapse', desc: 'Opens a singularity on the toughest enemy in range.', charge: 55, down: 9 } },
@@ -68,15 +69,15 @@ export interface EnemyDef {
 }
 
 /** Model scale per enemy type (weak points and the view use it). */
-export const ENEMY_SCALE: Record<EnemyType, number> = { grunt: 1, runner: 1, drone: 1, shield: 1, brute: 1, boss: 1.25 };
+export const ENEMY_SCALE: Record<EnemyType, number> = { grunt: 1, runner: 1, drone: 1, shield: 1, brute: 1, boss: 0.95 };
 
 export const ENEMIES: Record<EnemyType, EnemyDef> = {
-  grunt: { name: 'Grunt', hp: 30, speed: 3.0, bounty: 5, xp: 2, energy: 1.5, r: 0.55, y: 0.6, armor: 0, shield: 0, leak: 1, cost: 1, from: 1, scale: 1 },
-  runner: { name: 'Runner', hp: 15, speed: 5.0, bounty: 2, xp: 1, energy: 0.9, r: 0.5, y: 0.4, armor: 0, shield: 0, leak: 1, cost: 0.6, from: 2, scale: 1 },
-  drone: { name: 'Drone', hp: 24, speed: 3.8, bounty: 4, xp: 2, energy: 1.4, r: 0.55, y: 2.4, armor: 0, shield: 0, leak: 1, cost: 1.2, from: 4, fly: true, scale: 1 },
-  shield: { name: 'Aegis', hp: 60, speed: 2.5, bounty: 9, xp: 5, energy: 3, r: 0.7, y: 0.8, armor: 0, shield: 60, leak: 2, cost: 3, from: 6, scale: 1 },
-  brute: { name: 'Brute', hp: 190, speed: 1.9, bounty: 13, xp: 8, energy: 5, r: 0.95, y: 1.1, armor: 3, shield: 0, leak: 3, cost: 5, from: 8, scale: 1, weak: [{ x: 0, y: 1.3, z: -0.55, r: 0.4, mul: 2.5 }] },
-  boss: { name: 'Colossus', hp: 1300, speed: 1.3, bounty: 160, xp: 50, energy: 30, r: 2.0, y: 1.8, armor: 4, shield: 0, leak: 10, cost: 30, from: 5, scale: 1, weak: [{ x: 0, y: 2.1, z: -1.6, r: 0.6, mul: 3 }, { x: 0, y: 2.9, z: 1.5, r: 0.45, mul: 2.5 }] },
+  grunt: { name: 'Grunt', hp: 28, speed: 3.0, bounty: 5, xp: 2, energy: 1.5, r: 0.55, y: 0.6, armor: 0, shield: 0, leak: 1, cost: 1, from: 1, scale: 1 },
+  runner: { name: 'Runner', hp: 14, speed: 5.0, bounty: 2, xp: 1, energy: 0.9, r: 0.5, y: 0.4, armor: 0, shield: 0, leak: 1, cost: 0.6, from: 2, scale: 1 },
+  drone: { name: 'Drone', hp: 22, speed: 3.8, bounty: 4, xp: 2, energy: 1.4, r: 0.55, y: 2.4, armor: 0, shield: 0, leak: 1, cost: 1.2, from: 4, fly: true, scale: 1 },
+  shield: { name: 'Aegis', hp: 55, speed: 2.5, bounty: 9, xp: 5, energy: 3, r: 0.7, y: 0.8, armor: 0, shield: 55, leak: 2, cost: 3, from: 6, scale: 1 },
+  brute: { name: 'Brute', hp: 175, speed: 1.9, bounty: 13, xp: 8, energy: 5, r: 0.95, y: 1.1, armor: 3, shield: 0, leak: 3, cost: 5, from: 8, scale: 1, weak: [{ x: 0, y: 1.3, z: -0.55, r: 0.4, mul: 2.5 }] },
+  boss: { name: 'Colossus', hp: 1200, speed: 1.3, bounty: 160, xp: 50, energy: 30, r: 1.6, y: 1.4, armor: 4, shield: 0, leak: 6, cost: 30, from: 5, scale: 1, weak: [{ x: 0, y: 2.1, z: -1.6, r: 0.6, mul: 3 }, { x: 0, y: 2.9, z: 1.5, r: 0.45, mul: 2.5 }] },
 };
 
 /** Global balance knobs (tools/balance.ts can override them from the TUNE environment variable to sweep values). */
@@ -87,9 +88,26 @@ export const RAIL_CAP = 0.35;
 export const LANCE_HEAT = 1.5;
 export const LANCE_FOCUS = 0.5;
 export const PULSE_CRIT = 2;
-/** A Colossus that reaches the core batters it for one integrity every SIEGE_TICK seconds, up to SIEGE_SHARE of the starting integrity (at most its `leak`). */
-export const SIEGE_TICK = 1.2;
-export const SIEGE_SHARE = 0.4;
+/** An enemy that reaches the core attacks it for this long (a Colossus for BREACH_TIME_BOSS). If it is still alive then, the core takes its `leak` and the discharge destroys it. */
+export const BREACH_TIME = 0.7;
+export const BREACH_TIME_BOSS = 1.6;
+/** A Colossus never takes more than this share of the starting integrity in one breach (at most its `leak`). */
+export const BREACH_SHARE = 0.25;
+/** Seconds before the first wave arrives on its own (it can be called earlier), and between later waves. */
+export const FIRST_WAVE_IN = 30;
+export const NEXT_WAVE_IN = 12;
+/** The bow: seconds to a full draw, the weakest draw that still looses an arrow, the pause before the next arrow can be drawn, and how many of the old stream arrows a full draw is worth. */
+export const DRAW_TIME = 0.45;
+export const MIN_DRAW = 0.2;
+export const NOCK_TIME = 0.1;
+export const FULL_DRAW_MUL = 2.2;
+/** Seconds an Uplink lasts before cards. */
+export const HERO_DUR = 17.5;
+/** Firewall Pylons: link reach in tiles, half the thickness of a wall, the radius a lone pylon burns, and the colour of a singularity. */
+export const LINK_RANGE = 4;
+export const WALL_HALF = 0.75;
+export const FIRE_RING = 2.2;
+export const SING_COLOR = 0xa99cff;
 /** Co-op: enemy health and wave budget multipliers at full strength (see TUNE.coopHp / coopCount and coopScale()). */
 export const COOP_HP = 2.5;
 export const COOP_COUNT = 1.2;
@@ -100,9 +118,10 @@ export const TUNE = {
   /** wave budget: bud0 + bud1·w + w^budP */
   bud0: 8, bud1: 5, budP: 1.5,
   /** base arrow damage, credits per kill, wave-clear bonus (base + perWave·w), kill energy */
-  arrow: 9, bounty: 1, clear0: 15, clear1: 3, energy: 1, energyT: 0.8,
-  /** enemy health scales with (mean road length / mapLen)^mapPow · (road in reach of the best tiles / mapCov)^mapCovPow, see mapEase() in sim.ts */
-  mapLen: 105, mapPow: 0.25, mapCov: 27, mapCovPow: 0.55,
+  arrow: 10, bounty: 1, clear0: 15, clear1: 3, energy: 1, energyT: 0.8,
+  /** enemy health scales with (mean road length / mapLen)^mapPow · (road in reach of the best tiles / mapCov)^mapCovPow, see mapEase() in sim.ts.
+   *  starter: extra factor for the first map (Switchback), which new players learn on and which plays harder than its shape suggests */
+  mapLen: 105, mapPow: 0.2, mapCov: 39.8, mapCovPow: 0.64, starter: 0.78,
   /** Colossus: share of tower damage that gets through its plating, tower damage multiplier while the plating is cracked open, seconds a weak-point hit keeps it open, health multiplier */
   plate: 0.45, cracked: 1.25, crack: 3, boss: 1,
   /** co-op: enemy health and wave budget multipliers once the run is under way. Two players start with the same credits as one, so the first coopFrom waves are the solo ones and the extra then ramps in over coopRamp waves. */
@@ -116,13 +135,13 @@ export const waveHpMul = (w: number) => 1 + TUNE.hp1 * (w - 1) + TUNE.hp2 * (w -
 /** Enemy budget of wave w (see ENEMIES[..].cost), before the difficulty's count multiplier. */
 export const waveBudget = (w: number) => TUNE.bud0 + w * TUNE.bud1 + Math.pow(w, TUNE.budP);
 
-/** Bow tiers — the bow evolves as the run progresses. */
+/** Bow tiers: the bow evolves as the run progresses. Colours stay on the Ember ramp (sand, verdigris, apricot, vermilion, white-gold). */
 export const BOW_TIERS = [
-  { name: 'Carbon Bow', color: 0x35f0ff, mul: 1, perk: 'Standard carbon arrows.' },
-  { name: 'Pulse Bow', color: 0x5dff8f, mul: 1.8, perk: 'Arrows pierce one extra target.' },
-  { name: 'Tempest Bow', color: 0xffd23f, mul: 3.0, perk: 'Fires one extra arrow.' },
-  { name: 'Nova Bow', color: 0xff8a1f, mul: 4.8, perk: 'Arrows explode on impact.' },
-  { name: 'Singularity Bow', color: 0xff2bd6, mul: 7.5, perk: 'Arrows chain lightning.' },
+  { name: 'Carbon Bow', color: 0xe3dc92, mul: 1, perk: 'Standard carbon arrows.' },
+  { name: 'Pulse Bow', color: 0x6fe0c8, mul: 1.8, perk: 'Arrows pierce one extra target.' },
+  { name: 'Tempest Bow', color: 0xf68b56, mul: 3.0, perk: 'Fires one extra arrow.' },
+  { name: 'Nova Bow', color: 0xff5a3c, mul: 4.8, perk: 'Arrows explode on impact.' },
+  { name: 'Singularity Bow', color: 0xfff2c4, mul: 7.5, perk: 'Arrows chain lightning.' },
 ];
 export const bowTier = (wave: number) => Math.min(BOW_TIERS.length - 1, Math.floor(Math.max(0, wave - 1) / 4));
 
@@ -135,7 +154,8 @@ export interface Mods {
   pulseCrit: number; cryoSlow: number; cryoAoe: number; arcSlow: number; mortarAoe: number; railBreak: number; beaconFeed: number;
   /** tower specials: charge speed, reboot time multiplier, strength */
   specCharge: number; reboot: number; specPow: number;
-  flameBurn: number; flameMelt: number; lanceHeat: number; lanceRamp: number; missilePods: number; missileAoe: number; gravPull: number; gravVuln: number;
+  /** Firewall Pylons: burn stacks (Sticky Fire), Slag Curtain stacks, extra link reach in tiles */
+  flameBurn: number; flameMelt: number; flameLink: number; lanceHeat: number; lanceRamp: number; missilePods: number; missileAoe: number; gravPull: number; gravVuln: number;
 }
 export const baseMods = (): Mods => ({
   tDmg: 1, tRate: 1, tRange: 1, arcChain: 0, shatter: 0, napalm: 0, twin: 0, railCap: 0,
@@ -143,7 +163,7 @@ export const baseMods = (): Mods => ({
   tw: Object.fromEntries(TOWER_TYPES.map((t) => [t, { dmg: 1, rate: 1, range: 1 }])) as Mods['tw'],
   pulseCrit: 0, cryoSlow: 0, cryoAoe: 0, arcSlow: 0, mortarAoe: 0, railBreak: 0, beaconFeed: 0,
   specCharge: 1, reboot: 1, specPow: 1,
-  flameBurn: 0, flameMelt: 0, lanceHeat: 0, lanceRamp: 0, missilePods: 0, missileAoe: 0, gravPull: 0, gravVuln: 0,
+  flameBurn: 0, flameMelt: 0, flameLink: 0, lanceHeat: 0, lanceRamp: 0, missilePods: 0, missileAoe: 0, gravPull: 0, gravVuln: 0,
 });
 
 export interface HeroStats {
@@ -212,9 +232,9 @@ export const CARDS: Card[] = [
   { id: 'r_scope', name: 'Horizon Scope', desc: 'Railguns gain 25% range.', rar: 0, kind: 'tower', max: 2, icon: '◎', needs: 'rail', apply: (c) => { c.mods.tw.rail.range *= 1.25; } },
   { id: 'b_wide', name: 'Wide Band', desc: 'Beacons reach 30% further.', rar: 0, kind: 'tower', max: 2, icon: '◎', needs: 'beacon', apply: (c) => { c.mods.tw.beacon.range *= 1.3; } },
   { id: 'b_feed', name: 'Uplink Feed', desc: 'Each Beacon slowly charges your ultimate.', rar: 1, kind: 'tower', max: 2, icon: '⚡', needs: 'beacon', apply: (c) => { c.mods.beaconFeed += 1; } },
-  { id: 'f_fuel', name: 'Pressurised Fuel', desc: 'Flame Projectors reach 20% further.', rar: 0, kind: 'tower', max: 2, icon: '◎', needs: 'flame', apply: (c) => { c.mods.tw.flame.range *= 1.2; } },
-  { id: 'f_burn', name: 'Sticky Fire', desc: 'Burns last 1.5 seconds longer and run 40% hotter.', rar: 0, kind: 'tower', max: 3, icon: '♨', needs: 'flame', apply: (c) => { c.mods.flameBurn += 1; } },
-  { id: 'f_melt', name: 'Slag Jets', desc: 'Burning enemies lose 40% of their armour.', rar: 1, kind: 'tower', max: 2, icon: '⛏', needs: 'flame', apply: (c) => { c.mods.flameMelt += 1; } },
+  { id: 'f_fuel', name: 'Long Conduits', desc: 'Firewall Pylons link one tile further apart.', rar: 0, kind: 'tower', max: 2, icon: '◎', needs: 'flame', apply: (c) => { c.mods.flameLink += 1; } },
+  { id: 'f_burn', name: 'Sticky Fire', desc: 'Whatever crosses a firewall burns 1.5 seconds longer and 40% hotter.', rar: 0, kind: 'tower', max: 3, icon: '♨', needs: 'flame', apply: (c) => { c.mods.flameBurn += 1; } },
+  { id: 'f_melt', name: 'Slag Curtain', desc: 'Firewalls are 30% thicker, and burning enemies lose 40% of their armour.', rar: 1, kind: 'tower', max: 2, icon: '⛏', needs: 'flame', apply: (c) => { c.mods.flameMelt += 1; } },
   { id: 'l_dmg', name: 'Hard Light', desc: 'Lance Emitters deal 20% more damage.', rar: 0, kind: 'tower', max: 3, icon: '▲', needs: 'lance', apply: (c) => { c.mods.tw.lance.dmg *= 1.2; } },
   { id: 'l_focus', name: 'Focusing Lens', desc: 'Lance beams can heat up a further 50%.', rar: 1, kind: 'tower', max: 2, icon: '✧', needs: 'lance', apply: (c) => { c.mods.lanceHeat += 1; } },
   { id: 'l_hold', name: 'Thermal Memory', desc: 'Lances heat up 40% faster and keep half their heat when they switch targets.', rar: 1, kind: 'tower', max: 2, icon: '≋', needs: 'lance', apply: (c) => { c.mods.lanceRamp += 1; } },
@@ -230,10 +250,10 @@ export const CARDS: Card[] = [
   { id: 'aftershock', name: 'Aftershock', desc: 'Tower specials are 25% stronger: more damage, and Surge lasts 25% longer.', rar: 1, kind: 'tower', max: 3, icon: '✹', apply: (c) => { c.mods.specPow *= 1.25; } },
   { id: 'fab', name: 'Nano Fabricator', desc: 'Towers and upgrades cost 10% less.', rar: 1, kind: 'eco', max: 3, icon: '⬡', apply: (c) => { c.mods.cheap *= 0.9; } },
   // hero
-  { id: 'split', name: 'Split Shot', desc: 'Kestrel fires 2 more arrows per shot.', rar: 1, kind: 'hero', max: 3, icon: '⋔', apply: (c) => { c.hero.arrows += 2; } },
+  { id: 'split', name: 'Split Shot', desc: 'Kestrel looses 2 more arrows with every shot.', rar: 1, kind: 'hero', max: 3, icon: '⋔', apply: (c) => { c.hero.arrows += 2; } },
   { id: 'pierce', name: 'Phase Tips', desc: 'Arrows pierce 2 more enemies.', rar: 0, kind: 'hero', max: 3, icon: '➶', apply: (c) => { c.hero.pierce += 2; } },
   { id: 'volatile', name: 'Volatile Tips', desc: 'Arrows explode in a small blast.', rar: 1, kind: 'hero', max: 3, icon: '✹', apply: (c) => { c.hero.explode += 1; } },
-  { id: 'quick', name: 'Quick Draw', desc: 'Kestrel shoots 25% faster.', rar: 0, kind: 'hero', max: 4, icon: '≫', apply: (c) => { c.hero.rate *= 1.25; } },
+  { id: 'quick', name: 'Quick Draw', desc: 'Kestrel draws the bow 25% faster.', rar: 0, kind: 'hero', max: 4, icon: '≫', apply: (c) => { c.hero.rate *= 1.25; } },
   { id: 'overcharge', name: 'Overcharge', desc: 'Arrows and skills deal 30% more damage.', rar: 0, kind: 'hero', max: 6, icon: '✦', apply: (c) => { c.hero.dmg *= 1.3; } },
   { id: 'uplink', name: 'Extended Uplink', desc: 'Ultimate lasts 4 seconds longer.', rar: 1, kind: 'hero', max: 3, icon: '◷', apply: (c) => { c.hero.dur += 4; } },
   { id: 'charge', name: 'Fast Charge', desc: 'Ultimate charges 25% faster.', rar: 0, kind: 'hero', max: 4, icon: '⚡', apply: (c) => { c.hero.charge *= 1.25; } },

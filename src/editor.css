@@ -134,6 +134,8 @@ body #editor.overlay:not(#menu) { padding-inline: max(14px, var(--safe-l)) max(1
 }
 @media (pointer: coarse) {
   #editor .chip { min-height: 40px; }
+  /* two rows of three, so every level chip is wide enough for a thumb */
+  .ed-level { grid-template-columns: repeat(3, 1fr); }
   .ed-tool { min-height: 44px; }
   .ed-tool kbd, .ed-keys { display: none; }
   .ed-tw { min-height: 40px; }

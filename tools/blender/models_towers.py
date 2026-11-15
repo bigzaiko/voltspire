@@ -541,85 +541,60 @@ def tower_beacon():
 
 # ------------------------------------------------------------------ 7. flame
 def tower_flame():
-    """Flame Projector: squat, a pressure tank on the axis, two feed tanks, a wide flared nozzle."""
+    """Firewall Pylon: a slim hexagonal mast over a fuel collar, and a head with four tall emitter fins.
+    Two pylons throw a wall of fire between their fins; the game turns the head ('turret') so a fin faces the partner."""
     m = tower_model('flame')
     b = tower_base(m)
-    b.lathe([(0.50, 0.62), (0.55, 0.66), (0.55, 0.76), (0.47, 0.84)], segs=12)
+    # fuel collar and the fixed foot of the mast
+    b.lathe([(0.50, 0.62), (0.55, 0.66), (0.55, 0.76), (0.42, 0.86), (0.36, 1.00)], segs=12)
     b.ring(0.555, 0.02, 0.025, 'glow_main', segs=12, at=(0, 0, 0.71))
+    with b.frames(radial(3, start=60)):
+        b.tube([(0.58, 0, 0.56), (0.60, 0, 0.74), (0.47, 0, 0.90), (0.38, 0, 0.99)], 0.028, 'trim', segs=6)
+        b.cyl(0.05, 0.05, 'hull', segs=7, bevel=0.01, at=(0.58, 0, 0.55))
 
-    t = m.node('turret', at=(0, 0, 0.84))
-    t.cyl(0.50, 0.09, 'trim', segs=16, bevel=0.02)
-    t.prism([(-0.42, 0.09), (-0.48, 0.30), (-0.32, 0.52), (0.32, 0.56), (0.50, 0.40), (0.52, 0.09)], 0.56, 'hull',
-            bevel=0.04, plane='yz')
-    with t.sym():
-        t.prism([(-0.34, 0.14), (-0.39, 0.30), (-0.27, 0.45), (0.28, 0.48), (0.42, 0.36), (0.44, 0.14)], 0.05, 'paint',
-                bevel=0.012, plane='yz', at=(0.285, 0, 0))
-        # feed tanks at the rear corners
-        with t.frames(T(at=(0.34, 0.30, 0.42))):
-            t.lathe([(0.0, 0.0), (0.12, 0.015), (0.17, 0.07), (0.17, 0.50), (0.12, 0.57), (0.0, 0.59)], 'paint', segs=12)
-            for z in (0.13, 0.44):
-                t.cyl(0.182, 0.04, 'hull', segs=12, bevel=0.01, at=(0, 0, z))
-            t.cyl(0.05, 0.06, 'trim', segs=8, bevel=0.01, at=(0, 0, 0.58))
-        t.tube([(0.34, 0.30, 1.04), (0.30, 0.22, 1.14), (0.20, 0.10, 1.10)], 0.028, 'trim', segs=6)
-        t.tube([(0.16, -0.20, 1.00), (0.20, -0.40, 0.92), (0.17, -0.50, 0.62), (0.10, -0.46, 0.42)], 0.03, 'trim',
-               segs=6)
-        t.box((0.02, 0.22, 0.03), 'glow_main', bevel=0, at=(0.312, -0.06, 0.40))
-    # pressure tank on the axis
-    t.lathe([(0.0, 0.50), (0.27, 0.52), (0.29, 0.60), (0.29, 1.12), (0.23, 1.24), (0.10, 1.31), (0.0, 1.32)], 'paint',
-            segs=14)
-    for z in (0.66, 1.04):
-        t.cyl(0.305, 0.05, 'hull', segs=14, bevel=0.012, at=(0, 0, z))
-    t.box((0.10, 0.03, 0.16), 'hull', bevel=0.01, at=(0, -0.295, 0.86))
-    t.box((0.06, 0.012, 0.03), 'glow_main', bevel=0, at=(0, -0.313, 0.89))
-    t.cyl(0.07, 0.08, 'trim', segs=8, bevel=0.012, at=(0, 0, 1.30))
-    t.torus(0.11, 0.016, 'trim', segs=12, rsegs=5, at=(0, 0, 1.40))
-    with t.frames(radial(3)):
-        t.rod((0, 0, 1.40), (0.11, 0, 1.40), 0.01, 'trim', segs=4)
-    # pump and exhaust at the rear
-    t.box((0.40, 0.18, 0.30), 'hull', bevel=0.04, at=(0, 0.50, 0.30))
-    with t.sym():
-        t.cyl(0.04, 0.34, 'trim', segs=7, bevel=0.008, at=(0.12, 0.54, 0.40))
-    zn = power_node(m, 'flame') - 0.84
-    mount(t, 1.38, zn)
+    t = m.node('turret', at=(0, 0, 1.00))
+    t.cyl(0.38, 0.07, 'trim', segs=16, bevel=0.018)
+    # the mast: hexagonal, tapering, with paint bands and a lit seam on every other face
+    t.lathe([(0.29, 0.07), (0.27, 0.14), (0.20, 0.98), (0.24, 1.05), (0.24, 1.15), (0.17, 1.23), (0.0, 1.26)],
+            **HEX)
+    for z, r in ((0.26, 0.275), (0.62, 0.245)):
+        t.cyl(r, 0.06, 'paint', segs=6, phase=30, bevel=0.012, at=(0, 0, z))
+    with t.frames(radial(3, start=30)):
+        t.box((0.014, 0.05, 0.50), 'glow_main', bevel=0, at=(0.213, 0, 0.62), rot=(0, -4.8, 0))
+    t.cyl(0.255, 0.035, 'trim', segs=6, phase=30, bevel=0.008, at=(0, 0, 1.085))
+    # four emitter fins: a blade on two struts, the outer edge is the emitter (lit strip between three nozzle blocks)
+    with t.frames(radial(4)):
+        t.prism([(0.42, 0.12), (0.60, 0.20), (0.66, 0.34), (0.66, 0.98), (0.57, 1.16), (0.45, 1.16), (0.42, 1.00)],
+                0.07, 'hull', bevel=0.016, plane='xz')
+        for sy in (0.04, -0.04):
+            t.prism([(0.45, 0.26), (0.59, 0.32), (0.59, 0.92), (0.54, 1.04), (0.45, 1.04)], 0.012, 'paint',
+                    plane='xz', at=(0, sy, 0))
+        t.box((0.022, 0.05, 0.58), 'glow_main', bevel=0, at=(0.668, 0, 0.66))
+        for z in (0.36, 0.66, 0.96):
+            t.box((0.06, 0.11, 0.055), 'trim', bevel=0.01, at=(0.665, 0, z))
+        for z in (0.30, 0.92):
+            t.box((0.22, 0.045, 0.05), 'trim', bevel=0.01, at=(0.33, 0, z))
+        t.rod((0.28, 0, 0.20), (0.50, 0, 0.17), 0.02, 'trim', segs=6)
+    zn = power_node(m, 'flame') - 1.00
+    mount(t, 1.24, zn)
 
-    g = m.node('barrel', at=(0, -0.40, 0.34), parent=t)
-    g.cyl(0.13, 0.20, 'hull', segs=12, bevel=0.02, rot=FWD, at=(0, 0.06, 0))
-    g.cyl(0.15, 0.04, 'trim', segs=12, bevel=0.01, rot=FWD, at=(0, -0.08, 0))
-    with g.frames(T(rot=FWD, scale=(1.3, 0.75, 1.0))):
-        g.lathe([(0.11, 0.10), (0.15, 0.22), (0.30, 0.52), (0.33, 0.54), (0.33, 0.58), (0.29, 0.58), (0.13, 0.26),
-                 (0.0, 0.24)], 'hull', segs=14)
-        g.ring(0.335, 0.03, 0.03, 'trim', segs=14, at=(0, 0, 0.56))
-        with g.frames(radial(5, start=54, sweep=90)):
-            g.box((0.012, 0.035, 0.20), 'trim', bevel=0, at=(0.262, 0, 0.40), rot=(0, 26.5, 0))
-    # pilot light under the mouth
-    g.rod((0, -0.02, -0.14), (0, -0.60, -0.30), 0.018, 'trim', segs=6)
-    g.cyl(0.03, 0.05, 'hull', segs=6, bevel=0.008, rot=FWD, at=(0, -0.58, -0.30))
-    g.sphere(0.03, 'glow_main', segs=8, rings=5, at=(0, -0.645, -0.30))
-    # level 2: side jets and a heat shield over the nozzle
-    u = m.node('lvl2', parent=g)
-    for sgn in (1, -1):
-        with u.frames(T(at=(0.19 * sgn, 0.02, 0.02), rot=(90, 0, 24 * sgn))):
-            u.cyl(0.06, 0.26, 'hull', segs=8, bevel=0.012)
-            u.lathe([(0.055, 0.22), (0.075, 0.30), (0.15, 0.48), (0.165, 0.50), (0.165, 0.53), (0.14, 0.53),
-                     (0.06, 0.32), (0.0, 0.31)], 'hull', segs=10, scale=(1.0, 0.8, 1.0))
-            u.ring(0.168, 0.02, 0.025, 'trim', segs=10, at=(0, 0, 0.515), scale=(1.0, 0.8, 1.0))
-    with u.frames(T(rot=FWD, scale=(1.3, 0.75, 1.0))):
-        u.add(revolve([(0.175, 0.16), (0.365, 0.54), (0.39, 0.54), (0.20, 0.16)], segs=8, phase=30, arc=120), 'paint')
-        u.add(revolve([(0.37, 0.50), (0.41, 0.50), (0.41, 0.56), (0.37, 0.56)], segs=8, phase=26, arc=128), 'trim')
-    # level 3: two more tanks in armoured guards, taller stacks
+    # level 2: taller fin tips with their own light, heat shields at the foot of each fin
+    u = m.node('lvl2', parent=t)
+    with u.frames(radial(4)):
+        u.prism([(0.46, 1.15), (0.57, 1.15), (0.63, 1.30), (0.56, 1.42), (0.48, 1.36)], 0.06, 'hull', bevel=0.012,
+                plane='xz')
+        u.box((0.02, 0.045, 0.14), 'glow_main', bevel=0, at=(0.615, 0, 1.31), rot=(0, -22, 0))
+        u.prism([(0.60, 0.12), (0.72, 0.20), (0.72, 0.34), (0.69, 0.36), (0.69, 0.22), (0.60, 0.16)], 0.20, 'paint',
+                bevel=0.008, plane='xz')
+    # level 3: four short fins on the diagonals and a burner ring round the head of the mast
     u = m.node('lvl3', parent=t)
-    with u.sym():
-        with u.frames(T(at=(0.60, -0.04, 0.22))):
-            u.lathe([(0.0, 0.0), (0.11, 0.015), (0.15, 0.07), (0.15, 0.62), (0.11, 0.69), (0.0, 0.71)], 'paint', segs=12)
-            for z in (0.16, 0.54):
-                u.cyl(0.162, 0.04, 'hull', segs=12, bevel=0.01, at=(0, 0, z))
-            u.cyl(0.05, 0.05, 'trim', segs=8, bevel=0.01, at=(0, 0, 0.70))
-            u.ring(0.152, 0.02, 0.025, 'glow_main', segs=12, at=(0, 0, 0.35))
-        u.box((0.03, 0.40, 0.46), 'hull', bevel=0.012, at=(0.775, -0.04, 0.42))
-        u.box((0.22, 0.30, 0.10), 'hull', bevel=0.02, at=(0.52, -0.04, 0.20))
-        u.tube([(0.60, -0.04, 0.95), (0.52, 0.0, 1.06), (0.26, 0.0, 0.98)], 0.026, 'trim', segs=6)
-        u.cyl(0.05, 0.36, 'hull', segs=7, bevel=0.008, at=(0.12, 0.54, 0.72))
-        u.cyl(0.035, 0.02, 'glow_main', segs=7, at=(0.12, 0.54, 1.07))
+    with u.frames(radial(4, start=45)):
+        u.prism([(0.36, 0.14), (0.50, 0.22), (0.54, 0.34), (0.54, 0.66), (0.46, 0.78), (0.36, 0.72)], 0.055, 'hull',
+                bevel=0.012, plane='xz')
+        u.box((0.02, 0.04, 0.26), 'glow_main', bevel=0, at=(0.546, 0, 0.50))
+        u.box((0.16, 0.04, 0.045), 'trim', bevel=0.008, at=(0.30, 0, 0.44))
+    u.ring(0.30, 0.03, 0.03, 'trim', segs=16, at=(0, 0, 0.92))
+    u.ring(0.31, 0.014, 0.02, 'glow_main', segs=16, at=(0, 0, 0.925))
     return m
 
 

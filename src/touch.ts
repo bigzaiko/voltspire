@@ -1,8 +1,8 @@
-// Touch controls. Bird view: tap, drag to pan, pinch to zoom, hold then drag to move the build ghost.
-// Uplink: drag to aim, hold Fire, round buttons for the skills.
+// Touch controls. Bird view: tap, drag to pan, pinch to zoom, twist to turn, hold then drag to move the build ghost.
+// Uplink: drag to aim, hold Draw and let go to loose, round buttons for the skills.
 // Mouse and keyboard handlers in play.ts stay active; everything here only reacts to touch pointers,
 // except the on-screen buttons, which also take a mouse press or a keyboard activation.
-import './touch.css';
+// The styles (touch.css) are linked from play.html.
 
 export interface TouchApi {
   canvas: HTMLCanvasElement;
@@ -18,8 +18,13 @@ export interface TouchApi {
   tap(clientX: number, clientY: number): void;
   /** bird view: finger moved over the board without lifting (hover / ghost preview) */
   hoverAt(clientX: number, clientY: number): void;
-  pan(dx: number, dy: number): void;
+  /** drag by (dx, dy) pixels; (x, y) is where the finger, or the middle of two fingers, is now */
+  pan(dx: number, dy: number, x: number, y: number): void;
   zoom(factor: number): void;
+  /** two fingers twisted by this many radians, clockwise on screen */
+  rotate(angle: number): void;
+  pause(): void;
+  speed(): void;
 }
 
 const FREE = 0, BIRD = 1, LOOK = 2, FIRE = 3;
@@ -145,12 +150,18 @@ export function initTouch(api: TouchApi): void {
     if (s.role !== BIRD) return;
     const o = other(s);
     if (o) {
-      const d0 = Math.hypot(s.x - o.x, s.y - o.y);
+      const d0 = Math.hypot(s.x - o.x, s.y - o.y), a0 = Math.atan2(s.y - o.y, s.x - o.x);
       s.x = e.clientX; s.y = e.clientY;
       const d1 = Math.hypot(s.x - o.x, s.y - o.y);
       if (d0 > 8 && d1 > 8) api.zoom(d1 / d0);
+      // A twist only counts with the fingers well apart: close together the angle is all jitter.
+      if (d0 > 60 && d1 > 60) {
+        let da = Math.atan2(s.y - o.y, s.x - o.x) - a0;
+        if (da > Math.PI) da -= Math.PI * 2; else if (da < -Math.PI) da += Math.PI * 2;
+        if (Math.abs(da) < 0.5) api.rotate(da);
+      }
       // The midpoint moves half as far as the one finger that moved.
-      api.pan(dx * 0.5, dy * 0.5);
+      api.pan(dx * 0.5, dy * 0.5, (s.x + o.x) / 2, (s.y + o.y) / 2);
       return;
     }
     if (s.hover) { s.x = e.clientX; s.y = e.clientY; api.hoverAt(s.x, s.y); return; }
@@ -164,7 +175,7 @@ export function initTouch(api: TouchApi): void {
       return;
     }
     s.x = e.clientX; s.y = e.clientY;
-    api.pan(dx, dy);
+    api.pan(dx, dy, s.x, s.y);
   }
 
   function up(e: PointerEvent): void {
@@ -223,6 +234,9 @@ export function initTouch(api: TouchApi): void {
   press(byId('t-tp'), () => { if (api.isHero()) api.teleport(); });
   press(byId('t-exit'), () => { if (api.isHero()) api.exitHero(); });
   press(byId('t-ult'), () => { if (!api.isHero()) api.ult(); });
+  // Pause and speed act on press as well, so a second finger reaches them while the first holds Draw or aims.
+  press(byId('btn-pause'), () => api.pause());
+  press(byId('btn-speed'), () => api.speed());
 
   // Touch events are cancelled as well: that is what stops scrolling, the long-press menu and
   // the emulated mouse events on browsers that ignore a cancelled pointerdown.

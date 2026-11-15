@@ -1,7 +1,6 @@
 // The player's own music: a small playlist of YouTube and Spotify links next to the built-in soundtrack.
 // Only a service kind and an id are ever kept from a pasted link. The embed address is always
 // rebuilt from those two, and an embed is only created when the player presses play on an entry.
-import './music.css';
 
 export interface MusicHost {
   /** container element the music sheet builds its UI in */
@@ -351,8 +350,9 @@ export function initMusic(host: MusicHost): MusicApi {
     d.append(bar, body);
     dock = d; frame = f;
     // Start open so the player can be seen and pressed. A YouTube entry folds away again
-    // once it reports that it is playing, if the dock was minimised last time.
-    autoMin = min && e.kind !== 'sp';
+    // once it reports that it is playing, if the dock was minimised last time or the screen is small.
+    // On a phone the open dock covers a large part of the board, so it always folds once the music runs.
+    autoMin = (min || window.innerWidth < 700 || window.innerHeight < 520) && e.kind !== 'sp';
     setMin(false);
     f.src = src;
     document.body.append(d);
@@ -482,7 +482,8 @@ export function initMusic(host: MusicHost): MusicApi {
     save();
     if (active && !still) stop();
     else { if (still) active = still; renderList(); }
-    host.toast(replace ? 'Playlist replaced: ' + added + ' entries.' : added + ' entries added.');
+    const word = added === 1 ? ' entry' : ' entries';
+    host.toast(replace ? 'Playlist replaced: ' + added + word + '.' : added + word + ' added.');
     return true;
   }
 

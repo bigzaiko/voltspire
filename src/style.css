@@ -151,9 +151,16 @@ body:has(#editor:not(.hidden)) #btn-full { display: none; }
 #ult.ready .bar i { background: var(--verdigris); }
 #ult.ready .bar { box-shadow: inset 0 0 0 1px var(--verdigris), 0 0 16px rgba(111, 224, 200, 0.45); animation: lit 0.9s ease-in-out infinite alternate; }
 @keyframes lit { to { box-shadow: inset 0 0 0 1px var(--verdigris), 0 0 26px rgba(111, 224, 200, 0.8); } }
-#btn-wave { flex: none; flex-direction: column; gap: 4px; min-height: 52px; padding: 0 18px; font-size: 17px; }
+#btn-wave { flex: none; flex-direction: column; gap: 4px; min-width: 138px; min-height: 52px; padding: 0 14px; font-size: 17px; }
+#btn-wave small { font-variant-numeric: tabular-nums; }
+/* the slot stays reserved while there is nothing to call, so the Uplink bar does not jump sideways */
+#btn-wave.off { visibility: hidden; }
+#btn-wave.first { box-shadow: inset 0 -3px 0 rgba(26, 15, 8, 0.24), 0 0 0 2px var(--soot-0), 0 0 0 4px var(--apricot); }
 
 #tower { position: absolute; right: calc(12px + var(--safe-r)); bottom: calc(var(--console-h) + 12px); width: 250px; }
+/* docked on the left when the core is on the right side of the screen */
+#tower.left { right: auto; left: calc(12px + var(--safe-l)); }
+#hud:has(#tower.left:not(.hidden)) #tip { left: calc(274px + var(--safe-l)); }
 #tower h3 { color: var(--sand); }
 #t-stats { margin-bottom: 12px; font-size: 14px; line-height: 1.75; color: var(--muted); }
 #t-stats b { float: right; font-family: var(--display); font-size: 17px; font-weight: 600; letter-spacing: 0.02em; color: var(--bone); font-variant-numeric: tabular-nums; }
@@ -187,7 +194,7 @@ body:has(#editor:not(.hidden)) #btn-full { display: none; }
 #toasts { position: absolute; top: calc(var(--top-h) + 14px); left: calc(12px + var(--safe-l)); display: grid; gap: 4px; justify-items: start; }
 .toast { max-width: 340px; padding: 7px 12px 7px 11px; font-size: 14px; line-height: 1.3; color: var(--bone); background: var(--plate); border: 1px solid var(--line); border-left: 3px solid var(--apricot); border-radius: var(--r); animation: toast 3.2s forwards; }
 @keyframes toast { 0% { opacity: 0; transform: translateX(-12px); } 7% { opacity: 1; transform: none; } 86% { opacity: 1; } 100% { opacity: 0; } }
-#dmg span { position: absolute; font-family: var(--display); font-weight: 700; font-size: 19px; letter-spacing: 0.02em; color: var(--sand); text-shadow: 1px 1px 0 var(--soot-0), -1px 1px 0 var(--soot-0), 1px -1px 0 var(--soot-0), -1px -1px 0 var(--soot-0), 0 2px 0 var(--soot-0); font-variant-numeric: tabular-nums; pointer-events: none; will-change: transform, opacity; }
+#dmg span { position: absolute; left: 0; top: 0; opacity: 0; font-family: var(--display); font-weight: 700; font-size: 19px; letter-spacing: 0.02em; color: var(--sand); text-shadow: 1px 1px 0 var(--soot-0), -1px 1px 0 var(--soot-0), 1px -1px 0 var(--soot-0), -1px -1px 0 var(--soot-0), 0 2px 0 var(--soot-0); font-variant-numeric: tabular-nums; pointer-events: none; will-change: transform, opacity; }
 #tip { position: absolute; left: calc(12px + var(--safe-l)); bottom: calc(var(--console-h) + 12px); max-width: 300px; padding: 10px 14px 11px; font-size: 14px; line-height: 1.35; background: var(--plate); border: 1px solid var(--line-2); border-radius: var(--r); }
 #tip b { display: block; margin-bottom: 3px; font-family: var(--display); font-size: 18px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sand); }
 #tip span { color: var(--bone); }
@@ -196,6 +203,11 @@ body:has(#editor:not(.hidden)) #btn-full { display: none; }
 #tutor { position: absolute; left: 50%; bottom: calc(var(--console-h) + 64px); transform: translateX(-50%); display: grid; gap: 4px; max-width: min(560px, 86vw); padding: 9px 16px 11px 14px; background: var(--plate); border: 1px solid var(--line-2); border-left: 3px solid var(--apricot); border-radius: var(--r); z-index: 4; }
 #tutor b { font-family: var(--display); font-size: 21px; font-weight: 600; line-height: 1.15; letter-spacing: 0.04em; color: var(--bone); }
 body.hero #tutor { bottom: 190px; }
+/* before the first wave: what to do, and how long the grace period still runs */
+#prep { position: absolute; left: 50%; bottom: calc(var(--console-h) + 18px); transform: translateX(-50%); display: grid; gap: 3px; max-width: min(560px, 86vw); padding: 9px 16px 10px 14px; background: var(--plate); border: 1px solid var(--line-2); border-left: 3px solid var(--apricot); border-radius: var(--r); z-index: 3; }
+#prep b { font-family: var(--display); font-size: 21px; font-weight: 600; line-height: 1.15; letter-spacing: 0.04em; color: var(--bone); }
+#prep small { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; color: var(--muted); font-variant-numeric: tabular-nums; }
+#prep:not(.hidden) ~ #tutor { bottom: calc(var(--console-h) + 104px); }
 /* messages shown while a menu sheet is open (the HUD toasts are underneath it then) */
 #notes { position: fixed; left: 50%; bottom: calc(16px + var(--safe-b)); transform: translateX(-50%); z-index: 46; display: grid; gap: 4px; justify-items: center; pointer-events: none; }
 
@@ -212,17 +224,18 @@ body.hero #tutor { bottom: 190px; }
 .itag.dot > * { display: none; }
 
 /* Uplink hints: charged power nodes (diamond) and other Spires (ring) */
-.hint { position: absolute; left: 0; top: 0; translate: -50% -100%; display: none; padding-bottom: 16px; font-style: normal; text-align: center; opacity: 0.8; }
-.hint s { display: block; width: 9px; height: 9px; margin: 0 auto; background: rgba(16, 14, 12, 0.7); border: 1.5px solid var(--sand); rotate: 45deg; }
+.hint { position: absolute; left: 0; top: 0; translate: -50% -100%; display: none; padding-bottom: 14px; font-style: normal; text-align: center; opacity: 0.6; transition: opacity 0.15s; }
+.hint.faint { opacity: 0.16; }
+.hint s { display: block; width: 7px; height: 7px; margin: 0 auto; background: rgba(16, 14, 12, 0.7); border: 1.5px solid var(--sand); rotate: 45deg; }
 .hint b { display: none; margin-bottom: 7px; padding: 2px 6px; font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; white-space: nowrap; color: var(--sand); background: rgba(16, 14, 12, 0.85); border-radius: var(--r); }
 .hint.near { opacity: 1; display: flex; flex-direction: column-reverse; }
 .hint.near b { display: block; }
 .hint.spire s { border-color: var(--verdigris); border-radius: 50%; rotate: none; }
 .hint.spire b { color: var(--verdigris); }
 
-#marks .mark svg { display: block; width: 10px; height: 10px; margin: 3px auto 0; fill: var(--ink); }
-#marks .mark { position: absolute; left: -9px; top: -9px; width: 18px; height: 18px; display: none; font-style: normal; font-size: 10px; line-height: 17px; text-align: center; color: var(--ink); background: var(--apricot); border: 1px solid var(--soot-0); border-radius: var(--r); animation: bob 1s ease-in-out infinite alternate; pointer-events: none; }
-@keyframes bob { to { margin-top: -5px; } }
+#marks .mark svg { display: block; width: 8px; height: 8px; margin: 2px auto 0; fill: var(--ink); }
+#marks .mark { position: absolute; left: -7px; top: -7px; width: 14px; height: 14px; display: none; font-style: normal; font-size: 10px; line-height: 17px; text-align: center; color: var(--ink); background: var(--apricot); border: 1px solid var(--soot-0); border-radius: var(--r); animation: bob 1s ease-in-out infinite alternate; pointer-events: none; }
+@keyframes bob { to { margin-top: -3px; } }
 
 /* ---------- hero HUD ---------- */
 #herohud { position: absolute; inset: 0; }
@@ -234,6 +247,16 @@ body.hero #tutor { bottom: 190px; }
 #cross i:nth-child(3) { top: -1px; left: -20px; height: 2px; width: 10px; }
 #cross i:nth-child(4) { top: -1px; left: 10px; height: 2px; width: 10px; }
 #cross.tp i, #cross.tp::after { background: var(--verdigris); }
+/* draw gauge: a ring around the crosshair that fills as the bow is drawn */
+#draw { position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px; rotate: -90deg; opacity: 0; transition: opacity 0.12s; }
+#draw.on { opacity: 1; }
+#draw circle { fill: none; }
+#draw .trk { stroke: rgba(16, 14, 12, 0.6); stroke-width: 5; }
+#draw-arc { stroke: var(--sand); stroke-width: 3; stroke-dasharray: 100; stroke-dashoffset: 100; }
+#draw.weak #draw-arc { stroke: var(--muted); }
+#draw.full #draw-arc { stroke: var(--apricot); }
+#lock-hint { position: absolute; left: 50%; top: calc(var(--top-h) + 18px); transform: translateX(-50%); max-width: 86vw; font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; text-align: center; color: var(--sand-dim); }
+#lock-hint:not(:empty) { padding: 4px 10px; background: rgba(16, 14, 12, 0.85); border: 1px solid var(--line); border-radius: var(--r); }
 #hero-time { position: absolute; left: 50%; bottom: 108px; width: min(480px, 56vw); transform: translateX(-50%); display: grid; gap: 6px; padding: 8px 12px 10px; background: var(--plate); border: 1px solid var(--line); border-radius: var(--r); }
 #hero-time .bar i { background: var(--verdigris); }
 #hero-label { font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: 0.16em; color: var(--verdigris); font-variant-numeric: tabular-nums; }
@@ -251,7 +274,9 @@ body.hero #vignette { background: radial-gradient(ellipse at center, transparent
 
 /* ---------- touch controls (inside #hud; a touch controller removes .hidden) ---------- */
 #touch { position: absolute; inset: 0; }
-#t-look { position: absolute; left: 0; top: var(--top-h); bottom: 0; width: 52%; pointer-events: auto; touch-action: none; }
+/* the look pad is only a picture: the canvas underneath takes the finger, and nothing lies between the mouse and the view */
+#t-look { position: absolute; left: 0; top: var(--top-h); bottom: 0; width: 52%; pointer-events: none; }
+body.hero #hud .panel:not(#vs) { pointer-events: none; }
 #t-look::before { content: ''; position: absolute; left: calc(34px + var(--safe-l)); bottom: calc(30px + var(--safe-b)); width: 112px; height: 112px; border: 1px dashed var(--line-2); border-radius: 50%; background: rgba(16, 14, 12, 0.35); }
 #t-look span { position: absolute; left: calc(34px + var(--safe-l)); bottom: calc(78px + var(--safe-b)); width: 112px; text-align: center; font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--sand-dim); }
 .tb { position: absolute; display: grid; place-items: center; width: 60px; height: 60px; padding: 0; color: var(--sand); background: rgba(23, 20, 17, 0.9); border: 1.5px solid var(--line-2); border-radius: 50%; overflow: hidden; cursor: pointer; touch-action: none; }
@@ -354,6 +379,12 @@ a.foot { align-self: flex-start; padding: 6px 0; }
 .card p { font-size: 15px; line-height: 1.35; color: var(--bone); padding-bottom: 14px; }
 .card .kind { align-self: end; justify-self: stretch; margin: 0 -18px; padding: 9px 18px 10px; font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; color: var(--tc, var(--muted)); background: var(--soot-1); border-top: 1px solid var(--line); }
 .card kbd { position: absolute; top: 14px; right: 14px; font-size: 12px; }
+/* a fresh offer cannot be picked for a moment, so a click or key meant for the fight does not take a card unread */
+#card-guard { width: min(220px, 60%); height: 4px; margin-top: 6px; }
+#card-guard i { width: 100%; transform-origin: left center; background: var(--apricot); }
+#cards.armed #card-guard { visibility: hidden; }
+#cards:not(.armed) .card { pointer-events: none; cursor: default; }
+#cards:not(.armed) .card kbd { opacity: 0.35; }
 
 /* lobby, help, settings, end */
 .lobby-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -388,9 +419,13 @@ a.foot { align-self: flex-start; padding: 6px 0; }
 .set-row > span:first-child:not(#reset-text) { white-space: nowrap; }
 .reset-btns { display: flex; flex: none; gap: 8px; }
 #music-root { min-height: 96px; }
-.touch-only { display: none; }
-body.touch .touch-only { display: block; }
-body.touch .help-grid { grid-template-columns: 1fr 1fr; }
+/* help and settings: wording for the input in use */
+.tap-only, .touch-row { display: none !important; }
+body.touch .kbd-only { display: none !important; }
+body.touch p.tap-only { display: block !important; }
+body.touch span.tap-only { display: inline !important; }
+body.touch .settings > label.touch-row { display: flex !important; }
+body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top: 0; }
 .settings input[type='range'] { accent-color: var(--apricot); width: 180px; height: 28px; }
 .settings select { height: 36px; padding: 0 8px; font-family: var(--body); font-size: 14px; color: var(--bone); background: var(--soot-0); border: 1px solid var(--line-2); border-radius: var(--r); }
 #end-stats { display: grid; grid-template-columns: 1fr auto; gap: 0; padding-block: 6px; font-size: 15px; }
@@ -418,12 +453,15 @@ body.touch .help-grid { grid-template-columns: 1fr 1fr; }
 .mapcard.on { border-color: var(--sand); background: var(--soot-3); box-shadow: inset 0 0 0 1px var(--sand), 5px 5px 0 rgba(0, 0, 0, 0.4); }
 .mapcard canvas { display: block; width: 100%; margin-bottom: 6px; border-radius: 1px; }
 .mapcard b { display: block; padding: 0 4px; font-family: var(--display); font-size: 19px; font-weight: 600; line-height: 1.05; letter-spacing: 0.05em; text-transform: uppercase; color: var(--sand); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mapcard span { padding: 0 4px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; color: var(--muted); }
+.mapcard span { padding: 0 4px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mapcard.on span { color: var(--apricot); }
-#setup-desc { min-height: 2.8em; padding-left: 90px; font-size: 15px; }
+#setup-desc { min-height: 4.2em; padding-left: 90px; font-size: 15px; }
+#setup-diff .chip small { min-width: 8ch; text-align: left; }
 .chip small { margin-left: 8px; font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.04em; text-transform: none; opacity: 0.7; }
-.mapcard .rec { color: var(--sand-dim); }
+/* every card keeps this line, with or without a record, so the grid never changes height */
+.mapcard .rec { min-height: 1.4em; color: var(--sand-dim); }
 .mapcard.on .rec { color: var(--sand); }
+.mapcard .rec.none, .mapcard.on .rec.none { color: var(--soot-4); }
 #gen { display: grid; grid-template-columns: minmax(0, 416px) minmax(190px, 1fr); gap: 16px; align-items: start; }
 #gen-cv { display: block; width: 100%; height: auto; border: 1px solid var(--line-2); border-radius: 1px; }
 #gen-side { display: grid; gap: 8px; justify-items: start; }
@@ -530,6 +568,21 @@ body.touch .help-grid { grid-template-columns: 1fr 1fr; }
   .sheet.narrow { width: min(100%, 520px); }
   #hero-time { bottom: 92px; }
   #skills { bottom: 12px; }
+}
+/* phones held upright: a prompt to turn the phone, and a top bar that still fits for those who do not */
+#rotate { z-index: 44; }
+@media (max-width: 600px) and (orientation: portrait) {
+  .stat.wide, .stat.bow, .stat.next { display: none; }
+  .stat { min-width: 52px; padding: 5px 8px 4px; }
+  .gauges .stat:first-child { padding-left: 10px; }
+  #top { gap: 4px; padding-left: calc(8px + var(--safe-l)); }
+  body.has-full #top { padding-right: calc(8px + 48px + var(--safe-r)); }
+  #top .chip { min-width: 40px; padding: 0 8px; }
+  #btn-full { right: calc(8px + var(--safe-r)); }
+  .cover { padding-inline: 24px; }
+  .cover .logo { font-size: min(76px, 16vw); }
+  #touch:not(.hidden) ~ #herohud #hero-time { bottom: calc(232px + var(--safe-b)); width: min(300px, 70vw); }
+  #btn-wave { min-width: 0; }
 }
 /* fingers: bigger targets, no keyboard hints on things you tap */
 @media (max-width: 700px) { .stat.next { display: none; } }
