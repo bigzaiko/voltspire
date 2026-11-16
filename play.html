@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#100e0c" />
   <meta name="referrer" content="no-referrer" />
   <title>BEATSPIRE - Play</title>
-  <meta name="description" content="BEATSPIRE: tower defense on a hex grid where your ultimate puts you on an Uplink Spire as a third-person archer. Free, in your browser." />
+  <meta name="description" content="BEATSPIRE: tower defense on a hex grid where your own factory keeps the towers firing. Mine ore, run belts, pipes and power lines, and make the ammunition. Free, in your browser." />
   <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
   <!-- Stylesheets are linked here, not imported by the scripts, so the page is never painted without them. -->
   <link rel="preload" href="./fonts/saira-stencil-one-400.woff2" as="font" type="font/woff2" crossorigin />
@@ -32,8 +32,9 @@
         <div class="stat"><label>Wave</label><b id="wave">0</b><small id="wave-sub"></small></div>
         <div class="stat core"><label>Core</label><b id="lives">20</b></div>
         <div class="stat"><label>Credits</label><b id="gold">0</b></div>
+        <div class="stat" title="Building materials: Frames delivered to a Depot"><label>Materials</label><b id="mats">0</b></div>
         <div class="stat wide"><label>Level <span id="level">1</span></label><div class="bar"><i id="xpbar"></i></div></div>
-        <div class="stat bow"><label>Bow</label><b id="bow" class="sm">Carbon Bow</b></div>
+        <div class="stat power" title="Power drawn / available on all grids"><label>Power</label><b id="power" class="sm">0 / 0</b></div>
         <div class="stat next" id="next"><label id="next-label">Next wave</label><div id="next-row"></div></div>
       </div>
       <div class="spacer"></div>
@@ -42,28 +43,45 @@
     </div>
 
     <div id="bottom">
-      <div id="build" role="toolbar" aria-label="Build a tower"></div>
-      <button id="ult" type="button" aria-label="Uplink">
-        <span id="ult-label">UPLINK 0%</span>
-        <span class="bar big"><i id="ultbar"></i></span>
-      </button>
+      <div id="buildwrap">
+        <div id="bar-tabs" role="tablist" aria-label="Build bar">
+          <button id="tab-towers" class="chip on" type="button" role="tab" title="Towers (F switches)">Towers</button>
+          <button id="tab-factory" class="chip" type="button" role="tab" title="Factory (F switches)">Factory</button>
+        </div>
+        <div id="build" role="toolbar" aria-label="Build a tower"></div>
+        <div id="fbuild" class="hidden" role="toolbar" aria-label="Build the factory"></div>
+      </div>
       <button id="btn-wave" class="btn small" type="button"><span id="wave-label">Call wave</span><small id="wave-timer"></small></button>
     </div>
 
     <div id="tower" class="panel hidden">
       <h3 id="t-name"></h3>
       <div id="t-stats"></div>
+      <div id="t-sup"></div>
       <div id="t-spec">
         <b id="t-spec-name"></b>
         <p id="t-spec-desc"></p>
         <div class="bar"><i id="t-spec-bar"></i></div>
         <span id="t-spec-state"></span>
+        <button id="t-special" class="btn small" type="button">Fire special (Space)</button>
       </div>
       <div id="t-btns">
         <button id="t-up" class="btn small"></button>
         <button id="t-sell" class="btn small ghost"></button>
       </div>
       <p id="t-note"></p>
+    </div>
+
+    <div id="fpanel" class="panel hidden">
+      <h3 id="f-name"></h3>
+      <p id="f-state"></p>
+      <div id="f-stats"></div>
+      <div id="f-recipes" class="hidden"></div>
+      <div id="t-btns2">
+        <button id="f-turn" class="btn small ghost hidden" type="button">Turn (R)</button>
+        <button id="f-sell" class="btn small ghost" type="button"></button>
+      </div>
+      <p id="f-desc" class="muted small"></p>
     </div>
 
     <div id="vs" class="panel hidden">
@@ -74,46 +92,7 @@
 
     <!-- On-screen controls for touch devices. Hidden until the touch module removes .hidden. -->
     <div id="touch" class="hidden">
-      <div id="t-look"><span>Drag to aim</span></div>
-      <button id="t-ult" class="tb" type="button" aria-label="Uplink"><b>Uplink</b></button>
-      <button id="t-exit" class="tb" type="button" aria-label="Exit uplink"><b>Exit</b></button>
-      <!-- Uplink mode: build mode, and selling the tower it has marked -->
-      <button id="t-build" class="tb" type="button" aria-label="Build mode"><b>Build</b></button>
-      <button id="t-bsell" class="tb" type="button" aria-label="Sell the marked tower"><b>Sell</b></button>
-      <button id="t-bup" class="tb" type="button" aria-label="Upgrade the marked tower, or your own Spire"><b>Upgrade</b></button>
-      <button id="t-tp" class="tb" type="button" aria-label="Teleport"><b>Jump</b></button>
-      <button id="t-s0" class="tb" type="button" aria-label="Rail Shot"><b>Rail</b><i></i></button>
-      <button id="t-s1" class="tb" type="button" aria-label="Arrow Rain"><b>Rain</b><i></i></button>
-      <button id="t-s2" class="tb" type="button" aria-label="Singularity"><b>Well</b><i></i></button>
-      <button id="t-fire" class="tb" type="button" aria-label="Draw the bow. Hold, then let go to loose."><b class="draw">Draw</b><b class="place">Place</b><b class="cast">Cast</b><b class="fire">Fire</b></button>
-    </div>
-
-    <div id="herohud" class="hidden">
-      <div id="cross"><i></i><i></i><i></i><i></i></div>
-      <!-- build mode: the crosshair becomes a hex, with the tower and the reason it cannot go there underneath -->
-      <svg id="reticle" viewBox="0 0 40 40" aria-hidden="true"><polygon points="20,4 33.9,12 33.9,28 20,36 6.1,28 6.1,12" /></svg>
-      <div id="build-line"><b id="bl-name"></b><span id="bl-why"></span></div>
-      <!-- Rail Shot held ready: the edges darken and a ring round the crosshair closes as the shot charges -->
-      <div id="rail-scope" aria-hidden="true"><svg viewBox="0 0 100 100"><circle class="track" cx="50" cy="50" r="44" /><circle class="charge" cx="50" cy="50" r="44" pathLength="100" /></svg></div>
-      <svg id="draw" viewBox="0 0 64 64" aria-hidden="true"><circle class="trk" cx="32" cy="32" r="27" /><circle id="draw-arc" cx="32" cy="32" r="27" pathLength="100" /></svg>
-      <div id="lock-hint"></div>
-      <div id="hero-time"><span id="hero-label">UPLINK ACTIVE</span><div class="bar big"><i id="herobar"></i></div></div>
-      <div id="skills">
-        <div class="skill" id="sk-fire"><kbd>LMB</kbd><span>Hold, loose</span></div>
-        <div class="skill" id="sk-0"><kbd>RMB</kbd><span>Rail Shot</span><i></i></div>
-        <div class="skill" id="sk-1"><kbd>Q</kbd><span>Arrow Rain</span><i></i></div>
-        <div class="skill" id="sk-2"><kbd>E</kbd><span>Singularity</span><i></i></div>
-        <div class="skill" id="sk-tp"><kbd>F</kbd><span>Spire jump</span></div>
-        <div class="skill" id="sk-build"><em><kbd>B</kbd> or <kbd>1</kbd>-<kbd>0</kbd></em><span>Build</span></div>
-      </div>
-      <div id="bkeys">
-        <div class="skill"><kbd>LMB</kbd><span>Place</span></div>
-        <div class="skill"><em><kbd>Wheel</kbd> <kbd>1</kbd>-<kbd>0</kbd></em><span>Tower</span></div>
-        <div class="skill"><kbd>X</kbd><span>Sell</span></div>
-        <div class="skill"><kbd>U</kbd><span id="bk-up">Upgrade</span></div>
-        <div class="skill"><em><kbd>RMB</kbd> <kbd>B</kbd></em><span>Close</span></div>
-      </div>
-      <div id="hero-hint"></div>
+      <button id="t-turn" class="tb" type="button" aria-label="Turn the building you are placing"><b>Turn</b></button>
     </div>
 
     <!-- the Titan: danger while it approaches, its hull once it walks -->
@@ -123,7 +102,7 @@
     <div id="intel"></div>
     <div id="hints"></div>
     <div id="announce"></div>
-    <div id="prep" class="hidden"><span class="kicker">Before wave 1</span><b>Build, then call the first wave</b><small id="prep-sub"></small></div>
+    <div id="prep" class="hidden"><span class="kicker">Before wave 1</span><b>Build towers and a factory, then call the first wave</b><small id="prep-sub"></small></div>
     <div id="tutor" class="hidden"><span class="kicker">Tip</span><b id="tutor-text"></b></div>
     <div id="toasts"></div>
     <div id="dmg"></div>
@@ -149,8 +128,9 @@
       <p class="tag">Build the grid. Become the storm.</p>
       <div class="menu-buttons">
         <button class="btn" id="m-solo">Play solo</button>
-        <button class="btn" id="m-coop">Co-op online</button>
-        <button class="btn" id="m-versus">1 v 1 online</button>
+        <!-- online play is off until the factory is kept in sync between two browsers -->
+        <button class="btn hidden" id="m-coop">Co-op online</button>
+        <button class="btn hidden" id="m-versus">1 v 1 online</button>
         <button class="btn ghost" id="m-editor">Map editor</button>
         <button class="btn ghost" id="m-music">Music</button>
         <button class="btn ghost" id="m-help">How to play</button>
@@ -204,7 +184,6 @@
         <div class="seg" id="setup-mode">
           <button class="chip" data-v="campaign">Campaign</button>
           <button class="chip" data-v="survival">Survival</button>
-          <button class="chip" data-v="uplink">Uplink</button>
         </div>
       </div>
       <div class="field">
@@ -269,28 +248,24 @@
       </header>
       <div class="help-grid">
         <div class="panel"><h3>Command view</h3>
-          <p class="kbd-only">Pick a tower from the bar (<kbd>1</kbd> to <kbd>9</kbd>, <kbd>0</kbd>, <kbd>T</kbd>), then click a free hex to build. <kbd>Shift</kbd> keeps building.</p>
-          <p class="kbd-only">Click a tower to upgrade (<kbd>U</kbd>) or sell (<kbd>X</kbd>). The tags over the spawn gates show what the next wave sends down each road.</p>
-          <p class="kbd-only"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or right-drag to pan, wheel to zoom. <kbd>Q</kbd> <kbd>E</kbd> or middle-drag turns the view, <kbd>R</kbd> resets it.</p>
-          <p class="kbd-only"><kbd>N</kbd> calls the next wave early for bonus credits. <kbd>G</kbd> switches the game speed, <kbd>P</kbd> or <kbd>Esc</kbd> pauses. <kbd>F3</kbd> shows frame and mouse diagnostics.</p>
-          <p class="tap-only lead">Tap a tower in the bar, then tap a hex. Hold and drag to move the preview first. Tap a tower on the board to upgrade or sell it.</p>
+          <p class="kbd-only">Pick a tower or a factory building from the bar (<kbd>1</kbd> to <kbd>9</kbd>, <kbd>0</kbd>; <kbd>F</kbd> switches between Towers and Factory), then click a free hex to build. <kbd>Shift</kbd> keeps building.</p>
+          <p class="kbd-only">Click something you built to upgrade (<kbd>U</kbd>) or sell (<kbd>X</kbd>) it. The tags over the spawn gates show what the next wave sends down each road.</p>
+          <p class="kbd-only"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or right-drag to pan, wheel to zoom. <kbd>Q</kbd> <kbd>E</kbd> or middle-drag turns the view, <kbd>Home</kbd> resets it.</p>
+          <p class="kbd-only"><kbd>N</kbd> calls the next wave early for bonus credits. <kbd>G</kbd> switches the game speed, <kbd>P</kbd> or <kbd>Esc</kbd> pauses. <kbd>F3</kbd> shows frame diagnostics.</p>
+          <p class="tap-only lead">Tap a building in the bar, then tap a hex. Hold and drag to move the preview first (a belt follows your finger). Tap something on the board to upgrade or sell it.</p>
           <p class="tap-only">Drag with one finger to pan. Two fingers either pinch to zoom or twist to turn the view. The tags over the spawn gates show what the next wave sends down each road.</p>
         </div>
-        <div class="panel uplink"><h3>Uplink</h3>
-          <p>Kills charge the Uplink. When it is full <span class="kbd-only">press <kbd>Space</kbd></span><span class="tap-only">tap the Uplink button</span> to stand on an Uplink Spire as Kestrel. She can only use Spires, so keep at least one.</p>
-          <p class="kbd-only">Hold <kbd>LMB</kbd> to draw the bow, aim, let go to loose. A full draw hits hardest. Hold <kbd>RMB</kbd> to zoom in and charge Rail Shot, let go of <kbd>LMB</kbd> to fire it. <kbd>Q</kbd> Arrow Rain and <kbd>E</kbd> Singularity first show where they will land: aim, then <kbd>LMB</kbd> casts, <kbd>RMB</kbd> or the key again puts it away.</p>
-          <p class="kbd-only">Aim at another Spire and press <kbd>F</kbd>, or shoot its beacon, to jump there. <kbd>Space</kbd> ends early and refunds charge.</p>
-          <p class="tap-only">Drag anywhere to aim. Hold Draw to pull the bow and let go to loose: a full draw hits hardest. The round buttons are your skills. Shoot the beacon of another Spire, or tap Jump, to move there.</p>
-          <p>Towers charge a special. Shoot the glowing node on top of a charged tower to fire it. The tower then reboots for a few seconds. Brutes and the Colossus have weak points that take extra arrow damage.</p>
-          <p class="kbd-only">Uplink mode plays the whole run from the Spire. <kbd>B</kbd> or a tower key opens build mode: the crosshair marks a hex, <kbd>LMB</kbd> builds there, the wheel picks the tower, <kbd>X</kbd> sells and <kbd>U</kbd> upgrades the tower it marks (with nothing marked, <kbd>U</kbd> upgrades your own Spire), <kbd>RMB</kbd> or <kbd>B</kbd> closes it. A solo game slows down while it is open. Build a second Spire and jump to it to reach the rest of the grid.</p>
-          <p class="tap-only">Uplink mode plays the whole run from the Spire. Tap Build, pick a tower in the bar, aim at a hex and tap Place. Sell takes down the tower you aim at, Upgrade improves it (or your own Spire when you aim at no tower). Build a second Spire and jump to it to reach the rest of the grid.</p>
+        <div class="panel"><h3>The factory</h3>
+          <p>Towers do not fire for free. Pulse Turrets need ammo boxes, Firewall Pylons need petrol, Cryo Emitters, Arc Pylons and Beacons need power. The stronger towers need two things: shells, slugs, energy cells or missiles, and power.</p>
+          <p>Build Mines on iron, copper and coal deposits. A Smelter next to the ore and some coal makes plates. A Fabricator (it needs power) turns plates into the item you pick: Frames, ammo, shells, slugs, cells or missiles. Pumpjacks on oil fields and a Refinery give petrol through pipes.</p>
+          <p>Buildings hand their output to a neighbour that takes it, or to the belt at their arrow side (<span class="kbd-only"><kbd>R</kbd> turns it before you place it</span><span class="tap-only">Turn changes it</span>). A belt that only runs past is left alone. <span class="kbd-only">Drag to lay a line of belts; <kbd>R</kbd> turns the belt you are placing.</span><span class="tap-only">Hold and drag to lay belts; Turn changes their direction.</span> A belt that points into a building or a tower delivers to it.</p>
+          <p>A Generator burns coal (or petrol) for power. Power Poles carry it up to 5 tiles to the next pole, also across roads, and power everything within 2 tiles. Frames delivered to a Depot become building materials: towers and their upgrades cost them on top of credits.</p>
         </div>
-        <div class="panel"><h3>Cards and the bow</h3>
-          <p>Every level you pick one of three cards: tower blueprints, tower upgrades, hero powers or economy.</p>
-          <p>Your bow changes every 4 waves: pierce, extra arrows, explosions, chain lightning.</p>
-          <p>A campaign lasts 20, 25 or 30 waves depending on the threat level. A Colossus arrives every 5th wave. Survival has no last wave.</p>
-          <p>A machine that reaches the Heart stops and attacks it. Destroy it before it strikes and the core takes no damage.</p>
-          <p>Broodcarriers let mites loose that climb a tower and jam it: shoot the mites off. Late in a campaign the Titan lands. Only its weak points and tower specials hurt it, and the Uplink stays open while it stands.</p>
+        <div class="panel"><h3>Cards, specials and the machines</h3>
+          <p>Every level you pick one of three cards: tower blueprints, tower upgrades, factory upgrades or economy.</p>
+          <p>Towers charge a special. Select a charged tower and press <span class="kbd-only"><kbd>Space</kbd> or </span>Fire special. The tower then reboots for a few seconds.</p>
+          <p>A campaign lasts 20, 25 or 30 waves depending on the threat level. A Colossus arrives every 5th wave. Survival has no last wave. A machine that reaches the Heart stops and attacks it. Destroy it before it strikes and the core takes no damage.</p>
+          <p>Broodcarriers let mites loose that climb a tower and jam it. Late in a campaign the Titan lands and stuns every tower: its hull turns most tower fire, so save the specials for it.</p>
         </div>
       </div>
       <div class="menu-buttons row">
@@ -307,14 +282,9 @@
       </header>
       <div class="set-grid">
         <div class="panel settings">
-          <h3>Sound and controls</h3>
+          <h3>Sound and graphics</h3>
           <label>Volume <input type="range" id="set-vol" min="0" max="100" /></label>
           <label>Built-in music <input type="range" id="set-mus" min="0" max="100" /></label>
-          <label>Look sensitivity <input type="range" id="set-sens" min="20" max="200" /></label>
-          <label class="kbd-only" id="row-curve">Mouse response <select id="set-curve"><option value="even">Even slow aim</option><option value="linear">Fully linear</option><option value="system">As on the desktop</option></select></label>
-          <label class="kbd-only">Mouse aim <select id="set-aim"><option value="auto">Automatic</option><option value="lock">Capture the mouse</option><option value="free">Free cursor</option></select></label>
-          <label class="touch-row">Touch aim friction <input type="checkbox" id="set-friction" /></label>
-          <div class="set-row kbd-only"><span>Raw mouse input</span><span id="raw-state" class="muted"></span></div>
           <label>Graphics <select id="set-q"><option value="high">High (glow and shadows)</option><option value="low">Low (faster)</option></select></label>
         </div>
         <div class="panel settings">

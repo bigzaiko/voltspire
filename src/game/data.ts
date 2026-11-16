@@ -2,17 +2,24 @@
 
 // The board is a hex grid: all grid geometry lives in hex.ts.
 export { CELL, GW, GH, cellX, cellZ, worldToCell } from './hex.ts';
-export const MAX_ENERGY = 100;
 export const WIN_WAVE = 20;
 
-export type TowerType = 'pulse' | 'cryo' | 'arc' | 'mortar' | 'rail' | 'beacon' | 'flame' | 'lance' | 'missile' | 'gravity' | 'spire';
-export const TOWER_TYPES: TowerType[] = ['pulse', 'cryo', 'arc', 'mortar', 'rail', 'beacon', 'flame', 'lance', 'missile', 'gravity', 'spire'];
+export type TowerType = 'pulse' | 'cryo' | 'arc' | 'mortar' | 'rail' | 'beacon' | 'flame' | 'lance' | 'missile' | 'gravity';
+export const TOWER_TYPES: TowerType[] = ['pulse', 'cryo', 'arc', 'mortar', 'rail', 'beacon', 'flame', 'lance', 'missile', 'gravity'];
 
-/** A tower's special: charged over `charge` seconds, fired by shooting the tower's power node during the Uplink, then the tower reboots for `down` seconds. */
+/** A tower's special: charged over `charge` seconds, fired when the player presses Fire on the charged tower, then the tower reboots for `down` seconds. */
 export interface TowerSpecial { name: string; desc: string; charge: number; down: number }
+/**
+ * What a tower has to be supplied with by the factory (see factory.ts). `item`: the ammunition it is fed on a belt (or straight
+ * from a neighbouring building), `fluid`: what it draws from a pipe, `power`: units it draws from the grid while it works.
+ */
+export interface TowerNeeds { item?: ItemType; fluid?: FluidType; power?: number }
 export interface TowerDef {
   name: string;
   cost: number;
+  /** building materials (Frames delivered to a Depot) it costs on top of the credits */
+  mat: number;
+  needs: TowerNeeds;
   dmg: number;
   rate: number; // shots per second
   range: number;
@@ -26,24 +33,95 @@ export interface TowerDef {
 
 // Colours follow the "Ember" palette: warm sand / apricot / rust for the defenders, cold blue-white for the Static.
 export const TOWERS: Record<TowerType, TowerDef> = {
-  pulse: { name: 'Pulse Turret', cost: 50, dmg: 7, rate: 3.2, range: 7.5, color: 0xe3dc92, desc: 'Rapid homing bolts. Cheap and reliable.', key: '1', special: { name: 'Bullet Storm', desc: 'Fires five times as fast for 5 seconds.', charge: 35, down: 5 } },
-  cryo: { name: 'Cryo Emitter', cost: 70, dmg: 4, rate: 1.0, range: 6.5, aoe: 2.4, color: 0xbfe3ea, desc: 'Chills a group, slowing them.', key: '2', special: { name: 'Flash Freeze', desc: 'Freezes everything in range solid for 3 seconds.', charge: 40, down: 5 } },
-  arc: { name: 'Arc Pylon', cost: 110, dmg: 15, rate: 1.15, range: 7, color: 0xb48cff, desc: 'Lightning that chains between enemies.', key: '3', special: { name: 'Thunderhead', desc: 'One massive bolt that chains through a dozen enemies.', charge: 40, down: 7 } },
-  mortar: { name: 'Plasma Mortar', cost: 140, dmg: 42, rate: 0.42, range: 12, minRange: 3, aoe: 2.8, color: 0xf68b56, desc: 'Long-range blast. Cannot hit flyers.', key: '4', special: { name: 'Barrage', desc: 'Drops eight heavy shells on the road in range.', charge: 45, down: 8 } },
-  rail: { name: 'Railgun', cost: 190, dmg: 130, rate: 0.3, range: 17, color: 0xff5a3c, desc: 'Piercing beam. Targets the toughest.', key: '5', special: { name: 'Overcharge', desc: 'A map-long slug that pierces everything for eight times the damage.', charge: 50, down: 8 } },
-  beacon: { name: 'Signal Beacon', cost: 120, dmg: 0, rate: 0, range: 5.5, color: 0x9ccf6a, desc: 'Boosts damage and speed of nearby towers.', key: '6', special: { name: 'Surge', desc: 'Triples its boost for 8 seconds.', charge: 45, down: 6 } },
+  pulse: { name: 'Pulse Turret', cost: 50, mat: 2, needs: { item: 'ammo' }, dmg: 7, rate: 3.2, range: 7.5, color: 0xe3dc92, desc: 'Rapid homing bolts. Cheap and reliable.', key: '1', special: { name: 'Bullet Storm', desc: 'Fires five times as fast for 5 seconds.', charge: 35, down: 5 } },
+  cryo: { name: 'Cryo Emitter', cost: 70, mat: 3, needs: { power: 2 }, dmg: 4, rate: 1.0, range: 6.5, aoe: 2.4, color: 0xbfe3ea, desc: 'Chills a group, slowing them.', key: '2', special: { name: 'Flash Freeze', desc: 'Freezes everything in range solid for 3 seconds.', charge: 40, down: 5 } },
+  arc: { name: 'Arc Pylon', cost: 110, mat: 4, needs: { power: 3 }, dmg: 15, rate: 1.15, range: 7, color: 0xb48cff, desc: 'Lightning that chains between enemies.', key: '3', special: { name: 'Thunderhead', desc: 'One massive bolt that chains through a dozen enemies.', charge: 40, down: 7 } },
+  mortar: { name: 'Plasma Mortar', cost: 140, mat: 6, needs: { item: 'shell', power: 2 }, dmg: 42, rate: 0.42, range: 12, minRange: 3, aoe: 2.8, color: 0xf68b56, desc: 'Long-range blast. Cannot hit flyers.', key: '4', special: { name: 'Barrage', desc: 'Drops eight heavy shells on the road in range.', charge: 45, down: 8 } },
+  rail: { name: 'Railgun', cost: 190, mat: 8, needs: { item: 'slug', power: 4 }, dmg: 130, rate: 0.3, range: 17, color: 0xff5a3c, desc: 'Piercing beam. Targets the toughest.', key: '5', special: { name: 'Overcharge', desc: 'A map-long slug that pierces everything for eight times the damage.', charge: 50, down: 8 } },
+  beacon: { name: 'Signal Beacon', cost: 120, mat: 4, needs: { power: 2 }, dmg: 0, rate: 0, range: 5.5, color: 0x9ccf6a, desc: 'Boosts damage and speed of nearby towers.', key: '6', special: { name: 'Surge', desc: 'Triples its boost for 8 seconds.', charge: 45, down: 6 } },
   // Firewall Pylon: dmg x rate is what a wall deals per second to everything inside it; range is the link reach (4 tiles) in world units
-  flame: { name: 'Firewall Pylon', cost: 90, dmg: 15, rate: 2, range: 8, color: 0xffb02e, desc: 'Build two within 4 tiles of each other and a wall of fire burns between them. On its own it only burns a small ring.', key: '7', special: { name: 'Inferno', desc: 'Its walls burn 2.5 times as hard and wider for 5 seconds.', charge: 40, down: 6 } },
-  lance: { name: 'Lance Emitter', cost: 160, dmg: 9, rate: 4, range: 9, color: 0xff8fa8, desc: 'A continuous beam that burns hotter the longer it holds a target.', key: '8', special: { name: 'Overload', desc: 'Instantly at full heat, far hotter and piercing for 5 seconds. Comes back online still hot.', charge: 45, down: 6 } },
-  missile: { name: 'Missile Battery', cost: 170, dmg: 22, rate: 0.55, range: 13, aoe: 1.5, color: 0xd9a05b, desc: 'Salvos of homing missiles. Prefers flyers.', key: '9', special: { name: 'Swarm', desc: 'Launches two dozen missiles at targets anywhere on the map.', charge: 50, down: 7 } },
-  gravity: { name: 'Graviton Well', cost: 120, dmg: 0, rate: 0.5, range: 5.5, color: 0x7a8cff, desc: 'Deals no damage. Drags enemies back and slows them.', key: '0', special: { name: 'Collapse', desc: 'Opens a singularity on the toughest enemy in range.', charge: 55, down: 9 } },
-  spire: { name: 'Uplink Spire', cost: 180, dmg: 0, rate: 0, range: 0, color: 0x6fe0c8, desc: 'A tall relay tower. Kestrel can only uplink to Spires, and teleports between them. Upgrades amplify her arrows.', key: 't' },
+  flame: { name: 'Firewall Pylon', cost: 90, mat: 3, needs: { fluid: 'petrol' }, dmg: 15, rate: 2, range: 8, color: 0xffb02e, desc: 'Build two within 4 tiles of each other and a wall of fire burns between them. On its own it only burns a small ring.', key: '7', special: { name: 'Inferno', desc: 'Its walls burn 2.5 times as hard and wider for 5 seconds.', charge: 40, down: 6 } },
+  lance: { name: 'Lance Emitter', cost: 160, mat: 7, needs: { item: 'cell', power: 4 }, dmg: 9, rate: 4, range: 9, color: 0xff8fa8, desc: 'A continuous beam that burns hotter the longer it holds a target.', key: '8', special: { name: 'Overload', desc: 'Instantly at full heat, far hotter and piercing for 5 seconds. Comes back online still hot.', charge: 45, down: 6 } },
+  missile: { name: 'Missile Battery', cost: 170, mat: 8, needs: { item: 'missile', power: 2 }, dmg: 22, rate: 0.55, range: 13, aoe: 1.5, color: 0xd9a05b, desc: 'Salvos of homing missiles. Prefers flyers.', key: '9', special: { name: 'Swarm', desc: 'Launches two dozen missiles at targets anywhere on the map.', charge: 50, down: 7 } },
+  gravity: { name: 'Graviton Well', cost: 120, mat: 6, needs: { item: 'cell', power: 3 }, dmg: 0, rate: 0.5, range: 5.5, color: 0x7a8cff, desc: 'Deals no damage. Drags enemies back and slows them.', key: '0', special: { name: 'Collapse', desc: 'Opens a singularity on the toughest enemy in range.', charge: 55, down: 9 } },
 };
+
+// ---------- the factory ----------
+/** Items travel on belts and between neighbouring buildings. Ores come out of mines, plates out of smelters, the rest out of fabricators. */
+export type ItemType = 'iron_ore' | 'copper_ore' | 'coal' | 'iron' | 'copper' | 'frame' | 'ammo' | 'shell' | 'slug' | 'cell' | 'missile';
+export const ITEM_TYPES: ItemType[] = ['iron_ore', 'copper_ore', 'coal', 'iron', 'copper', 'frame', 'ammo', 'shell', 'slug', 'cell', 'missile'];
+export const ITEMS: Record<ItemType, { name: string; color: number; short: string }> = {
+  iron_ore: { name: 'Iron ore', color: 0x7f8fa6, short: 'Fe ore' },
+  copper_ore: { name: 'Copper ore', color: 0xc8733a, short: 'Cu ore' },
+  coal: { name: 'Coal', color: 0x2b2826, short: 'Coal' },
+  iron: { name: 'Iron plate', color: 0xc9d3de, short: 'Fe' },
+  copper: { name: 'Copper plate', color: 0xf09a55, short: 'Cu' },
+  frame: { name: 'Frame', color: 0xe3dc92, short: 'Frame' },
+  ammo: { name: 'Ammo box', color: 0xe8c547, short: 'Ammo' },
+  shell: { name: 'Plasma shells', color: 0xf68b56, short: 'Shells' },
+  slug: { name: 'Rail slugs', color: 0xff5a3c, short: 'Slugs' },
+  cell: { name: 'Energy cell', color: 0x7af0d8, short: 'Cell' },
+  missile: { name: 'Missile pack', color: 0xd9a05b, short: 'Missiles' },
+};
+/** Fluids run through pipes: crude oil out of pumpjacks, petrol out of refineries. */
+export type FluidType = 'crude' | 'petrol';
+export const FLUID_TYPES: FluidType[] = ['crude', 'petrol'];
+export const FLUIDS: Record<FluidType, { name: string; color: number }> = {
+  crude: { name: 'Crude oil', color: 0x3a2f45 },
+  petrol: { name: 'Petrol', color: 0xffb02e },
+};
+/** Deposits under the deck. 0 = none. Mines sit on ore and coal, pumpjacks on oil. */
+export type OreType = 'iron_ore' | 'copper_ore' | 'coal' | 'oil';
+export const ORE_TYPES: OreType[] = ['iron_ore', 'copper_ore', 'coal', 'oil'];
+export const ORES: Record<OreType, { name: string; color: number }> = {
+  iron_ore: { name: 'Iron deposit', color: 0x6d7d94 },
+  copper_ore: { name: 'Copper deposit', color: 0xb5652f },
+  coal: { name: 'Coal seam', color: 0x5c5650 },
+  oil: { name: 'Oil field', color: 0x6a4a9c },
+};
+/** Shots (or for a Lance, beam ticks; for a Graviton Well, pulses) one ammunition item is worth in a tower. */
+export const ITEM_SHOTS: Partial<Record<ItemType, number>> = { ammo: 40, shell: 8, slug: 5, cell: 30, missile: 3 };
+/** Petrol a Firewall Pylon burns per tick of its fire. */
+export const PETROL_PER_TICK = 0.5;
+
+export type FacType = 'belt' | 'pipe' | 'pole' | 'mine' | 'pump' | 'smelter' | 'fab' | 'refinery' | 'generator' | 'depot';
+export const FAC_TYPES: FacType[] = ['belt', 'pipe', 'pole', 'mine', 'pump', 'smelter', 'fab', 'refinery', 'generator', 'depot'];
+export interface FacDef { name: string; cost: number; color: number; key: string; desc: string; power?: number }
+export const FACS: Record<FacType, FacDef> = {
+  belt: { name: 'Conveyor Belt', cost: 2, color: 0x8a8174, key: '1', desc: 'Carries items in the direction of its arrow. R turns it; drag to lay a line. Mines, smelters and fabricators put their output on the belt at their arrow side, and a belt that points into a building or tower delivers to it.' },
+  pipe: { name: 'Pipe', cost: 3, color: 0x6f7b82, key: '2', desc: 'Joins up with the pipes next to it. Pumpjacks and refineries fill a pipe network, and refineries, generators, fabricators and Firewall Pylons beside it draw from it.' },
+  pole: { name: 'Power Pole', cost: 6, color: 0x9ccf6a, key: '3', desc: 'Wires reach other poles and generators up to 5 tiles away, also across roads. Powers everything within 2 tiles.' },
+  mine: { name: 'Mine', cost: 15, color: 0x9d8a6a, key: '4', desc: 'Build it on an iron, copper or coal deposit. Digs ore without power and hands it to a building next to it that takes it, or to the belt at its arrow (R turns it).' },
+  pump: { name: 'Pumpjack', cost: 30, color: 0x7a5fa0, key: '5', desc: 'Build it on an oil field. Pumps crude oil into the pipes or the refinery beside it. Needs power.', power: 2 },
+  smelter: { name: 'Smelter', cost: 20, color: 0xce6b44, key: '6', desc: 'Melts iron or copper ore into plates. Burns one coal for every four plates. No power needed. Hands its plates to a neighbour that takes them, or to the belt at its arrow.' },
+  fab: { name: 'Fabricator', cost: 30, color: 0xd9a05b, key: '7', desc: 'Assembles plates into frames, ammunition and more. Pick its recipe when it is selected. Needs power. Hands what it makes to a neighbour that takes it (a tower, a Depot), or to the belt at its arrow.', power: 2 },
+  refinery: { name: 'Refinery', cost: 45, color: 0xffb02e, key: '8', desc: 'Cracks crude oil into petrol. Needs power.', power: 3 },
+  generator: { name: 'Generator', cost: 25, color: 0x6fe0c8, key: '9', desc: 'Burns coal (or petrol from a pipe) for 10 power. Its wires reach poles up to 5 tiles away, and it powers everything within 2 tiles itself.' },
+  depot: { name: 'Depot', cost: 20, color: 0xe3dc92, key: '0', desc: 'Frames delivered here become building materials, which towers and upgrades cost on top of credits.' },
+};
+export interface Recipe { id: string; name: string; inp: Partial<Record<ItemType, number>>; fluid?: [FluidType, number]; out: ItemType; n: number; time: number }
+/** What a Fabricator can make. */
+export const RECIPES: Recipe[] = [
+  { id: 'frame', name: 'Frame', inp: { iron: 2 }, out: 'frame', n: 1, time: 2.5 },
+  { id: 'ammo', name: 'Ammo box', inp: { iron: 1, copper: 1 }, out: 'ammo', n: 2, time: 2 },
+  { id: 'shell', name: 'Plasma shells', inp: { iron: 1, coal: 1 }, out: 'shell', n: 1, time: 3 },
+  { id: 'slug', name: 'Rail slugs', inp: { iron: 2 }, out: 'slug', n: 1, time: 3 },
+  { id: 'cell', name: 'Energy cell', inp: { copper: 1 }, fluid: ['petrol', 10], out: 'cell', n: 1, time: 3 },
+  { id: 'missile', name: 'Missile pack', inp: { iron: 1, copper: 1 }, fluid: ['petrol', 10], out: 'missile', n: 1, time: 4 },
+];
+export const RECIPE_BY_ID: Record<string, Recipe> = Object.fromEntries(RECIPES.map((r) => [r.id, r]));
+/** Materials one Frame is worth at a Depot, and the materials a run starts with. */
+export const FRAME_MATS = 1;
+export const START_MATS = 8;
+/** Credits a run starts with are the map's, times this: the factory has to be paid for too. */
+export const START_GOLD_MUL = 1.8;
 
 export const LVL_DMG = [1, 1.65, 2.6];
 export const LVL_RANGE = [1, 1.08, 1.16];
 export const LVL_RATE = [1, 1.1, 1.25];
 export const upgradeCost = (t: TowerType, lvl: number) => Math.round(TOWERS[t].cost * (lvl === 1 ? 0.9 : 1.6));
+/** Materials an upgrade from level lvl costs. */
+export const upgradeMat = (t: TowerType, lvl: number) => Math.max(1, Math.round(TOWERS[t].mat * (lvl === 1 ? 0.75 : 1.25)));
 
 export type EnemyType = 'grunt' | 'runner' | 'drone' | 'shield' | 'brute' | 'boss' | 'wheel' | 'brood' | 'mite' | 'titan';
 // New types go at the end: co-op snapshots send the index.
@@ -57,7 +135,6 @@ export interface EnemyDef {
   speed: number;
   bounty: number;
   xp: number;
-  energy: number;
   r: number; // hit radius
   y: number; // centre height
   armor: number;
@@ -67,31 +144,28 @@ export interface EnemyDef {
   from: number; // first wave
   fly?: boolean;
   scale: number;
-  /** Weak points in the model's local space (x = right, y = up, z = forward, unscaled). Only Kestrel's arrows and Rail Shot can hit them. `front`: it only shows from in front (see weakOpen() in sim.ts). */
-  weak?: { x: number; y: number; z: number; r: number; mul: number; front?: boolean }[];
 }
 
-/** Model scale per enemy type (weak points and the view use it). */
+/** Model scale per enemy type (the view uses it). */
 export const ENEMY_SCALE: Record<EnemyType, number> = { grunt: 1, runner: 1, drone: 1, shield: 1, brute: 1, boss: 0.95, wheel: 1.35, brood: 1, mite: 1, titan: 1 };
 
 export const ENEMIES: Record<EnemyType, EnemyDef> = {
-  grunt: { name: 'Grunt', hp: 28, speed: 3.0, bounty: 5, xp: 2, energy: 1.5, r: 0.55, y: 0.6, armor: 0, shield: 0, leak: 1, cost: 1, from: 1, scale: 1 },
-  runner: { name: 'Runner', hp: 14, speed: 5.0, bounty: 2, xp: 1, energy: 0.9, r: 0.5, y: 0.4, armor: 0, shield: 0, leak: 1, cost: 0.6, from: 2, scale: 1 },
-  drone: { name: 'Drone', hp: 22, speed: 3.8, bounty: 4, xp: 2, energy: 1.4, r: 0.55, y: 2.4, armor: 0, shield: 0, leak: 1, cost: 1.2, from: 4, fly: true, scale: 1 },
-  shield: { name: 'Aegis', hp: 55, speed: 2.5, bounty: 9, xp: 5, energy: 3, r: 0.7, y: 0.8, armor: 0, shield: 55, leak: 2, cost: 3, from: 6, scale: 1 },
-  brute: { name: 'Brute', hp: 175, speed: 1.9, bounty: 13, xp: 8, energy: 5, r: 0.95, y: 1.1, armor: 3, shield: 0, leak: 3, cost: 5, from: 8, scale: 1, weak: [{ x: 0, y: 1.3, z: -0.55, r: 0.4, mul: 2.5 }] },
-  boss: { name: 'Colossus', hp: 1200, speed: 1.3, bounty: 160, xp: 50, energy: 30, r: 1.6, y: 1.4, armor: 4, shield: 0, leak: 6, cost: 30, from: 5, scale: 1, weak: [{ x: 0, y: 2.1, z: -1.6, r: 0.6, mul: 3 }, { x: 0, y: 2.9, z: 1.5, r: 0.45, mul: 2.5 }] },
+  grunt: { name: 'Grunt', hp: 28, speed: 3.0, bounty: 5, xp: 2, r: 0.55, y: 0.6, armor: 0, shield: 0, leak: 1, cost: 1, from: 1, scale: 1 },
+  runner: { name: 'Runner', hp: 14, speed: 5.0, bounty: 2, xp: 1, r: 0.5, y: 0.4, armor: 0, shield: 0, leak: 1, cost: 0.6, from: 2, scale: 1 },
+  drone: { name: 'Drone', hp: 22, speed: 3.8, bounty: 4, xp: 2, r: 0.55, y: 2.4, armor: 0, shield: 0, leak: 1, cost: 1.2, from: 4, fly: true, scale: 1 },
+  shield: { name: 'Aegis', hp: 55, speed: 2.5, bounty: 9, xp: 5, r: 0.7, y: 0.8, armor: 0, shield: 55, leak: 2, cost: 3, from: 6, scale: 1 },
+  brute: { name: 'Brute', hp: 175, speed: 1.9, bounty: 13, xp: 8, r: 0.95, y: 1.1, armor: 3, shield: 0, leak: 3, cost: 5, from: 8, scale: 1 },
+  boss: { name: 'Colossus', hp: 1200, speed: 1.3, bounty: 160, xp: 50, r: 1.6, y: 1.4, armor: 4, shield: 0, leak: 6, cost: 30, from: 5, scale: 1 },
   // Gyre: a machine riding inside one large armoured wheel, a mini-boss that rolls in on its own (see gyreCount). `speed` is its pace at full spin (see WHEEL_GUARD below).
-  wheel: { name: 'Gyre', hp: 520, speed: 4.2, bounty: 55, xp: 24, energy: 12, r: 1.4, y: 1.5, armor: 0, shield: 0, leak: 4, cost: 16, from: 8, scale: 1 },
+  wheel: { name: 'Gyre', hp: 520, speed: 4.2, bounty: 55, xp: 24, r: 1.4, y: 1.5, armor: 0, shield: 0, leak: 4, cost: 16, from: 8, scale: 1 },
   // Broodcarrier: sturdy and slow. It walks the road and lets swarms of mites loose on the towers beside it (see BROOD_* below).
-  brood: { name: 'Broodcarrier', hp: 230, speed: 1.8, bounty: 15, xp: 9, energy: 5, r: 1.0, y: 1.0, armor: 2, shield: 0, leak: 3, cost: 9, from: 6, scale: 1 },
+  brood: { name: 'Broodcarrier', hp: 230, speed: 1.8, bounty: 15, xp: 9, r: 1.0, y: 1.0, armor: 2, shield: 0, leak: 3, cost: 9, from: 6, scale: 1 },
   // Mite: a tiny spider machine from a Broodcarrier. It runs across the deck to a tower, climbs it and jams it. Any hit destroys it; it never goes for the core.
-  mite: { name: 'Mite', hp: 1, speed: 7, bounty: 0, xp: 0, energy: 0.3, r: 0.35, y: 0.25, armor: 0, shield: 0, leak: 0, cost: 0, from: 9999, scale: 1 },
-  // Titan: the giant Colossus of the finale, twice as tall as an Uplink Spire. Weak points: the eye (from in front), the reactor on its back, and the two hip joints.
+  mite: { name: 'Mite', hp: 1, speed: 7, bounty: 0, xp: 0, r: 0.35, y: 0.25, armor: 0, shield: 0, leak: 0, cost: 0, from: 9999, scale: 1 },
+  // Titan: the giant Colossus of the finale, towering over every tower. Only tower specials hurt it at full strength (see TUNE.titanTower).
   // Its health comes from Sim.titanHp() (hp here is not used) and its pace from the length of its road (see TITAN_* below).
   titan: {
-    name: 'Titan', hp: 1, speed: 1.4, bounty: 0, xp: 0, energy: 0, r: 3.2, y: 9, armor: 0, shield: 0, leak: 0, cost: 0, from: 9999, scale: 1,
-    weak: [{ x: 0, y: 13.4, z: 2.2, r: 0.9, mul: 3, front: true }, { x: 0, y: 10.2, z: -2.0, r: 1.1, mul: 2.5 }, { x: 2.4, y: 6.4, z: 0, r: 0.8, mul: 1.6 }, { x: -2.4, y: 6.4, z: 0, r: 0.8, mul: 1.6 }],
+    name: 'Titan', hp: 1, speed: 1.4, bounty: 0, xp: 0, r: 3.2, y: 9, armor: 0, shield: 0, leak: 0, cost: 0, from: 9999, scale: 1,
   },
 };
 
@@ -101,7 +175,7 @@ export const ENEMIES: Record<EnemyType, EnemyDef> = {
  * WHEEL_BLEED: spin a hit takes off, per share of the Gyre's full health the hit would have dealt without the guard.
  * WHEEL_DRAG: spin lost per second while slowed. WHEEL_SINK: per second while a Graviton Well or a Singularity holds it. A freeze stops it dead.
  * WHEEL_REST: seconds without a hit before it spins back up, at WHEEL_SPINUP per second (slow: focused fire and freezes keep the rim down).
- * WHEEL_PIERCE: share of the guard that Rail shots and Kestrel's full-draw arrows ignore.
+ * WHEEL_PIERCE: share of the guard that Rail shots ignore.
  */
 export const WHEEL_GUARD = 0.8;
 export const WHEEL_CRAWL = 0.45;
@@ -171,16 +245,9 @@ export const BREACH_TIME = 0.7;
 export const BREACH_TIME_BOSS = 1.6;
 /** A Colossus never takes more than this share of the starting integrity in one breach (at most its `leak`). */
 export const BREACH_SHARE = 0.25;
-/** Seconds before the first wave arrives on its own (it can be called earlier), and between later waves. */
-export const FIRST_WAVE_IN = 30;
+/** Seconds before the first wave arrives on its own (it can be called earlier: there is a factory to set up first), and between later waves. */
+export const FIRST_WAVE_IN = 75;
 export const NEXT_WAVE_IN = 12;
-/** The bow: seconds to a full draw, the weakest draw that still looses an arrow, the pause before the next arrow can be drawn, and how many of the old stream arrows a full draw is worth. */
-export const DRAW_TIME = 0.45;
-export const MIN_DRAW = 0.2;
-export const NOCK_TIME = 0.1;
-export const FULL_DRAW_MUL = 2.2;
-/** Seconds an Uplink lasts before cards. */
-export const HERO_DUR = 17.5;
 /** Firewall Pylons: link reach in tiles, half the thickness of a wall, the radius a lone pylon burns, and the colour of a singularity. */
 export const LINK_RANGE = 4;
 export const WALL_HALF = 0.75;
@@ -196,30 +263,21 @@ export const TUNE = {
   hp1: 0.22, hp2: 0.055, hp3: 0.00325,
   /** wave budget: bud0 + bud1·w + w^budP */
   bud0: 8, bud1: 5, budP: 1.5,
-  /** base arrow damage, credits per kill, wave-clear bonus (base + perWave·w), kill energy */
-  arrow: 10, bounty: 0.92, clear0: 13.8, clear1: 2.76, energy: 1, energyT: 0.8,
+  /** credits per kill, wave-clear bonus (base + perWave·w) */
+  bounty: 0.92, clear0: 13.8, clear1: 2.76,
   /** tower damage and xp from kills (the knobs of the balance pass), and how often rare and epic cards are offered next to common ones (weight 10) */
   tdmg: 0.92, xp: 0.92, rare: 4.25, epic: 1.7,
-  /** Titan: health per point of bow strength at the wave it arrives on (see titanHp() in sim.ts), and how much harder tower specials hit it */
-  titan: 11500, titanSpec: 1,
+  /** Titan: health at the wave it arrives on, per unit of waveHpMul (see titanHp() in sim.ts), share of ordinary tower damage that gets through its hull, and how much harder tower specials hit it */
+  titan: 800, titanTower: 0.35, titanSpec: 1,
   /** enemy health scales with (mean road length / mapLen)^mapPow · (road in reach of the best tiles / mapCov)^mapCovPow, see mapEase() in sim.ts.
    *  starter: extra factor for the first map (Switchback), which new players learn on and which plays harder than its shape suggests */
   mapLen: 105, mapPow: 0.2, mapCov: 39.8, mapCovPow: 0.64, starter: 0.78,
-  /** Colossus: share of tower damage that gets through its plating, tower damage multiplier while the plating is cracked open, seconds a weak-point hit keeps it open, health multiplier */
-  plate: 0.45, cracked: 1.25, crack: 3, boss: 1,
+  /** Colossus health multiplier */
+  boss: 1,
   /** co-op: enemy health and wave budget multipliers once the run is under way. Two players start with the same credits as one, so the first coopFrom waves are the solo ones and the extra then ramps in over coopRamp waves. */
   coopHp: COOP_HP, coopCount: COOP_COUNT, coopFrom: 3, coopRamp: 12,
   /** Lance: extra damage at full heat */
   lanceHeat: LANCE_HEAT,
-  /** Uplink mode, where the archer shoots for the whole run: enemy health and shield multiplier, and the Titan's health multiplier (see spawn() and titanHp() in sim.ts).
-   *  Tuned with tools/balance.ts matrix 6 all,gen easy,normal,hard hero,uplink: the bot wins 336, 238 and 57 of 336 runs in Uplink mode against
-   *  336, 232 and 52 in the campaign, and destroys the Titan at about the same point of its road (42 to 49% of it, against 44 to 46%). */
-  upHp: 2.45, upTitan: 1.1,
-  /** Uplink mode: the same for the Colossus and the Gyre. The campaign keeps its Uplink for them, so an Uplink that never ends helps less against them. */
-  upBoss: 1.9,
-  /** Uplink mode in co-op: a further health multiplier for all of them (the Titan aside), for the second archer who also shoots all run long.
-   *  Two bots on 16 maps then win 100%, 61% and 24% of their runs in Uplink mode on easy, normal and hard, against 97%, 63% and 24% in a co-op campaign. */
-  upCoop: 1.5,
 };
 /** Co-op multiplier for wave w: `full` (e.g. TUNE.coopHp) eased in between wave coopFrom and wave coopFrom + coopRamp. */
 export const coopScale = (full: number, w: number) => 1 + (full - 1) * Math.max(0, Math.min(1, (w - TUNE.coopFrom) / Math.max(1, TUNE.coopRamp)));
@@ -227,15 +285,6 @@ export const waveHpMul = (w: number) => 1 + TUNE.hp1 * (w - 1) + TUNE.hp2 * (w -
 /** Enemy budget of wave w (see ENEMIES[..].cost), before the difficulty's count multiplier. */
 export const waveBudget = (w: number) => TUNE.bud0 + w * TUNE.bud1 + Math.pow(w, TUNE.budP);
 
-/** Bow tiers: the bow evolves as the run progresses. Colours stay on the Ember ramp (sand, verdigris, apricot, vermilion, white-gold). */
-export const BOW_TIERS = [
-  { name: 'Carbon Bow', color: 0xe3dc92, mul: 1, perk: 'Standard carbon arrows.' },
-  { name: 'Pulse Bow', color: 0x6fe0c8, mul: 1.8, perk: 'Arrows pierce one extra target.' },
-  { name: 'Tempest Bow', color: 0xf68b56, mul: 3.0, perk: 'Fires one extra arrow.' },
-  { name: 'Nova Bow', color: 0xff5a3c, mul: 4.8, perk: 'Arrows explode on impact.' },
-  { name: 'Singularity Bow', color: 0xfff2c4, mul: 7.5, perk: 'Arrows chain lightning.' },
-];
-export const bowTier = (wave: number) => Math.min(BOW_TIERS.length - 1, Math.floor(Math.max(0, wave - 1) / 4));
 
 export interface Mods {
   tDmg: number; tRate: number; tRange: number;
@@ -243,7 +292,9 @@ export interface Mods {
   gold: number; xp: number; interest: number; beacon: number; cheap: number;
   /** per-tower-type multipliers */
   tw: Record<TowerType, { dmg: number; rate: number; range: number }>;
-  pulseCrit: number; cryoSlow: number; cryoAoe: number; arcSlow: number; mortarAoe: number; railBreak: number; beaconFeed: number;
+  pulseCrit: number; cryoSlow: number; cryoAoe: number; arcSlow: number; mortarAoe: number; railBreak: number;
+  /** factory: mine speed, belt speed, crafting speed (smelters, fabricators, refineries), generator output, extra shots per ammunition item */
+  mine: number; belt: number; craft: number; gen: number; ammo: number;
   /** tower specials: charge speed, reboot time multiplier, strength */
   specCharge: number; reboot: number; specPow: number;
   /** Firewall Pylons: burn stacks (Sticky Fire), Slag Curtain stacks, extra link reach in tiles */
@@ -253,30 +304,21 @@ export const baseMods = (): Mods => ({
   tDmg: 1, tRate: 1, tRange: 1, arcChain: 0, shatter: 0, napalm: 0, twin: 0, railCap: 0,
   gold: 1, xp: 1, interest: 0, beacon: 0, cheap: 1,
   tw: Object.fromEntries(TOWER_TYPES.map((t) => [t, { dmg: 1, rate: 1, range: 1 }])) as Mods['tw'],
-  pulseCrit: 0, cryoSlow: 0, cryoAoe: 0, arcSlow: 0, mortarAoe: 0, railBreak: 0, beaconFeed: 0,
+  pulseCrit: 0, cryoSlow: 0, cryoAoe: 0, arcSlow: 0, mortarAoe: 0, railBreak: 0,
+  mine: 1, belt: 1, craft: 1, gen: 1, ammo: 1,
   specCharge: 1, reboot: 1, specPow: 1,
   flameBurn: 0, flameMelt: 0, flameLink: 0, lanceHeat: 0, lanceRamp: 0, missilePods: 0, missileAoe: 0, gravPull: 0, gravVuln: 0,
 });
 
-export interface HeroStats {
-  dmg: number; rate: number; arrows: number; pierce: number; explode: number; chain: number;
-  dur: number; charge: number; cdr: number; rain: number; sing: number;
-  /** weak-point damage multiplier, and extra ultimate seconds per Uplink Spire owned */
-  weak: number; relay: number;
-}
-export const baseHero = (): HeroStats => ({
-  dmg: 1, rate: 1, arrows: 1, pierce: 0, explode: 0, chain: 0, dur: 0, charge: 1, cdr: 1, rain: 1, sing: 1, weak: 1, relay: 0,
-});
-
 export interface CardCtx {
   mods: Mods;
-  hero: HeroStats;
   unlocked: Set<TowerType>;
   addGold(n: number): void;
   addLives(n: number): void;
+  addMats(n: number): void;
 }
 
-export type CardKind = 'blueprint' | 'tower' | 'hero' | 'eco';
+export type CardKind = 'blueprint' | 'tower' | 'factory' | 'eco';
 export interface Card {
   id: string;
   name: string;
@@ -286,8 +328,6 @@ export interface Card {
   max: number;
   icon: string;
   needs?: TowerType;
-  /** The card only feeds the Uplink's charge or its length. Uplink mode has neither, so it never offers these. */
-  meter?: boolean;
   apply(c: CardCtx): void;
 }
 
@@ -325,7 +365,7 @@ export const CARDS: Card[] = [
   { id: 'r_break', name: 'Armour Breaker', desc: 'Rail slugs ignore armour and hit Brutes and Colossi 30% harder.', rar: 1, kind: 'tower', max: 2, icon: '⛏', needs: 'rail', apply: (c) => { c.mods.railBreak += 1; } },
   { id: 'r_scope', name: 'Horizon Scope', desc: 'Railguns gain 25% range.', rar: 0, kind: 'tower', max: 2, icon: '◎', needs: 'rail', apply: (c) => { c.mods.tw.rail.range *= 1.25; } },
   { id: 'b_wide', name: 'Wide Band', desc: 'Beacons reach 30% further.', rar: 0, kind: 'tower', max: 2, icon: '◎', needs: 'beacon', apply: (c) => { c.mods.tw.beacon.range *= 1.3; } },
-  { id: 'b_feed', name: 'Uplink Feed', desc: 'Each Beacon slowly charges your ultimate.', rar: 1, kind: 'tower', max: 2, icon: '⚡', needs: 'beacon', meter: true, apply: (c) => { c.mods.beaconFeed += 1; } },
+  { id: 'b_surge', name: 'Carrier Wave', desc: 'Beacons boost 10% harder and reach 15% further.', rar: 1, kind: 'tower', max: 2, icon: '⚡', needs: 'beacon', apply: (c) => { c.mods.beacon += 0.1; c.mods.tw.beacon.range *= 1.15; } },
   { id: 'f_fuel', name: 'Long Conduits', desc: 'Firewall Pylons link one tile further apart.', rar: 0, kind: 'tower', max: 2, icon: '◎', needs: 'flame', apply: (c) => { c.mods.flameLink += 1; } },
   { id: 'f_burn', name: 'Sticky Fire', desc: 'Whatever crosses a firewall burns 1.5 seconds longer and 40% hotter.', rar: 0, kind: 'tower', max: 3, icon: '♨', needs: 'flame', apply: (c) => { c.mods.flameBurn += 1; } },
   { id: 'f_melt', name: 'Slag Curtain', desc: 'Firewalls are 30% thicker, and burning enemies lose 40% of their armour.', rar: 1, kind: 'tower', max: 2, icon: '⛏', needs: 'flame', apply: (c) => { c.mods.flameMelt += 1; } },
@@ -343,20 +383,13 @@ export const CARDS: Card[] = [
   { id: 'reboot', name: 'Rapid Reboot', desc: 'Towers come back online 30% faster after a special.', rar: 0, kind: 'tower', max: 2, icon: '↻', apply: (c) => { c.mods.reboot *= 0.7; } },
   { id: 'aftershock', name: 'Aftershock', desc: 'Tower specials are 25% stronger: more damage, and Surge lasts 25% longer.', rar: 1, kind: 'tower', max: 3, icon: '✹', apply: (c) => { c.mods.specPow *= 1.25; } },
   { id: 'fab', name: 'Nano Fabricator', desc: 'Towers and upgrades cost 10% less.', rar: 1, kind: 'eco', max: 3, icon: '⬡', apply: (c) => { c.mods.cheap *= 0.9; } },
-  // hero
-  { id: 'split', name: 'Split Shot', desc: 'Kestrel looses 2 more arrows with every shot.', rar: 1, kind: 'hero', max: 3, icon: '⋔', apply: (c) => { c.hero.arrows += 2; } },
-  { id: 'pierce', name: 'Phase Tips', desc: 'Arrows pierce 2 more enemies.', rar: 0, kind: 'hero', max: 3, icon: '➶', apply: (c) => { c.hero.pierce += 2; } },
-  { id: 'volatile', name: 'Volatile Tips', desc: 'Arrows explode in a small blast.', rar: 1, kind: 'hero', max: 3, icon: '✹', apply: (c) => { c.hero.explode += 1; } },
-  { id: 'quick', name: 'Quick Draw', desc: 'Kestrel draws the bow 25% faster.', rar: 0, kind: 'hero', max: 4, icon: '≫', apply: (c) => { c.hero.rate *= 1.25; } },
-  { id: 'overcharge', name: 'Overcharge', desc: 'Arrows and skills deal 30% more damage.', rar: 0, kind: 'hero', max: 6, icon: '✦', apply: (c) => { c.hero.dmg *= 1.3; } },
-  { id: 'uplink', name: 'Extended Uplink', desc: 'Ultimate lasts 4 seconds longer.', rar: 1, kind: 'hero', max: 3, icon: '◷', meter: true, apply: (c) => { c.hero.dur += 4; } },
-  { id: 'charge', name: 'Fast Charge', desc: 'Ultimate charges 25% faster.', rar: 0, kind: 'hero', max: 4, icon: '⚡', meter: true, apply: (c) => { c.hero.charge *= 1.25; } },
-  { id: 'arcarrow', name: 'Storm Fletching', desc: 'Arrows chain lightning to 2 enemies.', rar: 2, kind: 'hero', max: 2, icon: '⌁', apply: (c) => { c.hero.chain += 2; } },
-  { id: 'rain', name: 'Monsoon Protocol', desc: 'Arrow Rain is larger and hits harder.', rar: 1, kind: 'hero', max: 3, icon: '☂', apply: (c) => { c.hero.rain += 0.5; } },
-  { id: 'sing', name: 'Event Horizon', desc: 'Singularity is larger and hits harder.', rar: 1, kind: 'hero', max: 3, icon: '◍', apply: (c) => { c.hero.sing += 0.5; } },
-  { id: 'scanner', name: 'Weak Point Scanner', desc: 'Weak-point hits deal 30% more damage.', rar: 1, kind: 'hero', max: 3, icon: '⌖', apply: (c) => { c.hero.weak += 0.3; } },
-  { id: 'relayup', name: 'Relay Uplink', desc: 'Ultimate lasts 1.5 seconds longer per Uplink Spire you own (up to 3 Spires).', rar: 1, kind: 'hero', max: 2, icon: '⟟', meter: true, apply: (c) => { c.hero.relay += 1.5; } },
-  { id: 'cdr', name: 'Coolant Loop', desc: 'Hero skills recharge 20% faster.', rar: 0, kind: 'hero', max: 3, icon: '↻', apply: (c) => { c.hero.cdr *= 0.8; } },
+  // factory
+  { id: 'f_drill', name: 'Diamond Drills', desc: 'Mines and pumpjacks work 25% faster.', rar: 0, kind: 'factory', max: 4, icon: '⛏', apply: (c) => { c.mods.mine *= 1.25; } },
+  { id: 'f_belt', name: 'Express Belts', desc: 'Conveyor belts move 30% faster.', rar: 0, kind: 'factory', max: 3, icon: '»', apply: (c) => { c.mods.belt *= 1.3; } },
+  { id: 'f_craft', name: 'Assembly Line', desc: 'Smelters, fabricators and refineries work 20% faster.', rar: 0, kind: 'factory', max: 4, icon: '⚙', apply: (c) => { c.mods.craft *= 1.2; } },
+  { id: 'f_gen', name: 'Turbine Upgrade', desc: 'Generators give 30% more power from the same fuel.', rar: 1, kind: 'factory', max: 3, icon: '⚡', apply: (c) => { c.mods.gen *= 1.3; } },
+  { id: 'f_ammo', name: 'Dense Packing', desc: 'Every ammunition item lasts 30% longer.', rar: 1, kind: 'factory', max: 3, icon: '▤', apply: (c) => { c.mods.ammo *= 1.3; } },
+  { id: 'f_stock', name: 'Material Cache', desc: 'Gain 8 building materials right now.', rar: 0, kind: 'factory', max: 99, icon: '▦', apply: (c) => { c.addMats(8); } },
   // economy
   { id: 'salvage', name: 'Salvage Rights', desc: 'Earn 20% more credits from kills.', rar: 0, kind: 'eco', max: 4, icon: '¤', apply: (c) => { c.mods.gold *= 1.2; } },
   { id: 'drop', name: 'Supply Drop', desc: 'Gain 160 credits right now.', rar: 0, kind: 'eco', max: 99, icon: '▣', apply: (c) => { c.addGold(160); } },

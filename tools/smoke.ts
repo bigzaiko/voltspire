@@ -1,17 +1,23 @@
 // Quick headless checks: node tools/smoke.ts
-import { Sim, standY, nodePos, weakPos, weakOpen, towerOff, RAIN_DELAY, TITAN_PHASES, raySphere, spireTarget, computeWalls, drawPower, arrowSpeed, paceOf, NODE_R, SPIRE_R, ARROW_PAD, ARROW_SPEED, FULL_DRAW, TOWER_H, DECK_GAP, MUST_EVENTS, SNAP_EVENTS_MAX, CORE_STAND } from '../src/game/sim.ts';
-import type { Ev, Enemy } from '../src/game/sim.ts';
+// Covers maps, co-op replication, towers and their specials, the enemies (Gyre, Broodcarrier, Titan), the factory
+// (deposits, mines, smelters, fabricators, belts, pipes, power, depots, tower supply) and bot runs with free towers.
+import { Sim, nodePos, towerOff, TITAN_PHASES, computeWalls, paceOf, NODE_R, DECK_GAP, MUST_EVENTS, SNAP_EVENTS_MAX, CORE_STAND } from '../src/game/sim.ts';
+import type { Ev, Enemy, Tower } from '../src/game/sim.ts';
 import {
   ENEMIES, ENEMY_SCALE, ENEMY_TYPES, WAVE_POOL, gyreCount, broodCap, GYRE_FIRST, GYRE_PAIR, BROOD_EVERY, BROOD_SIZE, BROOD_REACH, MITE_HOLD, JAM_LINGER,
-  TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY, TITAN_STRIKE, TITAN_SLOW, TITAN_GOLD, TITAN_SURVIVAL, TITAN_AGAIN, TITAN_TOUGHER, TITAN_SMASH, TITAN_LEAD, WHEEL_GUARD, WHEEL_CRAWL, WHEEL_BLEED, WHEEL_DRAG, WHEEL_SINK, WHEEL_REST, WHEEL_SPINUP, WHEEL_PIERCE, TOWERS, TOWER_TYPES, MAX_ENERGY, CARDS, CARD_BY_ID, GW, GH, TWIN_BOLT, TUNE, COOP_HP, coopScale, BOW_TIERS,
-  BREACH_TIME, BREACH_TIME_BOSS, BREACH_SHARE, FIRST_WAVE_IN, NEXT_WAVE_IN, DRAW_TIME, MIN_DRAW, NOCK_TIME, FULL_DRAW_MUL, HERO_DUR, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR,
+  TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY, TITAN_STRIKE, TITAN_SLOW, TITAN_GOLD, TITAN_SURVIVAL, TITAN_AGAIN, TITAN_TOUGHER, TITAN_SMASH, TITAN_LEAD, WHEEL_GUARD, WHEEL_CRAWL, WHEEL_BLEED, WHEEL_DRAG, WHEEL_SINK, WHEEL_REST, WHEEL_SPINUP, WHEEL_PIERCE, TOWERS, TOWER_TYPES, CARDS, CARD_BY_ID, GW, GH, TWIN_BOLT, TUNE, COOP_HP, coopScale,
+  BREACH_TIME, BREACH_TIME_BOSS, BREACH_SHARE, FIRST_WAVE_IN, NEXT_WAVE_IN, LINK_RANGE, WALL_HALF, FIRE_RING,
+  ORE_TYPES, FACS, FAC_TYPES, RECIPES, FRAME_MATS, START_MATS, START_GOLD_MUL, ITEM_SHOTS, upgradeMat,
 } from '../src/game/data.ts';
-import { bowTier as bowTierOf, waveHpMul } from '../src/game/data.ts';
-import { hexDist } from '../src/game/hex.ts';
+import type { FacType, OreType } from '../src/game/data.ts';
+import { waveHpMul } from '../src/game/data.ts';
+import { hexDist, neighbor, disc, inBoard } from '../src/game/hex.ts';
 import type { MapDef } from '../src/game/map.ts';
 import { Bot } from '../src/game/bot.ts';
 import { MAPS } from '../src/game/maps.ts';
 import { sanitizeMap, validateMap, encodeMap, decodeMap } from '../src/game/map.ts';
+import { makeDeposits, MINE_TIME, OUT_CAP, TOWER_STOCK, TANK, SUPPLY } from '../src/game/factory.ts';
+import type { Fac } from '../src/game/factory.ts';
 /** Switchback with its first diagonal raised to level 2. */
 const hill: MapDef = { ...MAPS[0], id: 'hill', towers: [], lanes: [MAPS[0].lanes[0].map((p, i) => (i === 1 || i === 2 ? [p[0], p[1], 2] : p))] };
 let fail = 0;
@@ -24,8 +30,8 @@ const evil = sanitizeMap({ ...MAPS[0], name: '<img src=x onerror=alert(1)>', gol
 ok(evil && !/[<>=]/.test(evil.name) && evil.gold <= 3000 && evil.lives >= 1 && evil.towers.length === 1, 'sanitize evil ' + JSON.stringify(evil?.name));
 
 // co-op replication round trip on a multi-lane map
-const host = new Sim({ mode: 'coop', players: 2, pauseOnCards: false, seed: 3, map: MAPS[2] });
-const cli = new Sim({ mode: 'coop', players: 2, pauseOnCards: false, seed: 3, map: MAPS[2] }); cli.replica = true;
+const host = new Sim({ mode: 'coop', players: 2, pauseOnCards: false, seed: 3, map: MAPS[2], free: true });
+const cli = new Sim({ mode: 'coop', players: 2, pauseOnCards: false, seed: 3, map: MAPS[2], free: true }); cli.replica = true;
 const bot = new Bot(host, 0), bot2 = new Bot(host, 1);
 for (let i = 0; i < 60 * 240; i++) {
   bot.step(1 / 60); bot2.step(1 / 60); host.step(1 / 60);
@@ -37,8 +43,9 @@ ok(host.wave >= 5, 'coop progressed to wave ' + host.wave);
 {
   // the new state is replicated: specials, elevation, wave intel, missiles, events
   const raised = hill;
-  const h2 = new Sim({ mode: 'coop', players: 2, pauseOnCards: false, seed: 11, map: raised, diff: 'hard' });
-  const c2 = new Sim({ mode: 'coop', players: 2, pauseOnCards: false, seed: 999, map: raised }); c2.replica = true;
+  const h2 = new Sim({ mode: 'coop', players: 2, pauseOnCards: false, seed: 11, map: raised, diff: 'hard', free: true });
+  h2.nextWaveIn = 30; // the first wave arrives while the specials are fired below (FIRST_WAVE_IN leaves time for a factory)
+  const c2 = new Sim({ mode: 'coop', players: 2, pauseOnCards: false, seed: 999, map: raised, free: true }); c2.replica = true;
   h2.gold = 1e5; h2.unlocked.add('missile'); h2.unlocked.add('flame');
   const spots: [number, number][] = []; for (let i = 0; i < GW * GH && spots.length < 400; i++) if (h2.grid[i] === 0) spots.push([i % GW, Math.floor(i / GW)]);
   const road = (cx: number, cz: number) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => cx + dx >= 0 && cx + dx < GW && cz + dz >= 0 && cz + dz < GH && h2.map.grid[(cz + dz) * GW + cx + dx] === 1);
@@ -59,7 +66,7 @@ ok(host.wave >= 5, 'coop progressed to wave ' + host.wave);
       if (c2.projs.some((p) => p.kind === 'missile')) sawMissile = true;
       c2.towers.forEach((t, k) => { const o = h2.towers[k]; if (Math.abs(t.charge - o.charge) > 0.011 || Math.abs(t.down - o.down) > 0.011 || Math.abs(t.spec - o.spec) > 0.011) same = false; if (t.down > 0) sawDown = true; if (t.charge > 0 && t.charge < 1) sawCharge = true; });
       c2.enemies.forEach((e, k) => { const o = h2.enemies[k]; if (Math.abs(e.gy - o.gy) > 0.011 || Math.abs(e.y - o.y) > 0.011) same = false; if (e.gy > 0.5) sawGy = true; });
-      if (JSON.stringify(c2.preview) !== JSON.stringify(h2.preview) || c2.winWave !== h2.winWave || c2.spires !== h2.spires) same = false;
+      if (JSON.stringify(c2.preview) !== JSON.stringify(h2.preview) || c2.winWave !== h2.winWave) same = false;
       if (JSON.stringify(c2.walls.map((w) => [w.a, w.b, w.ax, w.az, w.bx, w.bz])) !== JSON.stringify(h2.walls.map((w) => [w.a, w.b, w.ax, w.az, w.bx, w.bz]))) wallsSame = false;
       if (c2.walls.some((w) => w.hot)) sawHot = true;
       if (c2.walls.some((w) => !w.on)) sawOff = true;
@@ -83,48 +90,17 @@ ok(cli.towers.every((t) => t.charge >= 0 && t.charge <= 1 && t.down >= 0 && t.sp
 ok(cli.preview.lanes.length === cli.map.lanes.length && cli.preview.lanes.every((l) => l.length <= 6 && l.every((o) => Object.hasOwn(ENEMIES, o.type) && o.n >= 0 && o.n <= 999)) && Number.isFinite(cli.preview.wave), 'junk preview is sanitised');
 ok(cli.events.every((e) => typeof e.k === 'string' && e.k.length <= 16 && Object.values(e).every((v) => typeof v !== 'object' || (Array.isArray(v) && v.length <= 96))) && ({} as Record<string, unknown>).polluted === undefined, 'junk events are sanitised');
 cli.events.length = 0;
-for (const v of [NaN, -1, 1e9, 2.5, Infinity]) { host.triggerSpecial(v, v); host.activateHero(0, v); host.nearestSpire(v); }
-for (const v of [NaN, -1, 1e9, 2.5]) { host.build('pulse', v, v); host.upgrade(v); host.sell(v); host.pickCard(1, v); host.activateHero(1, v); host.heroTeleport(1, v); host.heroFire(1, v, v, v); host.heroAim(1, v as unknown as boolean, v, v, v); host.heroAim(1, true, v, v, v); host.heroAim(1, false, v, v, v); host.heroSkill(1, v, v, v, v); }
+for (const v of [NaN, -1, 1e9, 2.5, Infinity]) host.triggerSpecial(v, v);
+for (const v of [NaN, -1, 1e9, 2.5]) { host.build('pulse', v, v); host.upgrade(v); host.sell(v); host.pickCard(1, v); }
 host.step(1 / 60);
 ok(Number.isFinite(host.gold) && host.enemies.every((e) => Number.isFinite(e.x)), 'host state finite after junk input');
 
-// ---------- Uplink Spires ----------
 const V = { x: 0, y: 0, z: 0 };
 const bare: MapDef = { ...MAPS[0], towers: [] };
-{
-  for (const m of MAPS) ok(new Sim({ seed: 1, map: m }).spires >= 1, 'map has a spire: ' + m.id);
-  const a = new Sim({ seed: 1, map: bare, pauseOnCards: false }), b = new Sim({ seed: 77, map: bare });
-  const sp = a.towers.find((t) => t.type === 'spire')!;
-  ok(sp && a.spires === 1 && a.towers.length === 1, 'a map without a spire gets one for free');
-  ok(sp.cx === b.towers[0].cx && sp.cz === b.towers[0].cz, 'spire placement is deterministic');
-  ok(Math.max(Math.abs(sp.cx - bare.core[0]), Math.abs(sp.cz - bare.core[1])) > 2, 'spire is not adjacent to the core');
-  ok(sp.h === TOWER_H.spire && standY(sp) === sp.h, 'standY of a spire is its height');
-  ok(!a.sell(sp.id) && a.sellBlock(sp) === 'last', 'the last spire cannot be sold');
-  a.gold = 5000;
-  let free: [number, number] = [0, 0], free2: [number, number] = [0, 0];
-  for (let i = 0, n = 0; i < GW * GH && n < 2; i++) if (a.grid[i] === 0) { if (n++ === 0) free = [i % GW, Math.floor(i / GW)]; else free2 = [i % GW, Math.floor(i / GW)]; }
-  const pulse = a.build('pulse', free[0], free[1])!;
-  ok(a.unlocked.has('spire'), 'spires are unlocked from the start');
-  const sp2 = a.build('spire', free2[0], free2[1])!;
-  ok(pulse && sp2 && a.spires === 2, 'a second spire can be built');
-  a.players[0].energy = MAX_ENERGY;
-  ok(a.activateHero(0, pulse.id) && a.towerById(a.players[0].heroTower)!.type === 'spire', 'uplink to a turret resolves to the nearest spire');
-  const on = a.players[0].heroTower, o = a.heroOrigin(0)!;
-  ok(Math.abs(o.y - (standY(a.towerById(on)!) + 0.62)) < 1e-9, 'hero stands on top of the spire');
-  ok(!a.heroTeleport(0, pulse.id) && a.players[0].heroTower === on, 'teleport to a turret is refused');
-  ok(!a.sell(on), 'a spire with Kestrel on it cannot be sold');
-  const other = on === sp.id ? sp2 : sp;
-  ok(a.heroTeleport(0, other.id) && a.players[0].heroTower === other.id, 'teleport between spires');
-  ok(a.sell(on) && a.spires === 1 && !a.sell(other.id), 'the spare spire can be sold, the last one cannot');
-  a.exitHero(0); a.players[0].energy = MAX_ENERGY;
-  ok(a.activateHero(0, 987654) && a.players[0].heroTower === other.id, 'uplink with an unknown id uses a spire');
-  const before = a.projs.length; a.step(1 / 60);
-  ok(a.towers.every((t) => t.type !== 'spire' || t.charge === 0) && a.projs.length === before, 'spires do not attack or charge');
-}
 
-// ---------- tower special through the power node, weak points, wave intel, elevation ----------
+// ---------- tower specials fired by the player, wave intel, elevation ----------
 {
-  const s = new Sim({ seed: 5, map: bare, pauseOnCards: false });
+  const s = new Sim({ seed: 5, map: bare, pauseOnCards: false, free: true });
   s.gold = 5000;
   // a pulse turret next to the first stretch of road
   const turret = s.build('pulse', 3, 5)!;
@@ -143,56 +119,15 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
   turret.charge = 0.5; run(60);
   ok(turret.charge > 0.5 && turret.charge < 1, 'special charges over time');
   turret.charge = 1;
-  s.players[0].energy = MAX_ENERGY; ok(s.activateHero(0, 0), 'uplink');
-  s.players[0].heroTime = s.players[0].heroDur = 600;
-  const o = s.heroOrigin(0)!;
   ok(s.specialReady(turret) && !s.triggerSpecial(turret.id, 0) || s.enemies.some((e) => Math.hypot(e.x - turret.x, e.z - turret.z) < 10), 'a special with nothing to hit is not wasted');
-  // wait for the wave to reach the turret, then put an arrow through its node
-  run(60 * 30, () => { if (s.specialReady(turret) && s.enemies.some((e) => Math.hypot(e.x - turret.x, e.z - turret.z) < s.range(turret))) { nodePos(turret, V); s.heroFire(0, V.x, V.y, V.z); } });
+  // wait for the wave to reach the turret, then press Fire on it
+  run(60 * 30, () => { if (s.specialReady(turret) && s.enemies.some((e) => Math.hypot(e.x - turret.x, e.z - turret.z) < s.range(turret))) s.triggerSpecial(turret.id, 0); });
   ok(Math.abs(nodePos(turret, V).y - (turret.h + 0.55)) < 1e-9 && NODE_R === 0.6, 'node position');
-  const iSpec = evs.findIndex((e) => e.k === 'special' && e.id === turret.id && e.t === 'pulse'), iDown = evs.findIndex((e) => e.k === 'down' && e.id === turret.id), iUp = evs.findIndex((e) => e.k === 'up' && e.id === turret.id);
-  ok(iSpec >= 0, 'an arrow through the node fires the special');
+  const iSpec = evs.findIndex((e) => e.k === 'special' && e.id === turret.id && e.t === 'pulse' && e.p === 0), iDown = evs.findIndex((e) => e.k === 'down' && e.id === turret.id), iUp = evs.findIndex((e) => e.k === 'up' && e.id === turret.id);
+  ok(iSpec >= 0, 'triggerSpecial fires the special (and names the player)');
   ok(iDown > iSpec && iUp > iDown, 'the tower goes offline after the special and comes back');
   ok(turret.down === 0 && turret.spec === 0 && turret.charge > 0 && turret.charge < 1, 'back online, charging from zero');
   ok(!s.triggerSpecial(turret.id, 0), 'an uncharged special cannot be fired');
-  // weak point: a Colossus walks in; arrows at its weak point crit
-  evs.length = 0; s.enemies.length = 0; s.queue.length = 0;
-  (s as unknown as { spawn(t: string, m: number, l: number): void }).spawn('boss', 50, 0);
-  const boss = s.enemies[0];
-  ok(boss && boss.type === 'boss', 'boss spawned');
-  boss.dist = 20; boss.armor = 0;
-  const base = s.arrowDmg(s.players[0]);
-  run(60 * 6, () => {
-    const w = weakPos(boss, 1, V)!; // the front-top weak point, visible from a spire
-    const T = Math.hypot(w.x - o.x, w.y - o.y, w.z - o.z) / ARROW_SPEED;
-    s.heroFire(0, w.x + Math.sin(boss.yaw) * boss.speed * T, w.y, w.z + Math.cos(boss.yaw) * boss.speed * T);
-  });
-  const crit = evs.find((e) => e.k === 'crit');
-  ok(!!crit && crit.n >= base * FULL_DRAW_MUL * ENEMIES.boss.weak![1].mul * 0.99, `weak-point hit crits (${crit?.n} vs ${base * FULL_DRAW_MUL} per full-draw arrow)`);
-  ok(ENEMY_SCALE.boss === 0.95 && ENEMIES.boss.r === 1.6 && weakPos(boss, 5, V) === null && Math.abs(weakPos(boss, 0, V)!.y - (boss.gy + ENEMIES.boss.weak![0].y * 0.95)) < 1e-9, 'weak points scale with the smaller Colossus');
-  run(60, () => {}); // let arrows in flight land
-  evs.length = 0;
-  // aim at a part of the hull where no weak point is in the way
-  const hull = () => {
-    const vx = boss.x - o.x, vz = boss.z - o.z, vl = Math.hypot(vx, vz);
-    for (const k of [0, 0.6, -0.6, 1.2, -1.2, 1.7, -1.7]) for (const dy of [0, -0.8, 0.8]) {
-      const p = { x: boss.x + (vz / vl) * k, y: boss.y + dy, z: boss.z - (vx / vl) * k };
-      const dx = p.x - o.x, dy2 = p.y - o.y, dz = p.z - o.z, L = Math.hypot(dx, dy2, dz);
-      if (raySphere(o.x, o.y, o.z, dx / L, dy2 / L, dz / L, boss.x, boss.y, boss.z, boss.r) < 0) continue;
-      if ([0, 1].every((i) => { const w = weakPos(boss, i, V)!; return raySphere(o.x, o.y, o.z, dx / L, dy2 / L, dz / L, w.x, w.y, w.z, ENEMIES.boss.weak![i].r * ENEMY_SCALE.boss + 0.5) < 0; })) return p;
-    }
-    return null;
-  };
-  let hullShots = 0;
-  run(60 * 3, () => { const p = hull(); if (p && s.players[0].fireCd <= 0) { hullShots++; s.heroFire(0, p.x, p.y, p.z); } });
-  ok(hullShots > 3, 'found a clear line to the hull');
-  ok(!evs.some((e) => e.k === 'crit') && evs.some((e) => e.k === 'dmg'), 'body hits do not crit');
-  // no aim assistance: an arrow that passes beside the hull misses
-  evs.length = 0;
-  run(60, () => {}); // let arrows in flight land
-  evs.length = 0;
-  run(60 * 2, () => { const vx = boss.x - o.x, vz = boss.z - o.z, vl = Math.hypot(vx, vz), k = boss.r + ARROW_PAD + 1.6; s.heroFire(0, boss.x + (vz / vl) * k, boss.y, boss.z - (vx / vl) * k); });
-  ok(!evs.some((e) => e.k === 'dmg' || e.k === 'crit'), 'no aim assist: near misses miss');
 }
 {
   // elevation: a road that climbs to level 2 and comes back down
@@ -205,7 +140,7 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
 }
 {
   // every new tower works: flame, lance, missile, gravity fire, emit their events and stay finite
-  const s = new Sim({ seed: 8, map: bare, pauseOnCards: false });
+  const s = new Sim({ seed: 8, map: bare, pauseOnCards: false, free: true });
   s.gold = 1e5; for (const t of ['flame', 'lance', 'missile', 'gravity', 'arc', 'mortar', 'rail', 'beacon'] as const) s.unlocked.add(t);
   const cells: [number, number][] = [[3, 5], [4, 5], [6, 5], [7, 7], [8, 9], [6, 11], [8, 12], [8, 14], [11, 14], [13, 9]]; // free tiles along Switchback's road
   (['flame', 'lance', 'missile', 'gravity', 'flame', 'lance', 'missile', 'gravity', 'beacon', 'mortar'] as const).forEach((t, i) => ok(!!s.build(t, cells[i][0], cells[i][1]), 'build ' + t));
@@ -234,7 +169,7 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
 {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const priv = (s: Sim) => s as any;
-  const mk = (o: Partial<ConstructorParameters<typeof Sim>[0]> = {}) => { const s = new Sim({ seed: 21, map: bare, pauseOnCards: false, ...o }); s.gold = 1e6; s.nextWaveIn = 1e9; for (const t of TOWER_TYPES) s.unlocked.add(t); return s; };
+  const mk = (o: Partial<ConstructorParameters<typeof Sim>[0]> = {}) => { const s = new Sim({ seed: 21, map: bare, pauseOnCards: false, free: true, ...o }); s.gold = 1e6; s.nextWaveIn = 1e9; for (const t of TOWER_TYPES) s.unlocked.add(t); return s; };
   /** A stationary enemy with a huge health pool at a lane distance. */
   const put = (s: Sim, type: string, dist: number, lane = 0, speed = 0): Enemy => { priv(s).spawn(type, 1e6, lane); const e = s.enemies[s.enemies.length - 1]; e.speed = speed; e.dist = dist; e.off = 0; e.armor = 0; priv(s).place(e); return e; };
   const run = (s: Sim, sec: number, each?: (evs: Ev[]) => void) => { for (let i = 0; i < Math.round(sec * 60); i++) { s.step(1 / 60); const evs = s.events.splice(0); if (each) each(evs); s.players.forEach((p) => { p.pending.length = 0; }); } };
@@ -298,8 +233,6 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
     ok(hp()[0] === 50 && hp()[1] === 0, 'a blast on the bridge does not hit the road below');
     priv(s).aoe(low.x, low.z, 2.8, 50, -1, true, low.gy);
     ok(hp()[0] === 50 && hp()[1] === 50, 'a blast under the bridge does not hit the bridge');
-    priv(s).arrowHit({ dmg: 10, aoe: 1.5, owner: 0, tier: 0, chain: 0 }, up.x, up.y, up.z, up, 1);
-    ok(hp()[0] === 60 && hp()[1] === 50, 'an exploding arrow stays on its deck');
     // a mortar shell fired at the bridge
     const m = s.build('mortar', ...((): [number, number] => { for (let i = 0; i < GW * GH; i++) { const cx = i % GW, cz = Math.floor(i / GW); const d = Math.hypot((cx - GW / 2 + 0.5) * 2 - up.x, (cz - GH / 2 + 0.5) * 2 - up.z); if (s.grid[i] === 0 && d > 4 && d < 9) return [cx, cz]; } return [0, 0]; })())!;
     low.speed = 0; const before = hp();
@@ -358,64 +291,6 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
     ok(new Sim({ diff: 'hard', map: bare }).maxLives === 12 && Math.ceil(12 * BREACH_SHARE) === 3 && BREACH_TIME === 0.7 && BREACH_TIME_BOSS === 1.6, 'breach numbers');
   }
   {
-    // the bow: draw, hold, release
-    const s = mk(), p = s.players[0];
-    p.energy = MAX_ENERGY; ok(s.activateHero(0, 0) && p.heroDur === HERO_DUR && HERO_DUR === 17.5, 'the Uplink lasts 17.5 s');
-    p.heroTime = p.heroDur = 600; p.fireCd = 0;
-    const o = s.heroOrigin(0)!, aim: [number, number, number] = [o.x + 30, o.y, o.z];
-    const evs: Ev[] = [];
-    const hold = (sec: number, down: boolean) => { for (let i = 0; i < Math.round(sec * 60); i++) { s.heroAim(0, down, ...aim); s.step(1 / 60); evs.push(...s.events.splice(0)); } };
-    hold(DRAW_TIME / 2, true);
-    ok(p.drawing && Math.abs(p.draw - 0.5) < 0.05, `half a draw after half the draw time (${p.draw.toFixed(2)})`);
-    hold(DRAW_TIME / 2 + 0.05, true);
-    ok(p.draw === 1, 'full draw after DRAW_TIME');
-    hold(2, true);
-    ok(p.draw === 1 && !s.projs.length && !evs.some((e) => e.k === 'arrow'), 'holding at full draw looses nothing: no auto-fire');
-    hold(1 / 60, false);
-    const full = s.projs.filter((q) => q.kind === 'arrow');
-    const ev = evs.find((e) => e.k === 'arrow');
-    ok(full.length === 1 && !p.drawing && p.draw === 0 && !!ev && ev.pw === 1 && ev.p === 0, 'letting go looses one arrow at full power');
-    ok(Math.abs(full[0].dmg - s.arrowDmg(p) * FULL_DRAW_MUL) < 1e-9 && FULL_DRAW_MUL === 2.2 && full[0].pierce === 1 && Math.abs(Math.hypot(full[0].vx, full[0].vy, full[0].vz) - ARROW_SPEED) < 1e-6, 'a full draw is worth 2.2 stream arrows, pierces one more target and flies at full speed');
-    hold(1, false); s.projs.length = 0; evs.length = 0;
-    // a short pull is cancelled
-    hold(MIN_DRAW * DRAW_TIME * 0.5, true); hold(1 / 60, false);
-    ok(!s.projs.length && p.draw === 0, 'a pull shorter than MIN_DRAW is cancelled');
-    hold(0.3, false);
-    // half a draw is clearly worse than half the damage
-    hold(DRAW_TIME / 2, true); const d = p.draw; hold(1 / 60, false);
-    const half = s.projs.filter((q) => q.kind === 'arrow')[0];
-    ok(!!half && d > 0.4 && d < 0.6 && Math.abs(half.dmg - s.arrowDmg(p) * FULL_DRAW_MUL * drawPower(d)) < 1e-9 && half.dmg < full[0].dmg * d * 0.8 && half.pierce === 0 && d < FULL_DRAW, `half a draw is worth ${(100 * half.dmg / full[0].dmg).toFixed(0)}% and does not pierce`);
-    ok(Math.abs(Math.hypot(half.vx, half.vy, half.vz) - arrowSpeed(d)) < 1e-6 && arrowSpeed(d) < ARROW_SPEED && evs.some((e) => e.k === 'arrow' && Math.abs(e.pw - d) < 1e-9), 'a weak draw flies slower and reports its power');
-    // the nock time: the next draw starts NOCK_TIME after a loose
-    s.projs.length = 0; hold(NOCK_TIME * 0.5, true);
-    ok(p.draw === 0 && p.drawing, 'no draw while the next arrow is nocked');
-    hold(1, false);
-    // heroFire is an instant full-power loose, then the bow needs its draw time again
-    s.projs.length = 0; s.heroFire(0, ...aim);
-    ok(s.projs.length === 1 && Math.abs(s.projs[0].dmg - full[0].dmg) < 1e-9 && Math.abs(p.fireCd - (NOCK_TIME + DRAW_TIME)) < 1e-9, 'heroFire looses at full power');
-    s.heroFire(0, ...aim); ok(s.projs.length === 1, 'heroFire cannot stream arrows');
-    hold(1, false); s.projs.length = 0;
-    // cards per volley: Split Shot, Phase Tips, Quick Draw
-    p.stats.arrows = 3; p.stats.pierce = 2; p.stats.rate = 1.25 * 1.25;
-    hold(DRAW_TIME / 1.5625 + 0.03, true);
-    ok(p.draw === 1, 'Quick Draw shortens the draw');
-    hold(1 / 60, false);
-    ok(s.projs.length === 3 && s.projs.every((q) => q.pierce === 3 && Math.abs(q.dmg - full[0].dmg) < 1e-9), 'Split Shot and Phase Tips apply to the loosed volley');
-    // a skill takes the string
-    hold(1, false); s.projs.length = 0; hold(DRAW_TIME / 1.5625 * 0.6, true); const before = p.draw;
-    s.heroSkill(0, 0, ...aim);
-    ok(before > 0.4 && p.draw === 0, 'a skill resets a draw in progress');
-    // the draw is replicated
-    hold(1, true); hold(0.1, true);
-    const h = mk({ mode: 'coop', players: 2 }), c = mk({ mode: 'coop', players: 2 }); c.replica = true;
-    h.players[1].energy = MAX_ENERGY; h.activateHero(1, 0); h.players[1].fireCd = 0;
-    for (let i = 0; i < 12; i++) { h.heroAim(1, true, 5, 1, 5); h.step(1 / 60); }
-    c.applySnapshot(JSON.parse(JSON.stringify(h.snapshot([]))));
-    ok(c.players[1].drawing && Math.abs(c.players[1].draw - h.players[1].draw) < 0.011 && h.players[1].draw > 0.3, 'draw and drawing reach the replica');
-    h.exitHero(1); ok(h.players[1].draw === 0 && !h.players[1].drawing, 'leaving the Uplink drops the draw');
-    ok(BOW_TIERS.map((b) => b.color).join() === [0xe3dc92, 0x6fe0c8, 0xf68b56, 0xff5a3c, 0xfff2c4].join() && SING_COLOR !== 0xff2bd6, 'bow tiers use the Ember colours');
-  }
-  {
     // firewall: two pylons within link range burn a wall between them
     const s = mk(), cz = 5;
     // the first stretch of Switchback runs east along row 4; pylons go on rows 3 and 5, so the wall crosses the road
@@ -470,51 +345,16 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
     void b;
   }
   {
-    // jumping between Spires by shooting the target above the other one
-    const s = mk(), p = s.players[0];
-    const s1 = s.towers.find((t) => t.type === 'spire')!, s2 = s.build('spire', 20, 17)!;
-    p.energy = MAX_ENERGY; s.activateHero(0, s1.id); p.heroTime = p.heroDur = 600; p.fireCd = 0;
-    const T = spireTarget(s2, { x: 0, y: 0, z: 0 });
-    ok(Math.abs(T.y - (s2.h + 1.7)) < 1e-9 && T.x === s2.x && SPIRE_R === 0.75, 'spire target position');
-    let tele = 0; const each = (evs: Ev[]) => { for (const e of evs) if (e.k === 'tele') tele++; };
-    // a miss by more than the radius does nothing
-    s.heroFire(0, T.x, T.y + SPIRE_R + 0.5, T.z); run(s, 1.2, each);
-    ok(p.heroTower === s1.id && !tele, 'an arrow past the target does not jump');
-    s.heroFire(0, T.x, T.y, T.z); run(s, 1.2, each);
-    ok(p.heroTower === s2.id && tele === 1 && !s.projs.length, 'an arrow through the target of another Spire jumps there');
-    // and back with the Rail Shot
-    const T1 = spireTarget(s1, { x: 0, y: 0, z: 0 });
-    s.heroSkill(0, 0, T1.x, T1.y, T1.z); run(s, 0.1, each);
-    ok(p.heroTower === s1.id && tele === 2, 'the Rail Shot ray jumps too');
-    ok(s.heroTeleport(0, s2.id) && p.heroTower === s2.id, 'the direct teleport still works');
-  }
-  {
-    // the first wave waits 30 s and pays for an early call like every other wave
+    // the first wave waits 75 s (there is a factory to set up first) and pays for an early call like every other wave
     const s = new Sim({ seed: 3, map: bare, pauseOnCards: false });
-    ok(s.nextWaveIn === FIRST_WAVE_IN && FIRST_WAVE_IN === 30 && s.callBonus() === NEXT_WAVE_IN * 2, 'first wave in 30 s, early-call bonus ' + s.callBonus());
+    ok(s.nextWaveIn === FIRST_WAVE_IN && FIRST_WAVE_IN === 75 && s.callBonus() === NEXT_WAVE_IN * 2, 'first wave in 75 s, early-call bonus ' + s.callBonus());
     const g = s.gold; s.startWave();
     ok(s.wave === 1 && s.gold === g + NEXT_WAVE_IN * 2 && s.callBonus() === 0 && s.nextWaveIn === NEXT_WAVE_IN, 'calling wave 1 early pays the bonus');
     const t = new Sim({ seed: 3, map: bare, pauseOnCards: false }); const g2 = t.gold;
-    for (let i = 0; i < 60 * 31 && !t.wave; i++) t.step(1 / 60);
-    ok(t.wave === 1 && Math.abs(t.time - FIRST_WAVE_IN) < 0.1 && t.gold === g2, 'left alone, wave 1 comes after 30 s without a bonus');
+    for (let i = 0; i < 60 * (FIRST_WAVE_IN + 1) && !t.wave; i++) t.step(1 / 60);
+    ok(t.wave === 1 && Math.abs(t.time - FIRST_WAVE_IN) < 0.1 && t.gold === g2, 'left alone, wave 1 comes after 75 s without a bonus');
     s.queue.length = 0; s.nextWaveIn = 7.2;
     ok(s.callBonus() === 14, 'the bonus is two credits per second saved');
-  }
-  {
-    // hero skills on a raised road sit on the deck (and the replica hears about it)
-    const hl = MAPS.find((m) => m.id === 'highline')!;
-    const s = mk({ map: hl }), p = s.players[0];
-    const up = put(s, 'grunt', 14, 1), low = put(s, 'grunt', 12, 0);
-    p.energy = MAX_ENERGY; s.activateHero(0, 0); p.heroTime = p.heroDur = 600;
-    s.heroSkill(0, 1, up.x, up.gy, up.z); s.heroSkill(0, 2, low.x, low.gy, low.z);
-    const rain = s.zones.find((z) => z.kind === 'rain')!, sing = s.zones.find((z) => z.kind === 'sing')!;
-    ok(up.gy > 1 && Math.abs(rain.y - up.gy) < 0.4 && sing.y === low.gy, `Arrow Rain sits on the viaduct deck (${rain.y.toFixed(2)} vs ${up.gy.toFixed(2)}), Singularity on the ground road`);
-    const sk = s.events.filter((e) => e.k === 'skill');
-    ok(sk.length === 2 && Math.abs(sk[0].y - rain.y) < 1e-9, 'the skill event carries the deck height');
-    const c = mk({ map: hl }); c.replica = true; c.applySnapshot(JSON.parse(JSON.stringify(s.snapshot([]))));
-    ok(Math.abs(c.zones.find((z) => z.kind === 'rain')!.y - rain.y) < 0.011, 'zone height reaches the replica');
-    let boomY = -1; run(s, 3, (evs) => { for (const e of evs) if (e.k === 'boom' && e.c === SING_COLOR) boomY = e.y; });
-    ok(boomY === sing.y + 1, 'the collapse flash is at the zone height, in the singularity colour');
   }
   {
     // pulse cards: extra bolts are weaker
@@ -523,13 +363,13 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
     ok(b.length === 3 && Math.abs(b[1] / b[0] - TWIN_BOLT) < 1e-9 && TWIN_BOLT < 1, 'Twin Barrels bolts are weaker than the main bolt');
   }
   {
-    // co-op: the shared tower cards are offered to one player per level, the other gets hero cards
+    // co-op: the players take turns, one card offer per level
     const s = mk({ mode: 'coop', players: 2 });
     for (let lv = 0; lv < 6; lv++) {
       s.xp = s.xpNext; const e = put(s, 'grunt', 5); s.damage(e, 1e12, -1, true);
-      const full = s.level % 2, other = 1 - full;
-      ok(s.players[full].pending.length === 1 && s.players[other].pending.length <= 1 && s.players[other].pending.every((o) => o.every((id) => CARD_BY_ID[id].kind === 'hero')), `co-op level ${s.level}: only player ${full} is offered shared cards`);
-      s.players.forEach((_, i) => s.pickCard(i, 0));
+      const who = s.level % 2;
+      ok(s.players[who].pending.length === 1 && s.players[1 - who].pending.length === 0, `co-op level ${s.level}: only player ${who} is offered cards`);
+      s.pickCard(who, 0);
       ok(s.players.every((p) => !p.pending.length), 'offers consumed');
     }
   }
@@ -538,24 +378,20 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
     ok(coopScale(COOP_HP, 1) === 1 && coopScale(COOP_HP, TUNE.coopFrom) === 1 && Math.abs(coopScale(COOP_HP, TUNE.coopFrom + TUNE.coopRamp) - COOP_HP) < 1e-9 && coopScale(COOP_HP, 99) === COOP_HP && COOP_HP >= 2, 'co-op multiplier ramps in');
     const hpAt = (mode: 'solo' | 'coop', wave: number) => { const s = mk({ mode, players: mode === 'coop' ? 2 : 1 }); s.wave = wave; return put(s, 'grunt', 5).maxHp; };
     ok(hpAt('coop', 1) === hpAt('solo', 1) && Math.abs(hpAt('coop', 20) / hpAt('solo', 20) - COOP_HP) < 1e-9, 'co-op enemies: solo health in wave 1, COOP_HP times as much later');
-    // Colossus plating: towers are blunted until a weak-point hit cracks it open
-    const s = mk({}); const boss = put(s, 'boss', 5); boss.armor = 0;
-    const plated = s.damage(boss, 100, -1), hero = s.damage(boss, 100, 0); boss.crackT = 1; const open = s.damage(boss, 100, -1);
-    ok(Math.abs(plated - 100 * TUNE.plate) < 1e-9 && hero === 100 && Math.abs(open - 100 * TUNE.cracked) < 1e-9 && TUNE.plate < 1 && TUNE.cracked > 1, `plating: towers ${plated}, arrows ${hero}, cracked ${open}`);
   }
   {
     // snapshot: state events survive a flood of cosmetic ones, damage numbers are summed, modifiers are replicated
     const h = mk({ mode: 'coop', players: 2 }), c = mk({ mode: 'coop', players: 2 }); c.replica = true;
     const t = h.build('pulse', 3, 5)!;
-    const flood: Ev[] = [{ k: 'heroOff', p: 1, x: 0, y: 0, z: 0 }];
+    const flood: Ev[] = [{ k: 'build', x: 0, z: 0, c: 1 }];
     for (let i = 0; i < 400; i++) flood.push({ k: 'dmg', x: 0, y: 0, z: 0, n: 5, p: 1, id: 100 + (i % 200) });
     flood.push({ k: 'wave', n: 3 });
     for (let i = 0; i < 300; i++) flood.push({ k: 'hit', x: i, y: 0, z: 0, c: 1 });
-    for (const k of ['heroOn', 'special', 'down', 'up', 'card', 'levelup', 'boss', 'tele', 'leak']) flood.push({ k, p: 1, id: 1 });
+    for (const k of ['sell', 'special', 'down', 'up', 'card', 'levelup', 'boss', 'titanLand', 'leak']) flood.push({ k, p: 1, id: 1 });
     for (let i = 0; i < 100; i++) flood.push({ k: 'boom', x: i, y: 0, z: 0, r: 1, c: 1 });
     const snap = JSON.parse(JSON.stringify(h.snapshot(flood)));
     const ks = snap.ev.map((e: Ev) => e.k);
-    ok(['heroOff', 'wave', 'heroOn', 'special', 'down', 'up', 'card', 'levelup', 'boss', 'tele', 'leak'].every((k) => ks.includes(k) && MUST_EVENTS.has(k)), 'state events are never dropped from a snapshot');
+    ok(['build', 'wave', 'sell', 'special', 'down', 'up', 'card', 'levelup', 'boss', 'titanLand', 'leak'].every((k) => ks.includes(k) && MUST_EVENTS.has(k)), 'state events are never dropped from a snapshot');
     ok(snap.ev.length <= SNAP_EVENTS_MAX && snap.ev[snap.ev.length - 1].k === 'boom', `snapshot event budget (${snap.ev.length}), newest cosmetic events kept`);
     const agg = JSON.parse(JSON.stringify(h.snapshot([{ k: 'dmg', x: 0, y: 0, z: 0, n: 5, p: 1, id: 7 }, { k: 'dmg', x: 1, y: 0, z: 0, n: 6, p: 1, id: 7 }, { k: 'dmg', x: 0, y: 0, z: 0, n: 2, p: 0, id: 7 }]))).ev;
     ok(agg.length === 2 && agg[0].n === 11 && agg[0].x === 1 && agg[1].n === 2, 'damage numbers are summed per enemy and player');
@@ -655,7 +491,7 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       ok(!!well && gg.spin === 0 && gg.hp === 1e6, `a Graviton Well drags the rim to a stop (${gg.spin.toFixed(2)})`);
     }
     {
-      // Rail shots and full-draw arrows cut through half of the guard; everything else meets all of it
+      // Rail shots cut through half of the guard; everything else meets all of it
       const through = (type: 'rail' | 'pulse') => {
         const s = mk(), t = s.build(type, 3, 5)!, g = gyre(s, 10, 1e9);
         let hit = false;
@@ -664,21 +500,6 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       };
       const rail = through('rail'), pulse = through('pulse');
       ok(near(rail, 1 - WHEEL_GUARD * (1 - WHEEL_PIERCE), 1e-3) && near(pulse, 1 - WHEEL_GUARD, 1e-3), `a Railgun lands ${rail.toFixed(2)} of its damage on a spinning Gyre, a Pulse Turret ${pulse.toFixed(2)}`);
-      const s = mk(), p = s.players[0], g = gyre(s, 10, 1e9);
-      p.energy = MAX_ENERGY; s.activateHero(0, 0); p.heroTime = p.heroDur = 600; p.fireCd = 0;
-      s.heroFire(0, g.x, g.y, g.z);
-      ok(s.projs.length === 1 && s.projs[0].cut === WHEEL_PIERCE, 'a full-draw arrow carries the guard cut');
-      const want = s.arrowDmg(p) * FULL_DRAW_MUL * (1 - WHEEL_GUARD * (1 - WHEEL_PIERCE));
-      let got = 0; run(s, 1.5, (evs) => { for (const e of evs) if (e.k === 'dmg' && e.id === g.id) got += e.n; });
-      ok(Math.abs(got - want) <= 0.6, `a full-draw arrow lands ${got} on a spinning Gyre (expected ${want.toFixed(1)})`);
-      // a half-drawn arrow meets the whole guard
-      s.projs.length = 0;
-      for (let i = 0; i < 200 && p.draw < 0.5; i++) { s.heroAim(0, true, g.x, g.y, g.z); s.step(1 / 60); }
-      s.heroAim(0, false, g.x, g.y, g.z);
-      ok(s.projs.length === 1 && !s.projs[0].cut && p.draw === 0, 'a half-drawn arrow does not');
-      // Rail Shot (Kestrel's skill) cuts through as well
-      s.events.length = 0; const hp0 = g.hp; p.cds[0] = 0; s.heroSkill(0, 0, g.x, g.y, g.z);
-      ok(near(hp0 - g.hp, s.arrowDmg(p) * 8 * (1 - WHEEL_GUARD * (1 - WHEEL_PIERCE)), 0.01), 'Rail Shot ignores half of the guard');
     }
     {
       // waves: a mini-boss on its own. One on waves 8, 13, 18, ... (two from wave 18), never in the normal pool, never beside a Colossus, listed in the wave preview
@@ -764,13 +585,6 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       const gold = s.gold, xp = s.xp, kills = s.kills, second = mitesOf(s);
       ok(s.damage(second[0], 0.01, -1) > 0 && !second[0].alive && s.gold === gold && s.xp === xp && s.kills === kills && s.events.some((e) => e.k === 'die' && e.t === 'mite'), 'any hit destroys a mite, for no reward');
       ok(s.damage(second[1], 0, -1) === 0 && second[1].alive, 'a hit without damage does not');
-      // Kestrel shoots the rest off: the tower is free again at once
-      run(s, 1.2, each);
-      const p = s.players[0]; p.energy = MAX_ENERGY; s.activateHero(0, 0); p.heroTime = p.heroDur = 600; p.stats.pierce = 6;
-      evs.length = 0; const t0 = s.time;
-      run(s, 3, () => { const q = mitesOf(s).find((o) => o.latched); if (q && p.fireCd <= 0) s.heroFire(0, q.x, q.y, q.z); });
-      run(s, JAM_LINGER + 0.1, each);
-      ok(mitesOf(s).length === 0 && t.jam === 0 && s.time - t0 < MITE_HOLD - 0.5, 'Kestrel can shoot the mites off a tower and end the jam early');
     }
     {
       // a neighbour may shoot them: tower B covers tower A but not the carrier
@@ -793,12 +607,8 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       ok(jamAt > 0 && unAt > jamAt && unAt - jamAt < 3.5 && shotOff === BROOD_SIZE && bT.jam === 0, `a tower beside the jammed one shoots the mites off (jam ${(unAt - jamAt).toFixed(1)} s)`);
     }
     {
-      // never a Spire, never a tower that is offline
-      const s = mk(), sp = s.towers.find((t) => t.type === 'spire')!;
-      const c = put(s, 'brood', s.map.nearest(0, sp.x, sp.z));
-      ok(Math.hypot(c.x - sp.x, c.z - sp.z) < BROOD_REACH, 'the carrier stands within reach of the Spire');
-      c.ttl = 0; run(s, 1);
-      ok(mitesOf(s).length === 0, 'mites never go for a Spire');
+      // never a tower that is offline
+      const s = mk(), c = put(s, 'brood', 20);
       let cell: [number, number] = [0, 0], bd = 1e9;
       for (let i = 0; i < GW * GH; i++) if (s.grid[i] === 0) { const probe = s.build('pulse', i % GW, Math.floor(i / GW))!, dd = Math.hypot(probe.x - c.x, probe.z - c.z); s.sell(probe.id); if (dd < bd) { bd = dd; cell = [i % GW, Math.floor(i / GW)]; } }
       const t = s.build('pulse', cell[0], cell[1])!;
@@ -824,14 +634,12 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       (['gravity', 'cryo', 'mortar', 'missile', 'rail', 'lance', 'arc', 'flame', 'beacon', 'pulse'] as const).forEach((t, i) => s.build(t, cells[i][0], cells[i][1]));
       let jams = 0, bad = 0, miteBreach = 0;
       for (let k = 0; k < 4; k++) { priv(s).spawn('brood', 30, 0); s.enemies[s.enemies.length - 1].dist = 4 + k * 9; for (let g = 0; g < 4; g++) { priv(s).spawn('grunt', 30, 0); s.enemies[s.enemies.length - 1].dist = k * 9 + g; } }
-      const p = s.players[0]; p.energy = MAX_ENERGY; s.activateHero(0, 0); p.heroTime = p.heroDur = 600;
       run(s, 40, (evs) => {
         for (const e of evs) { if (e.k === 'jam') jams++; if (e.k === 'breach' && e.t === 'mite') miteBreach++; }
         for (const e of s.enemies) if (!Number.isFinite(e.x + e.z + e.y + e.gy + e.hp + e.dist + e.yaw)) bad++;
-        if (s.time % 6 < 0.02) { const e = s.enemies[0]; if (e) { p.cds[1] = p.cds[2] = 0; s.heroSkill(0, 1, e.x, e.gy, e.z); s.heroSkill(0, 2, e.x, e.gy, e.z); } }
         if (s.time % 9 < 0.02) for (const t of s.towers) { t.charge = 1; s.triggerSpecial(t.id, 0); }
       });
-      ok(jams >= 3 && bad === 0 && miteBreach === 0 && s.towers.every((t) => t.jam >= 0 && Number.isFinite(t.jam)), `mites among all the towers and skills: ${jams} jams, state stays finite`);
+      ok(jams >= 3 && bad === 0 && miteBreach === 0 && s.towers.every((t) => t.jam >= 0 && Number.isFinite(t.jam)), `mites among all the towers and specials: ${jams} jams, state stays finite`);
     }
     {
       // co-op: prey, latched and the jam reach the guest; hostile values are clamped
@@ -855,15 +663,15 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       }
       const old = JSON.parse(JSON.stringify(snap)); old.t = old.t.map((r: unknown[]) => r.slice(0, 12)); old.e = old.e.map((r: unknown[]) => r.slice(0, 13)); delete old.ti; old.a = old.a.slice(0, 16);
       c.applySnapshot(old);
-      ok(c.towers.every((x) => x.jam === 0 && x.stun === 0) && c.enemies.every((e) => e.prey === 0) && !c.overlink, 'a snapshot without the new fields reads as not jammed, not stunned, no overlink');
+      ok(c.towers.every((x) => x.jam === 0 && x.stun === 0 && !x.dry) && c.enemies.every((e) => e.prey === 0), 'a snapshot without the new fields reads as not jammed, not stunned, not dry');
     }
   }
   {
     // ---------- the Titan ----------
     const near = (a: number, b: number, eps = 1e-9) => Math.abs(a - b) < eps;
     const count = (evs: Ev[], k: string, id?: number) => evs.filter((e) => e.k === k && (id === undefined || e.id === id)).length;
-    const dT = ENEMIES.titan, wk = dT.weak!;
-    ok(ENEMY_SCALE.titan === 1 && dT.r === 3.2 && dT.y === 9 && wk.length === 4 && JSON.stringify(wk.map((w) => [w.x, w.y, w.z, w.r])) === JSON.stringify([[0, 13.4, 2.2, 0.9], [0, 10.2, -2.0, 1.1], [2.4, 6.4, 0, 0.8], [-2.4, 6.4, 0, 0.8]])
+    const dT = ENEMIES.titan;
+    ok(ENEMY_SCALE.titan === 1 && dT.r === 3.2 && dT.y === 9
       && TITAN_LAND === 2.5 && TITAN_STUN === 6 && TITAN_WINDUP === 4 && TITAN_STRIKE_EVERY === 5 && TITAN_STRIKE === 0.4 && TITAN_SLOW === 0.4 && TITAN_SURVIVAL === 22 && TITAN_AGAIN === 12 && TITAN_SMASH[0] === 20 && TITAN_SMASH[1] === 40 && TITAN_LEAD === 5
       && TITAN_PHASES.join() === 'none,far,warn,landing,walk,dead' && !WAVE_POOL.includes('titan'), 'Titan data follows the contract');
     /** Start the Titan's wave and (unless `leap` is set) run to just after the impact. Returns the Titan. */
@@ -876,32 +684,11 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
     };
     /** Hold the Titan still at a lane distance. */
     const hold = (s: Sim, ti: Enemy, dist: number) => { ti.speed = 0; ti.dist = dist; priv(s).place(ti); };
-    /** A weak point an arrow from `o` reaches by the rules of the sim, or -1. */
-    const openWeak = (ti: Enemy, o: { x: number; y: number; z: number }) => {
-      for (let i = 0; i < wk.length; i++) {
-        const w = weakPos(ti, i, { x: 0, y: 0, z: 0 })!, dx = w.x - o.x, dy = w.y - o.y, dz = w.z - o.z, L = Math.hypot(dx, dy, dz);
-        if (!weakOpen(ti, i, dx, dz)) continue;
-        const ub = raySphere(o.x, o.y, o.z, dx / L, dy / L, dz / L, ti.x, ti.y, ti.z, ti.r + ARROW_PAD), uw = raySphere(o.x, o.y, o.z, dx / L, dy / L, dz / L, w.x, w.y, w.z, wk[i].r);
-        if (ub < 0 || uw <= ub + 0.2) return i;
-      }
-      return -1;
-    };
-    /** A point on the hull with no weak point anywhere near the line of fire. */
-    const hullAim = (ti: Enemy, o: { x: number; y: number; z: number }) => {
-      const vx = ti.x - o.x, vz = ti.z - o.z, vl = Math.hypot(vx, vz);
-      for (const k of [0, 1, -1, 2, -2]) for (const dy of [0, 1.5, -1.5, 2.5, -2.5]) {
-        const q = { x: ti.x + (vz / vl) * k, y: ti.y + dy, z: ti.z - (vx / vl) * k };
-        const dx = q.x - o.x, dy2 = q.y - o.y, dz = q.z - o.z, L = Math.hypot(dx, dy2, dz);
-        if (raySphere(o.x, o.y, o.z, dx / L, dy2 / L, dz / L, ti.x, ti.y, ti.z, ti.r) < 0) continue;
-        if (wk.every((w, i) => { const c = weakPos(ti, i, { x: 0, y: 0, z: 0 })!; return raySphere(o.x, o.y, o.z, dx / L, dy2 / L, dz / L, c.x, c.y, c.z, w.r + 0.7) < 0; })) return q;
-      }
-      return null;
-    };
     {
       // when it comes: one per campaign, on a wave picked by the seed out of the four before the last; wave 22 in Survival; never in Versus
       for (const [diff, last] of [['easy', 20], ['normal', 25], ['hard', 30]] as const) {
         const seen = new Set<number>(); let far = true;
-        for (let seed = 1; seed <= 80; seed++) { const q = new Sim({ seed, map: bare, diff }); seen.add(q.titan.wave); if (q.titan.phase !== 'far' || q.titan.danger !== 0 || q.overlink) far = false; if (new Sim({ seed, map: bare, diff }).titan.wave !== q.titan.wave) far = false; }
+        for (let seed = 1; seed <= 80; seed++) { const q = new Sim({ seed, map: bare, diff }); seen.add(q.titan.wave); if (q.titan.phase !== 'far' || q.titan.danger !== 0) far = false; if (new Sim({ seed, map: bare, diff }).titan.wave !== q.titan.wave) far = false; }
         ok(far && [...seen].sort((a, b) => a - b).join() === [last - 4, last - 3, last - 2, last - 1].join(), `${diff}: the Titan arrives on a wave from ${last - 4} to ${last - 1}, picked by the seed (${[...seen].sort((a, b) => a - b).join()})`);
       }
       ok(new Sim({ seed: 3, map: bare, mode: 'versus', players: 1 }).titan.phase === 'none', 'no Titan in Versus');
@@ -926,7 +713,7 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       ok(s.preview.wave === s.titan.wave && s.preview.lanes.every((l, i) => (i === s.titan.lane ? JSON.stringify(l) === JSON.stringify([{ type: 'titan', n: 1 }]) : l.length === 0)), 'the wave preview lists the Titan, and nothing else, for its wave');
     }
     {
-      // the leap, the impact, the stun, the overlink
+      // the leap, the impact, the stun
       const s = mk(), turret = s.build('pulse', 3, 5)!, rail = s.build('rail', 4, 5)!;
       const g1 = put(s, 'grunt', 20), g2 = put(s, 'brute', 30);
       const evs: Ev[] = [];
@@ -934,17 +721,18 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       const gold = s.gold, xp = s.xp, kills = s.kills;
       const gate = s.map.pos(s.titan.lane, 0, { x: 0, z: 0, dx: 0, dz: 0, y: 0 });
       const leap = evs.find((e) => e.k === 'titanLand');
-      ok(s.wave === s.titan.wave && s.titan.phase === 'landing' && s.titan.danger === 1 && !!leap && leap.x === gate.x && leap.z === gate.z && leap.lane === s.titan.lane && s.queue.length === 0 && s.titanBusy && !s.overlink, 'its wave begins with the leap (titanLand at the gate of its lane), and nothing else is queued');
+      ok(s.wave === s.titan.wave && s.titan.phase === 'landing' && s.titan.danger === 1 && !!leap && leap.x === gate.x && leap.z === gate.z && leap.lane === s.titan.lane && s.queue.length === 0 && s.titanBusy, 'its wave begins with the leap (titanLand at the gate of its lane), and nothing else is queued');
       run(s, TITAN_LAND - 0.1, (e) => { evs.push(...e); });
       ok(s.titan.phase === 'landing' && g1.alive && g2.alive && !s.enemies.some((e) => e.type === 'titan') && count(evs, 'titanImpact') === 0, 'it is in the air for TITAN_LAND seconds');
       run(s, 0.15, (e) => { evs.push(...e); });
       const ti = s.enemies.find((e) => e.type === 'titan')!, hit = evs.find((e) => e.k === 'titanImpact');
-      ok(s.titan.phase === 'walk' && !!hit && hit.x === gate.x && hit.z === gate.z && s.overlink, 'the impact (titanImpact) puts it on the road and opens the overlink');
+      ok(s.titan.phase === 'walk' && !!hit && hit.x === gate.x && hit.z === gate.z, 'the impact (titanImpact) puts it on the road');
       ok(!g1.alive && !g2.alive && s.enemies.length === 1 && s.gold === gold && s.xp === xp && s.kills === kills, 'the impact destroys every enemy on the field, for no reward');
-      ok(s.towers.length >= 3 && s.towers.every((t) => t.stun > TITAN_STUN - 0.2 && t.stun <= TITAN_STUN && towerOff(t)), 'and stuns every tower for TITAN_STUN seconds');
+      ok(s.towers.length >= 2 && s.towers.every((t) => t.stun > TITAN_STUN - 0.2 && t.stun <= TITAN_STUN && towerOff(t)), 'and stuns every tower for TITAN_STUN seconds');
       const len = s.map.lanes[s.titan.lane].len;
       ok(!!ti && ti.lane === s.titan.lane && ti.dist < 0.5 && ti.r === 3.2 && near(ti.y, ti.gy + 9) && ti.maxHp === s.titanHp() && near(ti.speed, Math.max(0.9, Math.min(1.7, len / 70))) && MUST_EVENTS.has('titanLand') && MUST_EVENTS.has('titanImpact') && MUST_EVENTS.has('titanDie'), 'the Titan is an enemy of type titan on its lane, pacing itself to the road');
-      ok(near(s.titanHp(), TUNE.titan * BOW_TIERS[4].mul) && near(mk({ diff: 'hard' }).titanHp() / mk({ diff: 'easy', seed: 4 }).titanHp(), Math.sqrt(1.3 / 0.72) * (BOW_TIERS[4].mul / BOW_TIERS[bowTierOf(mk({ diff: 'easy', seed: 4 }).titan.wave)].mul), 1e-6) && near(mk({ mode: 'coop', players: 2 }).titanHp(), s.titanHp() * 1.75), 'its health follows the bow tier of its wave, the difficulty and the number of players');
+      const hard = mk({ diff: 'hard' }), easy = mk({ diff: 'easy', seed: 4 });
+      ok(near(s.titanHp(), TUNE.titan * waveHpMul(s.titan.wave) * s.mapMul) && near(hard.titanHp() / easy.titanHp(), Math.sqrt(1.3 / 0.72) * (waveHpMul(hard.titan.wave) / waveHpMul(easy.titan.wave)), 1e-6) && near(mk({ mode: 'coop', players: 2 }).titanHp(), s.titanHp() * 1.75), 'its health follows the enemy health of its wave, the difficulty and the number of players');
       // stunned towers are idle and dark: no shots, no charge, no special
       hold(s, ti, 10); evs.length = 0;
       turret.charge = 0.3; rail.charge = 1;
@@ -956,20 +744,21 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       s.startWave();
       ok(s.wave === wave && s.callBonus() === 0 && s.nextWaveIn === wait && s.waveActive && !s.cleared && s.queue.length === 0, 'no wave can start while the Titan walks');
       run(s, 1.2, (e) => { evs.push(...e); });
-      // regular tower fire does not hurt it; slows work at 40%
+      // regular tower fire only gets through at TUNE.titanTower, tower specials at full strength
       evs.length = 0; const hp = ti.hp;
       run(s, 3, (e) => { evs.push(...e); });
-      ok(count(evs, 'shot', turret.id) > 3 && count(evs, 'shot', rail.id) >= 1 && ti.hp === hp && turret.charge > 0.3 && turret.stun === 0, 'after the stun the towers fire again, and regular fire does not hurt the Titan');
-      ok(s.damage(ti, 1e6, -1) === 0 && s.damage(ti, 1e6, 0) === 0 && s.damage(ti, 1e6, -1, true) === 0 && ti.hp === hp, 'plain damage does nothing to it');
-      // tower specials do
+      ok(count(evs, 'shot', turret.id) > 3 && count(evs, 'shot', rail.id) >= 1 && ti.hp < hp && turret.charge > 0.3 && turret.stun === 0, `after the stun the towers fire again and chip at the Titan (${(hp - ti.hp).toFixed(0)})`);
+      const h0 = ti.hp, plain = s.damage(ti, 100, -1), rawHit = s.damage(ti, 100, 0, true);
+      ok(TUNE.titanTower === 0.35 && near(plain, 100 * TUNE.titanTower) && near(rawHit, 100 * TUNE.titanTower) && near(h0 - ti.hp, 200 * TUNE.titanTower, 1e-6), `plain damage gets through at ${TUNE.titanTower}`);
+      priv(s).sp = true; const spHit = s.damage(ti, 100, -1); priv(s).sp = false;
+      ok(near(spHit, 100 * TUNE.titanSpec) && TUNE.titanSpec >= 1, 'a hit from a special lands in full');
+      const hpS = ti.hp;
       ok(s.triggerSpecial(rail.id, 0), 'Overcharge fires at the Titan');
-      ok(near(hp - ti.hp, s.towerDmg(rail) * 8 * TUNE.titanSpec, 1e-6), `a tower special hurts it (${(hp - ti.hp).toFixed(0)})`);
+      ok(near(hpS - ti.hp, s.towerDmg(rail) * 8 * TUNE.titanSpec, 1e-6), `a tower special hurts it in full (${(hpS - ti.hp).toFixed(0)})`);
       const hp2 = ti.hp; turret.charge = 1;
       ok(s.triggerSpecial(turret.id, 0), 'Bullet Storm fires at the Titan');
       run(s, 3);
       ok(ti.hp < hp2 - s.towerDmg(turret) * 20, `Bullet Storm bolts hurt it too (${(hp2 - ti.hp).toFixed(0)})`);
-      run(s, 3.5); const hp3 = ti.hp; run(s, 8);
-      ok(turret.spec === 0 && ti.hp === hp3, 'once the storm is over the bolts do nothing again');
       // slowing effects at 40% strength
       ti.speed = 1; const d0 = ti.dist; run(s, 1); const free = ti.dist - d0;
       ti.slowT = 5; ti.slowF = 0.5; const d1 = ti.dist; run(s, 1);
@@ -977,50 +766,6 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       ti.slowT = 0; ti.frz = 5; const d2 = ti.dist; run(s, 1);
       ok(near(ti.dist - d2, 1 - TITAN_SLOW, 0.01), 'a freeze only slows it');
       ti.frz = 0; ti.speed = 0;
-      // the overlink: charge pinned at full, the Uplink does not run down, leaving and coming back is free
-      const p = s.players[0];
-      p.energy = 0; run(s, 0.05);
-      ok(p.energy === MAX_ENERGY, 'overlink: the charge is pinned at full');
-      p.energy = 0;
-      ok(s.activateHero(0, 0) && p.energy === MAX_ENERGY, 'the Uplink opens');
-      const left = p.heroTime; run(s, 4);
-      ok(p.heroActive && p.heroTime === left && left === p.heroDur, 'the Uplink timer does not run down');
-      s.exitHero(0);
-      ok(!p.heroActive && p.energy === MAX_ENERGY && s.activateHero(0, 0) && p.heroActive, 'leaving and coming back is free');
-      // arrows and the Rail Shot: weak points only
-      const o = s.heroOrigin(0)!;
-      let wi = -1, at = 10;
-      for (const dd of [10, 14, 18, 24, 30, 6]) { hold(s, ti, dd); wi = openWeak(ti, o); if (wi >= 0) { at = dd; break; } }
-      ok(wi >= 0, 'a weak point shows from the Spire (at lane distance ' + at + ')');
-      p.fireCd = 0; p.stats.arrows = 1; s.wave = 1; // (wave 1: a plain bow, one arrow, no blast)
-      run(s, 1); evs.length = 0; const hp4 = ti.hp;
-      const w = weakPos(ti, wi, { x: 0, y: 0, z: 0 })!;
-      s.heroFire(0, w.x, w.y, w.z); run(s, 1.2, (e) => { evs.push(...e); });
-      const crit = evs.find((e) => e.k === 'crit'), want = s.arrowDmg(p) * FULL_DRAW_MUL * wk[wi].mul;
-      ok(!!crit && near(hp4 - ti.hp, want, 1e-6) && Math.abs(crit.n - want) <= 0.5 && count(evs, 'deflect') === 0, `an arrow on a weak point hurts it (${(hp4 - ti.hp).toFixed(1)} of ${want.toFixed(1)})`);
-      const aim = hullAim(ti, o)!; evs.length = 0; const hp5 = ti.hp;
-      ok(!!aim, 'found a clear line to its hull');
-      s.heroFire(0, aim.x, aim.y, aim.z); run(s, 1.2, (e) => { evs.push(...e); });
-      const defl = evs.find((e) => e.k === 'deflect');
-      ok(!!defl && ti.hp === hp5 && count(evs, 'crit') === 0 && count(evs, 'dmg') === 0 && Math.abs(Math.hypot(defl.x - ti.x, defl.y - ti.y, defl.z - ti.z) - (ti.r + ARROW_PAD)) < 0.05, 'an arrow anywhere else glances off (deflect, where it met the hull)');
-      p.cds[0] = 0; evs.length = 0; s.heroSkill(0, 0, aim.x, aim.y, aim.z); evs.push(...s.events.splice(0));
-      ok(ti.hp === hp5 && count(evs, 'deflect') === 1 && count(evs, 'crit') === 0, 'a Rail Shot on the hull glances off as well');
-      p.cds[0] = 0; evs.length = 0; s.heroSkill(0, 0, w.x, w.y, w.z); evs.push(...s.events.splice(0));
-      ok(near(hp5 - ti.hp, s.arrowDmg(p) * 8 * wk[wi].mul, 1e-6) && count(evs, 'crit') === 1, `a Rail Shot through a weak point hurts it (${(hp5 - ti.hp).toFixed(1)} of ${(s.arrowDmg(p) * 8 * wk[wi].mul).toFixed(1)}, weak point ${wi}, ${count(evs, 'crit')} crits)`);
-      // the eye only shows from in front
-      const fx = Math.sin(ti.yaw), fz = Math.cos(ti.yaw);
-      ok(wk[0].front === true && weakOpen(ti, 0, -fx, -fz) && weakOpen(ti, 0, fz, -fx) && !weakOpen(ti, 0, fx, fz) && [1, 2, 3].every((i) => weakOpen(ti, i, fx, fz) && weakOpen(ti, i, -fx, -fz)) && !weakOpen(ti, 9, fx, fz), 'the eye can be hit from in front and from the side, not from behind');
-      // Arrow Rain and Singularity only slow it
-      run(s, 1); const hp6 = ti.hp; ti.speed = 1; ti.slowT = 0; ti.slowF = 0;
-      p.cds[1] = 0; s.heroSkill(0, 1, ti.x, ti.gy, ti.z); run(s, RAIN_DELAY + 0.3);
-      const d3 = ti.dist; run(s, 1);
-      ok(ti.hp === hp6 && near(ti.dist - d3, 1 - 0.5 * TITAN_SLOW, 0.02), `Arrow Rain does not hurt the Titan, it slows it (${(ti.dist - d3).toFixed(2)} a second)`);
-      run(s, 4); ti.slowT = 0; ti.slowF = 0;
-      p.cds[2] = 0; s.heroSkill(0, 2, ti.x, ti.gy, ti.z); run(s, 0.3);
-      const d4 = ti.dist; run(s, 1);
-      ok(near(ti.dist - d4, 1 - 0.9 * TITAN_SLOW, 0.02), 'a Singularity holds it at part strength and does not drag it');
-      run(s, 3);
-      ok(ti.hp === hp6, 'and its collapse does not hurt it');
     }
     {
       // at the core: four seconds of wind-up, then 40% of the core's maximum, again every five seconds until the core falls
@@ -1041,19 +786,19 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       ok(s.lives === 0 && s.over && !s.won && count(evs, 'lose') === 1 && count(evs, 'titanStrike') === 3, 'until the core falls');
     }
     {
-      // destroyed: titanDie, credits and a level, the overlink closes, the wave clears and the remaining waves follow
+      // destroyed: titanDie, credits and a level, the wave clears and the remaining waves follow
       const s = mk(), evs: Ev[] = [], each = (e: Ev[]) => { evs.push(...e); };
       const ti = land(s), p = s.players[0];
-      s.activateHero(0, 0); run(s, 2, each);
+      run(s, 2, each);
       const gold = s.gold, level = s.level, kills = s.kills, wave = s.wave;
       priv(s).sp = true; s.damage(ti, 1e12, 0); priv(s).sp = false;
       evs.push(...s.events.splice(0));
       const die = evs.find((e) => e.k === 'titanDie');
-      ok(!ti.alive && s.titan.phase === 'dead' && !s.overlink && !s.titanBusy && !!die && near(die.x, ti.x) && near(die.y, ti.y) && near(die.z, ti.z) && count(evs, 'die') === 0, 'titanDie: the Titan is destroyed and the overlink closes');
+      ok(!ti.alive && s.titan.phase === 'dead' && !s.titanBusy && !!die && near(die.x, ti.x) && near(die.y, ti.y) && near(die.z, ti.z) && count(evs, 'die') === 0, 'titanDie: the Titan is destroyed');
       ok(near(s.gold, gold + TITAN_GOLD) && s.level === level + 1 && count(evs, 'levelup') === 1 && p.pending.length === 1 && s.kills === kills + 1 && p.kills === 1, 'its reward: credits and a level-up');
       p.pending.length = 0;
-      const left = p.heroTime; run(s, 1, each);
-      ok(p.heroActive && p.heroTime < left - 0.9 && count(evs, 'clear') === 1 && s.cleared && s.nextWaveIn <= 5, 'normal rules resume: the Uplink runs down again and the wave is cleared');
+      run(s, 1, each);
+      ok(count(evs, 'clear') === 1 && s.cleared && s.nextWaveIn <= 5, 'normal rules resume: the wave is cleared');
       run(s, 5, each);
       ok(s.wave === wave + 1 && s.wave <= s.winWave && s.queue.length + s.enemies.length > 0 && s.titan.phase === 'dead' && !s.queue.some((q) => q.type === 'titan'), 'the remaining waves follow');
       let again = 0;
@@ -1071,7 +816,7 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       ok(s.wave === TITAN_SURVIVAL + 1 && s.titan.phase === 'far' && s.titan.danger === 0, 'and roams the district again');
       s.enemies.length = 0;
       const t2 = land(s);
-      ok(s.wave === TITAN_SURVIVAL + TITAN_AGAIN && !!t2 && near(t2.maxHp, hp1 * TITAN_TOUGHER, 1e-6), `the second Titan is tougher (${Math.round(hp1)} then ${Math.round(t2.maxHp)})`);
+      ok(s.wave === TITAN_SURVIVAL + TITAN_AGAIN && !!t2 && near(t2.maxHp / hp1, TITAN_TOUGHER * waveHpMul(TITAN_SURVIVAL + TITAN_AGAIN) / waveHpMul(TITAN_SURVIVAL), 1e-6), `the second Titan is tougher, on top of its later wave (${Math.round(hp1)} then ${Math.round(t2.maxHp)})`);
       // a campaign that plays on after its win gets one as well
       const c = mk(); const t3 = land(c);
       priv(c).sp = true; c.damage(t3, 1e12, 0); priv(c).sp = false; c.players[0].pending.length = 0;
@@ -1087,7 +832,7 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       const snap = JSON.parse(JSON.stringify(h.snapshot([{ k: 'titanLand', x: 1, z: 2, lane: 0 }, { k: 'titanImpact', x: 1, z: 2 }, { k: 'titanSmash' }, { k: 'titanDie', x: 1, y: 2, z: 3 }, { k: 'titanStrike', id: ti.id, x: 1, z: 2, n: 8 }])));
       c.applySnapshot(snap);
       const ct = c.enemies.find((e) => e.id === ti.id)!;
-      ok(c.titan.phase === 'walk' && c.titan.wave === h.titan.wave && c.titan.lane === h.titan.lane && c.titan.danger === 1 && Math.abs(c.titan.t - h.titan.t) < 0.011 && c.overlink, 'the Titan state and the overlink reach the guest');
+      ok(c.titan.phase === 'walk' && c.titan.wave === h.titan.wave && c.titan.lane === h.titan.lane && c.titan.danger === 1 && Math.abs(c.titan.t - h.titan.t) < 0.011, 'the Titan state reaches the guest');
       ok(!!ct && ct.type === 'titan' && ct.r === 3.2 && near(ct.y, ct.gy + 9) && Math.abs(ct.hp - ti.hp) <= 1 && c.towers.length === h.towers.length && c.towers.every((t, i) => Math.abs(t.stun - h.towers[i].stun) < 0.011 && t.stun > 0), 'the Titan itself and the stunned towers reach the guest');
       ok(['titanLand', 'titanImpact', 'titanSmash', 'titanDie', 'titanStrike'].every((k) => c.events.some((e) => e.k === k)) && c.events.some((e) => e.k === 'titanLand' && e.lane === 0 && e.x === 1), 'the Titan events reach the guest');
       h.preview = { wave: 22, lanes: [[{ type: 'titan', n: 1 }]] };
@@ -1096,37 +841,26 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       for (const bad of [[99, 5, 'x', -1, 1e9], ['walk', NaN, 1e99, {}, -4], [-1, -1, -1, -1, -1], [2.7, 0.5, 23.9, 1e99, 0.4], 'x', null, [[]]]) {
         const o = JSON.parse(JSON.stringify(snap)); o.ti = bad; o.a[16] = bad;
         try { c.applySnapshot(o); } catch (e) { ok(false, 'hostile Titan state threw ' + e); }
-        ok(TITAN_PHASES.includes(c.titan.phase) && c.titan.danger >= 0 && c.titan.danger <= 1 && Number.isInteger(c.titan.wave) && c.titan.wave >= 0 && c.titan.t >= 0 && Number.isFinite(c.titan.t) && Number.isInteger(c.titan.lane) && c.titan.lane >= 0 && c.titan.lane < c.map.lanes.length && c.overlink === false, 'hostile Titan state is clamped: ' + JSON.stringify(bad));
+        ok(TITAN_PHASES.includes(c.titan.phase) && c.titan.danger >= 0 && c.titan.danger <= 1 && Number.isInteger(c.titan.wave) && c.titan.wave >= 0 && c.titan.t >= 0 && Number.isFinite(c.titan.t) && Number.isInteger(c.titan.lane) && c.titan.lane >= 0 && c.titan.lane < c.map.lanes.length, 'hostile Titan state is clamped: ' + JSON.stringify(bad));
       }
     }
     {
-      // the bot: uplinks when the overlink is on (also in the runs without the hero), goes for the weak points and fires charged specials at it
+      // the bot fires a charged special at the Titan: specials are what hurts it most
       const s = mk(), rail = s.build('rail', 4, 5)!, bot = new Bot(s, 0);
-      bot.useHero = false;
-      const ti = land(s), p = s.players[0];
-      let crits = 0, specials = 0, on = -1;
+      const ti = land(s);
+      let specials = 0;
       const hp = ti.hp;
       for (let i = 0; i < 60 * 14; i++) {
-        p.energy = 0; // the no-hero balance runs do this every step
         if (i === 60) { for (const t of s.towers) t.stun = 0; rail.charge = 1; }
         bot.step(1 / 60); s.step(1 / 60);
-        if (p.heroActive && on < 0) on = s.time;
-        for (const e of s.events.splice(0)) { if (e.k === 'crit') crits++; if (e.k === 'special' && e.id === rail.id) specials++; }
-        p.pending.length = 0;
+        for (const e of s.events.splice(0)) if (e.k === 'special' && e.id === rail.id) specials++;
+        s.players[0].pending.length = 0;
       }
-      ok(on >= 0 && on - (s.time - 14) < 1.2, 'the bot uplinks as soon as the overlink is on, even when it plays without the hero');
-      ok(crits >= 8 && ti.hp < hp - s.arrowDmg(p) * FULL_DRAW_MUL * 8, `the bot hits the Titan's weak points (${crits} crits)`);
-      ok(specials === 1, 'and fires a charged special at it');
-      // mites on a tower: the bot shoots them off during the Uplink
-      const q = mk(), t = q.build('pulse', 3, 5)!, c = put(q, 'brood', 10), b2 = new Bot(q, 0), p2 = q.players[0];
-      c.ttl = 0; p2.energy = MAX_ENERGY; q.activateHero(0, 0); p2.heroTime = p2.heroDur = 600;
-      let shotOff = 0, jamT = 0;
-      for (let i = 0; i < 60 * 14; i++) { b2.step(1 / 60); q.step(1 / 60); if (t.jam > 0) jamT += 1 / 60; for (const e of q.events.splice(0)) if (e.k === 'die' && e.t === 'mite' && e.h === 1) shotOff++; p2.pending.length = 0; }
-      ok(shotOff >= 4 && jamT < 2 * (MITE_HOLD + JAM_LINGER) * 0.85, `the bot shoots mites off a jammed tower (${shotOff} shot off, jammed ${jamT.toFixed(1)} s of 14)`);
+      ok(specials === 1 && ti.hp < hp, 'the bot fires a charged special at the Titan');
     }
     {
       // a whole campaign with the bot: the Titan comes, is destroyed, and the final waves still play
-      const s = new Sim({ seed: 7, map: MAPS[0], diff: 'easy', pauseOnCards: false }), bot = new Bot(s, 0);
+      const s = new Sim({ seed: 7, map: MAPS[0], diff: 'easy', pauseOnCards: false, free: true }), bot = new Bot(s, 0);
       let dieWave = 0, landWave = 0, wavesAfter = 0, wonWhileAlive = false, spawnsDuring = 0;
       for (let i = 0; i < 60 * 60 * 40 && !s.over; i++) {
         bot.step(1 / 60); s.step(1 / 60);
@@ -1141,166 +875,6 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       ok(landWave === s.titan.wave && landWave >= s.winWave - 4 && landWave < s.winWave && spawnsDuring <= 60 * TITAN_LAND + 1, `the Titan landed on wave ${landWave} of ${s.winWave}, alone`);
       ok(dieWave === landWave && wavesAfter === s.winWave - landWave && s.won && !wonWhileAlive && s.wave === s.winWave, `the bot destroyed it, the last ${wavesAfter} waves were played and the campaign was won`);
     }
-  }
-  {
-    // ---------- Uplink mode: the whole run is played from a Spire ----------
-    const near = (a: number, b: number, eps = 1e-9) => Math.abs(a - b) < eps;
-    const up = (o: Partial<ConstructorParameters<typeof Sim>[0]> = {}) => new Sim({ seed: 21, map: bare, pauseOnCards: false, uplink: true, ...o });
-    const watch = (k: string) => { let n = 0; const f = (evs: Ev[]) => { for (const e of evs) if (e.k === k) n++; }; return { f, get n() { return n; } }; };
-    /** The road within 18 of a point (the reach a starting Spire is judged by): its share of all the road, and how much of that lies on the core half. */
-    const view = (s: Sim, t: { x: number; z: number }) => {
-      const P = { x: 0, z: 0, dx: 0, dz: 0, y: 0 };
-      let n = 0, all = 0, core = 0;
-      for (let l = 0; l < s.map.lanes.length; l++) { const len = s.map.lanes[l].len; for (let d = 0; d < len; d++) { s.map.pos(l, d, P); all++; if (Math.hypot(P.x - t.x, P.z - t.z) <= 18) { n++; if (d > len / 2) core++; } } }
-      return { road: n / all, core: n ? core / n : 0 };
-    };
-    {
-      // the starting Spire, the first step, exitHero, selling
-      const s = up(), h = s.uplinkHome(0)!, again = up({ seed: 5 }).uplinkHome(0)!;
-      ok(s.opts.uplink && !!h && h.type === 'spire' && !!again && h.cx === again.cx && h.cz === again.cz, `Uplink mode brings the player's Spire, on the same tile for any seed (${h?.cx},${h?.cz})`);
-      ok(Math.max(Math.abs(h.cx - bare.core[0]), Math.abs(h.cz - bare.core[1])) > 2, 'it is not right beside the core');
-      const c = new Sim({ seed: 21, map: bare });
-      ok(!c.opts.uplink && c.uplinkHome(0) === undefined && c.spires === 1 && c.towers.length === 1, 'the campaign keeps its one free Spire');
-      ok(s.sellBlock(h) === 'hero' && !s.sell(h.id), 'before the first step the Spire is already the player\'s: it cannot be sold');
-      for (const m of MAPS.filter((q) => !q.id.startsWith('gen-'))) {
-        const q = up({ map: m }), hq = q.uplinkHome(0)!, v = view(q, hq);
-        ok(!!hq && v.road >= 0.5 && v.core >= 0.5, `${m.id}: the Spire overlooks ${Math.round(100 * v.road)}% of the road, ${Math.round(100 * v.core)}% of that on the core half`);
-        const q2 = up({ map: m, mode: 'coop', players: 2 }), a = q2.uplinkHome(0)!, b = q2.uplinkHome(1)!;
-        q2.step(1 / 60);
-        ok(!!a && !!b && a !== b && a.type === 'spire' && b.type === 'spire' && Math.hypot(a.x - b.x, a.z - b.z) >= 10 && q2.players.every((p, i) => p.heroActive && p.heroTower === [a, b][i].id), `${m.id}: two players, two Spires of their own (${Math.hypot(a.x - b.x, a.z - b.z).toFixed(1)} apart), each on theirs from the first step`);
-      }
-      s.step(1 / 60);
-      const p = s.players[0], on = s.events.splice(0).find((e) => e.k === 'heroOn');
-      ok(p.heroActive && p.heroTower === h.id && !!on && on.p === 0 && on.x === h.x && on.z === h.z, 'the first step puts the player on it (heroOn)');
-      ok(p.energy === 0 && p.heroTime === p.heroDur, 'no charge to fill and no Uplink timer running down');
-      const flips = watch('heroOff');
-      s.exitHero(0); run(s, 1, flips.f);
-      ok(p.heroActive && p.heroTower === h.id && flips.n === 0 && !s.activateHero(0, h.id), 'exitHero is ignored, and there is nothing to activate');
-      const free = (): [number, number] => { for (let i = 0; i < GW * GH; i++) if (s.grid[i] === 0 && hexDist(i % GW, Math.floor(i / GW), h.cx, h.cz) >= 6) return [i % GW, Math.floor(i / GW)]; return [0, 0]; };
-      s.gold = 1e6;
-      const sp2 = s.build('spire', ...free())!, sp3 = s.build('spire', ...free())!;
-      ok(!!sp2 && !!sp3 && s.sellBlock(h) === 'hero' && !s.sell(h.id), 'the Spire the player stands on cannot be sold');
-      ok(s.heroTeleport(0, sp2.id) && p.heroTower === sp2.id && s.sellBlock(sp2) === 'hero' && s.sell(h.id) && !s.towerById(h.id), 'after a jump the old Spire can be sold, the new one cannot');
-      // a Spire gone from under the player (a co-op guest's snapshot can show that): back onto one that stands
-      s.towers.splice(s.towers.indexOf(sp2), 1); s.recomputeBuffs();
-      const back = watch('heroOn'); run(s, 0.1, back.f);
-      ok(p.heroActive && p.heroTower === sp3.id && back.n === 1, 'a player whose Spire is gone is put on another one');
-      s.over = true; s.exitHero(0);
-      ok(!p.heroActive && p.energy === 0, 'once the run is over the player may step down, and no charge shows up');
-      s.over = false; run(s, 0.1);
-      ok(p.heroActive && p.heroTower === sp3.id, 'and is back on a Spire when the run goes on (endless after a win)');
-    }
-    {
-      // cards that only feed the Uplink meter are never offered
-      ok(CARDS.filter((c) => c.meter).map((c) => c.id).sort().join() === 'b_feed,charge,relayup,uplink', 'the meter cards are flagged: Extended Uplink, Fast Charge, Relay Uplink, Uplink Feed');
-      const q = up({ mode: 'coop', players: 2 }), c = new Sim({ seed: 21, map: bare, pauseOnCards: false, mode: 'coop', players: 2 });
-      for (const t of TOWER_TYPES) { q.unlocked.add(t); c.unlocked.add(t); }
-      let dead = 0, short = 0, inCampaign = 0;
-      for (let i = 0; i < 3000; i++) {
-        q.level = c.level = 2 + (i % 30);
-        const a = q.rollCards(0), b = q.rollCards(1, true);
-        if (a.length < 3 || b.length < 3) short++;
-        for (const id of [...a, ...b]) if (CARD_BY_ID[id].meter) dead++;
-        for (const id of [...c.rollCards(0), ...c.rollCards(1, true)]) if (CARD_BY_ID[id].meter) inCampaign++;
-      }
-      ok(dead === 0 && short === 0 && inCampaign > 0, `Uplink mode offers no meter card and still three cards an offer (${dead} meter cards, ${short} short offers; the campaign offered ${inCampaign})`);
-    }
-    {
-      // the balance knobs: tougher machines and a tougher Titan, only in Uplink mode
-      const a = up(), b = new Sim({ seed: 21, map: bare, pauseOnCards: false });
-      const ea = put(a, 'shield', 10), eb = put(b, 'shield', 10), ba = put(a, 'boss', 10), bb = put(b, 'boss', 10), ga = put(a, 'wheel', 10), gb = put(b, 'wheel', 10);
-      ok(near(ea.maxHp / eb.maxHp, TUNE.upHp, 1e-9) && near(ea.maxShield / eb.maxShield, TUNE.upHp, 1e-9) && near(ba.maxHp / bb.maxHp, TUNE.upBoss, 1e-9) && near(ga.maxHp / gb.maxHp, TUNE.upBoss, 1e-9) && near(a.titanHp() / b.titanHp(), TUNE.upTitan, 1e-9),
-        `Uplink mode: the machines have ${TUNE.upHp} times the health and shield, the Colossus and the Gyre ${TUNE.upBoss} times, the Titan ${TUNE.upTitan} times`);
-      const ca = up({ mode: 'coop', players: 2 }), cb = new Sim({ seed: 21, map: bare, pauseOnCards: false, mode: 'coop', players: 2 });
-      ok(near(put(ca, 'grunt', 10).maxHp / put(cb, 'grunt', 10).maxHp, TUNE.upHp * TUNE.upCoop, 1e-9) && near(ca.titanHp() / cb.titanHp(), TUNE.upTitan, 1e-9), `and in co-op another ${TUNE.upCoop} times on top, for the second archer`);
-    }
-    {
-      // a whole run with the bot: the archer at every step, through the Titan; it builds, upgrades and jumps between Spires
-      const s = new Sim({ seed: 7, map: MAPS[0], diff: 'easy', pauseOnCards: false, uplink: true }), bot = new Bot(s, 0), p = s.players[0];
-      let off = 0, steps = 0, offers = 0, dead = 0, downs = 0, tele = 0, walk = 0, landed = false, killed = false;
-      for (let i = 0; i < 60 * 60 * 40 && !s.over; i++) {
-        for (const o of p.pending) { offers++; for (const id of o) if (CARD_BY_ID[id].meter) dead++; }
-        bot.step(1 / 60); s.step(1 / 60); steps++;
-        if (!s.over && (!p.heroActive || p.energy !== 0 || p.heroTime !== p.heroDur || s.towerById(p.heroTower)?.type !== 'spire')) off++;
-        if (s.titan.phase === 'walk') walk++;
-        for (const e of s.events.splice(0)) { if (e.k === 'heroOff') downs++; else if (e.k === 'tele') tele++; else if (e.k === 'titanImpact') landed = true; else if (e.k === 'titanDie') killed = true; }
-      }
-      ok(off === 0 && downs === 0 && steps > 60 * 60 * 5, `the player is the archer at every one of ${steps} steps (${off} off, ${downs} heroOff)`);
-      ok(landed && killed && walk > 60 * 10 && s.won, `also for the ${(walk / 60).toFixed(0)} s the Titan walked; the run was ${s.won ? 'won' : 'lost'}`);
-      ok(offers >= 15 && dead === 0, `no meter card in any of the ${offers} offers`);
-      ok(s.towers.length - s.spires >= 15 && s.towers.some((t) => t.lvl === 3), `the bot built ${s.towers.length - s.spires} towers and upgraded them (and jumped between Spires ${tele} times)`);
-    }
-    {
-      // the bot moves with the attack: machines far up the road from its Spire, next to another one, draw it over there
-      const s = up(), bot = new Bot(s, 0), p = s.players[0], h = s.uplinkHome(0)!, P = { x: 0, z: 0, dx: 0, dz: 0, y: 0 };
-      s.gold = 1e6; s.step(1 / 60);
-      let at = 0, far = 0;
-      for (let d = 0; d < s.map.lanes[0].len; d += 1) { s.map.pos(0, d, P); const f = Math.hypot(P.x - h.x, P.z - h.z); if (f > far) { far = f; at = d; } }
-      s.map.pos(0, at, P);
-      let cell = -1, cd = Infinity;
-      for (let i = 0; i < GW * GH; i++) { if (s.grid[i] !== 0) continue; const t = s.build('spire', i % GW, Math.floor(i / GW)); if (!t) continue; const d = Math.hypot(t.x - P.x, t.z - P.z); s.sell(t.id); if (d < cd) { cd = d; cell = i; } }
-      const other = s.build('spire', cell % GW, Math.floor(cell / GW))!;
-      for (let k = 0; k < 6; k++) put(s, 'grunt', at + k * 0.8);
-      let jumped = 0;
-      for (let i = 0; i < 60 * 6; i++) { bot.step(1 / 60); s.step(1 / 60); for (const e of s.events.splice(0)) if (e.k === 'tele') jumped++; p.pending.length = 0; }
-      ok(!!other && p.heroTower === other.id && jumped >= 1, `in Uplink mode the bot jumps to the Spire by the fight (${far.toFixed(0)} from its own, ${jumped} jumps)`);
-    }
-    {
-      // co-op: two archers on Spires of their own; the guest's copy keeps the archer state and learns the mode from the snapshot
-      const h = up({ map: MAPS[2], mode: 'coop', players: 2, seed: 3 }), c = new Sim({ map: MAPS[2], mode: 'coop', players: 2, seed: 3, pauseOnCards: false }); c.replica = true;
-      const bots = [new Bot(h, 0), new Bot(h, 1)];
-      let off = 0, same = true, apart = false;
-      for (let i = 0; i < 60 * 240; i++) {
-        for (const b of bots) b.step(1 / 60);
-        h.step(1 / 60);
-        if (h.players.some((p) => !p.heroActive || p.energy !== 0 || p.heroTime !== p.heroDur)) off++;
-        if (i === 0) apart = h.players[0].heroTower !== h.players[1].heroTower && h.players.every((p, k) => p.heroTower === h.uplinkHome(k)!.id);
-        if (i % 5 === 0) {
-          c.applySnapshot(JSON.parse(JSON.stringify(h.snapshot(h.events.splice(0))))); c.events.length = 0;
-          if (!c.opts.uplink || c.players.some((p, k) => { const o = h.players[k]; return p.heroActive !== o.heroActive || p.heroTower !== o.heroTower || p.energy !== 0 || Math.abs(p.heroTime - o.heroTime) > 0.011 || Math.abs(p.heroDur - o.heroDur) > 0.011; })) same = false;
-        }
-      }
-      ok(off === 0 && apart && h.wave >= 5, `co-op Uplink mode: both players start on their own Spire and stay archers (wave ${h.wave})`);
-      ok(same && c.players.every((p) => p.heroActive), 'the guest\'s copy keeps every archer state and takes Uplink mode from the snapshot');
-      const snap = JSON.parse(JSON.stringify(h.snapshot([])));
-      for (const bad of ['x', 5, null, -1, {}]) { snap.a[17] = bad; c.applySnapshot(snap); ok(c.opts.uplink === false, 'a hostile mode flag reads as off: ' + JSON.stringify(bad)); }
-    }
-    {
-      // versus ignores the option, also from a snapshot
-      const v = new Sim({ seed: 3, map: bare, mode: 'versus', players: 1, uplink: true, pauseOnCards: false });
-      v.step(1 / 60);
-      ok(!v.opts.uplink && !v.players[0].heroActive && v.uplinkHome(0) === undefined && v.spires === 1, 'versus ignores the option');
-      v.players[0].energy = MAX_ENERGY; v.activateHero(0, 0); v.exitHero(0);
-      ok(!v.players[0].heroActive, 'and the Uplink is left as usual there');
-      const g = new Sim({ seed: 3, map: bare, mode: 'versus', players: 1 }); g.replica = true;
-      const snap = JSON.parse(JSON.stringify(v.snapshot([]))); snap.a[17] = 1; g.applySnapshot(snap);
-      ok(!g.opts.uplink, 'a versus copy never takes the flag from a snapshot');
-    }
-    {
-      // Uplink mode in Survival: no last wave, the Titan on wave 22, the player on a Spire throughout
-      const s = new Sim({ seed: 9, map: MAPS[0], diff: 'easy', pauseOnCards: false, uplink: true, survival: true }), bot = new Bot(s, 0), p = s.players[0];
-      let off = 0, landed = 0, killed = 0;
-      for (let i = 0; i < 60 * 60 * 40 && !s.over && s.wave < TITAN_SURVIVAL + 2; i++) {
-        bot.step(1 / 60); s.step(1 / 60);
-        if (!s.over && (!p.heroActive || p.energy !== 0)) off++;
-        for (const e of s.events.splice(0)) { if (e.k === 'titanImpact') landed++; else if (e.k === 'titanDie') killed++; }
-      }
-      ok(off === 0 && landed === 1 && killed === 1 && !s.won && s.endless && s.wave === TITAN_SURVIVAL + 2, `Uplink mode with Survival: past the Titan on wave ${TITAN_SURVIVAL} to wave ${s.wave}, an archer throughout (${off} steps off)`);
-    }
-  }
-  {
-    // ---------- Arrow Rain: the volley is in the air for RAIN_DELAY seconds ----------
-    const s = mk(), p = s.players[0], e = put(s, 'grunt', 10);
-    p.energy = MAX_ENERGY; s.activateHero(0, 0); p.heroTime = p.heroDur = 600;
-    s.heroSkill(0, 1, e.x, e.gy, e.z);
-    const z = s.zones.find((q) => q.kind === 'rain')!, tick = s.arrowDmg(p) * 0.75;
-    ok(RAIN_DELAY === 0.8 && !!z && Math.abs(z.life - (3.5 + RAIN_DELAY)) < 1e-9 && z.tick === RAIN_DELAY, 'the rain zone exists from the cast and lasts the delay longer');
-    run(s, RAIN_DELAY - 0.05);
-    ok(e.hp === e.maxHp, 'no damage while the volley is in the air');
-    run(s, 0.1);
-    ok(Math.abs(e.maxHp - e.hp - tick) < 1e-6, `the first hits land about 0.8 s after the cast (${(e.maxHp - e.hp).toFixed(1)})`);
-    run(s, 4);
-    ok(Math.abs(e.maxHp - e.hp - tick * 14) < 1e-6 && !s.zones.length, 'and it deals the same fourteen ticks as before');
   }
   {
     // ---------- the balance pass: tower damage, credits, xp and rare cards ----------
@@ -1323,8 +897,254 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
 }
 
 // survival keeps going past the campaign's final wave
-const sv = new Sim({ pauseOnCards: false, seed: 9, survival: true, diff: 'easy' }); const b3 = new Bot(sv, 0, 2);
+const sv = new Sim({ pauseOnCards: false, seed: 9, survival: true, diff: 'easy', free: true }); const b3 = new Bot(sv, 0, 2);
 for (let i = 0; i < 60 * 1500 && !sv.over; i++) { b3.step(1 / 60); sv.step(1 / 60); sv.events.length = 0; }
 ok(!sv.won, 'survival never "wins"'); console.log('survival reached wave', sv.wave);
+
+// ---------- the factory: deposits, mines, smelters, fabricators, belts, pipes, power, depots, tower supply ----------
+{
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const priv = (s: Sim) => s as any;
+  const T = (o: OreType) => ORE_TYPES.indexOf(o) + 1;
+  const at = (cx: number, cz: number) => cz * GW + cx;
+  const a2s = (a: ArrayLike<number>) => Array.prototype.join.call(a, '');
+  /** A run with the factory switched on (not free), no waves coming, and plenty of credits. */
+  const fac = (o: Partial<ConstructorParameters<typeof Sim>[0]> = {}) => { const s = new Sim({ seed: 31, map: bare, pauseOnCards: false, ...o }); s.gold = 1e5; s.nextWaveIn = 1e9; return s; };
+  const step = (s: Sim, sec: number, evs?: Ev[]) => { for (let i = 0; i < Math.round(sec * 60); i++) { s.step(1 / 60); const e = s.events.splice(0); if (evs) evs.push(...e); s.players.forEach((p) => { p.pending.length = 0; }); } };
+  /** The centre of a patch of free deck of radius r, cleared of deposits (the tests lay their own). */
+  const open = (s: Sim, r: number, skip = 0): [number, number] => {
+    for (let i = 0; i < GW * GH; i++) {
+      const cx = i % GW, cz = Math.floor(i / GW), d = disc(cx, cz, r);
+      if (!d.every(([x, z]) => inBoard(x, z) && s.grid[at(x, z)] === 0)) continue;
+      if (skip-- > 0) continue;
+      for (const [x, z] of d) s.factory.ore[at(x, z)] = 0;
+      return [cx, cz];
+    }
+    throw new Error('no free patch of radius ' + r);
+  };
+  /** A stationary enemy that does not die. */
+  const foe = (s: Sim, dist: number) => { priv(s).spawn('grunt', 1e6, 0); const e: Enemy = s.enemies[s.enemies.length - 1]; e.speed = 0; e.dist = dist; e.off = 0; priv(s).place(e); return e; };
+  /** A free tile within r of a cell, not one of `not`. */
+  const freeNear = (s: Sim, cx: number, cz: number, r: number, not: [number, number][] = []): [number, number] => {
+    for (const [x, z] of disc(cx, cz, r)) if (inBoard(x, z) && s.grid[at(x, z)] === 0 && !(x === cx && z === cz) && !not.some((q) => q[0] === x && q[1] === z)) return [x, z];
+    throw new Error('no free tile near ' + cx + ',' + cz);
+  };
+  const shotsOf = (evs: Ev[], id: number) => evs.filter((e) => e.k === 'shot' && e.id === id).length;
+
+  {
+    // deposits: every pre-made map has iron, copper, coal and oil, on free deck only, the same for any seed
+    for (const m of MAPS) {
+      const s = new Sim({ seed: 1, map: m }), ore = s.factory.ore, kinds = new Set<number>();
+      let bad = 0;
+      for (let i = 0; i < GW * GH; i++) if (ore[i]) { kinds.add(ore[i]); if (s.map.grid[i] !== 0 || ore[i] > ORE_TYPES.length) bad++; }
+      ok(kinds.size === ORE_TYPES.length && !bad, `${m.id}: deposits of every kind, on free deck (${[...kinds].sort().map((k) => ORE_TYPES[k - 1]).join(', ')}${bad ? `, ${bad} on roads or scenery` : ''})`);
+      const again = new Sim({ seed: 999, map: m }).factory.ore;
+      ok(again.every((v, i) => v === ore[i]), `${m.id}: deposits do not depend on the seed`);
+    }
+    const g = new Sim({ seed: 1, map: bare }).map.grid;
+    ok(makeDeposits(g, 'x').every((v, i, a) => v === makeDeposits(g, 'x')[i] && (v === 0 || g[i] === 0)) && a2s(makeDeposits(g, 'x')) !== a2s(makeDeposits(g, 'y')), 'makeDeposits is deterministic per key, and the key matters');
+  }
+  {
+    // a mine on a deposit digs ore and hands it to the smelter beside it, which needs coal (from a coal mine) to melt it
+    const s = fac(), [cx, cz] = open(s, 2);
+    const S = neighbor(cx, cz, 0), M2 = neighbor(S[0], S[1], 0);
+    s.factory.ore[at(cx, cz)] = T('iron_ore'); s.factory.ore[at(M2[0], M2[1])] = T('coal');
+    ok(s.facBlock('mine', S[0], S[1]) === 'needs an ore or coal deposit' && !s.buildFac('mine', S[0], S[1]), 'a mine needs a deposit');
+    ok(s.facBlock('pump', cx, cz) === 'needs an oil field' && s.facBlock('mine', cx, cz) === '', 'a pumpjack needs an oil field, a mine goes on ore');
+    const mine = s.buildFac('mine', cx, cz, 3)!;
+    ok(!!mine && mine.ore === 'iron_ore' && s.grid[at(cx, cz)] === 2 && s.factory.facAt(cx, cz) === mine, 'the mine stands on its deposit');
+    step(s, MINE_TIME * 3 + 0.1);
+    ok(mine.out.length === 3 && mine.out.every((it) => it === 'iron_ore') && mine.state === 'ok', `a lone mine digs one ore every ${MINE_TIME} s and keeps it (${mine.out.length})`);
+    step(s, MINE_TIME * 4);
+    ok(mine.out.length === OUT_CAP && mine.state === 'full', 'with nowhere to put it, it fills up and stops');
+    const sm = s.buildFac('smelter', S[0], S[1], 0)!;
+    step(s, 2);
+    ok(!!sm && (sm.inv.iron_ore || 0) > 0 && mine.out.length < OUT_CAP && sm.state === 'nofuel' && !sm.out.length, 'the mine hands its ore to the smelter beside it, which has no coal yet');
+    const coal = s.buildFac('mine', M2[0], M2[1], 0)!;
+    step(s, 14);
+    ok(!!coal && coal.ore === 'coal' && sm.out.length >= 4 && sm.out.every((it) => it === 'iron'), `with coal from a coal mine the smelter melts iron plates (${sm.out.length}: ${sm.out.join(',')})`);
+  }
+  {
+    // a fabricator with power makes ammunition, puts it on the belt at its arrow, and the belt delivers it into a Pulse Turret
+    const s = fac(), [cx, cz] = open(s, 3);
+    const B = neighbor(cx, cz, 0), Tc = neighbor(B[0], B[1], 0), G = neighbor(cx, cz, 3);
+    const fab = s.buildFac('fab', cx, cz, 0)!, belt = s.buildFac('belt', B[0], B[1], 0)!, gen = s.buildFac('generator', G[0], G[1], 0)!;
+    const tw = s.build('pulse', Tc[0], Tc[1])!, stock0 = tw.stock;
+    ok(!!fab && !!belt && !!gen && !!tw && fab.recipe === 'ammo' && hexDist(cx, cz, tw.cx, tw.cz) === 2, 'fabricator, belt, generator and turret are down (the fabricator starts on ammo, two tiles from the turret)');
+    fab.inv.iron = 4; fab.inv.copper = 4;
+    step(s, 3);
+    ok(fab.state === 'nopower' && fab.pwr === 0 && !fab.out.length && !belt.items.length && tw.stock === stock0 && stock0 > 0 && stock0 < TOWER_STOCK && gen.state === 'nofuel', 'without coal in the generator the fabricator has no power and makes nothing');
+    gen.inv.coal = 4;
+    const evs: Ev[] = [];
+    let onBelt = 0;
+    for (let i = 0; i < 60 * 12; i++) { step(s, 1 / 60, evs); if (belt.items.some((q) => q.it === 'ammo')) onBelt++; }
+    ok(fab.pwr === 1 && gen.state !== 'nofuel' && onBelt > 0, 'with coal the generator powers it, and ammo rides the belt');
+    ok(tw.stock === TOWER_STOCK && !tw.dry, `the belt fills the turret up to ${TOWER_STOCK} items (${tw.stock})`);
+    // a belt turned back toward the fabricator takes nothing from it
+    s.rotateFac(belt.id, 3);
+    ok(belt.dir === 3, 'a belt can be turned');
+    const out = fab.out.length, held = belt.items.length; tw.stock = 0; fab.inv.iron = 4; fab.inv.copper = 4;
+    step(s, 4);
+    ok(tw.stock === 0 && fab.out.length >= out && belt.items.length <= held, 'a belt that points back into the fabricator takes nothing from it');
+  }
+  {
+    // supply: a Pulse Turret fires the ammunition it came with, then goes dry and stops; fed again by a fabricator beside it, it fires again
+    const s = fac(), t = s.build('pulse', 3, 5)!, e = foe(s, 10), evs: Ev[] = [], stock0 = t.stock, per = (ITEM_SHOTS.ammo || 0) * s.mods.ammo;
+    ok(!!t && stock0 >= 1 && t.ammo === 0 && !t.dry && Math.hypot(e.x - t.x, e.z - t.z) < s.range(t), `a new turret comes with ammunition loaded (${stock0} items)`);
+    step(s, (stock0 * per) / s.towerRate(t) + 3, evs);
+    const fired = shotsOf(evs, t.id);
+    ok(fired === stock0 * per && t.dry && towerOff(t) && t.stock === 0 && evs.some((q) => q.k === 'dry' && q.id === t.id), `it fires its ${stock0} x ${per} shots and runs dry (${fired} shots, dry event)`);
+    const charge = t.charge; evs.length = 0;
+    step(s, 3, evs);
+    ok(shotsOf(evs, t.id) === 0 && t.charge === charge, 'a dry tower neither fires nor charges');
+    t.charge = 1;
+    ok(!s.specialReady(t) && !s.triggerSpecial(t.id, 0) && t.charge === 1, 'and its special cannot be fired');
+    t.charge = charge;
+    const F = freeNear(s, t.cx, t.cz, 1), G = freeNear(s, F[0], F[1], 2, [[t.cx, t.cz]]);
+    const fab = s.buildFac('fab', F[0], F[1], 0)!, gen = s.buildFac('generator', G[0], G[1], 0)!;
+    gen.inv.coal = 4; fab.inv.iron = 4; fab.inv.copper = 4;
+    evs.length = 0; step(s, 6, evs);
+    ok(!!fab && !t.dry && evs.some((q) => q.k === 'fed' && q.id === t.id) && shotsOf(evs, t.id) > 3, `a fabricator next to it hands it ammo straight away and it fires again (${shotsOf(evs, t.id)} shots, fed event)`);
+    // a tower that runs on power: dry without a grid, working once a generator is in reach
+    const far = (() => { for (let i = 0; i < GW * GH; i++) { const x = i % GW, z = Math.floor(i / GW); if (s.grid[i] === 0 && hexDist(x, z, G[0], G[1]) > SUPPLY + 3 && disc(x, z, SUPPLY).filter(([u, v]) => inBoard(u, v) && s.grid[at(u, v)] === 0).length > 3) return [x, z] as [number, number]; } return [0, 0] as [number, number]; })();
+    const cryo = s.build('cryo', far[0], far[1])!;
+    step(s, 0.1);
+    ok(!!cryo && cryo.dry && cryo.pwr === 0, 'a Cryo Emitter without power is dry from the start');
+    const G2 = freeNear(s, cryo.cx, cryo.cz, SUPPLY);
+    const gen2 = s.buildFac('generator', G2[0], G2[1], 0)!; gen2.inv.coal = 2;
+    step(s, 0.5);
+    ok(!!gen2 && !cryo.dry && cryo.pwr > 0.99, `a generator within ${SUPPLY} tiles powers it`);
+    s.sellFac(gen2.id);
+    step(s, 0.5);
+    ok(cryo.dry && cryo.pwr === 0, 'and it goes dry again when the generator is sold');
+  }
+  {
+    // a pumpjack on oil and a powered refinery fill a pipe network with petrol, which reaches a Firewall Pylon's tank
+    const s = fac(), [cx, cz] = open(s, 3);
+    s.unlocked.add('flame');
+    const Pm = neighbor(cx, cz, 3), G = neighbor(cx, cz, 4), P1 = neighbor(cx, cz, 0), P2 = neighbor(P1[0], P1[1], 0), Fl = neighbor(P2[0], P2[1], 0);
+    s.factory.ore[at(Pm[0], Pm[1])] = T('oil');
+    ok(s.facBlock('mine', Pm[0], Pm[1]) !== '' && s.facBlock('pump', Pm[0], Pm[1]) === '', 'oil takes a pumpjack, not a mine');
+    const ref = s.buildFac('refinery', cx, cz, 0)!, pump = s.buildFac('pump', Pm[0], Pm[1], 0)!, gen = s.buildFac('generator', G[0], G[1], 0)!;
+    const p1 = s.buildFac('pipe', P1[0], P1[1], 0)!, p2 = s.buildFac('pipe', P2[0], P2[1], 0)!, pylon = s.build('flame', Fl[0], Fl[1])!;
+    ok(!!ref && !!pump && !!gen && !!p1 && !!p2 && !!pylon, 'refinery, pumpjack, generator, two pipes and a pylon are down');
+    pylon.tank = 0;
+    step(s, 3);
+    ok(pump.state === 'nopower' && ref.tout === 0 && pylon.tank === 0, 'nothing flows without power');
+    gen.inv.coal = 4;
+    step(s, 20);
+    const fl = s.factory.pipeFluid(p1);
+    ok(pump.state !== 'nopower' && ref.pwr > 0 && fl.fluid === 'petrol' && p1.net === p2.net && p1.net >= 0, `the pumpjack feeds the refinery and its petrol fills the pipes (${fl.fluid}, ${(100 * fl.fill).toFixed(0)}% full)`);
+    ok(pylon.tank > TANK / 2 && pylon.tank <= TANK && !pylon.dry, `the petrol reaches the pylon's tank (${pylon.tank.toFixed(1)} of ${TANK})`);
+    // a dry pylon burns nothing; with petrol it burns again
+    const e = foe(s, s.map.nearest(0, pylon.x, pylon.z));
+    if (Math.hypot(e.x - pylon.x, e.z - pylon.z) <= FIRE_RING + e.r) { s.sellFac(p2.id); pylon.tank = 0; const hp = e.hp; step(s, 2); ok(pylon.dry && e.hp === hp, 'a pylon with an empty tank burns nothing'); }
+  }
+  {
+    // Frames from a fabricator delivered to a Depot become building materials
+    const s = fac(), [cx, cz] = open(s, 2);
+    const D = neighbor(cx, cz, 0), G = neighbor(cx, cz, 3);
+    const fab = s.buildFac('fab', cx, cz, 0)!, depot = s.buildFac('depot', D[0], D[1], 0)!, gen = s.buildFac('generator', G[0], G[1], 0)!;
+    s.setRecipe(fab.id, 'frame');
+    ok(!!depot && fab.recipe === 'frame', 'a fabricator set to Frames, a Depot beside it');
+    fab.inv.iron = 6; gen.inv.coal = 4;
+    const m0 = s.mats, evs: Ev[] = [];
+    step(s, 10, evs);
+    const n = evs.filter((q) => q.k === 'mats').length;
+    ok(n >= 3 && s.mats === m0 + n * FRAME_MATS && evs.filter((q) => q.k === 'mats').every((q) => q.n === FRAME_MATS && q.x === depot.x), `${n} Frames reached the Depot and raised the materials from ${m0} to ${s.mats}`);
+  }
+  {
+    // what building costs and what selling gives back: credits and materials
+    const s = fac(), g0 = s.gold;
+    ok(s.mats === START_MATS && START_MATS === 8 && new Sim({ seed: 1, map: bare }).gold === Math.round(bare.gold * START_GOLD_MUL), `a run starts with ${START_MATS} materials and ${START_GOLD_MUL} times the map's credits`);
+    const [cx, cz] = open(s, 1), N = neighbor(cx, cz, 0);
+    const belt = s.buildFac('belt', cx, cz, 2)!;
+    ok(!!belt && belt.dir === 2 && s.gold === g0 - FACS.belt.cost && s.facCost('belt') === FACS.belt.cost && s.mats === START_MATS, 'a belt costs its credits and no materials');
+    ok(s.facSellValue(belt.id) === FACS.belt.cost && s.sellFac(belt.id) && s.gold === g0 && !s.factory.facAt(cx, cz) && s.grid[at(cx, cz)] === 0, 'a belt sells for its full price and frees the tile');
+    const sm = s.buildFac('smelter', cx, cz, 0)!;
+    ok(s.facSellValue(sm.id) === Math.round(FACS.smelter.cost * 0.6) && s.sellFac(sm.id) && s.gold === g0 - FACS.smelter.cost + Math.round(FACS.smelter.cost * 0.6), 'a smelter sells for 60%');
+    ok(!s.sellFac(sm.id), 'selling twice gives nothing');
+    const g1 = s.gold, t = s.build('pulse', cx, cz)!;
+    ok(!!t && s.gold === g1 - TOWERS.pulse.cost && s.mats === START_MATS - TOWERS.pulse.mat && t.spentMat === TOWERS.pulse.mat && s.matCost('pulse') === TOWERS.pulse.mat, `a Pulse Turret costs ${TOWERS.pulse.cost} credits and ${TOWERS.pulse.mat} materials`);
+    ok(!s.buildFac('belt', cx, cz) && s.facBlock('belt', cx, cz) === 'taken', 'nothing is built on a tower');
+    const up = s.upMat(t);
+    ok(up === upgradeMat('pulse', 1) && s.upgrade(t.id) && s.mats === START_MATS - TOWERS.pulse.mat - up && t.spentMat === TOWERS.pulse.mat + up, 'an upgrade costs materials too');
+    const m1 = s.mats, g2 = s.gold;
+    ok(s.sell(t.id) && s.mats === m1 + Math.floor(t.spentMat * 0.6) && s.gold === g2 + Math.round(t.spent * 0.6), 'selling a tower gives back 60% of the credits and of the materials');
+    s.mats = TOWERS.rail.mat - 1; s.unlocked.add('rail'); const g3 = s.gold;
+    ok(!s.canBuild('rail', cx, cz) && !s.build('rail', cx, cz) && s.gold === g3 && s.mats === TOWERS.rail.mat - 1, 'without the materials a tower cannot be built');
+    s.gold = FACS.mine.cost - 1;
+    ok(s.facBlock('belt', N[0], N[1]) === '' && s.facBlock('fab', N[0], N[1]) === 'not enough credits' && !s.buildFac('fab', N[0], N[1]), 'without the credits a building cannot be built');
+    s.gold = 1e5; s.mods.cheap = 0.9;
+    ok(s.facCost('refinery') === Math.round(FACS.refinery.cost * 0.9), 'Nano Fabricator makes the factory cheaper too');
+    s.over = true;
+    ok(!s.buildFac('belt', N[0], N[1]), 'nothing is built once the run is over');
+    // free towers: no materials, no supply
+    const f = fac({ free: true }), ft = f.build('rail', 3, 5) || f.build('pulse', 3, 5)!;
+    ok(f.opts.free && f.matCost('rail') === 0 && f.upMat(ft) === 0 && f.mats === START_MATS && ft.spentMat === 0 && f.supplied(ft), 'with free towers nothing costs materials and every tower counts as supplied');
+    ok(new Sim({ free: 'yes' as unknown as boolean }).opts.free === false && new Sim({}).opts.free === false, 'only free: true switches free towers on');
+  }
+  {
+    // garbage input: bad types, cells off the board or between tiles, NaN directions, unknown ids and recipes
+    const s = fac(), [cx, cz] = open(s, 2), n0 = s.factory.facs.length, g0 = s.gold, grid0 = s.grid.slice();
+    const types = ['nuke', '__proto__', 'constructor', 'toString', 'hasOwnProperty', '', 5, null, undefined, {}, NaN, 'Belt'] as unknown as FacType[];
+    const vals = [NaN, -1, GW, 1e9, -1e9, 0.5, 2.5, Infinity, -Infinity, '3', null] as unknown as number[];
+    let threw = '';
+    try {
+      for (const t of types) { s.facBlock(t, cx, cz); s.buildFac(t, cx, cz, 0); }
+      for (const t of FAC_TYPES) for (const v of vals) { s.facBlock(t, v, v); s.buildFac(t, v, cz, 0); s.buildFac(t, cx, v, 0); s.buildFac(t, v, v, v); }
+      for (const v of [...vals, 0, 1e15]) { s.sellFac(v); s.rotateFac(v, v); s.setRecipe(v, 'ammo'); }
+      step(s, 0.5);
+    } catch (e) { threw = String(e); }
+    const moved = s.grid.reduce((a, v, i) => a + (v !== grid0[i] ? 1 : 0), 0);
+    ok(!threw && s.factory.facs.length === n0 && s.gold === g0 && !moved, `garbage in buildFac / sellFac / rotateFac / setRecipe throws nothing and places nothing (${threw || `${s.factory.facs.length - n0} placed, ${moved} tiles changed, ${g0 - s.gold} credits spent`})`);
+    for (const v of [0.5, 2.5]) { const q = fac(), n = q.towers.length; for (let x = 0; x < GW; x++) q.build('pulse', x, v); ok(q.towers.length === n, `a tower is not built between rows (cz ${v}: ${q.towers.length - n} built)`); }
+    // a belt laid with a direction that is not a number still gets one, and items still move on it
+    const q = fac(), [bx, bz] = open(q, 2), belts: Fac[] = [];
+    let err = '';
+    try {
+      for (const d of [NaN, Infinity, -Infinity, 7.5, -13] as number[]) { const B = belts.length ? neighbor(belts[belts.length - 1].cx, belts[belts.length - 1].cz, 0) : [bx, bz]; const b = q.buildFac('belt', B[0], B[1], d); if (b) { b.items.push({ it: 'iron', p: 0 }); belts.push(b); } }
+      step(q, 2);
+    } catch (e) { err = String(e); }
+    ok(!err && belts.every((b) => Number.isInteger(b.dir) && b.dir >= 0 && b.dir < 6), `buildFac with a NaN, infinite or fractional direction gives a belt a direction 0..5 (${err || belts.map((b) => b.dir).join(',')})`);
+    // recipes and turning: only fabricators take a recipe, only belts and output buildings turn
+    const r = fac(), [rx, rz] = open(r, 2), G = neighbor(rx, rz, 0);
+    const fb = r.buildFac('fab', rx, rz, 1)!, gn = r.buildFac('generator', G[0], G[1], 4)!;
+    for (const id of ['__proto__', 'constructor', 'toString', '', 'nuke', null, 5, {}, undefined] as unknown as string[]) r.setRecipe(fb.id, id);
+    ok(fb.recipe === 'ammo', 'unknown recipes are refused: ' + fb.recipe);
+    r.setRecipe(gn.id, 'frame'); r.rotateFac(gn.id, 2); r.rotateFac(fb.id, 5); r.rotateFac(fb.id, NaN);
+    ok(gn.recipe === 'ammo' && gn.dir === 4 && fb.dir === 0 && RECIPES.every((rc) => { r.setRecipe(fb.id, rc.id); return fb.recipe === rc.id; }), 'a generator takes no recipe and does not turn; a fabricator turns and takes every recipe');
+  }
+  {
+    // the snapshot carries the materials and whether a tower is dry; hostile values are clamped
+    const h = fac({ mode: 'coop', players: 2 }), c = fac({ mode: 'coop', players: 2 }); c.replica = true;
+    const t = h.build('cryo', 3, 5)!; step(h, 0.1); h.mats = 17;
+    c.applySnapshot(JSON.parse(JSON.stringify(h.snapshot([]))));
+    const ct = c.towerById(t.id);
+    ok(t.dry && c.mats === 17 && !!ct && ct.dry, 'materials and a dry tower reach the guest');
+    for (const v of [-5, 'x', NaN, null, {}]) {
+      const o = JSON.parse(JSON.stringify(h.snapshot([]))); o.a[18] = v; o.t = o.t.map((row: unknown[]) => { const q = row.slice(); q[14] = v; return q; });
+      c.applySnapshot(o);
+      ok(c.mats === 0 && c.towers.every((x) => !x.dry), 'hostile materials and dry flags are clamped: ' + JSON.stringify(v));
+    }
+  }
+  {
+    // free towers: the bot plays with them (it lays out no factory) and the run is deterministic; towers fire without supply
+    const play = () => {
+      const s = new Sim({ seed: 13, map: MAPS[1], diff: 'easy', pauseOnCards: false, free: true }), b = new Bot(s, 0);
+      let shots = 0, dry = 0;
+      for (let i = 0; i < 60 * 60 * 40 && !s.over; i++) { b.step(1 / 60); s.step(1 / 60); for (const e of s.events.splice(0)) { if (e.k === 'shot') shots++; else if (e.k === 'dry') dry++; } }
+      return { s, shots, dry };
+    };
+    const a = play(), b = play();
+    const sig = (q: Sim) => [q.over, q.won, q.wave, q.lives, q.kills, Math.floor(q.gold), q.level, q.towers.length, q.time.toFixed(3)].join();
+    ok(a.s.over && sig(a.s) === sig(b.s), `a free-tower bot run ends the same way every time (${a.s.won ? 'won' : 'lost'} on wave ${a.s.wave} of ${a.s.winWave}, ${a.s.lives} lives left)`);
+    // what a tower comes with when it is built: in a free run it never uses any of it
+    const fresh = new Map<string, Tower>();
+    for (const type of TOWER_TYPES) { const q = new Sim({ seed: 1, map: bare, free: true }); q.gold = 1e6; q.unlocked.add(type); fresh.set(type, q.build(type, 3, 5)!); }
+    const stocked = (t: Tower) => t.stock === fresh.get(t.type)!.stock && t.ammo === 0 && t.tank === fresh.get(t.type)!.tank;
+    ok(a.dry === 0 && a.shots > 1000 && a.s.towers.length >= 6 && a.s.towers.every((t) => !t.dry && stocked(t)) && !a.s.factory.facs.length, `its ${a.s.towers.length} towers fired ${a.shots} shots without any supply and never went dry`);
+  }
+}
 console.log(fail ? `${fail} FAILED` : 'all smoke checks passed');
 process.exit(fail ? 1 : 0);

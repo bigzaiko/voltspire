@@ -17,12 +17,13 @@ if HERE not in sys.path:
 
 import bpy  # noqa: E402
 import vs_lib  # noqa: E402
-import models_towers, models_enemies, models_hero, models_misc  # noqa: E402
+import fac_common  # noqa: E402
+import models_towers, models_enemies, models_hero, models_misc, models_factory  # noqa: E402
 
-for mod in (vs_lib, models_towers, models_enemies, models_hero, models_misc):
+for mod in (vs_lib, fac_common, models_towers, models_enemies, models_hero, models_misc, models_factory):
     importlib.reload(mod)
 
-BUILDERS = models_towers.TOWERS + models_enemies.ENEMIES + models_hero.HERO + models_misc.MISC
+BUILDERS = models_towers.TOWERS + models_enemies.ENEMIES + models_hero.HERO + models_misc.MISC + models_factory.FACTORY
 
 BUDGET = {'enemy_grunt': 2500, 'enemy_runner': 2500, 'enemy_drone': 2500, 'enemy_brute': 4000, 'enemy_shield': 4000,
           'enemy_boss': 10000, 'enemy_wheel': 6500, 'enemy_brood': 5000, 'enemy_mite': 300, 'enemy_titan': 14000, 'hero': 9000, 'core': 12000, 'tower_spire': 9000}
@@ -31,6 +32,10 @@ BUDGET = {'enemy_grunt': 2500, 'enemy_runner': 2500, 'enemy_drone': 2500, 'enemy
 def budget(name):
     if name in BUDGET:
         return BUDGET[name]
+    if name == 'fac_pole':
+        return 1200
+    if name.startswith('fac_'):
+        return 3500
     return 8000 if name.startswith('tower_') else 1500
 
 
@@ -77,7 +82,7 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     names = []
     for fn in BUILDERS:
-        if only and fn.__name__ not in only and ('enemy_' + fn.__name__) not in only:
+        if only and fn.__name__ not in only and ('enemy_' + fn.__name__) not in only and ('fac_' + fn.__name__) not in only:
             continue
         names.append(build(fn))
     vs_lib.clear_scene()

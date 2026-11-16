@@ -210,7 +210,7 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   let saved = loadCustomMaps();
   let confirmSave = false;
   let confirmDelete = -1;
-  let visBlocked = 0, visTowers = 0, visSpires = 0; // scenery / towers not hidden under a road or the core
+  let visBlocked = 0, visTowers = 0; // scenery / towers not hidden under a road or the core
   let clashes: Pt[] = []; // tiles where two stretches meet on the same level
   let bridges = 0;
   let sel: { l: number; i: number } | null = null; // corner picked with the Level tool
@@ -231,9 +231,9 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     for (const l of lanes) if (l.length === 1 && inBoard(l[0][0], l[0][1])) occ[idx(l[0][0], l[0][1])] = 1;
     // Scenery and towers under a road or the core are only hidden (not drawn, not exported), never deleted:
     // dragging the core across the board or undoing a road point brings them back.
-    visBlocked = 0; visTowers = 0; visSpires = 0;
+    visBlocked = 0; visTowers = 0;
     for (const k of d.blocked) if (!occ[k]) visBlocked++;
-    for (const [k, t] of d.towers) if (!occ[k]) { visTowers++; if (t === 'spire') visSpires++; }
+    for (const [k] of d.towers) if (!occ[k]) visTowers++;
     findCrossings();
     validate(lanes);
   }
@@ -528,9 +528,8 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   const towerGrid = el('div', 'ed-towers');
   towerGrid.setAttribute('role', 'radiogroup'); towerGrid.setAttribute('aria-label', 'Starting tower type');
   const towerBtns = new Map<TowerType, HTMLButtonElement>();
-  // the spire leads the list: it is the one tower every map needs
-  for (const t of [...TOWER_TYPES].sort((x, y) => Number(y === 'spire') - Number(x === 'spire'))) {
-    const b = el('button', 'ed-tw' + (t === 'spire' ? ' spire' : '')); b.type = 'button';
+  for (const t of TOWER_TYPES) {
+    const b = el('button', 'ed-tw'); b.type = 'button';
     b.style.setProperty('--c', hex(TOWERS[t].color));
     b.setAttribute('role', 'radio'); b.setAttribute('aria-label', TOWERS[t].name);
     b.appendChild(el('i', 'ed-sw'));
@@ -770,9 +769,8 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     const ok = !problem;
     if (!ok) confirmSave = false;
     const ask = confirmSave && !!clean;
-    const note = ok && !ask && !visSpires;
+    const note = false;
     status.textContent = ask ? `"${clean!.name}" is already saved. Overwrite it?`
-      : note ? 'Ready to play. No Uplink Spire placed - one will be added automatically'
       : ok ? 'Ready to play' : problem;
     status.classList.toggle('ok', ok && !ask && !note); status.classList.toggle('note', note); status.classList.toggle('bad', !ok || ask);
     if (statusNote && !ask) {
@@ -813,7 +811,7 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     lowerBtn.disabled = !t || fixed || lv <= 0; raiseBtn.disabled = !t || fixed || lv >= MAX_LEVEL;
     removeBtn.classList.toggle('hidden', tool !== 'level');
     removeBtn.disabled = !canRemove(t);
-    towerInfo.textContent = `Built when the run starts (${visTowers}/${MAX_TOWERS}). Kestrel can only uplink to Spires. Press T to cycle.`;
+    towerInfo.textContent = `Built when the run starts, fully stocked (${visTowers}/${MAX_TOWERS}). Iron, copper, coal and oil deposits are laid out on the free deck when the run starts. Press T to cycle.`;
     for (const [tt, b] of towerBtns) { b.classList.toggle('on', tt === towerType); b.setAttribute('aria-checked', String(tt === towerType)); }
     otherInfo.textContent = tool === 'core' ? 'The core is what the machines are after. It fills seven tiles and keeps one tile from the border.'
       : tool === 'block' ? `Scenery tiles: ${visBlocked} of ${MAX_BLOCKED}.` : 'Removes scenery and starting towers. Roads are edited with their own tool.';
@@ -963,16 +961,13 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     g.fillStyle = '#efe9d6'; g.beginPath(); g.arc(kx, kz, s * 0.58, 0, Math.PI * 2); g.fill();
     g.fillStyle = '#100e0c'; g.beginPath(); g.arc(kx, kz, s * 0.34, 0, Math.PI * 2); g.fill();
     g.fillStyle = '#efe9d6'; g.beginPath(); g.arc(kx, kz, s * 0.14, 0, Math.PI * 2); g.fill();
-    // starting towers: a socket in the tower's colour, spires as a tall diamond
+    // starting towers: a socket in the tower's colour
     const tower = (cx: number, cz: number, t: TowerType, alpha: number) => {
       const c = hex(TOWERS[t].color), x = X(cx, cz), z = Z(cz);
       g.globalAlpha = alpha;
       g.beginPath(); tile(cx, cz, 0.8); g.fillStyle = '#100e0c'; g.fill(); g.strokeStyle = c; g.lineWidth = 1.5; g.stroke();
       g.fillStyle = c;
-      if (t === 'spire') {
-        const r = s * 0.36;
-        g.beginPath(); g.moveTo(x, z - r); g.lineTo(x + r * 0.62, z); g.lineTo(x, z + r); g.lineTo(x - r * 0.62, z); g.closePath(); g.fill();
-      } else { g.beginPath(); g.arc(x, z, s * 0.2, 0, Math.PI * 2); g.fill(); }
+      g.beginPath(); g.arc(x, z, s * 0.2, 0, Math.PI * 2); g.fill();
       g.globalAlpha = 1;
     };
     for (const [k, t] of d.towers) if (!occ[k]) tower(k % GW, Math.floor(k / GW), t, 1);

@@ -1,7 +1,7 @@
 {
   "name": "beatspire",
   "version": "1.0.0",
-  "description": "BEATSPIRE - cyberpunk tower defense with a third-person archer ultimate",
+  "description": "BEATSPIRE - cyberpunk tower defense where your own factory keeps the towers firing",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

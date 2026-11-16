@@ -6,15 +6,15 @@
   <meta name="referrer" content="no-referrer" />
   <meta name="theme-color" content="#100e0c" />
   <title>BEATSPIRE - Build the grid. Become the storm.</title>
-  <meta name="description" content="BEATSPIRE is a free tower defense on a hex grid for your browser. Build from above, then stand on an Uplink Spire as Kestrel, a third-person archer. Solo, online co-op and 1v1. No account, no ads, no tracking." />
+  <meta name="description" content="BEATSPIRE is a free tower defense on a hex grid for your browser, where your own factory keeps the towers firing. Mine ore, run belts, pipes and power lines, and make the ammunition. No account, no ads, no tracking." />
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="BEATSPIRE" />
   <meta property="og:title" content="BEATSPIRE - Build the grid. Become the storm." />
-  <meta property="og:description" content="Tower defense on a hex grid where your ultimate puts you on an Uplink Spire as a third-person archer. Free in your browser, solo or online." />
-  <meta property="og:image" content="./media/poster.jpg" />
+  <meta property="og:description" content="Tower defense on a hex grid where you build the factory that feeds your towers: mines, belts, pipes, power and ammunition. Free in your browser." />
+  <meta property="og:image" content="./media/shot-factory.jpg" />
   <meta property="og:image:width" content="1920" />
   <meta property="og:image:height" content="1080" />
-  <meta property="og:image:alt" content="Kestrel the archer firing from a tower into a column of machines." />
+  <meta property="og:image:alt" content="A factory of mines, smelters and fabricators sending ammunition down conveyor belts to the towers along a road full of machines." />
   <meta name="twitter:card" content="summary_large_image" />
   <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
   <link rel="preload" href="./fonts/saira-stencil-one-400.woff2" as="font" type="font/woff2" crossorigin />
@@ -32,11 +32,10 @@
   <header class="nav" id="nav">
     <a class="brand" href="#top" aria-label="BEATSPIRE, back to top"><span>BEAT</span><span class="brand-b">SPIRE</span></a>
     <nav class="nav-links" aria-label="Sections">
-      <a href="#trailer">Trailer</a>
       <a href="#game">The game</a>
       <a href="#towers">Towers</a>
       <a href="#static">The Static</a>
-      <a href="#multiplayer">Multiplayer</a>
+      <a href="#modes">Modes</a>
       <a href="#controls">Controls</a>
     </nav>
     <a class="btn btn-sm" href="./play.html">Play</a>
@@ -48,54 +47,33 @@
       <div class="hero-bg" aria-hidden="true"></div>
       <div class="hero-scan" aria-hidden="true"></div>
       <div class="wrap hero-inner">
-        <p class="eyebrow">Tower defense <i></i> Third-person archer <i></i> Free in your browser</p>
+        <p class="eyebrow">Tower defense <i></i> Factory building <i></i> Free in your browser</p>
         <h1 class="wordmark"><span class="wm-a">BEAT</span><span class="wm-b">SPIRE</span></h1>
         <p class="tagline">Build the grid. Become the storm.</p>
-        <p class="pitch">Defend the last power core of Nyx-9 on a hex grid. From above you build and upgrade towers beside the roads. When your Uplink is charged you stand on an Uplink Spire as Kestrel and shoot in third person: at the machines, at their weak points, and at the power nodes that fire your towers' specials. A run lasts 20, 25 or 30 waves depending on the difficulty.</p>
+        <p class="pitch">Defend the last power core of Nyx-9 on a hex grid. Build towers beside the roads, then keep them firing: mine iron, copper, coal and oil, smelt plates, run belts, pipes and power lines, and make the ammo boxes, shells, slugs, cells, missiles and petrol your towers live on. A run lasts 20, 25 or 30 waves depending on the difficulty.</p>
         <div class="cta">
           <a class="btn btn-lg" href="./play.html">Play free in your browser</a>
-          <a class="btn btn-ghost btn-lg" href="#trailer" id="watch-trailer"><span class="tri" aria-hidden="true"></span>Watch trailer</a>
+          <a class="btn btn-ghost btn-lg" href="#game">How it plays</a>
         </div>
         <ul class="facts" aria-label="At a glance">
-          <li><b>11</b><span>tower types</span></li>
+          <li><b>10</b><span>tower types</span></li>
           <li><b>20-30</b><span>waves per run</span></li>
-          <li><b>8</b><span>maps, plus generated ones</span></li>
-          <li><b>5</b><span>bow tiers</span></li>
-          <li><b>1-2</b><span>players, solo or online</span></li>
+          <li><b>38</b><span>maps, plus generated ones</span></li>
+          <li><b>10</b><span>factory buildings</span></li>
+          <li><b>11</b><span>items, 2 fluids, 1 power grid</span></li>
         </ul>
       </div>
     </section>
 
-    <!-- TRAILER -->
-    <section class="section trailer" id="trailer" aria-labelledby="h-trailer">
-      <div class="wrap">
-        <header class="head">
-          <p class="kicker">Transmission 01</p>
-          <h2 id="h-trailer">See the storm</h2>
-        </header>
-        <div class="frame" id="trailer-frame">
-          <video id="trailer-video" controls preload="metadata" playsinline poster="./media/poster.jpg" aria-label="BEATSPIRE gameplay trailer">
-            <source src="./media/trailer.mp4" type="video/mp4" />
-          </video>
-          <div class="frame-fallback" id="trailer-fallback" hidden>
-            <p class="ff-title">Trailer signal pending</p>
-            <p class="ff-text">The trailer is not available right now. The game is, and it loads in seconds.</p>
-            <a class="btn btn-sm" href="./play.html">Play instead</a>
-          </div>
-          <span class="corner c-tl" aria-hidden="true"></span><span class="corner c-tr" aria-hidden="true"></span>
-          <span class="corner c-bl" aria-hidden="true"></span><span class="corner c-br" aria-hidden="true"></span>
-        </div>
-        <p class="frame-cap">Captured in-engine, in a browser tab. Nothing to install.</p>
-      </div>
-    </section>
+    <!-- TRAILER: the recorded trailer shows the archer this version no longer has; it comes back once it is re-recorded -->
 
     <!-- THREE BEATS -->
     <section class="section" id="game" aria-labelledby="h-game">
       <div class="wrap">
         <header class="head">
           <p class="kicker">The game</p>
-          <h2 id="h-game">Two games, one battlefield</h2>
-          <p class="lede">BEATSPIRE moves between a commander's map and an archer's sightline. The cards you draw decide how both of them grow.</p>
+          <h2 id="h-game">Defend the road. Feed the guns.</h2>
+          <p class="lede">BEATSPIRE is a tower defense and a small factory game on the same board. The towers hold the road, the factory keeps them supplied, and the cards you draw decide how both of them grow.</p>
         </header>
 
         <article class="beat">
@@ -106,6 +84,7 @@
             <p>From above, the district is a board of hexes. Build towers on any free hex beside a road, upgrade each one twice, and sell what you no longer need. Roads can climb and cross each other on bridges. Tags over the spawn gates show what the next wave sends down each road.</p>
             <ul class="ticks">
               <li>You start with a few tower types and unlock the rest as blueprint cards</li>
+              <li>Towers cost credits from kills plus building materials from your factory</li>
               <li>Call the next wave early for bonus credits</li>
               <li>A Colossus arrives every fifth wave. Hold 20, 25 or 30 waves to win, then keep going if you like</li>
             </ul>
@@ -113,23 +92,17 @@
         </article>
 
         <article class="beat beat-flip">
-          <figure class="beat-img"><img src="./media/shot-hero.jpg" width="1920" height="1080" loading="lazy" alt="Third-person view of Kestrel on a tower, firing a rail shot down the lane at a group of machines." /></figure>
+          <figure class="beat-img"><img src="./media/shot-factory.jpg" width="1920" height="1080" loading="lazy" alt="Mines, smelters and fabricators beside the road, with ammunition boxes riding a conveyor belt to the towers." /></figure>
           <div class="beat-txt">
             <span class="num num-hot" aria-hidden="true">02</span>
-            <h3>Uplink</h3>
-            <p>Kills charge your ultimate. When it is full, the camera drops to the top of an Uplink Spire and you are Kestrel, an archer in third person, for a short time. She can only stand on Spires, so every map starts with one and you can build more. Aim at another Spire to jump to it.</p>
-            <p>Each combat tower charges a special. Shoot the glowing power node on top of a charged tower to fire it. The tower then reboots for a few seconds. Brutes and the Colossus have weak points that take extra arrow damage.</p>
+            <h3>The factory</h3>
+            <p>No tower fires for free. Pulse Turrets need ammo boxes, Firewall Pylons burn petrol, Cryo Emitters, Arc Pylons and Beacons draw power. The heavy towers need two things at once: shells, slugs, energy cells or missiles, and power.</p>
+            <p>Every map has deposits of iron, copper, coal and oil. Put mines on them, smelt the ore into plates, and let fabricators turn the plates into what your towers fire. Frames delivered to a Depot become the building materials that towers and upgrades cost.</p>
             <ul class="skills">
-              <li><kbd>LMB</kbd><span><b>Rapid arrows</b> Hold to loose a steady stream of shots.</span></li>
-              <li><kbd>RMB</kbd><span><b>Rail Shot</b> One heavy line that tears through the column. Hold the right button to zoom in and charge the bow, let go of the left one to fire.</span></li>
-              <li><kbd>Q</kbd><span><b>Arrow Rain</b> Saturate an area from above. Its area shows on the ground first; aim it and click.</span></li>
-              <li><kbd>E</kbd><span><b>Singularity</b> A gravity well that drags the swarm together, then detonates. Aimed the same way.</span></li>
-              <li><kbd>F</kbd><span><b>Teleport</b> Jump to the Spire in your sights.</span></li>
-            </ul>
-            <ul class="skill-shots" aria-label="The skills while they are aimed">
-              <li><img src="./media/skill-rail.jpg" width="720" height="405" loading="lazy" alt="Rail Shot held ready: the view zoomed in, a charge ring round the crosshair and the bow lit." /><span>Rail Shot, charged</span></li>
-              <li><img src="./media/skill-rain.jpg" width="720" height="405" loading="lazy" alt="Arrow Rain aimed: a sand-coloured disc on the ground under the crosshair." /><span>Arrow Rain, aimed</span></li>
-              <li><img src="./media/skill-singularity.jpg" width="720" height="405" loading="lazy" alt="Singularity aimed: a violet disc with arms winding into its middle." /><span>Singularity, aimed</span></li>
+              <li><kbd>Belt</kbd><span><b>Conveyor belts</b> Carry items from tile to tile. Drag to lay a line, and point the last one into a tower.</span></li>
+              <li><kbd>Pipe</kbd><span><b>Pipes</b> Pumpjacks fill them with crude oil, refineries with petrol.</span></li>
+              <li><kbd>Pole</kbd><span><b>Power lines</b> Generators burn coal or petrol. Poles wire up to 5 tiles apart, also across roads, and power everything within 2 tiles.</span></li>
+              <li><kbd>Fab</kbd><span><b>Fabricators</b> Frames, ammo boxes, plasma shells, rail slugs, energy cells or missile packs: pick a recipe.</span></li>
             </ul>
           </div>
         </article>
@@ -139,15 +112,8 @@
           <div class="beat-txt">
             <span class="num" aria-hidden="true">03</span>
             <h3>Cards</h3>
-            <p>Each level you are dealt three upgrade cards and keep one. Tower blueprints open new builds, per-tower upgrades sharpen the ones you rely on, hero powers reshape Kestrel's kit, and economy cards pay for all of it.</p>
-            <p>The bow evolves on its own as the run goes on, every four waves, through five tiers.</p>
-            <ol class="bow" aria-label="Bow tiers">
-              <li class="b1"><b>Carbon</b><span>Standard arrows</span></li>
-              <li class="b2"><b>Pulse</b><span>Pierces a target</span></li>
-              <li class="b3"><b>Tempest</b><span>Extra arrow</span></li>
-              <li class="b4"><b>Nova</b><span>Explodes on impact</span></li>
-              <li class="b5"><b>Singularity</b><span>Chains lightning</span></li>
-            </ol>
+            <p>Each level you are dealt three upgrade cards and keep one. Tower blueprints open new builds, per-tower upgrades sharpen the ones you rely on, factory cards speed up your mines, belts and machines, and economy cards pay for all of it.</p>
+            <p>Every tower charges a special. Select a charged tower and fire it: a Bullet Storm, a Flash Freeze, a Thunderhead, a Barrage. The tower reboots afterwards, so pick the moment.</p>
           </div>
         </article>
       </div>
@@ -159,60 +125,55 @@
         <header class="head">
           <p class="kicker">Arsenal</p>
           <h2 id="h-towers">Tower roster</h2>
-          <p class="lede">Eleven towers. Each upgrades through three levels and has cards of its own. Ten of them charge a special that Kestrel fires by shooting the power node.</p>
+          <p class="lede">Ten towers. Each upgrades through three levels, has cards of its own and charges a special you fire when it counts. The simple ones run on one supply, the strong ones on two.</p>
         </header>
         <ul class="roster">
           <li class="unit t-pulse">
             <div class="unit-img"><img src="./media/tower_pulse.jpg" width="640" height="640" loading="lazy" alt="Pulse Turret render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Rapid fire</span><span>50 cr</span></p><h3>Pulse Turret</h3><p>Rapid homing bolts. Cheap, reliable, and the backbone of every opening.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Ammo boxes</span><span>50 cr + 2</span></p><h3>Pulse Turret</h3><p>Rapid homing bolts. Cheap, reliable, and the backbone of every opening.</p></div>
           </li>
           <li class="unit t-cryo">
             <div class="unit-img"><img src="./media/tower_cryo.jpg" width="640" height="640" loading="lazy" alt="Cryo Emitter render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Crowd control</span><span>70 cr</span></p><h3>Cryo Emitter</h3><p>Chills a whole group and slows it, holding the column in everyone else's range.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Power</span><span>70 cr + 3</span></p><h3>Cryo Emitter</h3><p>Chills a whole group and slows it, holding the column in everyone else's range.</p></div>
           </li>
           <li class="unit t-arc">
             <div class="unit-img"><img src="./media/tower_arc.jpg" width="640" height="640" loading="lazy" alt="Arc Pylon render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Chain damage</span><span>110 cr</span></p><h3>Arc Pylon</h3><p>Lightning that jumps from enemy to enemy. The tighter the pack, the better it pays.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Power</span><span>110 cr + 4</span></p><h3>Arc Pylon</h3><p>Lightning that jumps from enemy to enemy. The tighter the pack, the better it pays.</p></div>
           </li>
           <li class="unit t-mortar">
             <div class="unit-img"><img src="./media/tower_mortar.jpg" width="640" height="640" loading="lazy" alt="Plasma Mortar render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Artillery</span><span>140 cr</span></p><h3>Plasma Mortar</h3><p>Long-range area blasts over the rooftops. Cannot hit flyers or anything at its feet.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Shells + power</span><span>140 cr + 6</span></p><h3>Plasma Mortar</h3><p>Long-range area blasts over the rooftops. Cannot hit flyers or anything at its feet.</p></div>
           </li>
           <li class="unit t-rail">
             <div class="unit-img"><img src="./media/tower_rail.jpg" width="640" height="640" loading="lazy" alt="Railgun render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Heavy sniper</span><span>190 cr</span></p><h3>Railgun</h3><p>A slow, piercing beam with the longest reach on the grid. It picks the toughest target.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Slugs + power</span><span>190 cr + 8</span></p><h3>Railgun</h3><p>A slow, piercing beam with the longest reach on the grid. It picks the toughest target.</p></div>
           </li>
           <li class="unit t-beacon">
             <div class="unit-img"><img src="./media/tower_beacon.jpg" width="640" height="640" loading="lazy" alt="Signal Beacon render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Support</span><span>120 cr</span></p><h3>Signal Beacon</h3><p>Fires nothing. Boosts the damage and speed of every tower standing near it.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Power</span><span>120 cr + 4</span></p><h3>Signal Beacon</h3><p>Fires nothing. Boosts the damage and speed of every tower standing near it.</p></div>
           </li>
           <li class="unit t-flame">
-            <div class="unit-img"><img src="./media/tower_flame.jpg" width="640" height="640" loading="lazy" alt="Flame Projector render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Close range</span><span>90 cr</span></p><h3>Flame Projector</h3><p>A short cone of fire that hits everything in front of it and leaves it burning. Best on a corner.</p></div>
+            <div class="unit-img"><img src="./media/tower_flame.jpg" width="640" height="640" loading="lazy" alt="Firewall Pylon render" /></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Petrol</span><span>90 cr + 3</span></p><h3>Firewall Pylon</h3><p>Build two within four tiles of each other and a wall of fire burns between them, setting alight whatever crosses it.</p></div>
           </li>
           <li class="unit t-lance">
             <div class="unit-img"><img src="./media/tower_lance.jpg" width="640" height="640" loading="lazy" alt="Lance Emitter render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Sustained beam</span><span>160 cr</span></p><h3>Lance Emitter</h3><p>A continuous beam that burns hotter the longer it holds one target. Made for Brutes and Colossi.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Cells + power</span><span>160 cr + 7</span></p><h3>Lance Emitter</h3><p>A continuous beam that burns hotter the longer it holds one target. Made for Brutes and Colossi.</p></div>
           </li>
           <li class="unit t-missile">
             <div class="unit-img"><img src="./media/tower_missile.jpg" width="640" height="640" loading="lazy" alt="Missile Battery render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Anti-air</span><span>170 cr</span></p><h3>Missile Battery</h3><p>Salvos of homing missiles at up to three targets. It picks flyers first.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Missiles + power</span><span>170 cr + 8</span></p><h3>Missile Battery</h3><p>Salvos of homing missiles at up to three targets. It picks flyers first.</p></div>
           </li>
           <li class="unit t-gravity">
             <div class="unit-img"><img src="./media/tower_gravity.jpg" width="640" height="640" loading="lazy" alt="Graviton Well render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Control</span><span>120 cr</span></p><h3>Graviton Well</h3><p>Deals no damage. Drags machines back along the road and slows them inside its field.</p></div>
-          </li>
-          <li class="unit t-spire">
-            <div class="unit-img"><img src="./media/tower_spire.jpg" width="640" height="640" loading="lazy" alt="Uplink Spire render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Uplink</span><span>180 cr</span></p><h3>Uplink Spire</h3><p>A tall relay mast with a platform. Kestrel can only uplink to Spires and teleports between them. Every map starts with one.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Cells + power</span><span>120 cr + 6</span></p><h3>Graviton Well</h3><p>Deals no damage. Drags machines back along the road and slows them inside its field.</p></div>
           </li>
         </ul>
         <ul class="roster-more">
-          <li class="t-flame"><b>Flame Projector</b><span>90 cr</span><p>Short-range cone of fire that leaves enemies burning.</p></li>
-          <li class="t-lance"><b>Lance Emitter</b><span>160 cr</span><p>A continuous beam that burns hotter the longer it holds a target.</p></li>
-          <li class="t-missile"><b>Missile Battery</b><span>170 cr</span><p>Salvos of homing missiles. Prefers flyers.</p></li>
-          <li class="t-gravity"><b>Graviton Well</b><span>120 cr</span><p>Deals no damage. Drags enemies back and slows them.</p></li>
-          <li class="t-spire"><b>Uplink Spire</b><span>180 cr</span><p>A tall relay tower. Kestrel stands here during the Uplink. Upgrades strengthen her arrows.</p></li>
+          <li class="t-flame"><b>Firewall Pylon</b><span>Petrol</span><p>Walls of fire between linked pylons.</p></li>
+          <li class="t-lance"><b>Lance Emitter</b><span>Cells + power</span><p>A continuous beam that burns hotter the longer it holds a target.</p></li>
+          <li class="t-missile"><b>Missile Battery</b><span>Missiles + power</span><p>Salvos of homing missiles. Prefers flyers.</p></li>
+          <li class="t-gravity"><b>Graviton Well</b><span>Cells + power</span><p>Deals no damage. Drags enemies back and slows them.</p></li>
         </ul>
       </div>
     </section>
@@ -230,11 +191,11 @@
           <li class="foe"><img src="./media/enemy_runner.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Runner</h3><p class="foe-tag">From wave 2</p><p>Fragile and very fast. Slips past slow guns in packs.</p></div></li>
           <li class="foe"><img src="./media/enemy_drone.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Drone</h3><p class="foe-tag">From wave 4 / Flying</p><p>Flies over the lane, out of reach of mortars.</p></div></li>
           <li class="foe"><img src="./media/enemy_shield.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Aegis</h3><p class="foe-tag">From wave 6 / Shielded</p><p>Carries an energy shield you must break before the hull.</p></div></li>
-          <li class="foe"><img src="./media/enemy_brute.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Brute</h3><p class="foe-tag">From wave 8 / Armored</p><p>Slow, plated, and costs three core integrity if it gets through. Has a weak point on its back.</p></div></li>
+          <li class="foe"><img src="./media/enemy_brute.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Brute</h3><p class="foe-tag">From wave 8 / Armored</p><p>Slow, plated, and costs three core integrity if it gets through. Railguns with Armour Breaker cut through it.</p></div></li>
           <li class="foe"><img src="./media/enemy_wheel.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Gyre</h3><p class="foe-tag">Mini-boss / Spin guard</p><p>A machine riding inside one armoured wheel. While the rim spins fast it shrugs off most hits; slow it, freeze it or focus your fire and the guard drops.</p></div></li>
-          <li class="foe"><img src="./media/enemy_brood.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Broodcarrier</h3><p class="foe-tag">From wave 6 / Jams towers</p><p>Walks the road and looses swarms of mites that climb the nearest tower and jam it. Shoot the mites off, or kill the carrier.</p></div></li>
-          <li class="foe foe-boss"><img src="./media/enemy_boss.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Colossus</h3><p class="foe-tag">Every 5th wave / Boss</p><p>A walking siege engine. Let one reach the Heart and it takes half your core with it. Aim for its exposed core.</p></div></li>
-          <li class="foe foe-boss"><img src="./media/enemy_titan.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Titan</h3><p class="foe-tag">Once, near the end / Finale</p><p>Twice as tall as a Spire. It lands on the gate, wrecks everything on the road and stuns your towers. Towers only slow it; your shots on its weak points and your tower specials bring it down.</p></div></li>
+          <li class="foe"><img src="./media/enemy_brood.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Broodcarrier</h3><p class="foe-tag">From wave 6 / Jams towers</p><p>Walks the road and looses swarms of mites that climb the nearest tower and jam it. Cover your towers with each other, or kill the carrier first.</p></div></li>
+          <li class="foe foe-boss"><img src="./media/enemy_boss.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Colossus</h3><p class="foe-tag">Every 5th wave / Boss</p><p>A walking siege engine. Let one reach the Heart and it takes a quarter of your core with it. Save your specials for it.</p></div></li>
+          <li class="foe foe-boss"><img src="./media/enemy_titan.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Titan</h3><p class="foe-tag">Once, near the end / Finale</p><p>Towers over the whole district. It lands on the gate, wrecks everything on the road and stuns your towers. Its hull turns most tower fire; tower specials hit it at full strength.</p></div></li>
         </ul>
       </div>
     </section>
@@ -244,9 +205,9 @@
       <div class="lore-bg" aria-hidden="true"></div>
       <div class="wrap lore-inner">
         <p class="kicker">Nyx-9 <i></i> 2187</p>
-        <h2 id="h-lore">One core left. One archer on the wire.</h2>
+        <h2 id="h-lore">One core left. One factory to hold it.</h2>
         <p>The megacity of Nyx-9 has gone dark district by district. The Static, a rogue machine swarm that answers to no one, has taken every power core but one. Now it is marching on the last: the Heart.</p>
-        <p>You are Kestrel. You hold the district grid from the command deck, and when the towers are not enough you ride the Uplink down to a Spire and hold it by hand.</p>
+        <p>You hold the district grid from the command deck. There are no supply convoys any more: what the towers fire, you dig out of the ground under them and build yourself.</p>
       </div>
     </section>
 
@@ -256,13 +217,13 @@
         <header class="head">
           <p class="kicker">Your war</p>
           <h2 id="h-modes">Pick the ground. Set the stakes.</h2>
-          <p class="lede">Eight pre-made maps run from one long switchback to three roads closing on the core at once. Or let the game generate a map from a seed, with ramps and bridges. Three difficulties change how hard the Static hits, how much your core can take and how long the run is.</p>
+          <p class="lede">38 pre-made maps run from one long switchback to three roads closing on the core at once. Or let the game generate a map from a seed, with ramps and bridges. Three difficulties change how hard the Static hits, how much your core can take and how long the run is.</p>
         </header>
         <div class="modes">
           <article class="mode">
             <p class="mode-tag">20 / 25 / 30 waves</p>
             <h3>Campaign</h3>
-            <p>Hold the Heart through 20 waves on Recruit, 25 on Veteran or 30 on Nightmare. After a win you can keep going with no last wave. Or play it in Uplink mode: the whole run on the Spire, and you build from up there.</p>
+            <p>Hold the Heart through 20 waves on Recruit, 25 on Veteran or 30 on Nightmare. After a win you can keep going with no last wave.</p>
           </article>
           <article class="mode mode-hot">
             <p class="mode-tag">No last wave / Score by wave</p>
@@ -272,38 +233,13 @@
           <article class="mode">
             <p class="mode-tag">Build / Save / Share</p>
             <h3>Map editor</h3>
-            <p>Draw up to three roads on the hex grid, raise them into ramps and bridges, place the core, wreckage and starting towers, set credits and core integrity. Test it in one click, save it in your browser, and share it as a code.</p>
+            <p>Draw up to three roads on the hex grid, raise them into ramps and bridges, place the core, wreckage and starting towers, set credits and core integrity. Deposits are laid out on the free deck for you. Test it in one click, save it in your browser, and share it as a code.</p>
           </article>
         </div>
       </div>
     </section>
 
-    <section class="section" id="multiplayer" aria-labelledby="h-mp">
-      <div class="wrap">
-        <header class="head">
-          <p class="kicker">Online</p>
-          <h2 id="h-mp">Bring one more</h2>
-          <p class="lede">Two ways to play with a friend, both joined with a six-character room code and nothing else.</p>
-        </header>
-        <div class="modes">
-          <article class="mode">
-            <p class="mode-tag">2 players / Together</p>
-            <h3>Co-op</h3>
-            <p>Defend one grid and one core together, with shared credits and two archers. Each of you charges your own Uplink, so one can hold a Spire while the other keeps building.</p>
-          </article>
-          <article class="mode mode-hot">
-            <p class="mode-tag">1 v 1 / Against</p>
-            <h3>Versus</h3>
-            <p>Each of you defends your own grid. Spend credits to send squads at your rival: Runner Packs, Drone Wings, Aegis Trios and Brute Pairs. The last core standing wins.</p>
-          </article>
-          <aside class="room" aria-label="How joining works">
-            <p class="room-label">Room code</p>
-            <p class="room-code" aria-hidden="true"><span>K</span><span>7</span><span>X</span><span>2</span><span>Q</span><span>F</span></p>
-            <p class="room-text">One player opens a room and reads out the code. The other types it in. The two browsers then connect directly, peer-to-peer.</p>
-          </aside>
-        </div>
-      </div>
-    </section>
+    <!-- MULTIPLAYER: co-op and 1v1 are off until the factory is kept in sync between two browsers -->
 
     <!-- CONTROLS + SAFETY -->
     <section class="section alt" id="controls" aria-labelledby="h-controls">
@@ -316,23 +252,18 @@
           <div class="keys">
             <h3>Command view</h3>
             <dl>
-              <div><dt><kbd>1</kbd>-<kbd>0</kbd> <kbd>T</kbd></dt><dd>Pick a tower, then click a hex to build. Hold <kbd>Shift</kbd> to keep building.</dd></div>
-              <div><dt><kbd>U</kbd> <kbd>X</kbd></dt><dd>Upgrade or sell the selected tower.</dd></div>
+              <div><dt><kbd>1</kbd>-<kbd>0</kbd></dt><dd>Pick a tower or factory building, then click a hex to build. Hold <kbd>Shift</kbd> to keep building.</dd></div>
+              <div><dt><kbd>F</kbd></dt><dd>Switch the build bar between towers and the factory.</dd></div>
+              <div><dt><kbd>R</kbd></dt><dd>Turn the belt (or the output side of a mine, smelter or fabricator) you are placing or have selected. Drag to lay a line of belts or pipes.</dd></div>
+              <div><dt><kbd>U</kbd> <kbd>X</kbd></dt><dd>Upgrade or sell the selected tower, or remove a factory building.</dd></div>
               <div><dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>Pan the camera, or drag with the right mouse button. Wheel zooms.</dd></div>
               <div><dt><kbd>N</kbd></dt><dd>Call the next wave early.</dd></div>
-              <div><dt><kbd>Space</kbd></dt><dd>Uplink to the nearest Spire when the charge is full.</dd></div>
+              <div><dt><kbd>Space</kbd></dt><dd>Fire the special of the selected tower when it is charged.</dd></div>
               <div><dt><kbd>Esc</kbd> <kbd>P</kbd></dt><dd>Pause.</dd></div>
-            </dl>
-            <h3>Uplink</h3>
-            <dl>
-              <div><dt><kbd>Mouse</kbd></dt><dd>Aim. Hold the left button to shoot. Hit a glowing power node to fire that tower's special.</dd></div>
-              <div><dt><kbd>RMB</kbd> <kbd>Q</kbd> <kbd>E</kbd></dt><dd>Rail Shot: hold <kbd>RMB</kbd> to zoom and charge, let go of <kbd>LMB</kbd> to fire. Arrow Rain and Singularity show their area first; left click casts, right click cancels.</dd></div>
-              <div><dt><kbd>F</kbd></dt><dd>Jump to the Spire you are aiming at.</dd></div>
-              <div><dt><kbd>Space</kbd></dt><dd>End the Uplink early and keep part of the charge.</dd></div>
             </dl>
             <h3>Touch and extras</h3>
             <dl>
-              <div><dt><kbd>Touch</kbd></dt><dd>Tap to build and select, drag to pan, pinch to zoom. In the Uplink, drag to aim and use the on-screen buttons.</dd></div>
+              <div><dt><kbd>Touch</kbd></dt><dd>Tap to build and select, drag to pan, pinch to zoom. Hold and drag to lay belts; the Turn button changes their direction.</dd></div>
               <div><dt><kbd>Music</kbd></dt><dd>Add YouTube or Spotify links to a playlist. The built-in score goes quiet while your music plays.</dd></div>
               <div><dt><kbd>Effects</kbd></dt><dd>Impact and beat pulses can be switched off, dimmed, recoloured or limited to tile borders, environment or towers.</dd></div>
             </dl>
@@ -345,7 +276,6 @@
             <li><b>No account, no login.</b> Open the page and play.</li>
             <li><b>No ads, no tracking.</b> No analytics, no third-party scripts. A YouTube or Spotify player only loads if you add a link to the playlist and press play.</li>
             <li><b>Nothing stored on a server.</b> Settings, records and maps stay in your own browser.</li>
-            <li><b>Direct multiplayer.</b> A match connects the two browsers to each other, so only share a room code with someone you trust.</li>
             <li><b>Open source.</b> Every line is public and can be checked.</li>
           </ul>
         </aside>

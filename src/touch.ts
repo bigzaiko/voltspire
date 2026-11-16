@@ -1,28 +1,16 @@
-// Touch controls. Bird view: tap, drag with one finger to pan, hold then drag to move the build ghost. Two fingers
-// either pinch (zoom) or twist (turn): whichever passes its threshold first, and it stays that until a finger lifts.
-// Uplink: drag to aim (slow drags aim finely, quick swipes turn far), hold Draw and let go to loose, and the thumb
-// that holds Draw can keep aiming. Round buttons for the skills. In Uplink mode Build opens build mode: the tower bar
-// can be tapped, Draw becomes Place, and Sell shows while the crosshair is on a tower.
+// Touch controls. Tap, drag with one finger to pan, hold then drag to move the build ghost (a belt laid that way follows
+// the finger). Two fingers either pinch (zoom) or twist (turn): whichever passes its threshold first, and it stays that
+// until a finger lifts. A round button turns the belt that is about to be placed.
 // Mouse and keyboard handlers in play.ts stay active; everything here only reacts to touch pointers,
 // except the on-screen buttons, which also take a mouse press or a keyboard activation.
 // The styles (touch.css) are linked from play.html.
 
 export interface TouchApi {
   canvas: HTMLCanvasElement;
-  isHero(): boolean;
-  /** hero look, in pixels of finger travel */
-  look(dx: number, dy: number): void;
-  fire(on: boolean): void;
-  skill(i: number): void;
-  teleport(): void;
-  ult(): void;
-  exitHero(): void;
-  /** Uplink mode: open or close build mode (while it is open, fire() places the tower instead of drawing) */
-  build(): void;
-  /** Uplink mode, build mode: sell the tower under the crosshair */
-  sell(): void;
-  /** Uplink mode, build mode: upgrade the tower under the crosshair, or the player's own Spire */
-  upgrade(): void;
+  /** turn the belt (or other building) that is about to be placed */
+  turn(): void;
+  /** the finger that moved the build ghost was lifted (a belt line ends there) */
+  hoverEnd(): void;
   /** bird view: a tap at client coordinates (build / select) */
   tap(clientX: number, clientY: number): void;
   /** bird view: finger moved over the board without lifting (hover / ghost preview) */
@@ -37,18 +25,11 @@ export interface TouchApi {
   speed(): void;
 }
 
-const FREE = 0, BIRD = 1, LOOK = 2, FIRE = 3;
+const FREE = 0, BIRD = 1;
 /** finger travel in px before a press counts as a drag */
 const DEAD = 12;
 /** press this long without moving and the drag moves the build ghost instead of the camera */
 const HOLD_MS = 240;
-// Look deltas are scaled for the controller's mouse factor of 0.0022 rad per px, and then by the speed of the
-// finger: below SLOW px per ms the gain is LOOK_FINE (100 px turn about 20 degrees, for aiming), above FAST it is
-// LOOK_SWIPE (a quick 300 px swipe turns more than half a circle). Vertical is a little calmer.
-const LOOK_X = 3.2, LOOK_Y = 2.2;
-const LOOK_FINE = 0.5, LOOK_SWIPE = 1.9, SLOW = 0.08, FAST = 1.1;
-/** the thumb that holds Draw aims a little finer than the free finger */
-const FIRE_AIM = 0.8;
 // Two fingers: the spread has to change by this much (px, or this share of the spread) to become a pinch,
 // or the line between the fingers has to turn by this much (radians, with the fingers at least APART px apart) to become a twist.
 const PINCH_PX = 18, PINCH_PART = 0.07, TWIST = 0.14, APART = 70;
@@ -62,7 +43,6 @@ export function initTouch(api: TouchApi): void {
   const canvas = api.canvas;
   const root = document.getElementById('touch');
   const byId = (id: string): HTMLElement | null => document.getElementById(id);
-  const lookPad = byId('t-look'), fireBtn = byId('t-fire');
 
   const slots: Slot[] = [];
   for (let i = 0; i < 4; i++) slots.push({ id: -1, role: FREE, x: 0, y: 0, sx: 0, sy: 0, moved: false, pan: false, hover: false, el: null, t: 0, v: 0 });
@@ -114,18 +94,13 @@ export function initTouch(api: TouchApi): void {
     holdTimer = 0;
     const s = holdSlot;
     holdSlot = null;
-    if (!s || s.role !== BIRD || s.moved || count(BIRD) !== 1 || api.isHero()) return;
+    if (!s || s.role !== BIRD || s.moved || count(BIRD) !== 1) return;
     s.hover = true;
     api.hoverAt(s.x, s.y);
   }
   function release(s: Slot): void {
     if (holdSlot === s) clearHold();
     if (s.el) { try { s.el.releasePointerCapture(s.id); } catch { /* not captured any more */ } }
-    if (s.role === FIRE) {
-      // Only stop firing when no other finger still holds the button.
-      s.role = FREE;
-      if (count(FIRE) === 0) { api.fire(false); if (fireBtn) fireBtn.classList.remove('on'); }
-    }
     const bird = s.role === BIRD;
     s.role = FREE; s.id = -1; s.el = null;
     if (bird) {
@@ -141,7 +116,6 @@ export function initTouch(api: TouchApi): void {
     activate();
     e.preventDefault();
     const el = e.currentTarget as Element;
-    if (api.isHero()) { take(e, LOOK, el); return; }
     if (el !== canvas) return;
     const s = take(e, BIRD, el);
     if (!s) return;
@@ -161,34 +135,11 @@ export function initTouch(api: TouchApi): void {
     }
   }
 
-  function downFire(e: PointerEvent): void {
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
-    if (e.pointerType === 'touch') activate();
-    e.preventDefault();
-    if (!api.isHero()) return;
-    if (!take(e, FIRE, e.currentTarget as Element)) return;
-    if (fireBtn) fireBtn.classList.add('on');
-    api.fire(true);
-  }
-
   function move(e: PointerEvent): void {
     const s = find(e.pointerId);
     if (!s) return;
     e.preventDefault();
     const dx = e.clientX - s.x, dy = e.clientY - s.y;
-    if (s.role === BIRD && api.isHero()) { s.role = LOOK; clearHold(); }
-    if (s.role === LOOK || s.role === FIRE) {
-      s.x = e.clientX; s.y = e.clientY;
-      // The mouse may hold Fire too, but it aims through pointer lock, not through this drag.
-      if (e.pointerType !== 'touch' || !api.isHero() || (dx === 0 && dy === 0)) return;
-      const ms = Math.max(4, Math.min(60, e.timeStamp - s.t));
-      s.t = e.timeStamp;
-      s.v += (Math.hypot(dx, dy) / ms - s.v) * 0.5;
-      const u = Math.max(0, Math.min(1, (s.v - SLOW) / (FAST - SLOW)));
-      const k = (LOOK_FINE + (LOOK_SWIPE - LOOK_FINE) * u * u * (3 - 2 * u)) * (s.role === FIRE ? FIRE_AIM : 1);
-      api.look(dx * LOOK_X * k, dy * LOOK_Y * k);
-      return;
-    }
     if (s.role !== BIRD) return;
     const o = other(s);
     if (o) {
@@ -234,10 +185,11 @@ export function initTouch(api: TouchApi): void {
     const s = find(e.pointerId);
     if (!s) return;
     e.preventDefault();
-    const tap = s.role === BIRD && !api.isHero() && (s.hover || !s.moved);
+    const tap = s.role === BIRD && (s.hover || !s.moved), held = s.hover;
     const x = s.hover ? e.clientX : s.sx, y = s.hover ? e.clientY : s.sy;
     release(s);
     if (tap) api.tap(x, y);
+    else if (held) api.hoverEnd();
   }
 
   function cancel(e: PointerEvent): void {
@@ -269,27 +221,14 @@ export function initTouch(api: TouchApi): void {
   const opts: AddEventListenerOptions = { passive: false };
 
   canvas.addEventListener('pointerdown', downSurface, opts);
-  if (lookPad) lookPad.addEventListener('pointerdown', downSurface, opts);
-  if (fireBtn) {
-    fireBtn.addEventListener('pointerdown', downFire, opts);
-    fireBtn.addEventListener('click', stop);
-  }
   window.addEventListener('pointermove', move, opts);
   window.addEventListener('pointerup', up, opts);
   window.addEventListener('pointercancel', cancel, opts);
   window.addEventListener('blur', releaseAll);
   document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAll(); });
 
-  press(byId('t-s0'), () => { if (api.isHero()) api.skill(0); });
-  press(byId('t-s1'), () => { if (api.isHero()) api.skill(1); });
-  press(byId('t-s2'), () => { if (api.isHero()) api.skill(2); });
-  press(byId('t-tp'), () => { if (api.isHero()) api.teleport(); });
-  press(byId('t-exit'), () => { if (api.isHero()) api.exitHero(); });
-  press(byId('t-build'), () => { if (api.isHero()) api.build(); });
-  press(byId('t-bsell'), () => { if (api.isHero()) api.sell(); });
-  press(byId('t-bup'), () => { if (api.isHero()) api.upgrade(); });
-  press(byId('t-ult'), () => { if (!api.isHero()) api.ult(); });
-  // Pause and speed act on press as well, so a second finger reaches them while the first holds Draw or aims.
+  press(byId('t-turn'), () => api.turn());
+  // Pause and speed act on press as well, so a second finger reaches them while another finger is on the board.
   press(byId('btn-pause'), () => api.pause());
   press(byId('btn-speed'), () => api.speed());
 

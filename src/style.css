@@ -84,7 +84,7 @@ kbd { display: inline-block; min-width: 1.7em; padding: 0 5px; margin: 0 1px; fo
 #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
 #hud button, #hud .panel, #build { pointer-events: auto; }
 #top, #bottom, #tower, #vs, #tip, #toasts { z-index: 2; }
-#touch, #herohud { z-index: 3; }
+#touch { z-index: 3; }
 
 #top { position: absolute; top: 0; left: 0; right: 0; display: flex; gap: 6px; align-items: flex-start; padding: 10px calc(12px + var(--safe-r)) 0 calc(12px + var(--safe-l)); }
 .gauges { display: flex; align-items: stretch; }
@@ -140,16 +140,6 @@ body:has(#editor:not(.hidden)) #btn-full { display: none; }
 .tw.locked .cost { font-size: 0; }
 .tw.locked .cost::after { content: 'Locked'; font-family: var(--mono); font-size: 9px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
 
-#ult { flex: 1 1 200px; min-width: 150px; max-width: 440px; margin: 0 auto; display: grid; gap: 7px; padding: 0; text-align: left; background: none; border: 0; border-radius: var(--r); cursor: pointer; appearance: none; }
-#ult .bar { display: block; }
-#ult-label { font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#ult-label::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--verdigris-dim); }
-#ult .bar.big { height: 14px; }
-#ult .bar i { background: var(--verdigris-dim); }
-#ult.ready #ult-label { color: var(--verdigris); }
-#ult.ready #ult-label::before { background: var(--verdigris); box-shadow: 0 0 8px var(--verdigris); }
-#ult.ready .bar i { background: var(--verdigris); }
-#ult.ready .bar { box-shadow: inset 0 0 0 1px var(--verdigris), 0 0 16px rgba(111, 224, 200, 0.45); animation: lit 0.9s ease-in-out infinite alternate; }
 @keyframes lit { to { box-shadow: inset 0 0 0 1px var(--verdigris), 0 0 26px rgba(111, 224, 200, 0.8); } }
 #btn-wave { flex: none; flex-direction: column; gap: 4px; min-width: 138px; min-height: 52px; padding: 0 14px; font-size: 17px; }
 #btn-wave small { font-variant-numeric: tabular-nums; }
@@ -177,8 +167,6 @@ body:has(#editor:not(.hidden)) #btn-full { display: none; }
 #t-spec.ready #t-spec-state { color: var(--apricot); }
 #t-spec.down .bar i { background: var(--rust-deep); }
 #t-spec.down #t-spec-state { color: var(--rust); }
-#t-spec.spire .bar { display: none; }
-#t-spec.spire #t-spec-name, #t-spec.spire #t-spec-state { color: var(--verdigris); }
 #t-note { margin: 8px 0 0; font-size: 13px; line-height: 1.3; color: var(--rust); }
 #t-note:empty { display: none; }
 #t-spec.jam .bar i { background: var(--violet); }
@@ -200,11 +188,7 @@ body:has(#editor:not(.hidden)) #btn-full { display: none; }
 #titan.walk { border-left-color: var(--static); }
 #titan.walk #titan-label { color: var(--static); }
 #titan.walk .bar i { background: var(--static); }
-#hud:has(#titan:not(.hidden)) #lock-hint { top: calc(var(--top-h) + 76px); }
 #hud:has(#titan:not(.hidden)) #vs { top: calc(var(--top-h) + 76px); }
-/* Overlink: the Uplink is held open while the Titan stands */
-#ult.held #ult-label, #hero-time.held #hero-label { color: var(--verdigris); }
-#ult.held .bar i, #hero-time.held .bar i { background: repeating-linear-gradient(135deg, var(--verdigris) 0 8px, var(--verdigris-dim) 8px 16px); }
 #announce { position: absolute; top: 19%; left: 0; right: 0; padding: 14px 16px 12px; text-align: center; font-family: var(--display); font-weight: 700; font-size: clamp(30px, 5.2vw, 66px); line-height: 1; letter-spacing: 0.12em; text-transform: uppercase; color: var(--sand); background: rgba(16, 14, 12, 0.8); border-block: 1px solid var(--line-2); opacity: 0; }
 #announce.show { animation: announce 2.4s ease-out forwards; }
 #announce small { display: block; margin-top: 10px; font-family: var(--mono); font-size: clamp(11px, 0.24em, 15px); font-weight: 500; letter-spacing: 0.24em; color: var(--apricot); }
@@ -220,7 +204,6 @@ body:has(#editor:not(.hidden)) #btn-full { display: none; }
 #dmg span.crit { font-size: 28px; color: var(--apricot); z-index: 1; }
 #tutor { position: absolute; left: 50%; bottom: calc(var(--console-h) + 64px); transform: translateX(-50%); display: grid; gap: 4px; max-width: min(560px, 86vw); padding: 9px 16px 11px 14px; background: var(--plate); border: 1px solid var(--line-2); border-left: 3px solid var(--apricot); border-radius: var(--r); z-index: 4; }
 #tutor b { font-family: var(--display); font-size: 21px; font-weight: 600; line-height: 1.15; letter-spacing: 0.04em; color: var(--bone); }
-body.hero #tutor { bottom: 190px; }
 /* before the first wave: what to do, and how long the grace period still runs */
 #prep { position: absolute; left: 50%; bottom: calc(var(--console-h) + 18px); transform: translateX(-50%); display: grid; gap: 3px; max-width: min(560px, 86vw); padding: 9px 16px 10px 14px; background: var(--plate); border: 1px solid var(--line-2); border-left: 3px solid var(--apricot); border-radius: var(--r); z-index: 3; }
 #prep b { font-family: var(--display); font-size: 21px; font-weight: 600; line-height: 1.15; letter-spacing: 0.04em; color: var(--bone); }
@@ -242,14 +225,6 @@ body.hero #tutor { bottom: 190px; }
 .itag.dot > * { display: none; }
 
 /* Uplink hints: charged power nodes (diamond) and other Spires (ring) */
-.hint { position: absolute; left: 0; top: 0; translate: -50% -100%; display: none; padding-bottom: 14px; font-style: normal; text-align: center; opacity: 0.6; transition: opacity 0.15s; }
-.hint.faint { opacity: 0.16; }
-.hint s { display: block; width: 7px; height: 7px; margin: 0 auto; background: rgba(16, 14, 12, 0.7); border: 1.5px solid var(--sand); rotate: 45deg; }
-.hint b { display: none; margin-bottom: 7px; padding: 2px 6px; font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; white-space: nowrap; color: var(--sand); background: rgba(16, 14, 12, 0.85); border-radius: var(--r); }
-.hint.near { opacity: 1; display: flex; flex-direction: column-reverse; }
-.hint.near b { display: block; }
-.hint.spire s { border-color: var(--verdigris); border-radius: 50%; rotate: none; }
-.hint.spire b { color: var(--verdigris); }
 
 #marks .mark svg { display: block; width: 8px; height: 8px; margin: 2px auto 0; fill: var(--ink); }
 #marks .mark { position: absolute; left: -7px; top: -7px; width: 14px; height: 14px; display: none; font-style: normal; font-size: 10px; line-height: 17px; text-align: center; color: var(--ink); background: var(--apricot); border: 1px solid var(--soot-0); border-radius: var(--r); animation: bob 1s ease-in-out infinite alternate; pointer-events: none; }
@@ -262,138 +237,13 @@ body.hero #tutor { bottom: 190px; }
 /* F3 diagnostics: frame times and the mouse path */
 #diag { position: fixed; right: calc(8px + var(--safe-r)); top: 50%; transform: translateY(-50%); z-index: 47; margin: 0; padding: 7px 10px; font-family: var(--mono); font-size: 11px; line-height: 1.5; color: var(--sand); background: rgba(16, 14, 12, 0.88); border: 1px solid var(--line-2); border-radius: var(--r); pointer-events: none; white-space: pre; }
 
-/* ---------- hero HUD ---------- */
-#herohud { position: absolute; inset: 0; }
-#cross { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
-#cross::after { content: ''; position: absolute; left: -2px; top: -2px; width: 4px; height: 4px; background: var(--sand); box-shadow: 0 0 0 1px var(--soot-0); }
-#cross i { position: absolute; background: var(--sand); box-shadow: 0 0 0 1px rgba(16, 14, 12, 0.85); }
-#cross i:nth-child(1) { left: -1px; top: -20px; width: 2px; height: 10px; }
-#cross i:nth-child(2) { left: -1px; top: 10px; width: 2px; height: 10px; }
-#cross i:nth-child(3) { top: -1px; left: -20px; height: 2px; width: 10px; }
-#cross i:nth-child(4) { top: -1px; left: 10px; height: 2px; width: 10px; }
-#cross.tp i, #cross.tp::after { background: var(--verdigris); }
-/* draw gauge: a ring around the crosshair that fills as the bow is drawn */
-#draw { position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px; rotate: -90deg; opacity: 0; transition: opacity 0.12s; }
-#draw.on { opacity: 1; }
-#draw circle { fill: none; }
-#draw .trk { stroke: rgba(16, 14, 12, 0.6); stroke-width: 5; }
-#draw-arc { stroke: var(--sand); stroke-width: 3; stroke-dasharray: 100; stroke-dashoffset: 100; }
-#draw.weak #draw-arc { stroke: var(--muted); }
-#draw.full #draw-arc { stroke: var(--apricot); }
-#lock-hint { position: absolute; left: 50%; top: calc(var(--top-h) + 18px); transform: translateX(-50%); max-width: 86vw; font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; text-align: center; color: var(--sand-dim); }
-#lock-hint:not(:empty) { padding: 4px 10px; background: rgba(16, 14, 12, 0.85); border: 1px solid var(--line); border-radius: var(--r); }
-body.aimfree, body.aimfree * { cursor: none !important; }
-#hero-time { position: absolute; left: 50%; bottom: 108px; width: min(480px, 56vw); transform: translateX(-50%); display: grid; gap: 6px; padding: 8px 12px 10px; background: var(--plate); border: 1px solid var(--line); border-radius: var(--r); }
-#hero-time .bar i { background: var(--verdigris); }
-#hero-label { font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: 0.16em; color: var(--verdigris); font-variant-numeric: tabular-nums; }
-#skills { position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); display: flex; gap: 4px; }
-.skill { position: relative; display: grid; align-content: center; justify-items: center; gap: 6px; width: 92px; height: 66px; background: var(--plate); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
-.skill span { font-family: var(--display); font-size: 15px; font-weight: 600; letter-spacing: 0.06em; line-height: 1; text-transform: uppercase; color: var(--bone); white-space: nowrap; }
-.skill i { position: absolute; left: 0; right: 0; bottom: 0; height: 0; background: rgba(16, 14, 12, 0.84); border-top: 2px solid var(--rust); }
-.skill.cd span { color: var(--muted); }
-#sk-tp { border-color: var(--verdigris-dim); }
-#sk-tp span { color: var(--verdigris); }
-#hero-hint { position: absolute; left: 50%; top: calc(50% + 40px); transform: translateX(-50%); font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: 0.16em; color: var(--verdigris); white-space: nowrap; }
-#hero-hint:not(:empty) { padding: 3px 9px; background: rgba(16, 14, 12, 0.85); border: 1px solid var(--verdigris-dim); border-radius: var(--r); }
-body.hero #bottom, body.hero #tower, body.hero #tip { display: none !important; }
-body.hero #vignette { background: radial-gradient(ellipse at center, transparent 48%, rgba(12, 9, 7, 0.78) 100%); }
-
-/* ---------- Uplink mode: the whole run from the Spire ---------- */
-/* the Uplink neither charges nor ends here: no meter, no timer, no way down */
-body.uplink #ult, body.uplink #hero-time, body.uplink #t-exit { display: none !important; }
-body.uplink #btn-wave { margin-left: auto; }
-#sk-build, #bkeys, #reticle, #build-line { display: none; }
-body.uplink #sk-build { display: grid; }
-.skill em { display: flex; align-items: center; gap: 3px; font-style: normal; font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; }
-.skill em kbd { margin: 0; }
-#sk-build, #bkeys .skill { width: auto; min-width: 92px; padding: 0 12px; }
-#sk-build { border-color: var(--line-2); }
-/* before wave 1: above the skill row (the bar with the wave button only shows in build mode) */
-body.uplink #prep { bottom: 100px; }
-body.uplink #prep:not(.hidden) ~ #tutor { bottom: 188px; }
-/* build mode: the tower bar comes back, and the build keys stand above it in place of the skills */
-body.hero.building #bottom { display: flex !important; }
-body.hero.building #tip:not(.hidden) { display: block !important; }
-body.building #skills { display: none; }
-body.building #bkeys { display: flex; }
-#bkeys { position: absolute; left: 50%; bottom: calc(var(--console-h) + 12px); transform: translateX(-50%); gap: 4px; }
-/* a free cursor is hidden and aims with the crosshair: it must not click the bar by accident */
-body.aimfree #bottom, body.aimfree #bottom * { pointer-events: none !important; }
-/* the crosshair becomes a hex: sand where the tower can go, rust where it cannot, apricot on a tower */
-body.building #cross i, body.building #draw { display: none; }
-body.building #reticle { display: block; position: absolute; left: 50%; top: 50%; width: 40px; height: 40px; margin: -20px 0 0 -20px; }
-#reticle polygon { fill: rgba(227, 220, 146, 0.08); stroke: var(--sand); stroke-width: 1.6; stroke-linejoin: round; }
-#hud.bbad #reticle polygon { fill: rgba(206, 107, 68, 0.12); stroke: var(--rust); }
-#hud.bsel #reticle polygon { fill: none; stroke: var(--apricot); }
-#build-line { position: absolute; left: 50%; top: calc(50% + 28px); transform: translateX(-50%); gap: 10px; padding: 3px 9px; font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; white-space: nowrap; background: rgba(16, 14, 12, 0.85); border: 1px solid var(--line-2); border-radius: var(--r); }
-body.building #build-line { display: flex; }
-#bl-name { font-weight: 500; color: var(--sand); }
-#bl-why { color: var(--sand-dim); }
-#bl-why:empty { display: none; }
-#hud.bbad #build-line { border-color: var(--rust-deep); }
-#hud.bbad #bl-why { color: var(--rust); }
-#hud.bsel #bl-name { color: var(--apricot); }
-body.building #hero-hint { top: calc(50% + 62px); }
-
 /* ---------- touch controls (inside #hud; a touch controller removes .hidden) ---------- */
-#touch { position: absolute; inset: 0; }
-/* the look pad is only a picture: the canvas underneath takes the finger, and nothing lies between the mouse and the view */
-#t-look { position: absolute; left: 0; top: var(--top-h); bottom: 0; width: 52%; pointer-events: none; }
-body.hero #hud .panel:not(#vs) { pointer-events: none; }
-#t-look::before { content: ''; position: absolute; left: calc(34px + var(--safe-l)); bottom: calc(30px + var(--safe-b)); width: 112px; height: 112px; border: 1px dashed var(--line-2); border-radius: 50%; background: rgba(16, 14, 12, 0.35); }
-#t-look span { position: absolute; left: calc(34px + var(--safe-l)); bottom: calc(78px + var(--safe-b)); width: 112px; text-align: center; font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--sand-dim); }
-.tb { position: absolute; display: grid; place-items: center; width: 60px; height: 60px; padding: 0; color: var(--sand); background: rgba(23, 20, 17, 0.9); border: 1.5px solid var(--line-2); border-radius: 50%; overflow: hidden; cursor: pointer; touch-action: none; }
+#touch { position: absolute; inset: 0; pointer-events: none; }
+.tb { position: absolute; display: grid; place-items: center; width: 60px; height: 60px; padding: 0; color: var(--sand); background: rgba(23, 20, 17, 0.9); border: 1.5px solid var(--line-2); border-radius: 50%; overflow: hidden; cursor: pointer; touch-action: none; pointer-events: auto; }
 .tb b { position: relative; z-index: 1; font-family: var(--display); font-size: 15px; font-weight: 700; letter-spacing: 0.08em; line-height: 1; text-transform: uppercase; }
-.tb i { position: absolute; left: 0; right: 0; bottom: 0; height: 0; background: rgba(16, 14, 12, 0.86); border-top: 2px solid var(--rust); }
-.tb.cd b { color: var(--muted); }
 .tb:active { background: var(--soot-4); border-color: var(--sand); }
-#t-fire { right: calc(26px + var(--safe-r)); bottom: calc(26px + var(--safe-b)); width: 96px; height: 96px; color: var(--ink); background: var(--apricot); border: 0; box-shadow: inset 0 -4px 0 rgba(26, 15, 8, 0.24), 0 0 0 4px rgba(16, 14, 12, 0.6); }
-#t-fire b { font-size: 22px; }
-#t-fire:active { background: var(--rust); box-shadow: inset 0 3px 0 rgba(26, 15, 8, 0.3), 0 0 0 4px rgba(16, 14, 12, 0.6); }
-#t-s0 { right: calc(144px + var(--safe-r)); bottom: calc(30px + var(--safe-b)); }
-#t-s1 { right: calc(122px + var(--safe-r)); bottom: calc(108px + var(--safe-b)); }
-#t-s2 { right: calc(44px + var(--safe-r)); bottom: calc(142px + var(--safe-b)); }
-#t-tp { right: calc(196px + var(--safe-r)); bottom: calc(160px + var(--safe-b)); width: 54px; height: 54px; color: var(--verdigris); border-color: var(--verdigris-dim); }
-#t-tp.on { color: var(--ink); background: var(--verdigris); border-color: var(--verdigris); }
-#t-exit { right: calc(12px + var(--safe-r)); top: calc(var(--top-h) + 6px); width: auto; height: 44px; min-width: 64px; padding: 0 14px; border-radius: var(--r); }
-#t-exit b { font-size: 14px; }
-#t-ult { left: 50%; bottom: calc(var(--console-h) + 12px + var(--safe-b)); transform: translateX(-50%); width: auto; height: 48px; padding: 0 26px; color: var(--muted); border-radius: 24px; }
-#t-ult b { font-size: 17px; letter-spacing: 0.14em; }
-#hud:has(#ult.ready) #t-ult { color: var(--ink); background: var(--verdigris); border-color: var(--verdigris); box-shadow: 0 0 22px rgba(111, 224, 200, 0.55); }
-body:not(.hero) #touch > :not(#t-ult) { display: none; }
-/* the Uplink button only takes up room on the board while there is something to press */
-#hud:not(:has(#ult.ready)) #t-ult { display: none; }
-body.hero #t-ult { display: none; }
-#touch:not(.hidden) ~ #herohud #skills, #touch:not(.hidden) ~ #herohud #bkeys { display: none !important; }
-/* Uplink mode: Build sits where Exit would be. In build mode Draw becomes Place (dimmed where the tower cannot go),
-   Sell shows above the buttons while the crosshair is on a tower, and the tower bar leaves the buttons their corner. */
-#t-build, #t-bsell, #t-bup { width: auto; height: 44px; min-width: 72px; padding: 0 14px; border-radius: var(--r); }
-#t-build b, #t-bsell b, #t-bup b { font-size: 14px; }
-#t-build { right: calc(12px + var(--safe-r)); top: calc(var(--top-h) + 6px); }
-body:not(.uplink) #t-build, #t-bsell, #t-bup { display: none; }
-body.building #t-bup { display: grid; }
-body.building #t-build { color: var(--ink); background: var(--sand); border-color: var(--sand); }
-body.building #hud.bsel #t-bsell { display: grid; }
-#t-bsell { right: calc(44px + var(--safe-r)); bottom: calc(214px + var(--safe-b)); color: var(--apricot); border-color: var(--rust); }
-#t-bup { right: calc(12px + var(--safe-r)); top: calc(var(--top-h) + 58px); }
-#t-fire .place, #t-fire .cast, body.building #t-fire .draw { display: none; }
-body.building #t-fire .place { display: inline; }
-/* an armed area skill: Draw reads Cast, and the line under the crosshair says how to let it go */
-body.arming #t-fire .draw, body.arming #t-fire .place { display: none; }
-body.arming #t-fire .cast { display: inline; }
-body.arming #build-line { display: flex; }
-#t-fire .fire, body[data-armed="3"] #t-fire .cast { display: none; }
-body[data-armed="3"] #t-fire .fire { display: inline; }
-#rail-scope { display: none; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at 50% 50%, transparent 32%, rgba(8, 7, 6, calc(0.55 * var(--rail, 0))) 78%); }
-body[data-armed="3"] #rail-scope { display: block; }
-#rail-scope svg { position: absolute; left: 50%; top: 50%; width: 92px; height: 92px; margin: -46px 0 0 -46px; transform: rotate(-90deg); }
-#rail-scope circle { fill: none; stroke-width: 1.6; }
-#rail-scope .track { stroke: rgba(246, 139, 86, 0.25); }
-#rail-scope .charge { stroke: var(--apricot); stroke-dasharray: 100; stroke-dashoffset: calc(100 - 100 * var(--rail, 0)); filter: drop-shadow(0 0 4px var(--apricot)); }
-body[data-armed="3"] #build-line { top: calc(50% + 54px); }
-body[data-armed="3"] #sk-0, body[data-armed="3"] #t-s0, body[data-armed="1"] #sk-1, body[data-armed="2"] #sk-2, body[data-armed="1"] #t-s1, body[data-armed="2"] #t-s2 { border-color: var(--sand); box-shadow: 0 0 0 1px var(--sand), 0 0 14px rgba(227, 220, 146, 0.35); }
-#hud.bbad #t-fire, #hud.bsel #t-fire { color: var(--muted); background: var(--soot-3); box-shadow: inset 0 0 0 1.5px var(--line-2), 0 0 0 4px rgba(16, 14, 12, 0.6); }
-body.touch.building #bottom { right: calc(262px + var(--safe-r)); }
+/* Turn only shows while a factory building is about to be placed or one is selected */
+body:not(.placing) #t-turn { display: none; }
 body.building #t-look { display: none; }
 body.touch.uplink #prep { bottom: calc(12px + var(--safe-b)); max-width: min(420px, 50vw); }
 #touch:not(.hidden) ~ #herohud #hero-time { bottom: calc(12px + var(--safe-b)); width: min(250px, 30vw); padding: 6px 10px 8px; }
@@ -588,8 +438,7 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
   #gen-side { max-height: none; }
   #setup { --pick-h: clamp(150px, calc(100vh - 600px), 400px); }
   .tw { width: 58px; }
-  #ult { flex-basis: 130px; min-width: 110px; }
-  #btn-wave { padding: 0 12px; }
+    #btn-wave { padding: 0 12px; }
   .lobby-cols, .help-grid { grid-template-columns: 1fr; }
   .field { grid-template-columns: 1fr; gap: 6px; }
   .field .lab { padding-top: 0; }
@@ -610,8 +459,7 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
   .tw .cost { font-size: 14px; }
   #btn-wave { min-height: 48px; }
   #ult-label { font-size: 10px; letter-spacing: 0.08em; }
-  #ult { flex-basis: 150px; min-width: 132px; }
-  .menu-buttons.row { position: sticky; bottom: -14px; z-index: 2; padding-bottom: 10px; margin-bottom: -10px; background: var(--soot-0); }
+    .menu-buttons.row { position: sticky; bottom: -14px; z-index: 2; padding-bottom: 10px; margin-bottom: -10px; background: var(--soot-0); }
   #announce { top: 16%; padding-block: 8px 7px; font-size: clamp(24px, 5vw, 40px); }
   #announce small { margin-top: 6px; }
   #tower { width: 250px; padding: 9px 12px 10px; }
@@ -709,3 +557,50 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
   #announce.show { animation-duration: 2.4s !important; }
   .toast { animation-duration: 3.2s !important; }
 }
+
+/* ---------- the factory ---------- */
+#buildwrap { display: flex; flex-direction: column; gap: 4px; flex: 0 1 auto; min-width: 0; pointer-events: auto; }
+#bar-tabs { display: flex; gap: 4px; }
+#bar-tabs .chip { min-height: 22px; padding: 0 10px; font-size: 11px; }
+#bar-tabs .chip.on { color: var(--ink); background: var(--sand); border-color: var(--sand); }
+#fbuild { display: flex; gap: 4px; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain; }
+#fbuild::-webkit-scrollbar { display: none; }
+#fbuild.hidden, #build.hidden { display: none; }
+.tw.fac .ico { border-radius: 2px; }
+#btn-wave { margin-left: auto; }
+.stat.power b.sm { font-size: 15px; }
+#tip i.needs { color: var(--apricot); }
+#t-sup { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 6px 0 10px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 13px; }
+#t-sup:empty { display: none; }
+#t-sup span { color: var(--muted); }
+#t-sup b { font-weight: 600; color: var(--bone); text-align: right; font-variant-numeric: tabular-nums; }
+#t-sup .bad { color: var(--rust); }
+#t-special { width: 100%; margin-top: 8px; }
+#t-special:disabled { opacity: 0.45; cursor: default; }
+#t-spec.dry .bar i { background: var(--rust-deep); }
+#t-spec.dry #t-spec-state { color: var(--rust); }
+#fpanel { position: absolute; right: calc(12px + var(--safe-r)); bottom: calc(var(--console-h) + 12px); width: 270px; z-index: 4; }
+#tower { z-index: 4; }
+#fpanel.left { right: auto; left: calc(12px + var(--safe-l)); }
+#fpanel h3 { color: var(--sand); }
+#fpanel .btn { width: 100%; }
+#f-state { margin: 0 0 8px; font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; }
+#f-state.ok { color: #8fe07a; }
+#f-state.warn { color: var(--sand-dim); }
+#f-state.bad { color: var(--rust); }
+#f-stats { margin-bottom: 10px; font-size: 13px; line-height: 1.45; color: var(--muted); }
+#f-stats b { font-weight: 600; color: var(--bone); }
+#f-recipes { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 10px; }
+#f-recipes.hidden { display: none; }
+#f-recipes .chip { --c: var(--sand); display: grid; justify-items: start; gap: 1px; min-height: 0; padding: 5px 7px; text-align: left; border-left: 3px solid var(--c); }
+#f-recipes .chip span { font-size: 12px; }
+#f-recipes .chip small { font-family: var(--mono); font-size: 9px; color: var(--muted); text-transform: none; letter-spacing: 0; }
+#f-recipes .chip.on { color: var(--sand); background: var(--soot-3); border-color: var(--sand); border-left-color: var(--c); }
+#f-recipes .chip.on small { color: var(--sand-dim); }
+#t-btns2 { display: grid; gap: 6px; }
+#f-desc { margin: 8px 0 0; font-size: 12px; line-height: 1.35; }
+#hud:has(#fpanel.left:not(.hidden)) #tip { left: calc(294px + var(--safe-l)); }
+#marks .mark.ammo, #marks .mark.power, #marks .mark.petrol { left: -8px; top: -8px; width: 16px; height: 16px; background: var(--rust); animation: bob 0.5s ease-in-out infinite alternate; }
+#marks .mark.ammo svg, #marks .mark.power svg, #marks .mark.petrol svg { width: 12px; height: 12px; margin-top: 1px; }
+#t-turn { right: calc(18px + var(--safe-r)); bottom: calc(var(--console-h) + 18px); }
+body.touch #fpanel, body.touch #tower { bottom: calc(var(--console-h) + 90px); }

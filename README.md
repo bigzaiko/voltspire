@@ -1,21 +1,22 @@
 # BEATSPIRE
 
-**Build the grid. Become the storm.** A tower defense on a hex grid where your ultimate puts you on a tower as a third-person archer. Plays free in the browser, with mouse and keyboard or touch.
+**Build the grid. Become the storm.** A tower defense on a hex grid where your own factory keeps the towers firing. Plays free in the browser, with mouse and keyboard or touch.
 
 **Play:** https://bigzaiko.github.io/beatspire/
 
-- **Command view** - build and upgrade eleven tower types on the hexes beside the roads. Tags over the spawn gates show what the next wave sends down each road. A Colossus arrives every fifth wave, a Gyre mini-boss in between.
-- **Uplink** - kills charge your ultimate. Press Space to stand on an Uplink Spire as Kestrel: arrows, Rail Shot (hold RMB to zoom and charge, let go of LMB to fire), and Arrow Rain and Singularity, which show their area on the ground before you cast them. She can only use Spires and teleports between them.
-- **Uplink mode** - the whole campaign from the Spire. Press B to build: the crosshair marks a hex and a click puts the tower down. Build a second Spire and jump to it to reach the rest of the grid.
-- **Tower specials** - every combat tower charges a special. During the Uplink, shoot the power node on top of a charged tower to fire it. The tower then reboots for a few seconds.
-- **Weak points** - Brutes and the Colossus have exposed spots that take extra arrow damage.
-- **Machines** - ten kinds, among them the Gyre (a wheel whose spinning rim deflects hits until you slow or freeze it), the Broodcarrier (its mites climb a tower and jam it until you shoot them off) and the Titan: one finale per campaign that lands on the gate, wipes the road and stuns every tower. Towers only slow it; your weak-point shots and tower specials bring it down, and the Uplink stays open while it stands.
-- **Cards** - every level, pick one of three: tower blueprints, upgrades for each tower type, hero powers, economy. The bow changes through five tiers.
+- **Towers** - build and upgrade ten tower types on the hexes beside the roads. Tags over the spawn gates show what the next wave sends down each road. A Colossus arrives every fifth wave, a Gyre mini-boss in between.
+- **The factory** - no tower fires for free. Every map has deposits of iron, copper, coal and oil. Mines dig the ore, smelters turn it into plates (burning coal), and fabricators assemble the plates into Frames, ammo boxes, plasma shells, rail slugs, energy cells or missile packs. Pumpjacks and refineries make petrol, generators burn coal or petrol for power.
+- **Logistics** - buildings hand their output to a neighbour that takes it, or to the conveyor belt at their output side. Belts carry items tile by tile and deliver into the building or tower they point at. Pipes carry crude oil and petrol. Power poles wire up to 5 tiles apart (also across roads) and power everything within 2 tiles.
+- **Supply** - simple towers run on one thing (Pulse Turret: ammo boxes, Firewall Pylon: petrol, Cryo, Arc and Beacon: power), the stronger ones on two (Mortar: shells and power, Railgun: slugs and power, Lance and Graviton Well: energy cells and power, Missile Battery: missiles and power). A tower that runs dry stops firing and shows what it is missing.
+- **Credits and materials** - kills and cleared waves pay credits. Frames delivered to a Depot become building materials. Towers and their upgrades cost both, factory buildings cost credits.
+- **Tower specials** - every tower charges a special. Select a charged tower and fire it (Space or the button in its panel). The tower then reboots for a few seconds.
+- **Machines** - ten kinds, among them the Gyre (a wheel whose spinning rim deflects hits until you slow or freeze it), the Broodcarrier (its mites climb a tower and jam it) and the Titan: one finale per campaign that lands on the gate, wipes the road and stuns every tower. Its hull turns most tower fire; tower specials hit it at full strength.
+- **Cards** - every level, pick one of three: tower blueprints, upgrades for each tower type, factory upgrades, economy.
 - **Maps and modes** - 38 pre-made maps in three tiers (one to three roads, some with ramps and bridges) or a generated map from a seed. Three difficulties with 20, 25 or 30 waves, and a Survival mode with no last wave.
-- **Map editor** - draw roads on the hex grid, place the core, wreckage and starting towers, set credits and core integrity. Maps are saved locally and can be shared as a code.
-- **Multiplayer** - online co-op for two, or 1v1 where you pay to send squads at your rival. Join with a room code.
+- **Map editor** - draw roads on the hex grid, place the core, wreckage and starting towers, set credits and core integrity. Deposits are laid out on the free deck automatically. Maps are saved locally and can be shared as a code.
+- **Multiplayer** - online co-op and 1v1 are switched off for now: the factory is not kept in sync between two browsers yet. The code for them is still there.
 - **Music** - five built-in synthwave tracks (92 to 108 BPM). Tick the ones you want and they play one after another as your playlist, or add YouTube and Spotify links of your own.
-- **Settings** - volume, look sensitivity, mouse response (on Linux the game takes the desktop's pointer curve back out, so slow aiming counts fully), graphics quality, and the impact and beat pulse effects (on or off, where they show, intensity, colour). Records per map and difficulty are kept in the browser.
+- **Settings** - volume, graphics quality, and the impact and beat pulse effects (on or off, where they show, intensity, colour). Records per map and difficulty are kept in the browser.
 
 ## Safe by design
 
@@ -27,8 +28,8 @@ No accounts, no login, no ads, no tracking, no server of ours. The site is stati
 npm install
 npm run dev        # http://localhost:5183
 npm run build      # static site in dist/
-node tools/balance.ts 5 1 hero all normal   # headless bot runs for balancing
-node tools/smoke.ts        # headless checks: maps, hostile input, co-op sync
+node tools/balance.ts               # headless bot runs for balancing (see the file for its arguments)
+node tools/smoke.ts        # headless checks: maps, the factory, hostile input, co-op sync
 node tools/hex-test.ts     # hex grid maths
 node tools/mapgen-test.ts  # map generator
 node tools/trailer.mjs     # records the trailer from the running dev server

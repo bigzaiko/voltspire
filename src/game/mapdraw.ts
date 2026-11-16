@@ -8,7 +8,7 @@ import type { MapDef, LanePoint } from './map.ts';
 export const MAP_INK = {
   ground: '#12100d', board: '#1f1a17', grid: 'rgba(227,220,146,0.07)', edge: 'rgba(227,220,146,0.3)',
   scenery: '#3a3029', bed: '#0c0a09', lanes: ['#e3dc92', '#f68b56', '#7fb8ad'], spawn: '#8fd0ff', core: '#efe9d6',
-  bad: '#ce6b44', spire: '#6fe0c8',
+  bad: '#ce6b44',
 };
 
 /** World to canvas: px = x0 + worldX * u, py = z0 + worldZ * u. */
@@ -146,15 +146,11 @@ export function drawMap(cv: HTMLCanvasElement, def: MapDef) {
     g.fillStyle = MAP_INK.bed; g.beginPath(); g.arc(x, z, t * 0.6, 0, 7); g.fill();
     g.fillStyle = MAP_INK.spawn; g.beginPath(); g.arc(x, z, t * 0.4, 0, 7); g.fill();
   }
-  // starting towers: a dot each, spires as a larger diamond
+  // starting towers: a dot each
   for (const tw of def.towers) {
     if (!inBoard(tw.cx, tw.cz)) continue;
     const x = X(tw.cx, tw.cz), z = Z(tw.cz);
-    if (tw.t === 'spire') {
-      const r = Math.max(3, t * 0.72);
-      g.fillStyle = MAP_INK.bed; g.beginPath(); g.arc(x, z, r * 1.1, 0, 7); g.fill();
-      g.fillStyle = MAP_INK.spire; g.beginPath(); g.moveTo(x, z - r); g.lineTo(x + r * 0.72, z); g.lineTo(x, z + r); g.lineTo(x - r * 0.72, z); g.closePath(); g.fill();
-    } else {
+    {
       g.fillStyle = MAP_INK.bed; g.beginPath(); g.arc(x, z, Math.max(2, t * 0.44), 0, 7); g.fill();
       g.fillStyle = '#' + TOWERS[tw.t].color.toString(16).padStart(6, '0'); g.beginPath(); g.arc(x, z, Math.max(1.4, t * 0.3), 0, 7); g.fill();
     }

@@ -1,20 +1,22 @@
 // BEATSPIRE game simulation (no rendering, no DOM). Runs in the browser and in Node.
 import {
-  CELL, GW, GH, MAX_ENERGY, WIN_WAVE, cellX, cellZ,
-  TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, ENEMY_SCALE, CARDS, CARD_BY_ID, BOW_TIERS, bowTier,
-  LVL_DMG, LVL_RANGE, LVL_RATE, upgradeCost, waveHpMul, waveBudget, baseMods, baseHero, TUNE,
+  CELL, GW, GH, WIN_WAVE, cellX, cellZ,
+  TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, CARDS, CARD_BY_ID,
+  LVL_DMG, LVL_RANGE, LVL_RATE, upgradeCost, upgradeMat, waveHpMul, waveBudget, baseMods, TUNE,
   TWIN_BOLT, PULSE_CRIT, RAIL_CAP, LANCE_FOCUS, BREACH_TIME, BREACH_TIME_BOSS, BREACH_SHARE, coopScale,
-  FIRST_WAVE_IN, NEXT_WAVE_IN, DRAW_TIME, MIN_DRAW, NOCK_TIME, FULL_DRAW_MUL, HERO_DUR, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR,
+  FIRST_WAVE_IN, NEXT_WAVE_IN, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR,
+  FACS, ITEM_SHOTS, PETROL_PER_TICK, START_MATS, START_GOLD_MUL, RECIPE_BY_ID,
   WHEEL_GUARD, WHEEL_CRAWL, WHEEL_BLEED, WHEEL_DRAG, WHEEL_SINK, WHEEL_REST, WHEEL_SPINUP, WHEEL_PIERCE, WAVE_POOL, gyreCount, GYRE_WAVE,
   BROOD_EVERY, BROOD_FIRST, BROOD_SIZE, BROOD_REACH, MITE_HOLD, MITE_LIFE, JAM_LINGER,
   TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY, TITAN_STRIKE, TITAN_SLOW, TITAN_WALK, TITAN_PACE, TITAN_LEAD, TITAN_GOLD, TITAN_SURVIVAL, TITAN_AGAIN, TITAN_TOUGHER, TITAN_SMASH,
 } from './data.ts';
-import type { TowerType, EnemyType, Mods, HeroStats, Card } from './data.ts';
+import type { TowerType, EnemyType, Mods, Card, FacType } from './data.ts';
 import { broodCap } from './data.ts';
 import { GameMap, DEFAULT_MAP, diffById } from './map.ts';
 import type { MapDef, Difficulty, PathOut } from './map.ts';
 import { hexDist } from './hex.ts';
-export { DRAW_TIME, MIN_DRAW, NOCK_TIME, HERO_DUR, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR, BREACH_TIME, BREACH_TIME_BOSS, TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY };
+import { Factory, makeDeposits, TOWER_STOCK, TANK } from './factory.ts';
+export { LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR, BREACH_TIME, BREACH_TIME_BOSS, TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY };
 /** How far from the end of its road an enemy stops to attack the core (plus 0.6 of its radius). */
 export const CORE_STAND = 1.6;
 
@@ -32,8 +34,6 @@ export interface Enemy {
   burn2T: number; burn2D: number;
   /** At the core: seconds left until its attack lands (0 = not there yet). The core then takes the damage and its discharge destroys the enemy. */
   breach: number;
-  /** Colossus plating: seconds left cracked open (towers deal full damage while it is > 0, see TUNE.plate) */
-  crackT: number;
   /** Gyre: rim spin 0..1 (0 for every other type), seconds until it may spin back up, whether it has stalled (between the 'spindown' and 'spinup' events), and the time of its next 'deflect' event */
   spin: number; spinCd: number; stalled: boolean; deflAt: number;
   /** Mite: the id of the tower it is after (0 for every other type), whether it sits on that tower, and the id of the Broodcarrier it came from. */
@@ -50,22 +50,23 @@ export interface Tower {
   heat: number; tgt: number; aux: number; fxT: number;
   /** Seconds left jammed by mites, and stunned by the Titan's landing. Either way the tower neither fires nor charges (apart from `down`, the reboot after a special). */
   jam: number; stun: number;
+  /** Supply from the factory: ammunition items waiting, shots left of the item in use, petrol in the tank, power satisfaction 0..1,
+   *  and whether it ran dry last step (it then does nothing until it is supplied again). spentMat: materials paid into it. */
+  stock: number; ammo: number; tank: number; pwr: number; dry: boolean; spentMat: number;
 }
-/** True while a tower does nothing: rebooting, jammed by mites or stunned by the Titan. */
-export const towerOff = (t: Tower) => t.down > 0 || t.jam > 0 || t.stun > 0;
-export type ProjKind = 'bolt' | 'shell' | 'arrow' | 'missile';
-const PROJ_KINDS: ProjKind[] = ['bolt', 'shell', 'arrow', 'missile'];
+/** True while a tower does nothing: rebooting, jammed by mites, stunned by the Titan, or out of supply. */
+export const towerOff = (t: Tower) => t.down > 0 || t.jam > 0 || t.stun > 0 || t.dry;
+export type ProjKind = 'bolt' | 'shell' | 'missile';
+const PROJ_KINDS: ProjKind[] = ['bolt', 'shell', 'missile'];
 export interface Proj {
   id: number; kind: ProjKind; x: number; y: number; z: number; vx: number; vy: number; vz: number;
   dmg: number; owner: number; target: number; life: number; pierce: number; hit: number[];
   tier: number; aoe: number; chain: number; sx: number; sz: number; tx: number; ty: number; tz: number; t: number; T: number;
-  /** share of a Gyre's guard the direct hit ignores (full-draw arrows) */
-  cut?: number;
-  /** fired by a tower special: these are the only tower shots that hurt the Titan */
+  /** fired by a tower special: these hit the Titan at full strength */
   sp?: boolean;
 }
-export type ZoneKind = 'burn' | 'rain' | 'sing';
-const ZONE_KINDS: ZoneKind[] = ['burn', 'rain', 'sing'];
+export type ZoneKind = 'burn' | 'sing';
+const ZONE_KINDS: ZoneKind[] = ['burn', 'sing'];
 export interface Zone {
   id: number; kind: ZoneKind; x: number; z: number; r: number; life: number; tick: number; dmg: number; owner: number; pd: number;
   /** deck height under the zone (roads can be raised). Burning ground does not reach through a bridge deck. */
@@ -74,11 +75,9 @@ export interface Zone {
 /** A wall of fire between two linked Firewall Pylons (a, b = tower ids). `on`: both pylons are online. `hot`: an Inferno is running on it. */
 export interface Wall { a: number; b: number; ax: number; az: number; bx: number; bz: number; on: boolean; hot: boolean }
 export interface Player {
-  energy: number; heroActive: boolean; heroTower: number; yaw: number; pitch: number;
-  heroTime: number; heroDur: number; stats: HeroStats; pending: string[][];
-  fireCd: number; cds: number[]; stacks: Record<string, number>; kills: number;
-  /** The bow: `drawing` mirrors the fire button, `draw` is the tension 0..1 (see heroAim). */
-  draw: number; drawing: boolean;
+  /** card offers waiting for this player (each up to three card ids) */
+  pending: string[][];
+  kills: number;
 }
 /** What the next startWave() will release, per lane (index = lane index). */
 export interface WavePreview { wave: number; lanes: { type: EnemyType; n: number }[][] }
@@ -94,48 +93,22 @@ export type TitanPhase = 'none' | 'far' | 'warn' | 'landing' | 'walk' | 'dead';
 export const TITAN_PHASES: TitanPhase[] = ['none', 'far', 'warn', 'landing', 'walk', 'dead'];
 export interface TitanState { phase: TitanPhase; danger: number; wave: number; t: number; lane: number }
 
-/** World scale: combat towers are about 3 to 4.5 units tall, Uplink Spires ~7.5; Kestrel is ~0.9 and stands on top of a Spire. */
+/** World scale: combat towers are about 3 to 4.5 units tall. */
 export const TOWER_SCALE = 1.15;
-export const TOWER_H: Record<TowerType, number> = { pulse: 2.76, cryo: 2.78, arc: 3.7, mortar: 2.4, rail: 3.23, beacon: 3.92, flame: 2.6, lance: 3.6, missile: 3.0, gravity: 3.3, spire: 7.475 };
-/** @deprecated Kestrel now stands directly on a Spire (see standY); kept so older view code compiles. */
-export const DECK = 0.55;
-export const HERO_SCALE = 0.5;
-export const SKILL_CD = [4, 11, 18]; // rail shot, arrow rain, singularity
-/** Seconds from the key press to the visible release of each skill (the view winds the pose up first; the sim applies the effect at once). */
-export const SKILL_CAST = [0.1, 0.26, 0.18];
-/** Seconds a skill occupies the bow: no arrows can be loosed until its pose has let go of the string. */
-export const SKILL_LOCK = [0.62, 0.86, 0.62];
-/** Arrow Rain: seconds the volley is in the air before the first hits land (the zone exists from the cast and lasts this much longer). */
-export const RAIN_DELAY = 0.8;
-/** Radius of a tower's power node (see nodePos). */
+export const TOWER_H: Record<TowerType, number> = { pulse: 2.76, cryo: 2.78, arc: 3.7, mortar: 2.4, rail: 3.23, beacon: 3.92, flame: 2.6, lance: 3.6, missile: 3.0, gravity: 3.3 };
+/** Radius of a tower's power node (the light on top that shows its special's charge, see nodePos). */
 export const NODE_R = 0.6;
-/** Extra radius an arrow gets against an enemy body. There is no other aim assistance. */
-export const ARROW_PAD = 0.3;
-/** Speed of an arrow loosed at full draw. */
-export const ARROW_SPEED = 85;
-/** Damage of an arrow loosed at draw d (0..1), as a share of a full draw. Clearly worse than proportional: half a draw is worth about a third. */
-export const drawPower = (d: number) => Math.pow(Math.max(0, Math.min(1, d)), 1.5);
-/** Speed of an arrow loosed at draw d. */
-export const arrowSpeed = (d: number) => ARROW_SPEED * (0.55 + 0.45 * Math.max(0, Math.min(1, d)));
-/** From this draw on an arrow counts as fully drawn and pierces one more target. */
-export const FULL_DRAW = 0.9;
-/** Radius of the jump target above an Uplink Spire (see spireTarget). */
-export const SPIRE_R = 0.75;
 /** Blasts and burning ground only reach enemies whose road is within this height of the blast (a bridge deck shields what is under or over it). */
 export const DECK_GAP = 1.2;
 /** Snapshot event budget: one-shot state events are always sent, cosmetic ones fill what is left of SNAP_EVENTS. */
 export const SNAP_EVENTS = 90;
 export const SNAP_EVENTS_MAX = 120;
 /** Events a co-op guest must never miss (everything else is cosmetic and may be dropped under load). */
-export const MUST_EVENTS: ReadonlySet<string> = new Set(['heroOn', 'heroOff', 'tele', 'special', 'down', 'up', 'wave', 'boss', 'clear', 'levelup', 'card', 'win', 'lose', 'leak', 'build', 'sell', 'incoming', 'titanLand', 'titanImpact', 'titanDie']);
+export const MUST_EVENTS: ReadonlySet<string> = new Set(['special', 'down', 'up', 'wave', 'boss', 'clear', 'levelup', 'card', 'win', 'lose', 'leak', 'build', 'sell', 'incoming', 'titanLand', 'titanImpact', 'titanDie']);
 
 interface P3 { x: number; y: number; z: number }
-/** Height Kestrel's feet are at when she stands on this tower. */
-export function standY(t: Tower): number { return t.h; }
-/** The power node the player shoots to fire a tower's special. */
+/** The power node on top of a tower: it glows while the tower's special is charged. */
 export function nodePos<T extends P3>(t: Tower, out: T): T { out.x = t.x; out.y = t.h + 0.55; out.z = t.z; return out; }
-/** The jump target above an Uplink Spire: an arrow or a Rail Shot from another Spire that passes through it carries Kestrel over. */
-export function spireTarget<T extends P3>(t: Tower, out: T): T { out.x = t.x; out.y = t.h + 1.7; out.z = t.z; return out; }
 /** How far apart (in tiles) a Firewall Pylon links: one tile further at level 3, plus the Long Conduits card. */
 export function linkRange(t: Tower, bonus = 0): number { return LINK_RANGE + (t.lvl >= 3 ? 1 : 0) + Math.max(0, Math.min(4, bonus | 0)); }
 /**
@@ -167,36 +140,8 @@ export function segDist(x: number, z: number, ax: number, az: number, bx: number
   const u = l2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2)) : 0;
   return Math.hypot(ax + dx * u - x, az + dz * u - z);
 }
-/** World position of an enemy's i-th weak point, or null if it has none. */
-export function weakPos<T extends P3>(e: Enemy, i: number, out: T): T | null {
-  const list = ENEMIES[e.type].weak, w = list && list[i];
-  if (!w) return null;
-  const s = ENEMY_SCALE[e.type], sn = Math.sin(e.yaw), cs = Math.cos(e.yaw);
-  out.x = e.x + (w.x * cs + w.z * sn) * s;
-  out.z = e.z + (-w.x * sn + w.z * cs) * s;
-  out.y = e.gy + w.y * s;
-  return out;
-}
-/** True if a shot travelling along (dx, dz) can reach an enemy's i-th weak point: one marked `front` (the Titan's eye) only shows to a shot that comes at it from in front or from the side, not from behind. */
-export function weakOpen(e: Enemy, i: number, dx: number, dz: number): boolean {
-  const list = ENEMIES[e.type].weak, w = list && list[i];
-  if (!w) return false;
-  if (!w.front) return true;
-  const l = Math.hypot(dx, dz) || 1;
-  return (dx * Math.sin(e.yaw) + dz * Math.cos(e.yaw)) / l < 0.25;
-}
 /** An enemy's own pace before slows. A Gyre rolls at WHEEL_CRAWL of its speed with the rim stopped, and at all of it at full spin. */
 export function paceOf(e: Enemy): number { return e.type === 'wheel' ? e.speed * (WHEEL_CRAWL + (1 - WHEEL_CRAWL) * e.spin) : e.speed; }
-/** Distance along a unit ray to where it enters a sphere (0 if it starts inside), or -1 if it misses. */
-export function raySphere(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, cx: number, cy: number, cz: number, r: number) {
-  const mx = cx - ox, my = cy - oy, mz = cz - oz;
-  const c = mx * mx + my * my + mz * mz - r * r;
-  if (c <= 0) return 0;
-  const b = mx * dx + my * dy + mz * dz;
-  if (b <= 0) return -1;
-  const disc = b * b - c;
-  return disc < 0 ? -1 : b - Math.sqrt(disc);
-}
 
 // ---------- legacy exports for the default map (scenery code still reads these) ----------
 const DEF = new GameMap(DEFAULT_MAP);
@@ -217,8 +162,8 @@ function mulberry(seed: number) {
 export type Mode = 'solo' | 'coop' | 'versus';
 export interface SimOpts {
   mode: Mode; players: number; seed: number; pauseOnCards: boolean; map: MapDef; diff: string; survival: boolean;
-  /** Uplink mode: every player stands on a Spire for the whole run and builds from there. Not in versus. */
-  uplink: boolean;
+  /** Towers need no supply from the factory and cost no materials (the attract demo and headless balance runs, where the bot plays). */
+  free: boolean;
 }
 
 const xpNeed = (lvl: number) => Math.round(12 + lvl * 7 + lvl * lvl * 0.55);
@@ -235,13 +180,6 @@ const INFERNO = 2.5;
 const INFERNO_WIDE = 1.8;
 const BURN_SHARE = 0.4;
 const RING_SHARE = 0.5;
-/**
- * Uplink mode, the Spire a player starts on: UPLINK_VIEW is the reach its view is judged by (a comfortable bow shot), UPLINK_APART
- * how far two players' Spires stand apart at least. A Spire of the map is taken when its view is at least UPLINK_KEEP of the best free tile.
- */
-const UPLINK_VIEW = 18;
-const UPLINK_APART = 10;
-const UPLINK_KEEP = 0.85;
 
 /**
  * How forgiving a map's layout is, as an enemy health multiplier: long roads and tiles that overlook a lot of road give
@@ -268,7 +206,12 @@ export function mapEase(map: GameMap): number {
 }
 
 function newTower(id: number, type: TowerType, cx: number, cz: number, spent: number): Tower {
-  return { id, type, cx, cz, x: cellX(cx, cz), z: cellZ(cz), lvl: 1, cd: 0.3, yaw: 0, buff: 0, spent, h: TOWER_H[type], charge: 0, spec: 0, down: 0, heat: 0, tgt: 0, aux: 0, fxT: 0, jam: 0, stun: 0 };
+  const n = TOWERS[type].needs;
+  // a new tower comes with two ammunition items and half a tank of petrol, so it can fire before the factory reaches it
+  return {
+    id, type, cx, cz, x: cellX(cx, cz), z: cellZ(cz), lvl: 1, cd: 0.3, yaw: 0, buff: 0, spent, h: TOWER_H[type], charge: 0, spec: 0, down: 0, heat: 0, tgt: 0, aux: 0, fxT: 0, jam: 0, stun: 0,
+    stock: n.item ? 2 : 0, ammo: 0, tank: n.fluid ? TANK / 2 : 0, pwr: 0, dry: false, spentMat: 0,
+  };
 }
 /** An enemy of a type with everything else at rest (spawn() and the co-op replica fill in the rest). */
 function newEnemy(id: number, type: EnemyType): Enemy {
@@ -276,7 +219,7 @@ function newEnemy(id: number, type: EnemyType): Enemy {
   return {
     id, type, x: 0, z: 0, y: d.y, yaw: 0, dist: 0, lane: 0, off: 0, hp: 1, maxHp: 1, shield: 0, maxShield: 0, shieldCd: 0,
     speed: d.speed, slowT: 0, slowF: 0, sing: 0, alive: true, r: d.r, armor: 0,
-    gy: 0, frz: 0, burnT: 0, burnD: 0, burnAcc: 0, vulnT: 0, pull: 0, pullCd: 0, burn2T: 0, burn2D: 0, breach: 0, crackT: 0,
+    gy: 0, frz: 0, burnT: 0, burnD: 0, burnAcc: 0, vulnT: 0, pull: 0, pullCd: 0, burn2T: 0, burn2D: 0, breach: 0,
     spin: 0, spinCd: 0, stalled: false, deflAt: 0, prey: 0, latched: false, mom: 0, ttl: 0,
   };
 }
@@ -284,8 +227,10 @@ function newEnemy(id: number, type: EnemyType): Enemy {
 export class Sim {
   opts: SimOpts;
   time = 0; wave = 0; lives = 20; maxLives = 20; gold = 220; level = 1; xp = 0; xpNext = xpNeed(1);
+  /** building materials: Frames delivered to a Depot. Towers and upgrades cost them on top of credits. */
+  mats = START_MATS;
   mods: Mods = baseMods();
-  unlocked = new Set<TowerType>(['pulse', 'cryo', 'spire']);
+  unlocked = new Set<TowerType>(['pulse', 'cryo']);
   stacks: Record<string, number> = {};
   enemies: Enemy[] = []; towers: Tower[] = []; projs: Proj[] = []; zones: Zone[] = [];
   /** Walls of fire between linked Firewall Pylons (rebuilt whenever the towers change, see computeWalls). */
@@ -297,7 +242,9 @@ export class Sim {
   queue: { t: number; type: EnemyType; mul: number; lane: number }[] = [];
   waveActive = false; nextWaveIn = FIRST_WAVE_IN; cleared = true;
   over = false; won = false; endless = false; replica = false;
-  kills = 0; leaked = 0; sent = 0; beacons = 0; spires = 0;
+  kills = 0; leaked = 0; sent = 0; beacons = 0;
+  /** mines, belts, pipes, power and the buildings of the factory (see factory.ts) */
+  factory: Factory;
   /** The campaign's final wave (from the difficulty). Survival and Versus ignore it. */
   winWave = WIN_WAVE;
   /** Enemy health multiplier from the map's shape: short roads give the towers less time, so the machines are weaker there and tougher on long roads. Keeps any map (pre-made, edited or generated) at a similar difficulty. */
@@ -306,30 +253,32 @@ export class Sim {
   preview: WavePreview = { wave: 0, lanes: [] };
   /** The Titan (see TitanState). */
   titan: TitanState = { phase: 'none', danger: 0, wave: 0, t: 0, lane: 0 };
-  /** True while the Titan walks: every player's Uplink is held open (charge pinned at full, the Uplink timer does not run down, leaving and coming back is free). */
-  overlink = false;
   /** Titans destroyed so far (each one after the first is tougher), the time until it wrecks the next building, its own random stream, and when the current wave began. */
   private titanN = 0; private smashIn = 0; private trand: () => number = Math.random; private waveT0 = 0;
-  /** Set while a hit is one that hurts the Titan: a weak-point hit or a tower special. */
+  /** Set while a hit comes from a tower special: it hits the Titan at full strength. */
   private sp = false;
   private next: { wave: number; items: { t: number; type: EnemyType; lane: number }[] } | null = null;
   private nid = 1;
   private snapN = 0; private modsSig = '';
   private wallTw: [Tower, Tower][] = [];
   private nospecAt = new Map<number, number>();
-  /** Uplink mode: the id of the Spire each player starts on (see uplinkHomes). */
-  private home: number[] = [];
   private rand: () => number;
 
   constructor(opts: Partial<SimOpts> = {}) {
-    this.opts = { mode: 'solo', players: 1, seed: (Math.random() * 1e9) | 0, pauseOnCards: true, map: DEFAULT_MAP, diff: 'normal', survival: false, uplink: false, ...opts };
-    this.opts.uplink = this.opts.uplink === true && this.opts.mode !== 'versus';
+    this.opts = { mode: 'solo', players: 1, seed: (Math.random() * 1e9) | 0, pauseOnCards: true, map: DEFAULT_MAP, diff: 'normal', survival: false, free: false, ...opts };
+    this.opts.free = this.opts.free === true;
     if (this.opts.seed === undefined) this.opts.seed = (Math.random() * 1e9) | 0;
     this.rand = mulberry(this.opts.seed);
     this.map = new GameMap(this.opts.map || DEFAULT_MAP);
     this.diff = diffById(this.opts.diff);
     this.grid = new Uint8Array(this.map.grid);
-    this.gold = this.map.def.gold;
+    this.gold = Math.round(this.map.def.gold * START_GOLD_MUL);
+    // (getters: a co-op replica swaps its tower list and event queue for new arrays)
+    const self = this; // eslint-disable-line @typescript-eslint/no-this-alias
+    this.factory = new Factory({
+      get grid() { return self.grid; }, get mods() { return self.mods; }, get towers() { return self.towers; }, get events() { return self.events; },
+      addMats: (n) => { this.mats += n; },
+    }, makeDeposits(this.grid, this.map.def.id + '|' + this.map.def.name));
     this.lives = this.maxLives = Math.max(1, Math.round(this.map.def.lives * this.diff.lives));
     this.endless = this.opts.survival;
     this.winWave = this.diff.waves;
@@ -349,27 +298,27 @@ export class Sim {
       if (!Object.hasOwn(TOWERS, t.t) || !(t.cx >= 0 && t.cz >= 0 && t.cx < GW && t.cz < GH) || this.grid[t.cz * GW + t.cx] !== 0) continue;
       this.grid[t.cz * GW + t.cx] = 2;
       this.unlocked.add(t.t);
-      this.towers.push(newTower(this.nid++, t.t, t.cx, t.cz, 0));
+      const tw = newTower(this.nid++, t.t, t.cx, t.cz, 0);
+      if (TOWERS[t.t].needs.item) tw.stock = TOWER_STOCK; // the map's own towers start fully stocked
+      if (TOWERS[t.t].needs.fluid) tw.tank = TANK;
+      this.towers.push(tw);
     }
-    if (this.opts.uplink) this.uplinkHomes();
-    this.ensureSpire();
     this.recomputeBuffs();
-    for (let i = 0; i < this.opts.players; i++) {
-      this.players.push({
-        energy: 0, heroActive: false, heroTower: 0, yaw: 0, pitch: -0.25, heroTime: 0, heroDur: HERO_DUR,
-        stats: baseHero(), pending: [], fireCd: 0, cds: [0, 0, 0], stacks: {}, kills: 0, draw: 0, drawing: false,
-      });
-    }
+    for (let i = 0; i < this.opts.players; i++) this.players.push({ pending: [], kills: 0 });
     this.planWave(1);
   }
 
   get paused() { return this.opts.pauseOnCards && this.players.some((p) => p.pending.length > 0); }
-  get tier() { return bowTier(this.wave); }
   /** True while the run ends at winWave (not Versus, not Survival / endless). */
   get campaign() { return this.opts.mode !== 'versus' && !this.endless; }
   cost(t: TowerType) { return Math.round(TOWERS[t].cost * this.mods.cheap); }
+  /** building materials a tower costs on top of its credits */
+  matCost(t: TowerType) { return this.opts.free ? 0 : TOWERS[t].mat; }
   upCost(t: Tower) { return Math.round(upgradeCost(t.type, t.lvl) * this.mods.cheap); }
+  upMat(t: Tower) { return this.opts.free ? 0 : upgradeMat(t.type, t.lvl); }
   sellValue(t: Tower) { return Math.round(t.spent * 0.6); }
+  sellMats(t: Tower) { return Math.floor(t.spentMat * 0.6); }
+  facCost(t: FacType) { return Math.round(FACS[t].cost * this.mods.cheap); }
   towerById(id: number) { return this.towers.find((t) => t.id === id); }
   /** A tower's reach. For a Firewall Pylon this is how far away it links to another pylon (whole tiles, see linkRange). */
   range(t: Tower) {
@@ -379,75 +328,64 @@ export class Sim {
   /** Half the thickness of a wall of fire (wider while an Inferno runs on it, and with Slag Curtain). */
   wallHalf(w: Wall) { return WALL_HALF * (1 + 0.3 * this.mods.flameMelt) * (w.hot ? INFERNO_WIDE : 1); }
   towerDmg(t: Tower) { return TOWERS[t.type].dmg * TUNE.tdmg * LVL_DMG[t.lvl - 1] * this.mods.tDmg * this.mods.tw[t.type].dmg * (1 + t.buff); }
-  towerRate(t: Tower) { return TOWERS[t.type].rate * LVL_RATE[t.lvl - 1] * this.mods.tRate * this.mods.tw[t.type].rate * (1 + t.buff * 0.6); }
-  /** Arrow damage. An upgraded Spire amplifies the arrows fired from it (+15% per level). */
-  arrowDmg(p: Player) {
-    const t = p.heroActive ? this.towerById(p.heroTower) : undefined;
-    return TUNE.arrow * BOW_TIERS[this.tier].mul * p.stats.dmg * (1 + 0.15 * ((t ? t.lvl : 1) - 1));
-  }
+  towerRate(t: Tower) { return TOWERS[t.type].rate * LVL_RATE[t.lvl - 1] * this.mods.tRate * this.mods.tw[t.type].rate * (1 + t.buff * 0.6) * this.powerMul(t); }
   /** True if the tower's special can be fired right now. */
   specialReady(t: Tower) { return !!TOWERS[t.type].special && t.charge >= 1 && !towerOff(t) && t.spec <= 0; }
   /** True from the Titan's leap until it is destroyed: nothing else spawns and no wave can be called. */
   get titanBusy() { return this.titan.phase === 'landing' || this.titan.phase === 'walk'; }
-  /** The Titan's health when it lands: sized by the strength of the bow on its wave (only weak-point hits and tower specials hurt it), the difficulty and the number of players. */
+  /** The Titan's health when it lands: sized by the enemy health of its wave, the difficulty and the number of players. Towers only hurt it at TUNE.titanTower, their specials at full strength. */
   titanHp() {
-    return TUNE.titan * BOW_TIERS[bowTier(this.titan.wave)].mul * Math.sqrt(this.diff.hp) * (1 + 0.75 * (this.players.length - 1)) * Math.pow(TITAN_TOUGHER, this.titanN) * (this.opts.uplink ? TUNE.upTitan : 1);
+    return TUNE.titan * waveHpMul(this.titan.wave) * Math.sqrt(this.diff.hp) * this.mapMul * (1 + 0.75 * (this.players.length - 1)) * Math.pow(TITAN_TOUGHER, this.titanN);
   }
 
   // ---------- building ----------
   canBuild(type: TowerType, cx: number, cz: number) {
-    return cx >= 0 && cz >= 0 && cx < GW && cz < GH && this.grid[cz * GW + cx] === 0 &&
-      this.unlocked.has(type) && this.gold >= this.cost(type);
+    return Number.isInteger(cx) && Number.isInteger(cz) && cx >= 0 && cz >= 0 && cx < GW && cz < GH && this.grid[cz * GW + cx] === 0 &&
+      this.unlocked.has(type) && this.gold >= this.cost(type) && this.mats >= this.matCost(type);
   }
   build(type: TowerType, cx: number, cz: number) {
     if (this.over || !Object.hasOwn(TOWERS, type) || !this.canBuild(type, cx, cz)) return null;
-    const c = this.cost(type);
-    this.gold -= c;
+    const c = this.cost(type), mt = this.matCost(type);
+    this.gold -= c; this.mats -= mt;
     this.grid[cz * GW + cx] = 2;
     const t = newTower(this.nid++, type, cx, cz, c);
+    t.spentMat = mt;
     this.towers.push(t);
     this.recomputeBuffs();
+    this.factory.dirty = true;
     this.events.push({ k: 'build', x: t.x, z: t.z, c: TOWERS[type].color });
     return t;
   }
   upgrade(id: number) {
     const t = this.towerById(id);
     if (!t || t.lvl >= 3 || this.over) return false;
-    const c = this.upCost(t);
-    if (this.gold < c) return false;
-    this.gold -= c; t.spent += c; t.lvl++;
+    const c = this.upCost(t), mt = this.upMat(t);
+    if (this.gold < c || this.mats < mt) return false;
+    this.gold -= c; this.mats -= mt; t.spent += c; t.spentMat += mt; t.lvl++;
     this.recomputeBuffs();
     this.events.push({ k: 'build', x: t.x, z: t.z, c: TOWERS[t.type].color });
     return true;
-  }
-  /** Why a tower cannot be sold right now ('' if it can). */
-  sellBlock(t: Tower): '' | 'hero' | 'last' {
-    if (this.players.some((p) => p.heroActive && p.heroTower === t.id)) return 'hero';
-    // Uplink mode, before the first step: a player's Spire is theirs although they are not on it yet
-    if (this.opts.uplink && this.players.some((p, i) => !p.heroActive && this.home[i] === t.id)) return 'hero';
-    if (t.type === 'spire' && this.spires <= 1) return 'last';
-    return '';
   }
   sell(id: number) {
     const i = this.towers.findIndex((t) => t.id === id);
     if (i < 0 || this.over) return false;
     const t = this.towers[i];
-    if (this.sellBlock(t)) return false;
-    this.gold += this.sellValue(t);
+    this.gold += this.sellValue(t); this.mats += this.sellMats(t);
     this.grid[t.cz * GW + t.cx] = 0;
     this.towers.splice(i, 1);
     this.recomputeBuffs();
+    this.factory.dirty = true;
     this.events.push({ k: 'sell', x: t.x, z: t.z });
     return true;
   }
   /** A beacon's current boost (0 while it reboots; tripled during Surge). */
   beaconBoost(b: Tower) { return towerOff(b) ? 0 : (0.25 + 0.1 * (b.lvl - 1) + this.mods.beacon) * (b.spec > 0 ? 3 : 1); }
   recomputeBuffs() {
-    this.beacons = 0; this.spires = 0;
-    for (const t of this.towers) { if (t.type === 'beacon') this.beacons++; else if (t.type === 'spire') this.spires++; }
+    this.beacons = 0;
+    for (const t of this.towers) if (t.type === 'beacon') this.beacons++;
     for (const t of this.towers) {
       t.buff = 0;
-      if (t.type === 'beacon' || t.type === 'spire') continue;
+      if (t.type === 'beacon') continue;
       for (const b of this.towers) {
         if (b.type !== 'beacon' || towerOff(b)) continue;
         if (Math.hypot(b.x - t.x, b.z - t.z) <= this.range(b)) t.buff = Math.max(t.buff, this.beaconBoost(b));
@@ -459,116 +397,72 @@ export class Sim {
     this.walls = computeWalls(this.towers, this.mods.flameLink);
     this.wallTw = this.walls.map((w) => [this.towerById(w.a)!, this.towerById(w.b)!]);
   }
-  /** Every map has at least one Uplink Spire: if the map defines none, one is placed for free on a good cell. */
-  private ensureSpire() {
-    if (this.towers.some((t) => t.type === 'spire')) return;
-    const core = this.map.def.core, L = this.map.lanes.length;
-    let best = -1, bs = -Infinity, any = -1;
-    for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) {
-      if (this.grid[cz * GW + cx] !== 0) continue;
-      if (any < 0) any = cz * GW + cx;
-      if (Math.max(Math.abs(cx - core[0]), Math.abs(cz - core[1])) <= 2) continue; // not adjacent to the core
-      const x = cellX(cx, cz), z = cellZ(cz);
-      let s = 0, near = 1e9;
-      for (let l = 0; l < L; l++) {
-        const len = this.map.lanes[l].len;
-        let ls = 0;
-        for (let d = 0; d < len; d += 2) {
-          this.map.pos(l, d, tmp);
-          const dd = Math.hypot(tmp.x - x, tmp.z - z);
-          if (dd < near) near = dd;
-          if (dd <= 16) ls += (0.6 + 0.8 * (d / len)) * (dd < 5 ? 0.7 : 1);
-        }
-        s += ls / L;
-      }
-      if (near < 3) s *= 0.8; // leave the tiles right beside the road for turrets
-      if (cx === 0 || cz === 0 || cx === GW - 1 || cz === GH - 1) s *= 0.9;
-      if (s > bs) { bs = s; best = cz * GW + cx; }
-    }
-    if (best < 0) best = any;
-    if (best < 0) return;
-    this.grid[best] = 2;
-    this.towers.push(newTower(this.nid++, 'spire', best % GW, Math.floor(best / GW), 0));
+  // ---------- the factory ----------
+  /** Why a factory building cannot go on a tile ('' if it can). */
+  facBlock(type: FacType, cx: number, cz: number): string {
+    if (!Object.hasOwn(FACS, type)) return 'unknown';
+    if (!Number.isInteger(cx) || !Number.isInteger(cz)) return 'off the grid';
+    const why = this.factory.placeBlock(type, cx, cz);
+    if (why) return why;
+    return this.gold < this.facCost(type) ? 'not enough credits' : '';
   }
-  /**
-   * Uplink mode: how good a tile is to live on. It counts the road within UPLINK_VIEW, the stretch toward the core up to ten times
-   * as much as the gate end, and on a map with several roads the road it sees least of counts again. Road in `seen` (what an
-   * earlier player's Spire overlooks) counts for a third, so the next player gets a view of their own. With `mark` it only adds
-   * the road this tile overlooks to `seen`.
-   */
-  private uplinkView(cx: number, cz: number, seen: Set<number>, mark = false): number {
-    const x = cellX(cx, cz), z = cellZ(cz), L = this.map.lanes.length;
-    let sum = 0, least = Infinity, near = Infinity;
-    for (let l = 0; l < L; l++) {
-      const len = this.map.lanes[l].len;
-      let ls = 0;
-      for (let d = 0, k = l * 4096; d < len; d += 2, k++) {
-        this.map.pos(l, d, tmp);
-        const dd = Math.hypot(tmp.x - x, tmp.z - z);
-        if (dd < near) near = dd;
-        if (dd > UPLINK_VIEW) continue;
-        if (mark) seen.add(k);
-        else ls += (0.2 + 1.8 * (d / len)) * (dd < 5 ? 0.7 : 1) * (seen.has(k) ? 0.35 : 1); // (straight down from the Spire is an awkward shot)
-      }
-      sum += ls / L;
-      if (ls < least) least = ls;
-    }
-    let s = sum + (L > 1 ? 0.5 * least : 0);
-    if (near < 3) s *= 0.8; // leave the tiles right beside the road for turrets
-    if (cx === 0 || cz === 0 || cx === GW - 1 || cz === GH - 1) s *= 0.9;
-    return s;
+  /** Build a factory building (a belt facing `dir`). */
+  buildFac(type: FacType, cx: number, cz: number, dir = 0) {
+    if (this.over || this.facBlock(type, cx, cz)) return null;
+    dir = Number.isFinite(dir) ? Math.floor(dir) : 0; // (from a click it is always 0..5; anything else must not reach the belt step)
+    const c = this.facCost(type);
+    const f = this.factory.place(type, cx, cz, dir, c);
+    if (!f) return null;
+    this.gold -= c;
+    this.events.push({ k: 'build', x: f.x, z: f.z, c: FACS[type].color, fac: 1 });
+    return f;
   }
-  /**
-   * Uplink mode: every player lives on a Spire, so where it stands decides the run. Each player gets the tile with the best view
-   * (see uplinkView), at least UPLINK_APART from the other players'. A Spire the map brings is used when it is about as good,
-   * otherwise a free one is placed; the map's other Spires stay where they are. The same for a given map and number of players.
-   */
-  private uplinkHomes() {
-    const core = this.map.def.core, seen = new Set<number>();
-    for (let pi = 0; pi < this.opts.players; pi++) {
-      const apart = (x: number, z: number) => this.home.every((id) => { const h = this.towerById(id)!; return Math.hypot(h.x - x, h.z - z) >= UPLINK_APART; });
-      // a new Spire right beside one the map already has would only see what that one sees: then the map's own is the choice
-      const clear = (x: number, z: number) => this.towers.every((t) => t.type !== 'spire' || this.home.includes(t.id) || Math.hypot(t.x - x, t.z - z) >= UPLINK_APART / 2);
-      let best = -1, bs = 0;
-      for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) {
-        const x = cellX(cx, cz), z = cellZ(cz);
-        if (this.grid[cz * GW + cx] !== 0 || Math.max(Math.abs(cx - core[0]), Math.abs(cz - core[1])) <= 2 || !apart(x, z) || !clear(x, z)) continue;
-        const s = this.uplinkView(cx, cz, seen);
-        if (s > bs) { bs = s; best = cz * GW + cx; }
-      }
-      let own: Tower | undefined, os = -1;
-      for (const t of this.towers) {
-        if (t.type !== 'spire' || this.home.includes(t.id) || !apart(t.x, t.z)) continue;
-        const s = this.uplinkView(t.cx, t.cz, seen);
-        if (s > os) { os = s; own = t; }
-      }
-      let t = own && os >= bs * UPLINK_KEEP ? own : undefined;
-      if (!t && best >= 0) {
-        this.grid[best] = 2;
-        t = newTower(this.nid++, 'spire', best % GW, Math.floor(best / GW), 0);
-        this.towers.push(t);
-      }
-      if (!t) t = own; // no free tile left: a Spire of the map will do
-      if (!t) break; // (holdUplink then shares what Spires there are)
-      this.home.push(t.id);
-      this.uplinkView(t.cx, t.cz, seen, true);
-    }
+  /** Take a factory building down for 60% of its price (100% for belts, pipes and poles: they are moved around a lot). Items in it are lost. */
+  sellFac(id: number) {
+    if (this.over) return false;
+    const f = this.factory.facById(id);
+    if (!f) return false;
+    this.factory.remove(id);
+    this.gold += f.type === 'belt' || f.type === 'pipe' || f.type === 'pole' ? f.spent : Math.round(f.spent * 0.6);
+    this.events.push({ k: 'sell', x: f.x, z: f.z, fac: 1 });
+    return true;
   }
-  /** Uplink mode: the Spire a player starts the run on (they stand on it from the first step). */
-  uplinkHome(pi: number): Tower | undefined { return this.opts.uplink ? this.towerById(this.home[pi]) : undefined; }
-  /** The Spire nearest to a tower (or to the middle of the map when the id is unknown). */
-  nearestSpire(towerId: number): Tower | undefined {
-    const t = this.towerById(towerId);
-    if (t && t.type === 'spire') return t;
-    const x = t ? t.x : 0, z = t ? t.z : 0;
-    let best: Tower | undefined, bd = Infinity;
-    for (const s of this.towers) {
-      if (s.type !== 'spire') continue;
-      const d = Math.hypot(s.x - x, s.z - z);
-      if (d < bd) { bd = d; best = s; }
-    }
-    return best;
+  facSellValue(id: number) { const f = this.factory.facById(id); return !f ? 0 : f.type === 'belt' || f.type === 'pipe' || f.type === 'pole' ? f.spent : Math.round(f.spent * 0.6); }
+  rotateFac(id: number, dir: number) { this.factory.rotate(id, dir | 0); }
+  setRecipe(id: number, recipe: string) { if (typeof recipe === 'string' && Object.hasOwn(RECIPE_BY_ID, recipe)) this.factory.setRecipe(id, recipe); }
+
+  // ---------- tower supply ----------
+  /** True if a tower has what it needs to fire right now (power, petrol, and ammunition loaded or in stock). */
+  supplied(t: Tower): boolean {
+    if (this.opts.free) return true;
+    const n = TOWERS[t.type].needs;
+    if (n.power && t.pwr < 0.05) return false;
+    if (n.item && t.ammo <= 0 && t.stock <= 0) return false;
+    if (n.fluid && t.tank < PETROL_PER_TICK) return false;
+    return true;
   }
+  /** Spend one shot of a tower's ammunition. False (and nothing spent) when it has none left. */
+  private useAmmo(t: Tower, n = 1): boolean {
+    if (this.opts.free) return true;
+    const it = TOWERS[t.type].needs.item;
+    if (!it) return true;
+    if (t.ammo < n) {
+      if (t.stock <= 0) return false;
+      t.stock--; t.ammo += (ITEM_SHOTS[it] || 1) * this.mods.ammo;
+    }
+    t.ammo = Math.max(0, t.ammo - n);
+    return true;
+  }
+  /** Burn petrol for `ticks` ticks of a Firewall Pylon's fire. False when the tank is dry. */
+  private usePetrol(t: Tower, ticks: number): boolean {
+    if (this.opts.free || !TOWERS[t.type].needs.fluid) return true;
+    const need = PETROL_PER_TICK * ticks;
+    if (t.tank < need) return false;
+    t.tank -= need;
+    return true;
+  }
+  /** Fire rate scale from a part-supplied power grid. */
+  private powerMul(t: Tower) { return this.opts.free || !TOWERS[t.type].needs.power ? 1 : Math.max(0.05, Math.min(1, t.pwr)); }
 
   // ---------- waves ----------
   /** Generate wave w one wave ahead, so the HUD can show what is coming and where. */
@@ -672,8 +566,7 @@ export class Sim {
       e.hp = e.maxHp = this.titanHp();
       e.speed = clamp(this.map.lanes[lane].len / TITAN_WALK, TITAN_PACE[0], TITAN_PACE[1]);
     } else {
-      // Uplink mode: the archer shoots for the whole run instead of a few seconds now and then, so the machines are tougher
-      const up = !this.opts.uplink ? 1 : (type === 'boss' || type === 'wheel' ? TUNE.upBoss : TUNE.upHp) * (this.opts.mode === 'coop' ? TUNE.upCoop : 1);
+      const up = 1;
       const hp = d.hp * mul * this.diff.hp * this.mapMul * (this.opts.mode === 'coop' ? coopScale(TUNE.coopHp, Math.max(1, this.wave)) : 1) * (type === 'boss' ? TUNE.boss : 1) * up;
       e.off = type === 'boss' ? 0 : (this.rand() - 0.5) * 1.3;
       e.hp = e.maxHp = hp; e.shield = e.maxShield = d.shield * mul * this.mapMul * up;
@@ -718,7 +611,7 @@ export class Sim {
     for (const t of this.towers) t.stun = TITAN_STUN;
     this.recomputeBuffs();
     this.spawn('titan', 1, T.lane);
-    T.phase = 'walk'; T.t = 0; this.overlink = true;
+    T.phase = 'walk'; T.t = 0;
     this.map.pos(T.lane, 0, tmp);
     this.events.push({ k: 'titanImpact', x: tmp.x, z: tmp.z });
   }
@@ -733,7 +626,7 @@ export class Sim {
   }
   private titanDown(e: Enemy, owner: number) {
     const T = this.titan;
-    T.phase = 'dead'; T.t = 0; T.danger = 0; this.overlink = false; this.titanN++;
+    T.phase = 'dead'; T.t = 0; T.danger = 0; this.titanN++;
     if (!this.campaign) T.wave += TITAN_AGAIN; // no last wave: the next one is already on its way
     this.kills++;
     const p = this.players[owner];
@@ -772,10 +665,9 @@ export class Sim {
   damage(e: Enemy, amt: number, owner: number, raw = false, cut = 0): number {
     if (!e.alive) return 0;
     if (e.type === 'mite') { if (!(amt > 0)) return 0; e.hp = 0; this.kill(e, owner); return 1; } // a sliver of health: any hit destroys it
-    if (e.type === 'titan') { if (!this.sp) return 0; if (owner < 0) amt *= TUNE.titanSpec; } // only weak-point hits and tower specials get through
+    if (e.type === 'titan') amt *= this.sp ? TUNE.titanSpec : TUNE.titanTower; // its hull turns most tower fire; specials get through
     if ((e.slowT > 0 || e.frz > 0) && this.mods.shatter) amt *= 1 + this.mods.shatter;
     if (e.vulnT > 0) amt *= 1 + this.mods.gravVuln;
-    if (e.type === 'boss' && owner < 0) amt *= e.crackT > 0 ? TUNE.cracked : TUNE.plate; // plated: towers are blunted until Kestrel cracks a weak point open
     if (!raw && e.armor) {
       const armor = e.burnT > 0 && this.mods.flameMelt ? e.armor * Math.max(0.2, 1 - 0.4 * this.mods.flameMelt) : e.armor;
       amt = Math.max(amt * 0.35, amt - armor);
@@ -813,44 +705,26 @@ export class Sim {
     if (!e.stalled && e.spin < 0.25) { e.stalled = true; this.events.push({ k: 'spindown', id: e.id, x: e.x, y: e.y, z: e.z }); }
     else if (e.stalled && e.spin > 0.6) { e.stalled = false; this.events.push({ k: 'spinup', id: e.id, x: e.x, y: e.y, z: e.z }); }
   }
-  /** A weak-point hit cracks a Colossus's plating open for TUNE.crack seconds. */
-  private crack(e: Enemy, x: number, y: number, z: number) {
-    if (e.type !== 'boss' || !e.alive) return;
-    if (e.crackT <= 0) this.events.push({ k: 'crack', id: e.id, x, y, z });
-    e.crackT = TUNE.crack;
-  }
   private kill(e: Enemy, owner: number) {
     e.alive = false;
     const d = ENEMIES[e.type];
     if (e.type === 'titan') { this.titanDown(e, owner); return; }
-    if (e.type === 'mite') { // no reward and no kill count: only a little charge
-      for (const p of this.players) if (!p.heroActive) p.energy = Math.min(MAX_ENERGY, p.energy + d.energy * TUNE.energy * p.stats.charge);
+    if (e.type === 'mite') { // no reward and no kill count
       this.events.push({ k: 'die', x: e.x, y: e.y, z: e.z, t: e.type, h: owner >= 0 ? 1 : 0 });
       return;
     }
     this.kills++;
     this.gold += d.bounty * TUNE.bounty * this.mods.gold * this.diff.gold;
     this.xp += d.xp * TUNE.xp * this.mods.xp;
-    for (let i = 0; i < this.players.length; i++) {
-      const p = this.players[i];
-      if (p.heroActive) { if (i === owner) { p.heroTime = Math.min(p.heroDur, p.heroTime + 0.12); p.kills++; } }
-      else p.energy = Math.min(MAX_ENERGY, p.energy + d.energy * TUNE.energy * p.stats.charge);
-    }
     this.events.push({ k: 'die', x: e.x, y: e.y, z: e.z, t: e.type, h: owner >= 0 ? 1 : 0 });
     while (this.xp >= this.xpNext) { this.xp -= this.xpNext; this.levelUp(); }
   }
   private levelUp() {
     this.level++; this.xpNext = xpNeed(this.level);
-    // co-op: one player per level (taking turns) is offered the shared tower / economy cards; the others get hero cards only
-    const np = this.players.length;
-    for (let i = 0; i < np; i++) { const o = this.rollCards(i, np > 1 && i !== this.level % np); if (o.length) this.players[i].pending.push(o); }
+    // co-op: the players take turns, one offer per level
+    const i = this.level % this.players.length, o = this.rollCards(i);
+    if (o.length) this.players[i].pending.push(o);
     this.events.push({ k: 'levelup', n: this.level });
-  }
-  /** An arrow or a Rail Shot that meets the Titan anywhere but on a weak point glances off (at most four reports a second). */
-  private glance(e: Enemy, x: number, y: number, z: number) {
-    if (this.time < e.deflAt) return;
-    e.deflAt = this.time + 0.25;
-    this.events.push({ k: 'deflect', x, y, z });
   }
   /** Area damage. With `gy` (ground height of the blast) enemies on a road more than DECK_GAP above or below are shielded by the deck. */
   private aoe(x: number, z: number, r: number, dmg: number, owner: number, ground = false, gy?: number) {
@@ -881,15 +755,13 @@ export class Sim {
   }
 
   // ---------- cards ----------
-  private cardOk(pi: number, c: Card) {
-    const p = this.players[pi];
-    const stack = (c.kind === 'hero' ? p.stacks[c.id] : this.stacks[c.id]) || 0;
-    if (c.meter && this.opts.uplink) return false; // nothing to charge and nothing to prolong: the Uplink never ends
+  private cardOk(_pi: number, c: Card) {
+    const stack = this.stacks[c.id] || 0;
     return stack < c.max && (!c.needs || this.unlocked.has(c.needs)) && !(c.kind === 'blueprint' && this.unlocked.has(c.id.slice(3) as TowerType));
   }
-  /** Roll an offer of up to three cards. `heroOnly` restricts it to that player's own hero cards (co-op, see kill()); it may then be empty. */
-  rollCards(pi: number, heroOnly = false): string[] {
-    const pool = CARDS.filter((c) => (!heroOnly || c.kind === 'hero') && this.cardOk(pi, c));
+  /** Roll an offer of up to three cards. */
+  rollCards(pi: number): string[] {
+    const pool = CARDS.filter((c) => this.cardOk(pi, c));
     const out: string[] = [];
     const bps = pool.filter((c) => c.kind === 'blueprint');
     if (bps.length && [2, 3, 5, 7, 9, 11, 13].includes(this.level)) out.push(bps[Math.floor(this.rand() * bps.length)].id);
@@ -915,202 +787,19 @@ export class Sim {
     const id = offer[Math.max(0, Math.min(offer.length - 1, idx | 0))];
     const card = typeof id === 'string' && Object.hasOwn(CARD_BY_ID, id) ? CARD_BY_ID[id] : undefined;
     if (!card) return;
-    const st = card.kind === 'hero' ? p.stacks : this.stacks;
+    const st = this.stacks;
     if ((st[card.id] || 0) >= card.max) { this.gold += 100; return; }
     st[card.id] = (st[card.id] || 0) + 1;
     card.apply({
-      mods: this.mods, hero: p.stats, unlocked: this.unlocked,
-      addGold: (n) => { this.gold += n; }, addLives: (n) => { this.lives = Math.min(30, this.lives + n); },
+      mods: this.mods, unlocked: this.unlocked,
+      addGold: (n) => { this.gold += n; }, addLives: (n) => { this.lives = Math.min(30, this.lives + n); }, addMats: (n) => { this.mats += n; },
     });
     this.recomputeBuffs();
     // offers rolled earlier may now contain a card that is maxed or a blueprint that is already unlocked
-    const multi = this.players.length > 1;
     this.players.forEach((q, i) => {
-      q.pending = q.pending.map((offer2) => (offer2.some((c) => !this.cardOk(i, CARD_BY_ID[c])) ? this.rollCards(i, multi && offer2.every((c) => CARD_BY_ID[c].kind === 'hero')) : offer2)).filter((o) => o.length > 0);
+      q.pending = q.pending.map((offer2) => (offer2.some((c) => !this.cardOk(i, CARD_BY_ID[c])) ? this.rollCards(i) : offer2)).filter((o) => o.length > 0);
     });
     this.events.push({ k: 'card', id: card.id, p: pi });
-  }
-
-  // ---------- hero ----------
-  /** Uplink. Kestrel can only stand on an Uplink Spire: any other tower id resolves to the Spire nearest to it. */
-  activateHero(pi: number, towerId: number) {
-    const p = this.players[pi];
-    if (!p || p.heroActive || (p.energy < MAX_ENERGY && !this.overlink && !this.opts.uplink) || this.over) return false;
-    const t = this.nearestSpire(towerId);
-    if (!t) return false;
-    p.heroActive = true; p.heroTower = t.id; p.energy = this.overlink && !this.opts.uplink ? MAX_ENERGY : 0;
-    p.heroDur = HERO_DUR + p.stats.dur + p.stats.relay * Math.min(3, this.spires); p.heroTime = p.heroDur; p.fireCd = 0.4;
-    p.draw = 0; p.drawing = false;
-    this.events.push({ k: 'heroOn', p: pi, x: t.x, y: standY(t), z: t.z });
-    return true;
-  }
-  exitHero(pi: number) {
-    const p = this.players[pi];
-    if (!p || !p.heroActive) return;
-    if (this.opts.uplink && !this.over && this.towerById(p.heroTower)) return; // Uplink mode: nobody steps down
-    p.heroActive = false; p.draw = 0; p.drawing = false;
-    // free to come back while the Titan walks; Uplink mode has no charge at all (stepping down is only possible once the run is over)
-    p.energy = this.opts.uplink ? 0 : this.overlink ? MAX_ENERGY : Math.max(0, Math.min(80, (p.heroTime / p.heroDur) * 80));
-    p.heroTime = 0;
-    const t = this.towerById(p.heroTower);
-    this.events.push({ k: 'heroOff', p: pi, x: t ? t.x : 0, y: t ? standY(t) : 0, z: t ? t.z : 0 });
-  }
-  /** Uplink mode: put a player on a Spire (again). Each player starts on their own (see uplinkHomes); when that one is gone, on one of those that are left. */
-  private holdUplink(pi: number) {
-    const p = this.players[pi];
-    const sp = this.towers.filter((t) => t.type === 'spire');
-    if (!sp.length) return;
-    if (p.heroActive) { p.heroActive = false; p.draw = 0; p.drawing = false; }
-    this.activateHero(pi, (this.towerById(this.home[pi]) || sp[pi % sp.length]).id);
-  }
-  heroOrigin(pi: number) {
-    const p = this.players[pi], t = p ? this.towerById(p.heroTower) : undefined;
-    return t ? { x: t.x, y: standY(t) + 0.62, z: t.z } : null;
-  }
-  /** Jump to another Uplink Spire (only Spires are accepted). */
-  heroTeleport(pi: number, towerId: number) {
-    const p = this.players[pi], t = this.towerById(towerId);
-    if (!p || !p.heroActive || !t || t.type !== 'spire' || t.id === p.heroTower || this.over) return false;
-    const o = this.towerById(p.heroTower);
-    p.heroTower = t.id;
-    this.events.push({ k: 'tele', p: pi, x: t.x, y: standY(t), z: t.z, fx: o ? o.x : t.x, fy: o ? standY(o) : standY(t), fz: o ? o.z : t.z });
-    return true;
-  }
-  /**
-   * The bow. Called every frame during the Uplink with whether the fire button is held and the current aim point.
-   * While it is held the draw rises from 0 to 1 over DRAW_TIME seconds (in step(); Quick Draw shortens it) and may be held at full.
-   * Letting go looses the arrow at that point if the draw reached MIN_DRAW; a shorter pull is cancelled. Nothing fires on its own.
-   */
-  heroAim(pi: number, drawing: boolean, tx: number, ty: number, tz: number) {
-    const p = this.players[pi];
-    if (!p) return;
-    if (!p.heroActive || this.over) { p.drawing = false; p.draw = 0; return; }
-    const held = drawing === true;
-    if (!held && p.drawing) {
-      const d = p.draw;
-      p.draw = 0;
-      if (d >= MIN_DRAW && p.fireCd <= 0) this.loose(pi, d, tx, ty, tz);
-    }
-    p.drawing = held;
-    if (!held) p.draw = 0;
-  }
-  /** An instant full-power loose at a world point (tests and scripted shots). The bow then needs its nock and draw time again, so it is never faster than a real full draw. */
-  heroFire(pi: number, tx: number, ty: number, tz: number) {
-    const p = this.players[pi];
-    if (!p || !p.heroActive || p.fireCd > 0 || this.over) return;
-    p.draw = 0;
-    if (this.loose(pi, 1, tx, ty, tz)) p.fireCd = NOCK_TIME + DRAW_TIME / Math.max(0.2, p.stats.rate);
-  }
-  /** Loose a volley at a world point with the given draw. No aim assistance: the first arrow flies exactly at the point given. */
-  private loose(pi: number, draw: number, tx: number, ty: number, tz: number): boolean {
-    const p = this.players[pi];
-    if (!p || !p.heroActive || this.over || this.replica) return false;
-    const o = this.heroOrigin(pi);
-    if (!o || ![tx, ty, tz].every(Number.isFinite)) return false;
-    let dx = tx - o.x, dy = ty - o.y, dz = tz - o.z;
-    const L = Math.hypot(dx, dy, dz) || 1;
-    dx /= L; dy /= L; dz /= L;
-    const tier = this.tier, s = p.stats, pw = clamp(draw, 0, 1);
-    const n = Math.min(9, s.arrows + (tier >= 2 ? 1 : 0));
-    // a full draw is worth FULL_DRAW_MUL of the old stream arrows and pierces one more target; a weak draw is worth much less than its share
-    const dmg = this.arrowDmg(p) * FULL_DRAW_MUL * drawPower(pw), SP = arrowSpeed(pw);
-    const yaw = Math.atan2(dx, dz), hl = Math.hypot(dx, dz);
-    for (let i = 0; i < n; i++) {
-      // arrow 0 is dead centre; extra arrows fan out alternately right and left
-      const a = yaw + (i % 2 ? (i + 1) / 2 : -i / 2) * 0.055;
-      this.projs.push({
-        id: this.nid++, kind: 'arrow', x: o.x + dx * 0.8, y: o.y + dy * 0.8, z: o.z + dz * 0.8,
-        vx: Math.sin(a) * hl * SP, vy: dy * SP, vz: Math.cos(a) * hl * SP,
-        dmg, owner: pi, target: 0, life: 1.6, pierce: s.pierce + (tier >= 1 ? 1 : 0) + (pw >= FULL_DRAW ? 1 : 0), hit: [], tier,
-        aoe: s.explode * 1.5 + (tier >= 3 ? 1.6 : 0), chain: s.chain + (tier >= 4 ? 2 : 0), sx: 0, sz: 0, tx: 0, ty: 0, tz: 0, t: 0, T: 0,
-        cut: pw >= FULL_DRAW ? WHEEL_PIERCE : 0,
-      });
-    }
-    p.fireCd = NOCK_TIME;
-    this.events.push({ k: 'arrow', p: pi, x: o.x, y: o.y, z: o.z, pw });
-    return true;
-  }
-  /** Height of the road deck under a point: of the roads passing within 2.5 of it, the one closest to height y (0 when there is none). */
-  deckAt(x: number, y: number, z: number): number {
-    let best = 0, bd = Infinity;
-    for (const L of this.map.lanes) for (let i = 1; i < L.pts.length; i++) {
-      const a = L.pts[i - 1], b = L.pts[i];
-      if (segDist(x, z, a[0], a[1], b[0], b[1]) > 2.5) continue;
-      const u = clamp(((x - a[0]) * (b[0] - a[0]) + (z - a[1]) * (b[1] - a[1])) / ((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2 || 1), 0, 1);
-      const h = L.ys[i - 1] + (L.ys[i] - L.ys[i - 1]) * u, d = Math.abs(h - y);
-      if (d < bd) { bd = d; best = h; }
-    }
-    return best;
-  }
-  heroSkill(pi: number, skill: number, tx: number, ty: number, tz: number) {
-    const p = this.players[pi];
-    if (!p || !p.heroActive || !(skill >= 0 && skill < 3) || p.cds[skill] > 0 || this.over) return;
-    const o = this.heroOrigin(pi);
-    if (!o || ![tx, ty, tz].every(Number.isFinite)) return;
-    const dmg = this.arrowDmg(p), c = BOW_TIERS[this.tier].color;
-    p.cds[skill] = SKILL_CD[skill] * p.stats.cdr;
-    p.fireCd = Math.max(p.fireCd, SKILL_LOCK[skill]); p.draw = 0; // the skill takes the string: a draw in progress starts over
-    if (skill === 0) {
-      let dx = tx - o.x, dy = ty - o.y, dz = tz - o.z;
-      const L = Math.hypot(dx, dy, dz) || 1;
-      dx /= L; dy /= L; dz /= L;
-      const R = 70;
-      for (const e of this.enemies) {
-        if (!e.alive) continue;
-        const ex = e.x - o.x, ey = e.y - o.y, ez = e.z - o.z;
-        const u = ex * dx + ey * dy + ez * dz;
-        if (u < 0 || u > R) continue;
-        const miss = Math.hypot(ex - dx * u, ey - dy * u, ez - dz * u) >= e.r + 1.0;
-        // the ray pierces, so any weak point it passes through counts (also one that stands clear of the hull, like the Titan's eye)
-        let mul = 1, wi = -1;
-        const wk = ENEMIES[e.type].weak;
-        if (wk) for (let i = 0; i < wk.length; i++) {
-          if (!weakOpen(e, i, dx, dz)) continue;
-          weakPos(e, i, W3);
-          const wx = W3.x - o.x, wy = W3.y - o.y, wz = W3.z - o.z, wu = wx * dx + wy * dy + wz * dz;
-          if (wu >= 0 && wu <= R && Math.hypot(wx - dx * wu, wy - dy * wu, wz - dz * wu) <= wk[i].r * ENEMY_SCALE[e.type] + 0.25 && wk[i].mul > mul) { mul = wk[i].mul; wi = i; }
-        }
-        if (wi < 0 && miss) continue;
-        if (wi >= 0) {
-          weakPos(e, wi, W3);
-          const cx = W3.x, cy = W3.y, cz = W3.z;
-          this.sp = true;
-          const n = this.damage(e, dmg * 8 * mul * p.stats.weak, pi);
-          this.sp = false;
-          this.events.push({ k: 'crit', x: cx, y: cy, z: cz, n: Math.round(n) });
-          this.crack(e, cx, cy, cz);
-        } else if (e.type === 'titan') this.glance(e, o.x + dx * u, o.y + dy * u, o.z + dz * u);
-        else this.damage(e, dmg * 8, pi, false, WHEEL_PIERCE);
-      }
-      // charged power nodes on the ray fire their specials
-      for (const t of this.towers) {
-        if (!this.specialReady(t)) continue;
-        nodePos(t, W3);
-        const wx = W3.x - o.x, wy = W3.y - o.y, wz = W3.z - o.z, wu = wx * dx + wy * dy + wz * dz;
-        if (wu >= 0 && wu <= R && Math.hypot(wx - dx * wu, wy - dy * wu, wz - dz * wu) <= NODE_R + 0.25) this.triggerSpecial(t.id, pi);
-      }
-      this.events.push({ k: 'rail', x: o.x, y: o.y, z: o.z, tx: o.x + dx * R, ty: Math.max(0, o.y + dy * R), tz: o.z + dz * R, c, big: 1, p: pi });
-      // a ray through the jump target of another Spire carries Kestrel over (the nearest one on the ray)
-      let jump: Tower | null = null, ju = R;
-      for (const t of this.towers) {
-        if (t.type !== 'spire' || t.id === p.heroTower) continue;
-        spireTarget(t, W3);
-        const wx = W3.x - o.x, wy = W3.y - o.y, wz = W3.z - o.z, wu = wx * dx + wy * dy + wz * dz;
-        if (wu >= 0 && wu <= ju && Math.hypot(wx - dx * wu, wy - dy * wu, wz - dz * wu) <= SPIRE_R + 0.25) { ju = wu; jump = t; }
-      }
-      if (jump) this.heroTeleport(pi, jump.id);
-    } else {
-      const d = Math.hypot(tx - o.x, tz - o.z);
-      if (d > 48) { tx = o.x + ((tx - o.x) / d) * 48; tz = o.z + ((tz - o.z) / d) * 48; }
-      const y = this.deckAt(tx, ty, tz); // on a bridge or viaduct the zone sits on the deck that was aimed at
-      if (skill === 1) {
-        // the volley is in the air first: the hits start RAIN_DELAY seconds after the cast and then fall for 3.5 seconds as before
-        this.zones.push({ id: this.nid++, kind: 'rain', x: tx, z: tz, r: 4.5 * Math.sqrt(p.stats.rain), life: 3.5 + RAIN_DELAY, tick: RAIN_DELAY, dmg: dmg * 0.75 * p.stats.rain, owner: pi, pd: 0, y });
-      } else {
-        this.zones.push({ id: this.nid++, kind: 'sing', x: tx, z: tz, r: 5.5 * Math.sqrt(p.stats.sing), life: 2.6, tick: 0, dmg: dmg * p.stats.sing, owner: pi, pd: 0, y });
-      }
-      this.events.push({ k: 'skill', s: skill, p: pi, x: tx, y, z: tz, c });
-    }
   }
 
   // ---------- tower specials ----------
@@ -1119,7 +808,7 @@ export class Sim {
     return false;
   }
   /**
-   * Fire a tower's special (normally by an arrow through its power node). Needs a full charge and an online tower,
+   * Fire a tower's special (the player presses Fire on the charged tower). Needs a full charge and an online tower,
    * and something for the special to hit. Otherwise false is returned and the charge is kept; a charged tower with
    * nothing to hit answers with a 'nospec' event.
    */
@@ -1280,15 +969,11 @@ export class Sim {
           }
         }
       }
-      this.sp = z.kind === 'sing' && z.owner < 0; // a Collapse is a tower special: it hurts the Titan (Kestrel's own Singularity only holds it)
+      this.sp = z.kind === 'sing'; // a Collapse is a tower special: it hits the Titan at full strength
       if (z.tick <= 0) {
         z.tick = 0.25;
         if (z.kind === 'burn') this.aoe(z.x, z.z, z.r, z.dmg * 0.25, -1, true, z.y);
-        else if (z.kind === 'rain') {
-          this.aoe(z.x, z.z, z.r, z.dmg, z.owner);
-          // the Titan shrugs the arrows off, but the hail slows it
-          for (const e of this.enemies) if (e.alive && e.type === 'titan' && Math.hypot(e.x - z.x, e.z - z.z) <= z.r + e.r) { e.slowT = Math.max(e.slowT, 0.6); e.slowF = Math.max(e.slowF, 0.5); }
-        } else this.aoe(z.x, z.z, z.r, z.dmg * 0.3, z.owner);
+        else this.aoe(z.x, z.z, z.r, z.dmg * 0.3, z.owner);
       }
       if (z.life <= 0 && z.kind === 'sing') {
         this.aoe(z.x, z.z, z.r, z.dmg * 7, z.owner);
@@ -1319,7 +1004,6 @@ export class Sim {
         v *= WHEEL_CRAWL + (1 - WHEEL_CRAWL) * e.spin;
       }
       if (e.vulnT > 0) e.vulnT -= dt;
-      if (e.crackT > 0) e.crackT -= dt;
       if (e.pullCd > 0) e.pullCd -= dt;
       if (e.burnT > 0) {
         e.burnT -= dt; e.burnAcc += dt;
@@ -1352,7 +1036,8 @@ export class Sim {
       w.on = !towerOff(tw[0]) && !towerOff(tw[1]); w.hot = w.on && (tw[0].spec > 0 || tw[1].spec > 0);
     }
 
-    // towers
+    // the factory runs, then the towers fire on what it delivered
+    this.factory.step(dt);
     for (const t of this.towers) this.stepTower(t, dt);
 
     // projectiles
@@ -1360,25 +1045,6 @@ export class Sim {
     if (this.projs.length) this.projs = this.projs.filter((p) => p.life > 0);
     this.enemies = this.enemies.filter((e) => e.alive);
 
-    // players
-    for (let i = 0; i < this.players.length; i++) {
-      const p = this.players[i];
-      p.fireCd -= dt;
-      if (!p.heroActive || !p.drawing) p.draw = 0;
-      else if (p.fireCd <= 0) p.draw = Math.min(1, p.draw + (dt * Math.max(0.2, p.stats.rate)) / DRAW_TIME);
-      for (let s = 0; s < 3; s++) if (p.cds[s] > 0) p.cds[s] -= dt;
-      if (this.opts.uplink) { // Uplink mode: the player is on a Spire from the first moment to the last
-        p.energy = 0;
-        if (!this.over && (!p.heroActive || !this.towerById(p.heroTower))) this.holdUplink(i);
-        p.heroTime = p.heroDur;
-      } else if (this.overlink) { // the Titan walks: the Uplink is held open
-        p.energy = MAX_ENERGY;
-        if (p.heroActive && !this.towerById(p.heroTower)) this.exitHero(i);
-      } else if (p.heroActive) {
-        p.heroTime -= dt;
-        if (p.heroTime <= 0 || !this.towerById(p.heroTower)) { p.heroTime = 0; this.exitHero(i); p.energy = 0; }
-      } else if (this.waveActive) p.energy = Math.min(MAX_ENERGY, p.energy + (TUNE.energyT + 0.3 * this.mods.beaconFeed * Math.min(4, this.beacons)) * p.stats.charge * dt);
-    }
   }
 
   /** The attack of an enemy at the core lands: the core takes the damage and its discharge destroys the attacker. */
@@ -1402,10 +1068,10 @@ export class Sim {
       if (o.mom === e.id) { e.ttl = 0.3; return; } // its last swarm is still out
       taken.add(o.prey);
     }
-    // never a Spire, and never a tower that is already offline, jammed or spoken for
+    // never a tower that is already offline, jammed or spoken for
     let best: Tower | null = null, bd = BROOD_REACH;
     for (const t of this.towers) {
-      if (t.type === 'spire' || towerOff(t) || taken.has(t.id)) continue;
+      if (towerOff(t) || taken.has(t.id)) continue;
       const d = Math.hypot(t.x - e.x, t.z - e.z);
       if (d < bd) { bd = d; best = t; }
     }
@@ -1459,11 +1125,19 @@ export class Sim {
       return;
     }
     if (t.stun > 0 || t.jam > 0) return; // stunned or jammed: idle, and the special neither runs nor charges
+    // out of supply (no power, no petrol, no ammunition): idle until the factory delivers, and the special does not charge
+    const dry = !this.supplied(t);
+    if (dry !== t.dry) {
+      t.dry = dry;
+      this.events.push({ k: dry ? 'dry' : 'fed', id: t.id, t: t.type, x: t.x, z: t.z });
+      if (t.type === 'beacon') this.recomputeBuffs();
+    }
+    if (dry) { if (t.spec > 0) this.endSpecial(t); return; }
     if (sp) {
       if (t.spec > 0) { t.spec -= dt; if (t.spec <= 0) { this.endSpecial(t); return; } }
       else if (t.charge < 1) t.charge = Math.min(1, t.charge + (dt * this.mods.specCharge) / sp.charge);
     }
-    if (t.type === 'beacon' || t.type === 'spire') return;
+    if (t.type === 'beacon') return;
     const range = this.range(t);
     if (t.aux > 0) { // Barrage / Swarm in progress
       t.fxT -= dt;
@@ -1487,6 +1161,7 @@ export class Sim {
     const iv = 1 / (this.towerRate(t) * (storm ? 5 : 1)), dmg = this.towerDmg(t) * (storm ? this.mods.specPow : 1);
     let e: Enemy | null = tgt;
     for (let n = 0; n < MAX_SHOTS && t.cd <= 0 && e; n++) {
+      if (!storm && !this.useAmmo(t)) break; // a Bullet Storm is the tower's special: it costs no ammunition
       t.cd += iv;
       this.fire(t, e, dmg, range);
       if (!e.alive) e = this.pickTarget(t, range, def.minRange || 0);
@@ -1517,6 +1192,7 @@ export class Sim {
     if (t.cd > 0) return;
     if (!this.enemies.length) { t.cd = 0; return; }
     const shots = this.shots(t), fb = this.mods.flameBurn;
+    if (!this.usePetrol(t, shots)) return;
     const dmg = this.towerDmg(t), hot = INFERNO * this.mods.specPow;
     const bD = dmg * this.towerRate(t) * BURN_SHARE * (1 + 0.4 * fb), bT = 2.5 + 1.5 * fb;
     let linked = false;
@@ -1562,7 +1238,9 @@ export class Sim {
     this.turn(t, e.x, e.z, dt);
     t.heat = Math.min(1, t.heat + (dt * (1 + 0.4 * this.mods.lanceRamp)) / 4);
     if (t.cd > 0) return;
-    const dmg = this.towerDmg(t) * (1 + (TUNE.lanceHeat + LANCE_FOCUS * this.mods.lanceHeat) * t.heat) * (over ? OVERLOAD * this.mods.specPow : 1) * this.shots(t);
+    const ticks = this.shots(t);
+    if (!over && !this.useAmmo(t, ticks)) return;
+    const dmg = this.towerDmg(t) * (1 + (TUNE.lanceHeat + LANCE_FOCUS * this.mods.lanceHeat) * t.heat) * (over ? OVERLOAD * this.mods.specPow : 1) * ticks;
     const y = t.h * 0.85;
     let tx = e.x, tz = e.z;
     this.sp = over;
@@ -1585,6 +1263,7 @@ export class Sim {
   private stepGravity(t: Tower, dt: number, range: number) {
     t.cd -= dt;
     if (t.cd > 0 || !this.anyIn(t, range)) return;
+    if (!this.useAmmo(t)) return;
     t.cd = 1 / this.towerRate(t);
     // the drag is a share of the ground the enemy would cover until it can be dragged again, so nothing is ever held in place for good
     // (every Deep Well stack and every level adds drag; the cap is only a safety net. A Beacon makes the well pulse faster, not drag further.)
@@ -1779,92 +1458,7 @@ export class Sim {
         this.events.push({ k: 'boom', x: p.x, y: p.y, z: p.z, r: p.aoe, c: TOWERS.missile.color, s: 1 });
         p.life = 0;
       }
-    } else {
-      const ox = p.x, oy = p.y, oz = p.z;
-      p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
-      const sx = p.x - ox, sy = p.y - oy, sz = p.z - oz, L = Math.hypot(sx, sy, sz) || 1e-6;
-      const dx = sx / L, dy = sy / L, dz = sz / L;
-      // weak points are tested before the body: a weak point counts if the arrow reaches it before (or as) it enters the hull
-      const hits: { e: Enemy; u: number; w: number }[] = [];
-      for (const e of this.enemies) {
-        if (!e.alive || p.hit.includes(e.id)) continue;
-        const ub = raySphere(ox, oy, oz, dx, dy, dz, e.x, e.y, e.z, e.r + ARROW_PAD);
-        const body = ub >= 0 && ub <= L;
-        let uw = -1, wi = -1;
-        const wk = ENEMIES[e.type].weak;
-        if (wk) for (let i = 0; i < wk.length; i++) {
-          if (!weakOpen(e, i, dx, dz)) continue;
-          weakPos(e, i, W3);
-          const u = raySphere(ox, oy, oz, dx, dy, dz, W3.x, W3.y, W3.z, wk[i].r * ENEMY_SCALE[e.type] + 0.1);
-          if (u >= 0 && u <= L + 0.35 && (wi < 0 || u < uw)) { uw = u; wi = i; }
-        }
-        if (wi >= 0 && (body ? uw <= ub + 0.35 : uw <= L)) hits.push({ e, u: uw, w: wi });
-        else if (body) hits.push({ e, u: ub, w: -1 });
-      }
-      // a charged power node in the flight path fires that tower's special and swallows the arrow
-      let node: Tower | null = null, nu = Infinity;
-      for (const t of this.towers) {
-        if (!this.specialReady(t)) continue;
-        nodePos(t, W3);
-        const u = raySphere(ox, oy, oz, dx, dy, dz, W3.x, W3.y, W3.z, NODE_R);
-        if (u >= 0 && u <= L && u < nu) { nu = u; node = t; }
-      }
-      // the jump target of another Spire in the flight path carries Kestrel over and swallows the arrow
-      let jump: Tower | null = null, ju = Infinity;
-      const pl = this.players[p.owner];
-      if (pl && pl.heroActive && this.spires > 1) for (const t of this.towers) {
-        if (t.type !== 'spire' || t.id === pl.heroTower) continue;
-        spireTarget(t, W3);
-        const u = raySphere(ox, oy, oz, dx, dy, dz, W3.x, W3.y, W3.z, SPIRE_R);
-        if (u >= 0 && u <= L && u < ju) { ju = u; jump = t; }
-      }
-      // the node and the jump target that lie before distance u, nearest first; true if one of them swallowed the arrow
-      const swallowed = (u: number): boolean => {
-        for (let k = 0; k < 2; k++) {
-          if (node && (!jump || nu <= ju)) { if (nu >= u) return false; const t: Tower = node; node = null; if (this.triggerSpecial(t.id, p.owner)) return true; }
-          else if (jump) { if (ju >= u) return false; const t: Tower = jump; jump = null; if (this.heroTeleport(p.owner, t.id)) return true; }
-          else return false;
-        }
-        return false;
-      };
-      hits.sort((a, b) => a.u - b.u); // nearest along the flight path first
-      for (const h of hits) {
-        const e = h.e;
-        if (!e.alive) continue;
-        if (swallowed(h.u)) { p.life = 0; break; }
-        p.hit.push(e.id);
-        if (h.w >= 0 && weakPos(e, h.w, W3)) this.arrowHit(p, W3.x, W3.y, W3.z, e, ENEMIES[e.type].weak![h.w].mul);
-        else if (e.type === 'titan') this.arrowHit(p, ox + dx * h.u, oy + dy * h.u, oz + dz * h.u, e, 1); // where it glances off the hull
-        else this.arrowHit(p, e.x, e.y, e.z, e, 1);
-        if (p.pierce-- <= 0) { p.life = 0; break; }
-      }
-      if (p.life > 0 && swallowed(Infinity)) p.life = 0;
-      if (p.life > 0 && p.y <= 0.05) {
-        if (p.aoe > 0) this.arrowHit(p, p.x, 0.2, p.z, null, 1);
-        else this.events.push({ k: 'hit', x: p.x, y: 0.1, z: p.z, c: BOW_TIERS[p.tier].color });
-        p.life = 0;
-      }
     }
-  }
-  private arrowHit(p: Proj, x: number, y: number, z: number, e: Enemy | null, mul: number) {
-    const c = BOW_TIERS[p.tier].color;
-    if (e) {
-      if (mul > 1) {
-        const pl = this.players[p.owner];
-        this.sp = true;
-        const n = this.damage(e, p.dmg * mul * (pl ? pl.stats.weak : 1), p.owner);
-        this.sp = false;
-        this.events.push({ k: 'crit', x, y, z, n: Math.round(n) });
-        this.crack(e, x, y, z);
-      } else if (e.type === 'titan') this.glance(e, x, y, z);
-      else this.damage(e, p.dmg, p.owner, false, p.cut);
-    }
-    if (p.aoe > 0) {
-      const gy = e ? e.gy : 0; // the blast stays on its own deck
-      for (const o of this.enemies) if (o.alive && o !== e && Math.abs(o.gy - gy) <= DECK_GAP && Math.hypot(o.x - x, o.z - z) <= p.aoe + o.r) this.damage(o, p.dmg * 0.5, p.owner);
-      this.events.push({ k: 'boom', x, y, z, r: p.aoe, c, s: 1 });
-    } else this.events.push({ k: 'hit', x, y, z, c });
-    if (e && p.chain > 0) this.chainFrom(e, p.chain, p.dmg * 0.5, p.owner, c);
   }
 
   // ---------- co-op replication ----------
@@ -1886,14 +1480,14 @@ export class Sim {
     const sendMods = sig !== this.modsSig || this.snapN % 20 === 0;
     this.modsSig = sig; this.snapN++;
     return {
-      a: [r(this.time), this.wave, this.lives, Math.floor(this.gold), this.level, Math.floor(this.xp), this.xpNext, this.waveActive ? 1 : 0, r(this.queue.length ? -1 : this.nextWaveIn), this.over ? 1 : 0, this.won ? 1 : 0, this.kills, this.mods.cheap, this.winWave, this.endless ? 1 : 0, this.maxLives, this.overlink ? 1 : 0, this.opts.uplink ? 1 : 0],
+      a: [r(this.time), this.wave, this.lives, Math.floor(this.gold), this.level, Math.floor(this.xp), this.xpNext, this.waveActive ? 1 : 0, r(this.queue.length ? -1 : this.nextWaveIn), this.over ? 1 : 0, this.won ? 1 : 0, this.kills, this.mods.cheap, this.winWave, this.endless ? 1 : 0, this.maxLives, 0, 0, Math.floor(this.mats)],
       ti: [TITAN_PHASES.indexOf(this.titan.phase), r(this.titan.danger), this.titan.wave, r(this.titan.t), this.titan.lane],
       u: [...this.unlocked].map((t) => TOWER_TYPES.indexOf(t)),
-      e: this.enemies.map((e) => [e.id, ENEMY_TYPES.indexOf(e.type), r(e.x), r(e.z), r(e.yaw), Math.ceil(e.hp), Math.ceil(e.maxHp), Math.ceil(e.shield), e.slowT > 0 ? 1 : 0, r(e.gy), (e.burnT > 0 ? 1 : 0) | (e.frz > 0 ? 2 : 0) | (e.vulnT > 0 ? 4 : 0) | (e.crackT > 0 ? 16 : 0) | (e.latched ? 32 : 0), r(e.breach), r(e.spin), e.prey]),
-      t: this.towers.map((t) => [t.id, TOWER_TYPES.indexOf(t.type), t.cx, t.cz, t.lvl, r(t.yaw), r(t.buff), t.spent, r(t.charge), r(t.down), r(t.spec), r(t.heat), r(t.jam), r(t.stun)]),
+      e: this.enemies.map((e) => [e.id, ENEMY_TYPES.indexOf(e.type), r(e.x), r(e.z), r(e.yaw), Math.ceil(e.hp), Math.ceil(e.maxHp), Math.ceil(e.shield), e.slowT > 0 ? 1 : 0, r(e.gy), (e.burnT > 0 ? 1 : 0) | (e.frz > 0 ? 2 : 0) | (e.vulnT > 0 ? 4 : 0) | (e.latched ? 32 : 0), r(e.breach), r(e.spin), e.prey]),
+      t: this.towers.map((t) => [t.id, TOWER_TYPES.indexOf(t.type), t.cx, t.cz, t.lvl, r(t.yaw), r(t.buff), t.spent, r(t.charge), r(t.down), r(t.spec), r(t.heat), r(t.jam), r(t.stun), t.dry ? 1 : 0]),
       p: this.projs.map((p) => [p.id, PROJ_KINDS.indexOf(p.kind), r(p.x), r(p.y), r(p.z), r(p.vx), r(p.vy), r(p.vz), p.tier]),
       z: this.zones.map((z) => [z.id, ZONE_KINDS.indexOf(z.kind), r(z.x), r(z.z), r(z.r), r(z.life), r(z.y)]),
-      pl: this.players.map((p) => [r(p.energy), p.heroActive ? 1 : 0, p.heroTower, r(p.yaw), r(p.pitch), r(p.heroTime), r(p.heroDur), p.cds.map(r), p.pending[0] || [], p.pending.length, p.stats.cdr, r(p.draw), p.drawing ? 1 : 0]),
+      pl: this.players.map((p) => [p.pending[0] || [], p.pending.length]),
       w: [this.preview.wave, this.preview.lanes.map((l) => l.map((o) => [ENEMY_TYPES.indexOf(o.type), o.n]))],
       m: sendMods ? row : undefined,
       ev: packEvents(evs).map((e) => { const o: Ev = { k: e.k }; for (const key in e) { const v = e[key]; o[key] = typeof v === 'number' ? r(v) : Array.isArray(v) ? v.map((n: unknown) => (typeof n === 'number' ? r(n) : n)) : v; } return o; }),
@@ -1910,9 +1504,7 @@ export class Sim {
     this.over = !!a[9]; this.won = !!a[10]; this.kills = num(a[11]) | 0; this.mods.cheap = Math.max(0.3, Math.min(1, num(a[12], 1)));
     if (a.length > 13) { this.winWave = clamp(num(a[13], this.winWave) | 0, 1, 1000); this.endless = !!a[14]; }
     if (a.length > 15) this.maxLives = clamp(num(a[15], this.maxLives) | 0, 1, 1000);
-    this.overlink = a[16] === 1;
-    // Uplink mode is the host's to decide: the guest's HUD and its sell checks follow it (never in versus)
-    if (a.length > 17 && this.opts.mode !== 'versus') this.opts.uplink = a[17] === 1;
+    if (a.length > 18) this.mats = Math.max(0, num(a[18]));
     if (Array.isArray(s.ti)) {
       const T = this.titan, ph = TITAN_PHASES[num(s.ti[0], -1) | 0];
       if (ph) T.phase = ph;
@@ -1941,7 +1533,7 @@ export class Sim {
       e.x = clamp(num(v[2]), -200, 200); e.z = clamp(num(v[3]), -200, 200); e.yaw = num(v[4]); e.hp = num(v[5]); e.maxHp = num(v[6], 1) || 1; e.shield = num(v[7]); e.slowT = v[8] ? 1 : 0;
       e.gy = clamp(num(v[9]), 0, 20); e.y = e.gy + d.y;
       const fl = num(v[10]) | 0;
-      e.burnT = fl & 1 ? 1 : 0; e.frz = fl & 2 ? 1 : 0; e.vulnT = fl & 4 ? 1 : 0; e.crackT = fl & 16 ? 1 : 0;
+      e.burnT = fl & 1 ? 1 : 0; e.frz = fl & 2 ? 1 : 0; e.vulnT = fl & 4 ? 1 : 0;
       e.breach = clamp(num(v[11]), 0, 10);
       e.spin = type === 'wheel' ? clamp(num(v[12], 1), 0, 1) : 0; // a host that does not send it yet: full spin
       e.prey = type === 'mite' ? clamp(num(v[13]) | 0, 0, 1e9) : 0; e.latched = type === 'mite' && !!(fl & 32);
@@ -1963,12 +1555,12 @@ export class Sim {
       if (!t || t.type !== type || t.cx !== cx || t.cz !== cz) t = newTower(num(v[0]), type, cx, cz, 0);
       t.lvl = Math.max(1, Math.min(3, num(v[4], 1) | 0)); t.yaw = num(v[5]); t.buff = clamp(num(v[6]), 0, 10); t.spent = num(v[7]);
       t.charge = clamp(num(v[8]), 0, 1); t.down = clamp(num(v[9]), 0, 120); t.spec = clamp(num(v[10]), 0, 120); t.heat = clamp(num(v[11]), 0, 1);
-      t.jam = clamp(num(v[12]), 0, 60); t.stun = clamp(num(v[13]), 0, 60);
+      t.jam = clamp(num(v[12]), 0, 60); t.stun = clamp(num(v[13]), 0, 60); t.dry = v[14] === 1;
       this.grid[cz * GW + cx] = 2;
       this.towers.push(t);
     }
-    this.beacons = 0; this.spires = 0;
-    for (const t of this.towers) { if (t.type === 'beacon') this.beacons++; else if (t.type === 'spire') this.spires++; }
+    this.beacons = 0;
+    for (const t of this.towers) if (t.type === 'beacon') this.beacons++;
     this.rebuildWalls(); // from the replicated towers (and their down / spec state), the same way the host builds them
     this.projs = [];
     for (const v of s.p.slice(0, 600)) {
@@ -1986,14 +1578,9 @@ export class Sim {
     for (let i = 0; i < this.players.length && i < s.pl.length; i++) {
       const v = s.pl[i], p = this.players[i];
       if (!Array.isArray(v)) continue;
-      p.energy = clamp(num(v[0]), 0, MAX_ENERGY); p.heroActive = !!v[1]; p.heroTower = num(v[2]); p.yaw = num(v[3]); p.pitch = num(v[4]);
-      p.heroTime = num(v[5]); p.heroDur = num(v[6], HERO_DUR) || HERO_DUR;
-      if (Array.isArray(v[7])) p.cds = [num(v[7][0]), num(v[7][1]), num(v[7][2])];
-      const offer = Array.isArray(v[8]) ? v[8].slice(0, 8).filter((id: unknown) => typeof id === 'string' && Object.hasOwn(CARD_BY_ID, id as string)).slice(0, 3) : [];
-      const n = Math.max(0, Math.min(50, num(v[9]) | 0));
+      const offer = Array.isArray(v[0]) ? v[0].slice(0, 8).filter((id: unknown) => typeof id === 'string' && Object.hasOwn(CARD_BY_ID, id as string)).slice(0, 3) : [];
+      const n = Math.max(0, Math.min(50, num(v[1]) | 0));
       p.pending = offer.length && n ? [offer, ...Array(n - 1).fill(offer)] : [];
-      p.stats.cdr = clamp(num(v[10], 1) || 1, 0.05, 1);
-      p.draw = clamp(num(v[11]), 0, 1); p.drawing = !!v[12] && p.heroActive;
     }
     if (Array.isArray(s.w)) {
       const rows: unknown = s.w[1];

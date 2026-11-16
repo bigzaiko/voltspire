@@ -1,7 +1,7 @@
 // Procedural map checks: node tools/mapgen-test.ts [seeds=400] [--noplay] [--diffs=easy,normal,hard] [--runs=2] [--samples=0]
 // Generates seeds x 3 tiers, checks every design rule with independent checkers, prints sample maps as ASCII
 // and (unless --noplay) lets the bot play the hand-made maps and a few generated ones.
-import { GW, GH, CELL, cellX, cellZ, hexDist, lineDir, neighbor, neighbors, disc, inBoard } from '../src/game/hex.ts';
+import { GW, GH, hexDist, lineDir, neighbor, neighbors, disc, inBoard } from '../src/game/hex.ts';
 import { GameMap, validateMap, sanitizeMap, encodeMap, decodeMap } from '../src/game/map.ts';
 import type { MapDef, LanePoint } from '../src/game/map.ts';
 import { generateMap, generateMapEx, fallbackMap, mapStats, MIN_FREE } from '../src/game/mapgen.ts';
@@ -14,7 +14,6 @@ const arg = (name: string, d: string) => (process.argv.find((a) => a.startsWith(
 const DIFFS = arg('diffs', 'normal').split(',').filter((d) => ['easy', 'normal', 'hard'].includes(d));
 const RUNS = Math.max(1, Math.min(10, +arg('runs', '2') || 2));
 const MORE = +arg('samples', '0') || 0;
-const world = (ax: number, az: number, bx: number, bz: number) => Math.hypot(cellX(ax, az) - cellX(bx, bz), cellZ(az) - cellZ(bz)) / CELL;
 
 interface RCell { x: number; z: number; h: number; lane: number; i: number; dir: number }
 /** Walk a lane tile by tile (own implementation, independent of mapgen's). dir = direction of the step that leaves the tile. */
@@ -143,23 +142,15 @@ function check(def: MapDef, tier: number, seed: number): string[] {
   { const ls = lanes.map((l) => l.length - 1); if (Math.min(...ls) < Math.max(...ls) * 0.55) bad.push(`lopsided roads ${ls.join('/')}`); }
   if (tier === 3) for (const l of lanes) if (l.length - 1 > 62) bad.push(`tier 3 road of ${l.length - 1} tiles is not short`);
 
-  // --- buildable space, scenery, spires ---
+  // --- buildable space, scenery ---
   const g = new GameMap(def).grid;
   let free = 0;
   for (let i = 0; i < g.length; i++) if (g[i] === 0) free++;
   // the grid the game builds must agree with the tiles the checker walked
   { const want = new Set<number>(); for (const c of all) if (inBoard(c.x, c.z)) want.add(c.z * GW + c.x); for (const [x, z] of disc(kx, kz, 1)) want.add(z * GW + x); let got = 0; for (let i = 0; i < g.length; i++) if (g[i] === 1) { got++; if (!want.has(i)) bad.push(`grid marks ${i % GW},${(i / GW) | 0} as road but no road runs there`); } if (got !== want.size) bad.push(`grid has ${got} road tiles, the walk ${want.size}`); }
-  const spires = def.towers.filter((t) => t.t === 'spire');
+  // generated maps bring no towers (the Uplink Spires are gone); every free tile is buildable
   if (free - def.towers.length < MIN_FREE || MIN_FREE < 150 || st.free !== free - def.towers.length) bad.push(`free tiles ${free - def.towers.length} (stats ${st.free})`);
-  if (def.towers.length !== spires.length || spires.length !== (tier === 3 ? 2 : 1)) bad.push(`${spires.length} spires / ${def.towers.length} towers`);
-  const roadIn = all.filter((c) => inBoard(c.x, c.z));
-  spires.forEach((t, i) => {
-    if (!inBoard(t.cx, t.cz) || g[t.cz * GW + t.cx] !== 0) bad.push(`spire ${i + 1} not on a free tile`);
-    if (hexDist(t.cx, t.cz, kx, kz) < 4) bad.push(`spire ${i + 1} next to the core`);
-    const seen = roadIn.filter((c) => world(c.x, c.z, t.cx, t.cz) <= 7).length;
-    if (seen < (tier === 3 ? 14 : 20)) bad.push(`spire ${i + 1} overlooks only ${seen} road tiles`);
-    for (let j = 0; j < i; j++) if (hexDist(t.cx, t.cz, spires[j].cx, spires[j].cz) < 3) bad.push('spires on top of each other');
-  });
+  if (def.towers.length) bad.push(`${def.towers.length} towers on a generated map`);
   if (def.blocked.length < 6 || def.blocked.length > 24) bad.push(`${def.blocked.length} scenery tiles`);
   const bset = new Set<number>();
   for (const [x, z] of def.blocked) {
@@ -191,7 +182,7 @@ function check(def: MapDef, tier: number, seed: number): string[] {
 
 /**
  * ASCII picture in offset-hex layout (two characters per tile, odd rows indented by one):
- * digits = road level, / = ramp, X = bridge crossing, S = gate, @ = core, o = core ring, T = spire, # = scenery.
+ * digits = road level, / = ramp, X = bridge crossing, S = gate, @ = core, o = core ring, t = tower, # = scenery.
  */
 function ascii(def: MapDef): string {
   const rows: string[][] = [];
@@ -205,7 +196,7 @@ function ascii(def: MapDef): string {
   for (const l of lanes) for (const c of l) count.set(c.x + ',' + c.z, (count.get(c.x + ',' + c.z) || 0) + 1);
   for (const l of lanes) l.forEach((c, i) => put(c.x, c.z, i === 0 ? 'S' : count.get(c.x + ',' + c.z)! > 1 ? 'X' : Number.isInteger(c.h) ? String(c.h) : '/'));
   put(def.core[0], def.core[1], '@');
-  for (const t of def.towers) put(t.cx, t.cz, t.t === 'spire' ? 'T' : 't');
+  for (const t of def.towers) put(t.cx, t.cz, 't');
   const st = mapStats(def);
   const head = `${def.id}  "${def.name}"  tier ${def.tier}  gold ${def.gold}  lives ${def.lives}\n  ${def.desc}\n  roads ${st.roads.join(' + ')} tiles, free ${st.free}, scenery ${def.blocked.length}, max level ${st.maxLevel}` +
     (st.crossings.length ? ', bridges: ' + st.crossings.map((c) => `(${c.x},${c.z}) road ${c.over + 1}@L${c.overLevel} over road ${c.under + 1}@L${c.underLevel}`).join('; ') : '');
@@ -260,17 +251,15 @@ for (let t = 1; t <= 3; t++) { try { for (const b of check(fallbackMap(42, t), t
 for (const [seed, tier] of [[NaN, 1], [-5, 2], [1e15, 3], [3.7, 0], [7, 99], [Infinity, NaN]] as [number, number][]) {
   try { const d = generateMap(seed, tier); if (validateMap(d) || !sanitizeMap(JSON.parse(JSON.stringify(d)))) report(`odd input ${seed},${tier} gave an invalid map`); } catch (e) { report(`odd input ${seed},${tier} threw ${e}`); }
 }
-// the hand-made maps: valid, on the hex grid, a spire on a free tile, bridges where roads meet, and they survive sanitizing
+// the hand-made maps: valid, on the hex grid, towers on free tiles, bridges where roads meet, and they survive sanitizing
 if (HANDMADE !== 8 || MAPS.length !== 38 || new Set(MAPS.map((m) => m.id)).size !== MAPS.length) report('expected eight hand-made maps plus thirty picked ones, all with distinct ids');
 for (const id of ['switchback', 'spiral', 'crossfire', 'gauntlet', 'pincer', 'trident', 'overpass', 'highline']) if (mapById(id)?.id !== id) report(`mapById(${id})`);
 for (const m of MAPS) {
   const v = validateMap(m);
   if (v) { report(`map ${m.id}: ${v}`); continue; }
-  const g = new GameMap(m).grid, sp = m.towers.filter((t) => t.t === 'spire');
-  if (!sp.length) report(`map ${m.id} has no spire`);
+  const g = new GameMap(m).grid;
   const seen = new Set<number>();
   for (const t of m.towers) { const k = t.cz * GW + t.cx; if (!inBoard(t.cx, t.cz) || g[k] !== 0 || seen.has(k)) report(`map ${m.id}: tower at ${t.cx},${t.cz} is not on a free tile`); seen.add(k); }
-  for (const t of sp) if (hexDist(t.cx, t.cz, m.core[0], m.core[1]) < 3) report(`map ${m.id}: spire next to the core`);
   for (const [x, z] of m.blocked) if (!inBoard(x, z) || g[z * GW + x] !== 3) report(`map ${m.id}: scenery ${x},${z} sits on a road`);
   if (new Set(m.blocked.map(([x, z]) => z * GW + x)).size !== m.blocked.length) report(`map ${m.id}: duplicate scenery`);
   let free = 0;
@@ -314,6 +303,11 @@ sum.forEach((s, i) => {
         free tiles avg ${(s.free / s.n).toFixed(0)} (min ${s.freeMin})   gold avg ${(s.gold / s.n).toFixed(0)} (${s.goldMin}-${s.goldMax})`);
 });
 
+// the generator should almost always find a layout of its own: a fallback is the last resort, not the rule
+sum.forEach((s, i) => { if (s.fallback > Math.max(2, s.n * 0.02)) report(`tier ${i + 1}: ${s.fallback} of ${s.n} seeds fell back to a stock layout`); });
+// and the thirty picked maps are thirty different layouts
+if (new Set(MAPS.slice(HANDMADE).map((m) => JSON.stringify(m.lanes))).size !== MAPS.length - HANDMADE) report('the picked generated maps are not all different layouts');
+
 console.log('\n=== samples ===');
 const samples = [[1, 1], [9, 1], [14, 1], [33, 1], [5, 2], [17, 2], [21, 2], [40, 2], [4, 3], [27, 3], [31, 3], [52, 3]];
 for (let i = 0; i < MORE; i++) samples.push([100 + i, 1 + (i % 3)]);
@@ -322,12 +316,12 @@ console.log('\n=== hand-made maps ===');
 for (const m of MAPS) console.log('\n' + ascii(m));
 
 if (!NOPLAY) {
-  console.log(`\n=== bot playtest (skill 1, with hero, ${RUNS} runs each; cells are wins and the average wave reached) ===`);
+  console.log(`\n=== bot playtest (skill 1, free towers, ${RUNS} runs each; cells are wins and the average wave reached) ===`);
   try {
     const { Sim, mapEase } = await import('../src/game/sim.ts');
     const { Bot } = await import('../src/game/bot.ts');
     const play = (map: MapDef, seed: number, diff: string) => {
-      const sim = new Sim({ seed, pauseOnCards: false, map, diff });
+      const sim = new Sim({ seed, pauseOnCards: false, map, diff, free: true }); // the bot lays out no factory
       const bot = new Bot(sim, 0, 1);
       for (let i = 0; i < 60 * 60 * 60 && !sim.over; i++) { bot.step(1 / 60); sim.step(1 / 60); sim.events.length = 0; }
       if (!Number.isFinite(sim.gold) || sim.enemies.some((e) => !Number.isFinite(e.x) || !Number.isFinite(e.z))) report(`playtest ${map.id}: non-finite state`);

@@ -1,11 +1,13 @@
 // BEATSPIRE - game controller: input, HUD, menus, saved progress, multiplayer glue.
 // The fonts, style.css, editor.css, touch.css and music.css are linked from play.html, so the page never shows unstyled.
 import * as THREE from 'three';
-import { GW, GH, TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, CARD_BY_ID, RARITY, BOW_TIERS, MAX_ENERGY, SQUADS, worldToCell } from './game/data.ts';
-import type { TowerType, EnemyType } from './game/data.ts';
-import { Sim, SKILL_CD, nodePos, raySphere, TITAN_STUN } from './game/sim.ts';
-import * as simMod from './game/sim.ts';
+import { GW, GH, TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, CARD_BY_ID, RARITY, SQUADS, worldToCell, FACS, FAC_TYPES, ITEMS, FLUIDS, ORES, RECIPES, RECIPE_BY_ID } from './game/data.ts';
+import type { TowerType, EnemyType, FacType, ItemType } from './game/data.ts';
+import { Sim, TITAN_STUN } from './game/sim.ts';
 import type { Ev, Mode, Tower } from './game/sim.ts';
+import { TOWER_STOCK, TANK, SUPPLY, POLE_REACH, OUT_CAP, turns } from './game/factory.ts';
+import type { Fac } from './game/factory.ts';
+import { neighbor, lineDir } from './game/hex.ts';
 import { Bot } from './game/bot.ts';
 import { View } from './game/render.ts';
 import { Sound, TRACKS } from './game/audio.ts';
@@ -18,8 +20,6 @@ import { drawMap } from './game/mapdraw.ts';
 import { openEditor, loadCustomMaps } from './editor.ts';
 import { initTouch } from './touch.ts';
 import { initMusic } from './music.ts';
-import { CurveUndo } from './game/pointer.ts';
-import type { MouseCurve } from './game/pointer.ts';
 import type { Msg } from './game/net.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -52,22 +52,18 @@ function icon(d: string, cls = ''): SVGSVGElement {
 const STORE_KEY = 'beatspire';
 /** the game's earlier name: progress saved under it is read once and carried over */
 const OLD_STORE_KEY = 'voltspire';
-const UA = navigator.userAgent;
-/** a Linux desktop (not Android, not Chrome OS): the one place where a browser cannot hand out the raw mouse */
-const LINUX = /Linux|X11/.test(UA) && !/Android|CrOS/.test(UA);
-const FIREFOX = /Firefox\//.test(UA);
 type FxColor = 'auto' | 'sand' | 'apricot' | 'verdigris' | 'custom';
-/** A map's record: the campaign (wave, wins, time), Survival (surv) and Uplink mode (up...), each kept apart. */
-interface Rec { wave: number; wins: number; time: number; surv: number; upWave: number; upWins: number; upTime: number }
+/** A map's record: the campaign (wave, wins, time) and Survival (surv), kept apart. */
+interface Rec { wave: number; wins: number; time: number; surv: number }
 interface Store {
   v: 2;
-  settings: { vol: number; mus: number; sens: number; q: 'high' | 'low'; friction: boolean; aim: 'auto' | 'lock' | 'free'; curve: MouseCurve };
+  settings: { vol: number; mus: number; q: 'high' | 'low' };
   fx: { impact: boolean; beat: boolean; borders: boolean; env: boolean; towers: boolean; intensity: number; color: FxColor; custom: string };
-  /** filter: which layouts the map picker shows (0 all, 1 to 3 one tier). survival and uplink are never both set. */
-  setup: { survival: boolean; uplink: boolean; source: 'premade' | 'generated'; map: string; mapName: string; seed: number; tier: number; tierAuto: boolean; diff: string; filter: number };
+  /** filter: which layouts the map picker shows (0 all, 1 to 3 one tier) */
+  setup: { survival: boolean; source: 'premade' | 'generated'; map: string; mapName: string; seed: number; tier: number; tierAuto: boolean; diff: string; filter: number };
   /** per map and difficulty, keyed "<map id>|<difficulty id>" */
   records: Record<string, Rec>;
-  tips: { node: boolean; boss: boolean; mite: boolean; titan: boolean; uplink: boolean };
+  tips: { node: boolean; boss: boolean; mite: boolean; titan: boolean; factory: boolean; dry: boolean };
 }
 const REC_KEY = /^[A-Za-z0-9 _.:\-]{1,64}\|(easy|normal|hard)$/;
 const MAX_RECORDS = 300;
@@ -89,7 +85,7 @@ function mapKeyOf(m: MapDef): string {
   return `custom:${slug || 'map'}.${hash8(m.name + '|' + roads + '|' + m.core.join(','))}`;
 }
 const newSeed = () => 1 + Math.floor(Math.random() * 999998);
-const defaultSetup = (): Store['setup'] => ({ survival: false, uplink: false, source: 'premade', map: MAPS[0].id, mapName: MAPS[0].name, seed: newSeed(), tier: 2, tierAuto: true, diff: 'normal', filter: 0 });
+const defaultSetup = (): Store['setup'] => ({ survival: false, source: 'premade', map: MAPS[0].id, mapName: MAPS[0].name, seed: newSeed(), tier: 2, tierAuto: true, diff: 'normal', filter: 0 });
 
 function readStore(raw: unknown): Store {
   const o = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
@@ -104,37 +100,33 @@ function readStore(raw: unknown): Store {
   const colors: FxColor[] = ['auto', 'sand', 'apricot', 'verdigris', 'custom'];
   const store: Store = {
     v: 2,
-    settings: { vol: int(s.vol, 0, 100, 70), mus: int(s.mus, 0, 100, 50), sens: int(s.sens, 20, 200, 100), q: s.q === 'low' ? 'low' : 'high', friction: bool(s.friction, true),
-      aim: s.aim === 'lock' || s.aim === 'free' ? s.aim : 'auto', curve: s.curve === 'system' || s.curve === 'linear' ? s.curve : 'even' },
+    settings: { vol: int(s.vol, 0, 100, 70), mus: int(s.mus, 0, 100, 50), q: s.q === 'low' ? 'low' : 'high' },
     fx: {
       impact: bool(f.impact, true), beat: bool(f.beat, true), borders: bool(f.borders, true), env: bool(f.env, false), towers: bool(f.towers, false),
       intensity: int(f.intensity, 0, 100, 30), color: colors.find((c) => c === f.color) || 'auto',
       custom: typeof f.custom === 'string' && /^#[0-9a-f]{6}$/i.test(f.custom) ? f.custom.toLowerCase() : '#e3dc92',
     },
     setup: {
-      survival: bool(u.survival, ds.survival), uplink: bool(u.uplink, false) && u.survival !== true, source: u.source === 'generated' ? 'generated' : 'premade',
+      survival: bool(u.survival, ds.survival), source: u.source === 'generated' ? 'generated' : 'premade',
       map: str(old ? old.map : u.map, 32, ds.map), mapName: str(u.mapName, 40, ''),
       seed: int(u.seed, 0, 999999999, ds.seed), tier: int(u.tier, 1, 3, 2), tierAuto: bool(u.tierAuto, true),
       diff: diffById(old ? old.diff : u.diff).id, filter: int(u.filter, 0, 3, 0),
     },
     records: {},
-    tips: { node: bool(t.node, false), boss: bool(t.boss, false), mite: bool(t.mite, false), titan: bool(t.titan, false), uplink: bool(t.uplink, false) },
+    tips: { node: bool(t.node, false), boss: bool(t.boss, false), mite: bool(t.mite, false), titan: bool(t.titan, false), factory: bool(t.factory, false), dry: bool(t.dry, false) },
   };
   let n = 0;
   for (const [k, v] of Object.entries(o(r.records))) {
     if (n >= MAX_RECORDS || !REC_KEY.test(k)) continue;
     const q = o(v), waves = diffById(k.slice(k.lastIndexOf('|') + 1)).waves;
-    // a campaign best (and an Uplink mode best) can never be past the last wave of its difficulty
-    store.records[k] = {
-      wave: int(q.wave, 0, waves, 0), wins: int(q.wins, 0, 99999, 0), time: num(q.time, 0, 360000, 0), surv: int(q.surv, 0, 9999, 0),
-      upWave: int(q.upWave, 0, waves, 0), upWins: int(q.upWins, 0, 99999, 0), upTime: num(q.upTime, 0, 360000, 0),
-    };
+    // a campaign best can never be past the last wave of its difficulty
+    store.records[k] = { wave: int(q.wave, 0, waves, 0), wins: int(q.wins, 0, 99999, 0), time: num(q.time, 0, 360000, 0), surv: int(q.surv, 0, 9999, 0) };
     n++;
   }
   if (old) {
     // carry the two old global bests over as records of the first map
     const best = int(old.best, 0, 9999, 0), surv = int(old.bestSurv, 0, 9999, 0);
-    if (best || surv) store.records[`${MAPS[0].id}|normal`] = { wave: Math.min(best, diffById('normal').waves), wins: 0, time: 0, surv, upWave: 0, upWins: 0, upTime: 0 };
+    if (best || surv) store.records[`${MAPS[0].id}|normal`] = { wave: Math.min(best, diffById('normal').waves), wins: 0, time: 0, surv };
   }
   return store;
 }
@@ -158,19 +150,10 @@ sound.volume = settings.vol / 100; sound.musicVol = settings.mus / 100;
 interface FxOptions { impact: boolean; beat: boolean; borders: boolean; env: boolean; towers: boolean; intensity: number; color: number | null }
 const vx = view as unknown as {
   fxOptions?: Partial<FxOptions>; beat?(level: number): void; skipIntro?(): void; introActive?(): boolean;
-  frameMap?(bottom?: number): unknown; camera?: { position: { x: number; y: number; z: number } };
+  frameMap?(bottom?: number): unknown;
 };
 /** The bird camera. rot turns it around the point it looks at; the view works out the tilt from dist. */
 const bird = () => view.cam as { x: number; z: number; dist: number; rot?: number };
-// Parts of the sim that are being added separately (the bow draw, the wave call bonus). Optional until they land.
-const simX = simMod as unknown as { DRAW_TIME?: unknown; MIN_DRAW?: unknown };
-const DRAW_TIME = typeof simX.DRAW_TIME === 'number' && simX.DRAW_TIME > 0 ? simX.DRAW_TIME : 0.6;
-const MIN_DRAW = typeof simX.MIN_DRAW === 'number' ? simX.MIN_DRAW : 0.2;
-type SimX = {
-  heroAim?(pi: number, drawing: boolean, tx: number, ty: number, tz: number): void;
-  heroFire?(pi: number, tx: number, ty: number, tz: number): void;
-  callBonus?(): number;
-};
 const FX_COLORS = { sand: 0xe3dc92, apricot: 0xf68b56, verdigris: 0x6fe0c8 };
 function applyFx() {
   const o = vx.fxOptions, f = store.fx;
@@ -187,25 +170,28 @@ let bot: Bot | null = null;
 let me = 0;
 let net: Net | null = null;
 let isClient = false;
-/** speed is the one the player chose. The Uplink always runs at 1x and the choice comes back afterwards. */
 let paused = false, speed = 1, acc = 0;
-let buildType: TowerType | null = null, selected = 0;
+/** What the next click builds (a tower or a factory building), and what is selected on the board (a tower id, or a factory building id in selFac). */
+let buildType: TowerType | null = null, buildFac: FacType | null = null, selected = 0, selFac = 0;
+/** The direction the next belt (or other building) faces, and the bar the number keys pick from. */
+let facDir = 0, barTab: 'towers' | 'factory' = 'towers';
+/** A line of belts or pipes being laid with the button held: the last tile placed. */
+let painting = false;
+const paintAt = { cx: -1, cz: -1, id: 0 };
 let dragging = false, rotating = false;
-/** The bow is being drawn: left mouse button held, or a finger on the touch Draw button. Letting go looses the arrow. */
-let mouseFire = false, touchFire = false;
 /** mouse buttons that are down right now (the bit mask of MouseEvent.buttons) */
 let mouseBtns = 0;
 /** the run was started with "Test play" in the map editor */
 let editorRun = false;
 /** the last press came from a finger, not from the mouse or the keyboard */
 let byTouch = false;
-let snapT = 0, lookT = 0, vsT = 0;
+let snapT = 0, vsT = 0;
 let netEvs: Ev[] = [];
-let cardKey = '', ended = false, readyShown = false, lastTier = 0;
+let cardKey = '', ended = false;
 let lobbyMode: 'coop' | 'versus' = 'coop';
-/** The run the setup sheet starts. survival and uplink are never both set: neither is the campaign. */
-const choice: { map: MapDef; diff: string; survival: boolean; uplink: boolean; source: 'premade' | 'generated'; seed: number; tier: number; tierAuto: boolean } =
-  { map: MAPS[0], diff: 'normal', survival: false, uplink: false, source: 'premade', seed: 1, tier: 2, tierAuto: true };
+/** The run the setup sheet starts. */
+const choice: { map: MapDef; diff: string; survival: boolean; source: 'premade' | 'generated'; seed: number; tier: number; tierAuto: boolean } =
+  { map: MAPS[0], diff: 'normal', survival: false, source: 'premade', seed: 1, tier: 2, tierAuto: true };
 let setupFor: 'solo' | 'lobby' = 'solo';
 let rival = { l: 20, w: 0, k: 0 };
 let lastRx = 0, squadTokens = 3, squadT = 0, endTimer = 0;
@@ -217,26 +203,11 @@ const OVERLAYS = ['pause', 'help', 'settings', 'music'];
 const menuOpen = () => OVERLAYS.some(shown);
 const hover = { cx: -1, cz: -1 };
 const keys = new Set<string>();
-const aim = new THREE.Vector3(), gp = new THREE.Vector3();
-const P3 = { x: 0, y: 0, z: 0 };
+const gp = new THREE.Vector3();
 /** true once the touch module has switched the on-screen controls on */
 const touchUi = () => shown('touch');
-const heroOn = () => !!sim.players[me]?.heroActive;
-/** Uplink mode (SimOpts.uplink): the whole run is played from a Spire, and towers are built from up there. */
-const upMode = () => mode !== 'attract' && !!sim.opts.uplink;
-/**
- * Uplink mode, build mode: whether it is open, the tower it places (kept between openings), the hex under the crosshair
- * with the tower on it (0 for none) and whether the chosen tower can go there, and the game speed it eases toward (solo).
- */
-let building = false, upTower: TowerType = 'pulse', buildSlow = 1;
-const bhex = { cx: -1, cz: -1, tower: 0, ok: false };
 
 // ---------- actions (local sim, or sent to the co-op host) ----------
-/** Why a tower cannot be sold. Worked out here as well so a co-op guest gets the reason without a round trip. */
-function sellReason(t: Tower): string {
-  const why = sim.sellBlock(t);
-  return why === 'hero' ? 'Kestrel is standing on this Spire.' : why === 'last' ? 'This is the last Uplink Spire. It cannot be sold.' : '';
-}
 const act = {
   build(type: TowerType, cx: number, cz: number) {
     if (isClient) { if (sim.canBuild(type, cx, cz)) net?.send({ t: 'in', a: 'build', ty: TOWER_TYPES.indexOf(type), cx, cz }); else return false; return true; }
@@ -244,19 +215,23 @@ const act = {
   },
   upgrade(id: number) { if (isClient) net?.send({ t: 'in', a: 'up', id }); else if (!sim.upgrade(id)) sound.play('error'); },
   sell(id: number) {
-    const t = sim.towerById(id);
-    if (!t) return false;
-    const why = sellReason(t);
-    if (why) { sound.play('error'); note(why); return false; }
+    if (!sim.towerById(id)) return false;
     if (isClient) net?.send({ t: 'in', a: 'sell', id }); else sim.sell(id);
     return true;
   },
   card(i: number) { if (isClient) net?.send({ t: 'in', a: 'card', i }); else sim.pickCard(me, i); },
-  hero(id: number) { if (isClient) net?.send({ t: 'in', a: 'hero', id }); else sim.activateHero(me, id); },
-  exit() { if (isClient) net?.send({ t: 'in', a: 'exit' }); else sim.exitHero(me); },
-  tele(id: number) { if (isClient) net?.send({ t: 'in', a: 'tele', id }); else sim.heroTeleport(me, id); },
-  skill(s: number, p: THREE.Vector3) { if (isClient) net?.send({ t: 'in', a: 'skill', s, x: p.x, y: p.y, z: p.z }); else sim.heroSkill(me, s, p.x, p.y, p.z); },
   wave() { if (isClient) net?.send({ t: 'in', a: 'wave' }); else sim.startWave(); },
+  /** fire a charged tower's special */
+  special(id: number) {
+    const t = sim.towerById(id);
+    if (!t || !sim.specialReady(t)) { sound.play('error'); return; }
+    if (!sim.triggerSpecial(id, me)) { sound.play('nospec'); note('Nothing in range for that special. The tower keeps its charge.'); }
+  },
+  // the factory (solo only for now)
+  fac(type: FacType, cx: number, cz: number, dir: number) { return sim.buildFac(type, cx, cz, dir); },
+  sellFac(id: number) { return sim.sellFac(id); },
+  turnFac(id: number, dir: number) { sim.rotateFac(id, dir); },
+  recipe(id: number, r: string) { sim.setRecipe(id, r); },
 };
 
 // ---------- HUD helpers ----------
@@ -295,35 +270,6 @@ function tutor(text: string) {
   tutorTimer = window.setTimeout(() => show('tutor', false), 8000);
 }
 function flash() { const f = $('flash'); f.classList.add('on'); requestAnimationFrame(() => requestAnimationFrame(() => f.classList.remove('on'))); }
-// Damage numbers come from a fixed pool of elements that are only moved and re-animated, never created or
-// removed during a fight, and only a few plain numbers start per frame. A burst of hits costs no layout work.
-const DMG_POOL = 28, DMG_PER_FRAME = 5;
-const dmgPool: { el: HTMLElement; anim: Animation | null }[] = [];
-let dmgFrame = 0, dmgSteal = 0;
-const DMG_PLAIN = [{ transform: 'translateY(0) scale(1.3)', opacity: 1 }, { transform: 'translateY(-46px) scale(0.9)', opacity: 0 }];
-const DMG_CRIT = [{ transform: 'translateY(0) scale(1.7)', opacity: 1 }, { transform: 'translateY(-22px) scale(1.25)', opacity: 1, offset: 0.25 }, { transform: 'translateY(-70px) scale(1.05)', opacity: 0 }];
-/** Show a number at the hit. Returns its pool slot, or -1 when it was skipped. */
-function dmgNumber(e: Ev, crit = false): number {
-  if (!crit && dmgFrame >= DMG_PER_FRAME) return -1;
-  if (typeof e.n !== 'number' || !Number.isFinite(e.n)) return -1;
-  const [x, y, ok] = view.project(e.x, e.y + 0.4, e.z);
-  if (!ok) return -1;
-  let i = dmgPool.findIndex((q) => !q.anim);
-  if (i < 0) {
-    if (dmgPool.length < DMG_POOL) { const span = el('span'); $('dmg').appendChild(span); i = dmgPool.push({ el: span, anim: null }) - 1; }
-    else if (crit) { i = dmgSteal = (dmgSteal + 1) % DMG_POOL; dmgPool[i].anim?.cancel(); }
-    else return -1;
-  }
-  const q = dmgPool[i];
-  q.el.textContent = String(Math.round(e.n));
-  q.el.className = crit ? 'crit' : '';
-  q.el.style.translate = `${(x + (Math.random() - 0.5) * 24).toFixed(0)}px ${y.toFixed(0)}px`;
-  const an = q.el.animate(crit ? DMG_CRIT : DMG_PLAIN, { duration: crit ? 950 : 650, easing: 'ease-out' });
-  q.anim = an;
-  an.onfinish = an.oncancel = () => { if (q.anim === an) q.anim = null; };
-  if (!crit) dmgFrame++;
-  return i;
-}
 
 // ---------- enemy icons (wave intel) ----------
 const MITE_PATH = 'M8 4.8a3.2 3.2 0 1 0 0 6.4a3.2 3.2 0 0 0 0-6.4zM0.8 3.6l4 1.7-0.5 1.3-4-1.7zM15.2 3.6l-4 1.7 0.5 1.3 4-1.7zM0.3 7.3h4v1.4h-4zM11.7 7.3h4v1.4h-4zM0.8 12.4l4-1.7-0.5-1.3-4 1.7zM15.2 12.4l-4-1.7 0.5-1.3 4 1.7z';
@@ -360,17 +306,33 @@ function enemyChips(box: HTMLElement, list: Group[]) {
 }
 
 // ---------- build bar ----------
+/** What a tower runs on, in words. */
+function needsText(t: TowerType): string {
+  const n = TOWERS[t].needs, parts: string[] = [];
+  if (n.item) parts.push(ITEMS[n.item].name.toLowerCase() + 's'.repeat(n.item === 'ammo' || n.item === 'cell' ? 1 : 0));
+  if (n.fluid) parts.push(FLUIDS[n.fluid].name.toLowerCase());
+  if (n.power) parts.push(`${n.power} power`);
+  return parts.join(' and ');
+}
 function towerTip(t: TowerType) {
   const d = TOWERS[t], tip = $('tip');
   tip.textContent = '';
   const stats = d.dmg > 0 ? ` Damage ${d.dmg}, ${d.rate} per second, range ${d.range}.` : d.range > 0 ? ` Range ${d.range}.` : '';
   tip.append(el('b', '', d.name), el('span', '', d.desc + stats));
+  tip.append(el('i', 'needs', `Runs on ${needsText(t)}. Costs ${sim.cost(t)} credits and ${sim.matCost(t)} materials.`));
   if (d.special) tip.append(el('i', '', `Special: ${d.special.name}. ${d.special.desc}`));
   if (!sim.unlocked.has(t)) tip.append(el('i', 'lock', 'Locked. Find its blueprint card to build it.'));
   show('tip');
 }
+function facTip(t: FacType) {
+  const d = FACS[t], tip = $('tip');
+  tip.textContent = '';
+  tip.append(el('b', '', d.name), el('span', '', d.desc), el('i', 'needs', `Costs ${sim.facCost(t)} credits.`));
+  show('tip');
+}
 const buildBtns = {} as Record<TowerType, HTMLButtonElement>;
-let tipHover: TowerType | null = null;
+const facBtns = {} as Record<FacType, HTMLButtonElement>;
+let tipHover: TowerType | FacType | null = null;
 for (const t of TOWER_TYPES) {
   const d = TOWERS[t];
   const b = el('button', 'tw') as HTMLButtonElement;
@@ -378,7 +340,7 @@ for (const t of TOWER_TYPES) {
   b.style.setProperty('--c', hex(d.color));
   b.setAttribute('aria-label', `${d.name}, key ${d.key.toUpperCase()}`);
   b.append(el('kbd', '', d.key), el('div', 'ico'), el('div', 'nm', d.name), el('div', 'cost'));
-  b.addEventListener('click', () => { sound.init(); if (building) openBuild(t); else if (!upMode()) pickBuild(t); });
+  b.addEventListener('click', () => { sound.init(); pickBuild(t); });
   // A tooltip opens when the mouse moves over the button, not when a button appears under a resting pointer.
   // Fingers have no hover: the tooltip of the tower picked for building is shown instead.
   b.addEventListener('pointermove', (e) => { if (e.pointerType !== 'touch' && (e.movementX || e.movementY)) tipHover = t; });
@@ -386,17 +348,53 @@ for (const t of TOWER_TYPES) {
   buildBtns[t] = b;
   $('build').appendChild(b);
 }
+for (const t of FAC_TYPES) {
+  const d = FACS[t];
+  const b = el('button', 'tw fac') as HTMLButtonElement;
+  b.type = 'button';
+  b.style.setProperty('--c', hex(d.color));
+  b.setAttribute('aria-label', `${d.name}, key ${d.key.toUpperCase()}`);
+  b.append(el('kbd', '', d.key), el('div', 'ico'), el('div', 'nm', d.name), el('div', 'cost'));
+  b.addEventListener('click', () => { sound.init(); pickFac(t); });
+  b.addEventListener('pointermove', (e) => { if (e.pointerType !== 'touch' && (e.movementX || e.movementY)) tipHover = t; });
+  b.addEventListener('pointerleave', () => { if (tipHover === t) tipHover = null; });
+  facBtns[t] = b;
+  $('fbuild').appendChild(b);
+}
+/** Show the tower bar or the factory bar. */
+function setTab(tab: 'towers' | 'factory') {
+  barTab = tab;
+  show('build', tab === 'towers'); show('fbuild', tab === 'factory');
+  $('tab-towers').classList.toggle('on', tab === 'towers'); $('tab-factory').classList.toggle('on', tab === 'factory');
+}
+$('tab-towers').addEventListener('click', () => { sound.init(); sound.play('click'); setTab('towers'); });
+$('tab-factory').addEventListener('click', () => { sound.init(); sound.play('click'); setTab('factory'); });
+function pickFac(t: FacType | null) {
+  buildFac = buildFac === t ? null : t;
+  buildType = null; selected = 0; selFac = 0;
+  sound.play('click');
+  view.setGhost(null);
+  if (!buildFac) view.setFacGhost(null);
+  refreshGhost();
+  if ((buildFac === 'belt' || buildFac === 'pipe') && !bot && !store.tips.factory) { store.tips.factory = true; save(); tutor(touchUi() ? 'Hold and drag to lay a line of belts. Turn changes their direction.' : 'Drag to lay a line of belts. R turns the next one.'); }
+}
 function pickBuild(t: TowerType | null) {
   if (t && !sim.unlocked.has(t)) { sound.play('error'); note(TOWERS[t].name + ' is locked. Find its blueprint card first.'); return; }
   buildType = buildType === t ? null : t;
-  selected = 0;
+  buildFac = null; selected = 0; selFac = 0;
+  view.setFacGhost(null);
   sound.play('click');
   if (!buildType) view.setGhost(null);
   refreshGhost();
 }
 function refreshGhost() {
-  if (heroOn()) { view.setGhost(null); view.setHover(0, 0, false); return; }
   const inb = hover.cx >= 0 && hover.cz >= 0 && hover.cx < GW && hover.cz < GH;
+  if (buildFac) {
+    view.setGhost(null); view.setHover(0, 0, false);
+    if (inb) view.setFacGhost(buildFac, hover.cx, hover.cz, facDir, !sim.facBlock(buildFac, hover.cx, hover.cz));
+    else view.setFacGhost(null);
+    return;
+  }
   if (buildType && inb) {
     const fake = { type: buildType, lvl: 1 } as Parameters<Sim['range']>[0];
     view.setGhost(buildType, hover.cx, hover.cz, sim.canBuild(buildType, hover.cx, hover.cz), sim.range(fake));
@@ -429,7 +427,7 @@ const CARD_GUARD_MS = 900;
 let cardAt = 0, cardFree = false, cardArmed = false, guardAnim: Animation | null = null;
 function armCards() {
   if (cardArmed) return;
-  if (!cardFree && !mouseBtns && !touchFire && !keys.has('1') && !keys.has('2') && !keys.has('3')) cardFree = true;
+  if (!cardFree && !mouseBtns && !keys.has('1') && !keys.has('2') && !keys.has('3')) cardFree = true;
   if (cardFree && performance.now() - cardAt >= CARD_GUARD_MS) { cardArmed = true; $('cards').classList.add('armed'); }
 }
 function showCards() {
@@ -449,56 +447,48 @@ function showCards() {
     const d = el('button', 'card') as HTMLButtonElement;
     d.type = 'button';
     d.style.setProperty('--rc', ['#e3dc92', '#f68b56', '#6fe0c8'][c.rar]);
-    d.append(el('kbd', '', String(i + 1)), el('div', 'ci', c.icon), el('div', 'rar', RARITY[c.rar]), el('h4', '', c.name), el('p', '', c.desc), el('div', 'kind', c.needs ? TOWERS[c.needs].name : c.kind === 'eco' ? 'economy' : c.kind === 'tower' ? 'all towers' : c.kind === 'hero' ? 'Kestrel' : c.kind));
+    d.append(el('kbd', '', String(i + 1)), el('div', 'ci', c.icon), el('div', 'rar', RARITY[c.rar]), el('h4', '', c.name), el('p', '', c.desc), el('div', 'kind', c.needs ? TOWERS[c.needs].name : c.kind === 'eco' ? 'economy' : c.kind === 'tower' ? 'all towers' : c.kind));
     if (c.needs) d.style.setProperty('--tc', hex(TOWERS[c.needs].color));
     d.addEventListener('click', () => pickCard(i));
     d.addEventListener('mouseenter', () => sound.play('hover'));
     row.appendChild(d);
   });
   cardAt = performance.now(); cardFree = false; cardArmed = false;
-  closeBuild();
   $('cards').classList.remove('armed');
   guardAnim?.cancel();
   guardAnim = ($('card-guard').firstElementChild as HTMLElement).animate([{ transform: 'scaleX(1)' }, { transform: 'scaleX(0)' }], { duration: CARD_GUARD_MS, easing: 'linear', fill: 'forwards' });
   show('cards');
-  unlockPointer();
 }
 function pickCard(i: number) {
   const p = sim.players[me];
   if (!cardArmed || !cardKey || cardKey.startsWith('sent:') || !p.pending.length || i >= p.pending[0].length) return;
   cardKey = 'sent:' + cardKey;
-  const more = p.pending.length > 1;
   show('cards', false);
   act.card(i);
   sound.play('card');
-  if (heroOn() && !more) lockPointer(); // with another offer waiting the mouse stays free for it
 }
 
 // ---------- events ----------
 const SHOT_SOUND: Record<string, string> = { pulse: 'shot', arc: 'arcshot', mortar: 'mortar', rail: 'rail', missile: 'missile' };
 /**
- * Play an effect where it happens. In the bird view things near the middle of the picture are at full level and it
- * falls off toward the edge of what the camera sees (and a little when zoomed far out); in the Uplink the distance
- * from Kestrel counts. Left and right follow the screen.
+ * Play an effect where it happens. Things near the middle of the picture are at full level and it falls off toward the
+ * edge of what the camera sees (and a little when zoomed far out). Left and right follow the screen.
  */
 function playAt(name: string, e: Ev) {
   let g = 1, pan = 0;
   if (fin(e.x) && fin(e.z)) {
-    if (heroOn()) { const o = sim.heroOrigin(me); if (o) g = clamp(1.25 - Math.hypot(e.x - o.x, e.z - o.z) / 46, 0.35, 1); }
-    else { const c = bird(), d = Math.hypot(e.x - c.x, e.z - c.z); g = clamp(1.2 - d / (c.dist * 1.1), 0.4, 1) * (1 - 0.25 * clamp((c.dist - 40) / 44, 0, 1)); }
+    const c = bird(), d = Math.hypot(e.x - c.x, e.z - c.z); g = clamp(1.2 - d / (c.dist * 1.1), 0.4, 1) * (1 - 0.25 * clamp((c.dist - 40) / 44, 0, 1));
     const [sx, , ok] = view.project(e.x, fin(e.y) ? e.y : 0, e.z);
     if (ok) pan = clamp((sx / Math.max(1, innerWidth)) * 2 - 1, -1, 1) * 0.6;
   }
   sound.play(name, g, pan);
 }
-/** seconds until the Overlink fanfare plays (it follows the Titan's impact) */
-let overlinkCue = 0;
+/** seconds until the tip about the Titan shows (it follows its impact) */
+let titanCue = 0;
 function handleEvents(evs: Ev[]) {
   view.handle(evs);
   const quiet = mode === 'attract';
   if (quiet) return;
-  let lastDmg: { slot: number; n: number } | null = null;
-  dmgFrame = 0;
   for (const e of evs) {
     switch (e.k) {
       case 'shot': playAt((typeof e.t === 'string' && Object.hasOwn(SHOT_SOUND, e.t) && SHOT_SOUND[e.t]) || 'shot', e); break;
@@ -511,69 +501,51 @@ function handleEvents(evs: Ev[]) {
         else if (e.t === 'boss') { sound.play('bossdie'); toast('Colossus destroyed.'); }
         else playAt('die', e);
         break;
-      case 'arrow': sound.play('arrow'); break;
       case 'rail': if (e.big) sound.play('bigshot'); break;
-      case 'skill': sound.play(e.s === 1 ? 'rain' : 'sing'); break;
       case 'shieldbreak': playAt('shield', e); break;
       case 'build': playAt('build', e); break;
       case 'sell': playAt('sell', e); break;
-      case 'tele': sound.play('tele'); if (e.p === me) { flash(); faceEnemies(); } break;
-      case 'dmg': if (e.p === me && heroOn()) lastDmg = { slot: dmgNumber(e), n: e.n }; break;
-      case 'crit': {
-        // A weak-point hit. The sim also reports the same damage as a plain 'dmg' just before: show the crit instead.
-        if (!heroOn()) break;
-        const mine = !!lastDmg && Math.abs(lastDmg.n - e.n) <= 1;
-        if (mine) { if (lastDmg!.slot >= 0) dmgPool[lastDmg!.slot].anim?.cancel(); lastDmg = null; }
-        if (mine || mode !== 'coop' || isClient) { dmgNumber(e, true); sound.play('crit'); }
+      case 'dmg': break;
+      case 'dry': {
+        // a tower ran out of supply: say once what it needs, then only the cue
+        if (bot || mode !== 'solo') break;
+        playAt('down', e);
+        const t = typeof e.t === 'string' && Object.hasOwn(TOWERS, e.t) ? e.t as TowerType : null;
+        if (t) note(`${TOWERS[t].name} is out of supply: it needs ${needsText(t)}.`);
+        if (t && !store.tips.dry) { store.tips.dry = true; save(); tutor('Towers need supply from your factory. Click one to see what it runs on.'); }
         break;
       }
+      case 'fed': playAt('up', e); break;
+      case 'mats': if (!bot) playAt('card', e); break;
       case 'special': {
         playAt('special', e);
         const d = typeof e.t === 'string' && Object.hasOwn(TOWERS, e.t) ? TOWERS[e.t as TowerType] : null;
-        if (d?.special && e.p === me) toast(`${d.special.name} fired. ${d.name} reboots afterwards.`);
+        if (d?.special && e.p === me && !bot) toast(`${d.special.name} fired. ${d.name} reboots afterwards.`);
         break;
       }
       case 'down': playAt('down', e); break;
       case 'up': playAt('up', e); break;
-      case 'heroOn':
-        sound.play('heroOn');
-        if (e.p === me) {
-          closeBuild();
-          flash(); document.body.classList.add('hero'); show('herohud'); setText('btn-speed', '1x'); buildType = null; selected = 0; rotating = false; dragging = false; edgeArmed = false; heroSince = performance.now(); undo.reset(); owed.x = owed.y = 0; zoomS.on = false; keyV.x = keyV.y = keyV.r = 0; view.setGhost(null); view.setSelected(null); view.setHover(0, 0, false); faceEnemies();
-          if (upMode()) uplinkOn();
-        } else if (!upMode()) toast('Your partner uplinked.');
-        break;
-      case 'heroOff':
-        sound.play('heroOff');
-        // the chosen game speed comes back, and the next full charge announces itself again
-        if (e.p === me) { closeBuild(); flash(); document.body.classList.remove('hero'); show('herohud', false); mouseFire = false; aimSentDraw = false; localDraw = 0; readyShown = false; setText('btn-speed', speed + 'x'); view.setTele(null); unlockPointer(); }
-        break;
       case 'wave': {
-        const tier = sim.tier, last = sim.campaign && e.n >= sim.winWave, newBow = tier !== lastTier;
-        if (newBow) { lastTier = tier; toast(`${BOW_TIERS[tier].name}: ${BOW_TIERS[tier].perk}`); }
+        const last = sim.campaign && e.n >= sim.winWave;
         // the Titan's wave is announced by its landing
         if (sim.titan && sim.titan.wave === e.n && sim.titan.phase !== 'dead' && sim.titan.phase !== 'none' && sim.titan.phase !== 'far') break;
         sound.play('wave');
-        const sub = last ? 'Final wave' : e.n % 5 === 0 ? 'Colossus inbound' : e.n >= 8 && e.n % 5 === 3 ? 'Gyre inbound' : newBow ? `New bow: ${BOW_TIERS[tier].name}` : '';
+        const sub = last ? 'Final wave' : e.n % 5 === 0 ? 'Colossus inbound' : e.n >= 8 && e.n % 5 === 3 ? 'Gyre inbound' : '';
         announce('Wave ' + e.n, sub);
         break;
       }
       case 'boss':
         sound.play('boss');
-        if (!bot && !store.tips.boss) { store.tips.boss = true; save(); tutor('Aim for the exposed core'); }
+        if (!bot && !store.tips.boss) { store.tips.boss = true; save(); tutor('Save your tower specials for the Colossus'); }
         break;
       case 'clear': sound.play('clear'); toast(`Wave ${e.n} cleared, +${e.g} credits`); break;
       case 'levelup': sound.play('levelup'); break;
       case 'card': if (e.p !== me && typeof e.id === 'string' && Object.hasOwn(CARD_BY_ID, e.id)) toast('Partner took ' + CARD_BY_ID[e.id].name); break;
       case 'leak': { sound.play('leak'); coreHurt(); break; }
       case 'breach': playAt('breach', e); break;
-      case 'nospec':
-        // a charged node was shot with nothing for its special to hit: say so once per run, then only the dull click
-        sound.play('nospec');
-        if (!nospecTold && heroOn()) { nospecTold = true; toast('Nothing in range for that special. The tower keeps its charge.'); }
-        break;
+      case 'nospec': break; // (act.special says so)
       case 'incoming': sound.play('boss'); toast(`Incoming from your rival: ${int(e.n)} x ${typeof e.type === 'string' && Object.hasOwn(ENEMIES, e.type) ? ENEMIES[e.type as EnemyType].name : 'enemies'}`); break;
-      // the Gyre: arrows glancing off its rim, the rim stalling and spinning up again
+      // the Gyre: hits glancing off its rim, the rim stalling and spinning up again
       case 'deflect': playAt('deflect', e); break;
       case 'spindown': playAt('spindown', e); break;
       case 'spinup': playAt('spinup', e); break;
@@ -581,7 +553,7 @@ function handleEvents(evs: Ev[]) {
       case 'brood': playAt('brood', e); break;
       case 'jam':
         playAt('jam', e);
-        if (!bot && !store.tips.mite) { store.tips.mite = true; save(); tutor('Shoot the mites off the tower'); }
+        if (!bot && !store.tips.mite) { store.tips.mite = true; save(); tutor('Mites jam a tower. Any hit knocks them off: cover your towers with each other.'); }
         break;
       case 'unjam': playAt('unjam', e); break;
       // the Titan
@@ -593,71 +565,23 @@ function handleEvents(evs: Ev[]) {
         break;
       case 'titanImpact':
         sound.play('titanImpact'); flash();
-        overlinkCue = 1.5;
+        titanCue = 1.5;
         break;
       case 'titanStrike': sound.play('boom'); break; // the blow itself; the 'leak' event beside it carries the alarm
       case 'titanDie':
         sound.play('titanDie'); flash();
-        announce(`${TITAN_NAME()} destroyed`, upMode() ? '' : 'The Uplink runs on its charge again');
+        announce(`${TITAN_NAME()} destroyed`);
         break;
     }
   }
 }
 const TITAN_NAME = () => ENEMIES.titan?.name || 'Titan';
 function coreHurt() { const s = $('lives').parentElement!; s.classList.add('hurt'); setTimeout(() => s.classList.remove('hurt'), 500); }
-/** The Titan has landed and the Uplink is held open: say so once the dust of the impact has settled. */
-function overlinkSay() {
-  if (!sim.overlink || ended) return;
-  // Uplink mode: the Uplink never closes, so there is nothing to hold open. Only the tip about the Titan is left.
-  if (upMode()) { if (!bot && !store.tips.titan) { store.tips.titan = true; save(); tutor('Only its weak points and tower specials hurt it'); } return; }
-  sound.play('overlink');
-  announce('Overlink', 'The Uplink stays open while the Titan stands');
-  toast('Overlink: the Uplink stays open while the Titan stands.');
-  if (!bot && !store.tips.titan) { store.tips.titan = true; save(); tutor('Only its weak points and tower specials hurt it'); }
-}
-let nospecTold = false;
-/**
- * Where Kestrel looks when an Uplink starts or she lands on another Spire: at the Titan or a Colossus if one is on the field,
- * else at the enemy with the least road left to the core, else up the road toward the nearest spawn gate.
- * This only sets the starting direction. Nothing turns the view afterwards but the player.
- */
-function faceEnemies() {
-  const o = sim.heroOrigin(me);
-  if (!o) return;
-  const core = sim.map.core;
-  let tx = 0, ty = 0, tz = 0, found = false, best = Infinity;
-  for (const e of sim.enemies) {
-    if (!e.alive) continue;
-    const L = sim.map.lanes[e.lane];
-    // a guest only knows where enemies are, not how far along the road: the straight distance to the core stands in
-    const left = (!isClient && L && Number.isFinite(e.dist) ? L.len - e.dist : Math.hypot(e.x - core.x, e.z - core.z)) - (e.type === 'titan' ? 2e6 : e.type === 'boss' ? 1e6 : 0);
-    if (left < best) { best = left; tx = e.x; ty = e.y; tz = e.z; found = true; }
-  }
-  if (!found) {
-    let gd = Infinity, lane = sim.map.lanes[0];
-    for (const L of sim.map.lanes) { const d = Math.hypot(L.pts[0][0] - o.x, L.pts[0][1] - o.z); if (d < gd) { gd = d; lane = L; } }
-    if (!lane) return;
-    // the road point nearest the Spire, then a stretch up the road from there
-    let at = 0, nd = Infinity;
-    for (let i = 1; i < lane.pts.length; i++) {
-      const a = lane.pts[i - 1], b = lane.pts[i], vx = b[0] - a[0], vz = b[1] - a[1], ll = vx * vx + vz * vz || 1;
-      const u = clamp(((o.x - a[0]) * vx + (o.z - a[1]) * vz) / ll, 0, 1), d = Math.hypot(a[0] + vx * u - o.x, a[1] + vz * u - o.z);
-      if (d < nd) { nd = d; at = lane.cum[i - 1] + Math.sqrt(ll) * u; }
-    }
-    const want = Math.max(0, at - 14);
-    let i = 1;
-    while (i < lane.pts.length - 1 && lane.cum[i] < want) i++;
-    const a = lane.pts[i - 1], b = lane.pts[i], span = lane.cum[i] - lane.cum[i - 1] || 1, u = clamp((want - lane.cum[i - 1]) / span, 0, 1);
-    tx = a[0] + (b[0] - a[0]) * u; tz = a[1] + (b[1] - a[1]) * u;
-    ty = (lane.ys[i - 1] || 0) + ((lane.ys[i] || 0) - (lane.ys[i - 1] || 0)) * u + 0.5;
-  }
-  // The camera sits about 3 behind, 0.85 to the right of and 0.9 above the bow, so the angles from the bow are
-  // corrected a little. It only has to put the target near the crosshair, not on it.
-  const flat = Math.max(0.5, Math.hypot(tx - o.x, tz - o.z));
-  view.yaw = Math.atan2(tx - o.x, tz - o.z) + Math.atan2(0.85, flat + 3);
-  let pitch = Math.atan2(ty - o.y, flat);
-  for (let i = 0; i < 2; i++) pitch = Math.atan2(ty - (o.y + 0.88 - 3 * Math.sin(pitch)), flat + 3 * Math.cos(pitch));
-  view.pitch = clamp(pitch, -1.1, 0.1);
+/** The Titan has landed: a tip on how to bring it down, once. */
+function titanSay() {
+  if (ended || bot || store.tips.titan) return;
+  store.tips.titan = true; save();
+  tutor('Its hull turns most tower fire. Tower specials hit it at full strength.');
 }
 
 // ---------- game flow ----------
@@ -665,40 +589,32 @@ function fastForward(seconds: number) {
   for (let i = 0; i < seconds * 60 && !sim.over; i++) { bot?.step(STEP); sim.step(STEP); sim.events.length = 0; }
 }
 function resetUi() {
-  for (const id of ['cards', 'menu', 'lobby', 'help', 'settings', 'music', 'pause', 'end', 'herohud', 'tower', 'vs', 'tip', 'setup', 'editor', 'tutor']) show(id, false);
-  closeBuild();
-  document.body.classList.remove('hero', 'uplink');
-  buildSlow = 1;
+  for (const id of ['cards', 'menu', 'lobby', 'help', 'settings', 'music', 'pause', 'end', 'tower', 'fpanel', 'vs', 'tip', 'setup', 'editor', 'tutor']) show(id, false);
   clearTimeout(endTimer); clearTimeout(tutorTimer);
   for (const id of ['prep', 'p-editor', 'e-editor']) show(id, false);
   $('toasts').textContent = ''; $('notes').textContent = '';
-  for (const q of dmgPool) q.anim?.cancel();
   lastRx = performance.now(); squadTokens = 3;
-  unlockPointer();
-  buildType = null; selected = 0; mouseFire = false; dragging = false; rotating = false; paused = false; speed = 1; acc = 0; cardKey = ''; ended = false; readyShown = false; lastTier = 0;
-  runKey = ''; runWon = false; tipHover = null; nospecTold = false; editorRun = false;
-  aimSentDraw = false; localDraw = 0; guestAim.d = false;
+  buildType = null; buildFac = null; selected = 0; selFac = 0; painting = false; facDir = 0; dragging = false; rotating = false; paused = false; speed = 1; acc = 0; cardKey = ''; ended = false;
+  runKey = ''; runWon = false; tipHover = null; editorRun = false;
+  setTab('towers'); view.setFacGhost(null);
   // what these keys stood for was just hidden or reset behind the cache's back
-  for (const k of ['prep', 'wavecls', 'tdock', 'tele', 'tip', 'titan', 'titancls', 'ultheld']) delete cache[k];
-  show('titan', false); $('ult').classList.remove('held'); $('hero-time').classList.remove('held');
-  overlinkCue = 0; zoomS.on = false; keyV.x = keyV.y = keyV.r = 0;
-  // skill cooldown marks belong to the run that just ended
-  for (let i = 0; i < 3; i++) { delete cache['cd' + i]; for (const id of ['sk-' + i, 't-s' + i]) { const box = $(id); box.classList.remove('cd'); (box.lastElementChild as HTMLElement).style.height = '0'; } }
+  for (const k of ['prep', 'wavecls', 'tdock', 'fdock', 'tip', 'titan', 'titancls']) delete cache[k];
+  show('titan', false);
+  titanCue = 0; zoomS.on = false; keyV.x = keyV.y = keyV.r = 0;
   sound.intense = 0;
   setText('btn-speed', '1x');
 }
 function bestLine() {
-  let wave = 0, surv = 0, wins = 0, up = 0, upWins = 0;
-  for (const r of Object.values(store.records)) { wave = Math.max(wave, r.wave); surv = Math.max(surv, r.surv); wins += r.wins; up = Math.max(up, r.upWave); upWins += r.upWins; }
-  return [wave ? `Best campaign: ${wave} waves held` : '', wins ? `${wins} ${wins === 1 ? 'win' : 'wins'}` : '', surv ? `Best survival: ${surv} waves held` : '',
-    up ? `Best Uplink mode: ${up} waves held${upWins ? `, ${upWins} ${upWins === 1 ? 'win' : 'wins'}` : ''}` : ''].filter(Boolean).join(' / ');
+  let wave = 0, surv = 0, wins = 0;
+  for (const r of Object.values(store.records)) { wave = Math.max(wave, r.wave); surv = Math.max(surv, r.surv); wins += r.wins; }
+  return [wave ? `Best campaign: ${wave} waves held` : '', wins ? `${wins} ${wins === 1 ? 'win' : 'wins'}` : '', surv ? `Best survival: ${surv} waves held` : ''].filter(Boolean).join(' / ');
 }
 function startAttract() {
   resetUi();
   if (setupStale) { setupStale = false; loadSetup(); }
   net?.close(); net = null; isClient = false;
   mode = 'attract'; me = 0;
-  sim = new Sim({ pauseOnCards: false });
+  sim = new Sim({ pauseOnCards: false, free: true });
   bot = new Bot(sim, 0, 1);
   fastForward(150);
   view.setSim(sim, 0); view.orbit = true;
@@ -719,25 +635,23 @@ function frameBoard() {
     if (typeof f.dist === 'number' && Number.isFinite(f.dist)) c.dist = clamp(f.dist, 20, 84);
   }
 }
-function startGame(m: Mode, opts: { client?: boolean; seed?: number; demo?: boolean; map?: MapDef; diff?: string; survival?: boolean; uplink?: boolean; editor?: boolean } = {}) {
+function startGame(m: Mode, opts: { client?: boolean; seed?: number; demo?: boolean; map?: MapDef; diff?: string; survival?: boolean; editor?: boolean } = {}) {
   resetUi();
   editorRun = !!opts.editor && m === 'solo';
   mode = m; isClient = !!opts.client; me = isClient ? 1 : 0;
-  // Uplink mode is not for versus, the editor's test play or the scripted demo; it plays the campaign, never Survival
-  const uplink = m !== 'versus' && !opts.demo && !editorRun && (opts.uplink ?? choice.uplink);
   sim = new Sim({
     mode: m, players: m === 'coop' ? 2 : 1, pauseOnCards: m === 'solo' && !opts.demo, seed: opts.seed ?? ((Math.random() * 2 ** 31) | 0),
-    map: opts.map ?? choice.map, diff: opts.diff ?? choice.diff, survival: m === 'versus' || uplink ? false : opts.survival ?? choice.survival, uplink,
+    map: opts.map ?? choice.map, diff: opts.diff ?? choice.diff, survival: m === 'versus' ? false : opts.survival ?? choice.survival,
+    // the scripted demo is played by the bot, which builds no factory
+    free: !!opts.demo,
   });
   sim.replica = isClient;
   bot = opts.demo ? new Bot(sim, 0, 1.5) : null;
   view.setSim(sim, me); view.orbit = false;
   frameBoard();
-  document.body.classList.toggle('uplink', !!sim.opts.uplink);
   show('hud'); show('vs', m === 'versus');
   show('p-editor', editorRun);
-  // the Uplink always runs at 1x, and in Uplink mode that is the whole run
-  show('btn-speed', m === 'solo' && !sim.opts.uplink); show('btn-pause', true);
+  show('btn-speed', m === 'solo'); show('btn-pause', true);
   rival = { l: 20, w: 0, k: 0 };
   sound.init(); sound.startMusic(true); // a new run: on shuffle the score moves on to another track
   if (m === 'solo' && !opts.demo) {
@@ -746,11 +660,13 @@ function startGame(m: Mode, opts: { client?: boolean; seed?: number; demo?: bool
   }
   if (!opts.demo) {
     announce('Defend the Heart', m === 'coop' ? 'Co-op link is up' : m === 'versus' ? 'Outlast your rival'
-      : `${sim.map.def.name} / ${sim.endless ? 'Survival' : `${sim.opts.uplink ? 'Uplink mode, ' : ''}${sim.diff.name}, ${sim.winWave} waves`}`);
-    // Uplink mode explains its own building once the player stands on the Spire (see uplinkOn)
-    if (!sim.opts.uplink) setTimeout(() => {
-      if (sim.wave === 0 && mode === m && !ended) toast(touchUi() ? 'Tap a tower below, then tap a hex beside the road.' : 'Pick a tower below (or press 1), then click a hex beside the road.');
+      : `${sim.map.def.name} / ${sim.endless ? 'Survival' : `${sim.diff.name}, ${sim.winWave} waves`}`);
+    setTimeout(() => {
+      if (sim.wave === 0 && mode === m && !ended) toast(touchUi() ? 'Build towers beside the road, and a factory to keep them supplied.' : 'Build towers beside the road (1 to 0), and a factory to keep them supplied (F switches the bar).');
     }, 1500);
+    setTimeout(() => {
+      if (sim.wave === 0 && mode === m && !ended) toast('Mines go on the coloured deposits: iron is blue-grey, copper orange, coal black, oil violet.');
+    }, 6000);
   }
 }
 /** Update the saved record of the run that just ended. Returns what to show on the end screen. */
@@ -764,19 +680,14 @@ function recordRun(win: boolean): { rec: Rec; newBest: boolean } | null {
     if (!old) return null;
     delete store.records[old];
   }
-  const rec: Rec = (Object.hasOwn(store.records, runKey) && store.records[runKey]) || { wave: 0, wins: 0, time: 0, surv: 0, upWave: 0, upWins: 0, upTime: 0 };
+  const rec: Rec = (Object.hasOwn(store.records, runKey) && store.records[runKey]) || { wave: 0, wins: 0, time: 0, surv: 0 };
   const survival = sim.opts.survival;
   // Waves held: the wave you died on does not count. A campaign that was continued with
   // "Keep going" still counts as that campaign, so its best stops at the last wave.
   const held = win ? sim.wave : Math.max(0, sim.wave - 1);
   let newBest = false;
   if (survival) { if (held > rec.surv) { rec.surv = held; newBest = true; } }
-  else if (sim.opts.uplink) {
-    // Uplink mode keeps a record of its own: the same rules as the campaign, a different game
-    const camp = Math.min(held, sim.winWave);
-    if (camp > rec.upWave) { rec.upWave = camp; newBest = true; }
-    if (win && !runWon) { runWon = true; rec.upWins++; if (!rec.upTime || sim.time < rec.upTime) rec.upTime = sim.time; }
-  } else {
+  else {
     const camp = Math.min(held, sim.winWave);
     if (camp > rec.wave) { rec.wave = camp; newBest = true; }
     if (win && !runWon) { runWon = true; rec.wins++; if (!rec.time || sim.time < rec.time) rec.time = sim.time; }
@@ -790,9 +701,7 @@ function recordRun(win: boolean): { rec: Rec; newBest: boolean } | null {
 function endGame(win: boolean, title?: string, sub?: string) {
   if (ended) return;
   ended = true;
-  closeBuild();
-  unlockPointer();
-  document.body.classList.remove('hero'); show('herohud', false); show('cards', false); show('tutor', false); show('prep', false);
+  show('cards', false); show('tutor', false); show('prep', false);
   sound.play(win ? 'win' : 'lose'); sound.intense = 0;
   const saved = recordRun(win);
   if (!win && sim.endless && !title) { title = 'Overrun'; sub = `You held the line for ${Math.max(0, sim.wave - 1)} waves.`; }
@@ -804,16 +713,13 @@ function endGame(win: boolean, title?: string, sub?: string) {
   const row = (k: string, v: string | number, hot = false) => st.append(el('span', '', k), el('b', hot ? 'hot' : '', String(v)));
   row('Wave reached', sim.campaign ? `${sim.wave} / ${sim.winWave}` : sim.wave);
   row('Machines destroyed', sim.kills); row('Level', sim.level);
-  row('Towers standing', sim.towers.length); row('Time', clock(sim.time));
+  row('Towers standing', sim.towers.length); row('Factory buildings', sim.factory.facs.filter((f) => f.type !== 'belt' && f.type !== 'pipe').length); row('Time', clock(sim.time));
   if (mode === 'versus') row('Enemies sent', sim.sent);
   if (saved) {
     const r = saved.rec;
     // the record counts waves held, so after a loss it is one less than the wave reached
     if (sim.opts.survival) row('Most waves held here', `${r.surv}${saved.newBest ? ' (new)' : ''}`, saved.newBest);
-    else if (sim.opts.uplink) {
-      row('Most waves held here in Uplink mode', `${r.upWave} of ${sim.winWave}${saved.newBest ? ' (new)' : ''}`, saved.newBest);
-      if (r.upWins) row('Uplink mode wins / fastest', `${r.upWins} / ${clock(r.upTime)}`);
-    } else {
+    else {
       row('Most waves held here', `${r.wave} of ${sim.winWave}${saved.newBest ? ' (new)' : ''}`, saved.newBest);
       if (r.wins) row('Wins / fastest', `${r.wins} / ${clock(r.time)}`);
     }
@@ -826,27 +732,23 @@ function endGame(win: boolean, title?: string, sub?: string) {
 }
 
 // ---------- multiplayer ----------
-// 5: the start message carries Uplink mode, and a guest can let its bow down without loosing ('drop')
-const NET_V = 5;
-/** The co-op guest's bow as last reported: drawing or not, and the point aimed at. The host feeds it to the sim every frame. */
-const guestAim = { d: false, x: 0, y: 0, z: 0 };
+// 6: no hero any more, and the factory (online play is switched off in the menu until the factory is replicated)
+const NET_V = 6;
 const fin = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const int = (v: unknown) => (fin(v) ? Math.trunc(v) : -1);
-/** a world coordinate from a peer: finite and somewhere near the board */
-const pt = (m: Msg): m is Msg & { x: number; y: number; z: number } => fin(m.x) && fin(m.y) && fin(m.z) && Math.abs(m.x) < 500 && Math.abs(m.y) < 500 && Math.abs(m.z) < 500;
 
 function onNet(m: Msg) {
   if (!net) return;
   if (m.t === 'start' && !net.isHost && mode === 'attract') {
     const map = sanitizeMap(m.map);
     if (m.v !== NET_V || (m.m !== 'coop' && m.m !== 'versus') || !map) { lobbyStatus('l-join-status', 'Version mismatch. Both players should reload the page.'); return; }
-    startGame(m.m, { client: m.m === 'coop', seed: int(m.seed) >>> 0, map, diff: diffById(m.diff).id, survival: m.surv === true, uplink: m.up === true && m.surv !== true });
+    startGame(m.m, { client: m.m === 'coop', seed: int(m.seed) >>> 0, map, diff: diffById(m.diff).id, survival: m.surv === true });
     return;
   }
   if (mode === 'coop' && isClient && m.t === 'snap') { lastRx = performance.now(); sim.applySnapshot(m.s); return; }
   if (mode === 'coop' && !isClient && m.t === 'in') {
-    // Everything a guest can do arrives here. The sim checks the rules (credits, unlocks, Spires only,
-    // sell blocks); this only makes sure the arguments have the right shape before they get there.
+    // Everything a guest can do arrives here. The sim checks the rules (credits, unlocks);
+    // this only makes sure the arguments have the right shape before they get there.
     const p = sim.players[1];
     if (!p || typeof m.a !== 'string') return;
     lastRx = performance.now();
@@ -855,14 +757,7 @@ function onNet(m: Msg) {
       case 'up': if (int(m.id) > 0) sim.upgrade(int(m.id)); break;
       case 'sell': if (int(m.id) > 0) sim.sell(int(m.id)); break;
       case 'card': { const i = int(m.i); if (i >= 0 && i < 3) sim.pickCard(1, i); break; }
-      case 'hero': sim.activateHero(1, Math.max(0, int(m.id))); break;
-      case 'exit': sim.exitHero(1); break;
-      case 'tele': if (int(m.id) > 0) sim.heroTeleport(1, int(m.id)); break;
-      case 'aim': if (pt(m) && (m.d === 0 || m.d === 1)) { guestAim.d = m.d === 1; guestAim.x = m.x; guestAim.y = m.y; guestAim.z = m.z; } break;
-      // the guest opened build mode with the bow drawn: it comes down without an arrow
-      case 'drop': guestAim.d = false; p.drawing = false; p.draw = 0; break;
-      case 'skill': { const s = int(m.s); if (s >= 0 && s < 3 && pt(m)) sim.heroSkill(1, s, m.x, m.y, m.z); break; }
-      case 'look': if (fin(m.y) && fin(m.p)) { p.yaw = m.y % (Math.PI * 2); p.pitch = clamp(m.p, -1.4, 1.4); } break;
+      case 'spec': if (int(m.id) > 0) sim.triggerSpecial(int(m.id), 1); break;
       case 'wave': sim.startWave(); break;
     }
     return;
@@ -890,7 +785,7 @@ const lobbyStatus = (id: string, s: string) => { $(id).textContent = s; };
 function openLobby(m: 'coop' | 'versus') {
   lobbyMode = m;
   setText('lobby-title', m === 'coop' ? 'Co-op online' : '1 v 1 online');
-  setText('lobby-sub', m === 'coop' ? 'Defend one grid together: two archers, shared credits. No account needed.' : 'Each of you defends your own grid. Spend credits to send squads at your rival. Last core standing wins.');
+  setText('lobby-sub', m === 'coop' ? 'Defend one grid together, with shared credits. No account needed.' : 'Each of you defends your own grid. Spend credits to send squads at your rival. Last core standing wins.');
   show('menu', false); show('lobby'); show('l-code', false);
   lobbyStatus('l-host-status', ''); lobbyStatus('l-join-status', '');
   ($('l-host') as HTMLButtonElement).disabled = false; ($('l-join') as HTMLButtonElement).disabled = false;
@@ -899,7 +794,7 @@ function openLobby(m: 'coop' | 'versus') {
 /** The line that says which map and difficulty the host will start. An open room is left alone. */
 function lobbyChoice() {
   const d = diffById(choice.diff), m = lobbyMode;
-  setText('l-choice', `${choice.map.name} / ${d.name}${m !== 'coop' ? '' : choice.survival ? ' / Survival' : choice.uplink ? ` / Uplink mode, ${d.waves} waves` : ` / ${d.waves} waves`}`);
+  setText('l-choice', `${choice.map.name} / ${d.name}${m !== 'coop' ? '' : choice.survival ? ' / Survival' : ` / ${d.waves} waves`}`);
 }
 function newNet() {
   net?.close();
@@ -916,7 +811,7 @@ $('l-host').addEventListener('click', async () => {
     if (net !== n || mode !== 'attract') return;
     const seed = (Math.random() * 2 ** 31) | 0;
     // the guest runs this map through sanitizeMap before using it
-    n.send({ t: 'start', v: NET_V, m, seed, map: choice.map, diff: choice.diff, surv: choice.survival, up: m === 'coop' && choice.uplink });
+    n.send({ t: 'start', v: NET_V, m, seed, map: choice.map, diff: choice.diff, surv: choice.survival });
     startGame(m, { seed });
   };
   try {
@@ -964,13 +859,12 @@ function recText(m: MapDef): string {
   if (!r) return '';
   // one short line: it has to fit a map card without wrapping
   if (choice.survival) return r.surv ? `Held ${r.surv} waves` : '';
-  if (choice.uplink) return r.upWins ? `${r.upWins} ${r.upWins === 1 ? 'win' : 'wins'}, best ${clock(r.upTime)}` : r.upWave ? `Held ${r.upWave} of ${diffById(choice.diff).waves}` : '';
   return r.wins ? `${r.wins} ${r.wins === 1 ? 'win' : 'wins'}, best ${clock(r.time)}` : r.wave ? `Held ${r.wave} of ${diffById(choice.diff).waves}` : '';
 }
 function refreshSetup() {
   const d = diffById(choice.diff), gen = choice.source === 'generated';
   const seg = (id: string, v: string) => { for (const c of $(id).children) c.classList.toggle('on', (c as HTMLElement).dataset.v === v); };
-  seg('setup-mode', choice.survival ? 'survival' : choice.uplink ? 'uplink' : 'campaign');
+  seg('setup-mode', choice.survival ? 'survival' : 'campaign');
   seg('setup-diff', choice.diff);
   seg('setup-src', choice.source);
   seg('gen-tier', String(choice.tier));
@@ -984,11 +878,11 @@ function refreshSetup() {
   const endless = choice.survival || (setupFor === 'lobby' && lobbyMode === 'versus');
   for (const c of $('setup-diff').children) { const sm = c.querySelector('small'), df = diffById((c as HTMLElement).dataset.v); if (sm) sm.textContent = endless ? 'no end' : `${df.waves} waves`; }
   if (gen) {
-    const lanes = choice.map.lanes.length, sp = choice.map.towers.filter((x) => x.t === 'spire').length || 1, t = recText(choice.map);
-    setText('gen-info', `${choice.map.name}. ${lanes} ${lanes === 1 ? 'road' : 'roads'}, ${sp} ${sp === 1 ? 'Spire' : 'Spires'} to start.${t ? ' ' + t + '.' : ''} The same seed and layout always give the same map.`);
+    const lanes = choice.map.lanes.length, t = recText(choice.map);
+    setText('gen-info', `${choice.map.name}. ${lanes} ${lanes === 1 ? 'road' : 'roads'}.${t ? ' ' + t + '.' : ''} The same seed and layout always give the same map.`);
   }
   const waves = setupFor === 'lobby' && lobbyMode === 'versus' ? 'No last wave: the last core standing wins.' : choice.survival ? 'Survival has no last wave.'
-    : choice.uplink ? `Uplink mode: you play the whole run from the Spire and build from up there. ${d.waves} waves to win.` : `${d.waves} waves to win.`;
+    : `${d.waves} waves to win.`;
   setText('setup-desc', `${choice.map.desc || 'A custom map.'} ${d.name}: ${d.desc} ${waves}`);
 }
 function setSource(src: 'premade' | 'generated') {
@@ -1060,7 +954,7 @@ for (const b of $('map-tier').children) b.addEventListener('click', () => {
 for (const b of $('setup-mode').children) b.addEventListener('click', () => {
   // the mode changes nothing else: the chosen map stays chosen
   const v = (b as HTMLElement).dataset.v;
-  choice.survival = v === 'survival'; choice.uplink = v === 'uplink';
+  choice.survival = v === 'survival';
   sound.play('click');
   refreshSetup();
 });
@@ -1097,13 +991,13 @@ $<HTMLInputElement>('gen-seed').addEventListener('change', (e) => {
 function saveSetup() {
   clearTimeout(genTimer);
   if (choice.source === 'generated') regen();
-  store.setup = { survival: choice.survival, uplink: choice.uplink, source: choice.source, map: premade.id, mapName: premade.name, seed: choice.seed, tier: choice.tier, tierAuto: choice.tierAuto, diff: choice.diff, filter: mapFilter };
+  store.setup = { survival: choice.survival, source: choice.source, map: premade.id, mapName: premade.name, seed: choice.seed, tier: choice.tier, tierAuto: choice.tierAuto, diff: choice.diff, filter: mapFilter };
   save();
 }
 /** Bring the saved setup back. Called at boot and after a progress reset. */
 function loadSetup() {
   const u = store.setup;
-  choice.diff = diffById(u.diff).id; choice.survival = u.survival; choice.uplink = u.uplink && !u.survival; choice.source = u.source;
+  choice.diff = diffById(u.diff).id; choice.survival = u.survival; choice.source = u.source;
   choice.seed = u.seed; choice.tier = u.tier; choice.tierAuto = u.tierAuto;
   mapFilter = u.filter;
   setTierAuto();
@@ -1115,7 +1009,7 @@ function openEditorScreen() {
   for (const id of ['menu', 'setup', 'lobby']) show(id, false);
   show('editor');
   openEditor($('editor'), {
-    play(def) { choice.map = def; premade = def; choice.source = 'premade'; choice.survival = false; choice.uplink = false; show('editor', false); startGame('solo', { editor: true }); },
+    play(def) { choice.map = def; premade = def; choice.source = 'premade'; choice.survival = false; show('editor', false); startGame('solo', { editor: true }); },
     close() { show('editor', false); show('menu'); },
     sound(name) { sound.play(name); },
   }, choice.source === 'generated' || MAPS.includes(choice.map) ? undefined : choice.map);
@@ -1169,29 +1063,28 @@ click('p-editor', backToEditor);
 click('e-editor', backToEditor);
 click('e-again', () => { if (mode === 'solo') startGame('solo', { editor: editorRun }); else { const m = mode === 'versus' ? 'versus' : 'coop'; sound.stopMusic(); startAttract(); openLobby(m); } });
 click('e-menu', () => { sound.stopMusic(); startAttract(); });
-click('e-endless', () => { sim.exitHero(me); sim.over = false; sim.won = false; sim.endless = true; sim.nextWaveIn = 5; ended = false; show('end', false); toast('No last wave from here on. How far can you go?'); });
-// A HUD button must not keep the keyboard focus, or Space (the Uplink key) would press it again.
+click('e-endless', () => { sim.over = false; sim.won = false; sim.endless = true; sim.nextWaveIn = 5; ended = false; show('end', false); toast('No last wave from here on. How far can you go?'); });
+// A HUD button must not keep the keyboard focus, or Space (the special key) would press it again.
 $('hud').addEventListener('click', () => { const a = document.activeElement; if (a instanceof HTMLButtonElement) a.blur(); });
 // The pause and speed chips act on press (wired up by the touch module), so a second finger reaches them too.
 function pressPause() { sound.init(); sound.play('click'); togglePause(); }
 function pressSpeed() {
-  if (mode !== 'solo' || !playing() || upMode()) return;
+  if (mode !== 'solo' || !playing()) return;
   sound.init(); sound.play('click');
-  if (heroOn()) { note('The Uplink always runs at 1x. Your speed comes back afterwards.'); return; }
   speed = speed === 1 ? 2 : 1; setText('btn-speed', speed + 'x');
 }
 click('btn-wave', () => act.wave());
-click('ult', () => tryUlt());
 click('t-up', () => { if (selected) act.upgrade(selected); });
 click('t-sell', () => { if (selected && act.sell(selected)) selected = 0; });
+$('t-special').addEventListener('click', () => { sound.init(); if (selected) act.special(selected); });
+click('f-sell', () => { if (selFac && act.sellFac(selFac)) selFac = 0; });
+click('f-turn', () => turnSelected());
 function togglePause(on = !menuOpen()) {
   if (mode === 'attract' || ended) return;
-  if (on) closeBuild();
   paused = on && mode === 'solo';
   for (const id of OVERLAYS) show(id, false);
   show('pause', on);
-  if (on) { unlockPointer(); rotating = false; dragging = false; }
-  if (!on && heroOn()) lockPointer();
+  if (on) { rotating = false; dragging = false; painting = false; }
 }
 /** Escape on a sheet that has a way back: take it. Returns false when no such sheet is open. */
 function escBack(): boolean {
@@ -1201,7 +1094,7 @@ function escBack(): boolean {
 }
 
 // ---------- settings ----------
-const bind = (id: string, key: 'vol' | 'mus' | 'sens', fn: (v: number) => void) => {
+const bind = (id: string, key: 'vol' | 'mus', fn: (v: number) => void) => {
   const i = $<HTMLInputElement>(id);
   i.value = String(settings[key]);
   i.addEventListener('input', () => { settings[key] = clamp(+i.value || 0, +i.min, +i.max); fn(settings[key]); });
@@ -1209,21 +1102,6 @@ const bind = (id: string, key: 'vol' | 'mus' | 'sens', fn: (v: number) => void) 
 };
 bind('set-vol', 'vol', (v) => sound.setVolume(v / 100));
 bind('set-mus', 'mus', (v) => sound.setMusic(v / 100));
-bind('set-sens', 'sens', () => {});
-{
-  const box = $<HTMLInputElement>('set-friction');
-  box.checked = settings.friction;
-  box.addEventListener('change', () => { settings.friction = box.checked; sound.play('click'); save(); });
-}
-{
-  const aimSel = $<HTMLSelectElement>('set-aim'), curveSel = $<HTMLSelectElement>('set-curve');
-  aimSel.value = settings.aim;
-  aimSel.addEventListener('change', () => { settings.aim = aimSel.value === 'lock' || aimSel.value === 'free' ? aimSel.value : 'auto'; if (freeAim()) unlockPointer(); save(); });
-  curveSel.value = settings.curve;
-  curveSel.addEventListener('change', () => { settings.curve = curveSel.value === 'system' || curveSel.value === 'linear' ? curveSel.value : 'even'; save(); });
-  // the pointer curve is a Linux matter: elsewhere the browser hands out the raw mouse, or the system has no such slow-down
-  if (!LINUX) $('row-curve').style.display = 'none';
-}
 const qsel = $<HTMLSelectElement>('set-q');
 qsel.value = settings.q;
 qsel.addEventListener('change', () => { settings.q = qsel.value === 'low' ? 'low' : 'high'; view.setQuality(settings.q); save(); });
@@ -1265,20 +1143,14 @@ function resetStep(asking: boolean, text = RESET_IDLE) {
 click('s-reset', () => resetStep(true, 'Delete all records, the last run setup and the tips? Sound and effects settings stay.'));
 click('s-reset-no', () => resetStep(false));
 click('s-reset-yes', () => {
-  store.records = {}; store.tips = { node: false, boss: false, mite: false, titan: false, uplink: false }; store.setup = defaultSetup();
+  store.records = {}; store.tips = { node: false, boss: false, mite: false, titan: false, factory: false, dry: false }; store.setup = defaultSetup();
   save();
   // a run in progress keeps its own choice; the defaults are loaded when it goes back to the menu
   if (mode === 'attract') loadSetup(); else setupStale = true;
   setText('best', bestLine());
   resetStep(false, 'Progress deleted.');
 });
-/** What the browser said when the mouse was asked for without pointer acceleration. */
-function rawLine() {
-  setText('raw-state', rawMouse === 'granted' ? 'Granted by the browser.'
-    : rawMouse === 'refused' ? (LINUX ? 'Not offered by this browser. The game takes the desktop pointer curve back out itself (see Mouse response).' : "Refused by the browser. The system's pointer acceleration applies to the look.")
-    : 'Not asked yet. It is asked for when the Uplink captures the mouse.');
-}
-function openSettings() { syncFxUi(); resetStep(false); rawLine(); show('settings'); }
+function openSettings() { syncFxUi(); resetStep(false); show('settings'); }
 
 // ---------- fullscreen (mostly for phones and tablets) ----------
 {
@@ -1323,71 +1195,20 @@ addEventListener('pointermove', (e) => { if (byTouch && e.pointerType === 'mouse
 // Which mouse buttons are down, wherever the press landed (the card picker waits until they are let go).
 for (const ev of ['mousedown', 'mouseup'] as const) addEventListener(ev, (e) => { mouseBtns = e.buttons; }, { capture: true, passive: true });
 
-// Mouse look. With the pointer captured the view turns by the raw mouse travel. Where capture is not available
-// (an embedded browser pane, a refused request) the mouse still turns the view from anywhere on the page, and
-// holding the cursor at a screen edge keeps it turning. The mouse gets no aim assistance of any kind.
-//
-// On Linux a browser cannot hand out the raw mouse, so a captured mouse arrives with the desktop's pointer curve on it:
-// slow movement is damped to as little as 30 %, which is exactly the movement a crosshair needs. The look takes that
-// curve back out (src/game/pointer.ts). Firefox on Wayland goes further and drops slow movement of a captured mouse
-// altogether, so there the mouse is not captured by default: the cursor is hidden and the view follows where it goes.
-/** buildEscAt: when Escape last closed build mode (the browser may release the captured mouse for that same press) */
-let selfUnlock = false, lockFailed = false, autoPauseAt = -1e9, buildEscAt = -1e9, mouseIn = false, edgeArmed = false, heroSince = 0, lockIdle = 0, cursorHidden = false;
-const freeAim = () => settings.aim === 'free' || (settings.aim === 'auto' && LINUX && FIREFOX);
-const undo = new CurveUndo();
-/** the share of a slow movement that the curve took away: handed back over the next moments, not in one jump */
-const owed = { x: 0, y: 0 };
-const curveMode = (): MouseCurve => (LINUX && rawMouse !== 'granted' ? settings.curve : 'system');
-/** Raw (unadjusted) mouse input: not asked for yet, granted, or refused by the browser. */
-let rawMouse: 'unasked' | 'granted' | 'refused' = 'unasked';
-/** when the pointer was last captured or the window last got its focus back (see the mouse look) */
-let lockAt = -1e9;
-function unlockPointer() { if (document.pointerLockElement) { selfUnlock = true; document.exitPointerLock(); } }
-function lockPointer() {
-  if (byTouch || document.pointerLockElement || freeAim()) return; // a finger aims by dragging, there is no pointer to lock
-  const c = canvas as unknown as { requestPointerLock(o?: { unadjustedMovement: boolean }): unknown };
-  const plain = () => { try { const r = c.requestPointerLock(); if (r instanceof Promise) r.catch(() => {}); } catch { /* not allowed */ } };
-  try {
-    // ask for the mouse without the system's pointer acceleration first; where that is not on offer, the plain lock
-    const r = c.requestPointerLock({ unadjustedMovement: true });
-    if (r instanceof Promise) r.then(() => { rawMouse = 'granted'; rawLine(); }, (err: unknown) => { if ((err as { name?: string } | null)?.name === 'NotSupportedError') { rawMouse = 'refused'; rawLine(); plain(); } });
-    else { rawMouse = 'refused'; rawLine(); } // an older browser: it took the plain capture and ignored the option
-  } catch { rawMouse = 'refused'; rawLine(); plain(); }
-}
-document.addEventListener('pointerlockerror', () => { lockFailed = true; });
-document.addEventListener('pointerlockchange', () => {
-  if (document.pointerLockElement) {
-    lockFailed = false; selfUnlock = false; lockAt = performance.now();
-    // the capture is granted a moment after it is asked for: by then a sheet or the card picker may be up
-    if (!active()) unlockPointer();
-    return;
-  }
-  // The browser took the pointer back (Escape, or the window lost focus). In the Uplink that opens the pause sheet,
-  // unless it was Escape in build mode: that press only closes build mode, whichever of the two events came first.
-  if (!selfUnlock && heroOn() && active()) {
-    if ((building || performance.now() - buildEscAt < 400) && document.hasFocus()) { closeBuild(); buildEscAt = autoPauseAt = performance.now(); }
-    else { autoPauseAt = performance.now(); togglePause(true); }
-  }
-  selfUnlock = false;
-});
 const lastMouse = { x: innerWidth / 2, y: innerHeight / 2 };
 const playing = () => mode !== 'attract' && !ended && !bot;
 /** true while the player's input should reach the game: no menu sheet and no card picker in the way */
 const active = () => playing() && !paused && !menuOpen() && !shown('cards');
-const spires = () => sim.towers.filter((t) => t.type === 'spire');
 
 // ---------- the Titan's entrance ----------
-// When it leaps, the bird camera swings to the gate, time slows around the impact, and once it is on the road
-// the player is put on the Spire with the best view of it. Any key or click hands the camera back early.
+// When it leaps, the bird camera swings to the gate, and time slows around the impact. Any key or click hands the camera back early.
 type TitanState = { phase: string; t: number } | undefined;
 const titanState = () => (sim as unknown as { titan?: TitanState }).titan;
 let cine: { t: number; x: number; z: number; fx: number; fz: number; fd: number } | null = null;
-let autoLink = false;
 const TITAN_LAND_S = 2.5; // seconds from the leap to the impact (TITAN_LAND in the rules)
 function titanEntrance(x: number, z: number) {
   if (mode === 'attract' || !Number.isFinite(x) || !Number.isFinite(z)) return;
-  autoLink = !bot;
-  if (!heroOn()) { const c = bird(); cine = { t: 0, x, z, fx: c.x, fz: c.z, fd: c.dist }; }
+  const c = bird(); cine = { t: 0, x, z, fx: c.x, fz: c.z, fd: c.dist };
 }
 /** Slow motion around the impact. Only where the rules run (the host in co-op), so both players see the same. */
 function titanSlow() {
@@ -1399,284 +1220,14 @@ function titanSlow() {
 }
 function titanCamera(dt: number) {
   const t = titanState();
-  if (cine) {
-    cine.t += dt;
-    const c = bird(), u = Math.min(1, cine.t / 1.1), k = u * u * (3 - 2 * u);
-    // aim between the gate and the middle of the deck, so the leap and the road it lands on are both in frame
-    c.x = cine.fx + (cine.x * 0.55 - cine.fx) * k; c.z = cine.fz + (cine.z * 0.55 - cine.fz) * k; c.dist = cine.fd + (52 - cine.fd) * k;
-    if (heroOn() || sim.over || cine.t > 12 || !t || (t.phase !== 'landing' && t.phase !== 'walk')) cine = null;
-  }
-  if (autoLink && t && t.phase === 'walk' && t.t > 1.1) {
-    autoLink = false; cine = null;
-    if (active() && !heroOn()) {
-      // the Spire with the best view: not right under it, not across the map
-      const titan = sim.enemies.find((e) => e.type === 'titan');
-      let id = 0, best = Infinity;
-      for (const sp of spires()) { const d = titan ? Math.abs(Math.hypot(sp.x - titan.x, sp.z - titan.z) - 14) : 0; if (d < best) { best = d; id = sp.id; } }
-      if (id) { act.hero(id); lockPointer(); }
-    }
-  }
-  if (t && (t.phase === 'dead' || t.phase === 'none')) autoLink = false;
+  if (!cine) return;
+  cine.t += dt;
+  const c = bird(), u = Math.min(1, cine.t / 1.1), k = u * u * (3 - 2 * u);
+  // aim between the gate and the middle of the deck, so the leap and the road it lands on are both in frame
+  c.x = cine.fx + (cine.x * 0.55 - cine.fx) * k; c.z = cine.fz + (cine.z * 0.55 - cine.fz) * k; c.dist = cine.fd + (52 - cine.fd) * k;
+  if (sim.over || cine.t > 6 || !t || (t.phase !== 'landing' && t.phase !== 'walk')) cine = null;
 }
 
-/** Space, the Uplink bar or the touch button: uplink to the Spire nearest the selection or the cursor, or leave. */
-function tryUlt() {
-  if (!active() || upMode()) return; // Uplink mode: there is no charge to spend and no way down
-  const p = sim.players[me];
-  if (p.heroActive) { act.exit(); return; }
-  if (p.energy < MAX_ENERGY && !sim.overlink) { sound.play('error'); note(`Uplink is still charging: ${Math.floor((p.energy / MAX_ENERGY) * 100)}%.`); return; }
-  const list = spires();
-  if (!list.length) { sound.play('error'); note('There is no Uplink Spire on the grid. Build one first: Kestrel can only stand on Spires.'); return; }
-  const sel = sim.towerById(selected);
-  let id = sel && sel.type === 'spire' ? sel.id : 0;
-  if (!id) {
-    let x: number, z: number;
-    if (sel) { x = sel.x; z = sel.z; } else { view.groundPoint(lastMouse.x, lastMouse.y, gp); x = gp.x; z = gp.z; }
-    let bd = Infinity;
-    for (const t of list) { const d = Math.hypot(t.x - x, t.z - z); if (d < bd) { bd = d; id = t.id; } }
-  }
-  act.hero(id);
-  lockPointer();
-}
-/**
- * The Spire in the sights, or 0. Starts from the view's pick and falls back to the Spire closest to the
- * crosshair on screen, with a wider margin for thumbs.
- */
-function aimSpire(): number {
-  const p = sim.players[me];
-  const t = sim.towerById(view.aimTower());
-  if (t && t.type === 'spire' && t.id !== p.heroTower) return t.id;
-  let best = 0, bd = touchUi() ? innerHeight * 0.22 : 44;
-  for (const s of sim.towers) {
-    if (s.type !== 'spire' || s.id === p.heroTower) continue;
-    const [x, y, ok] = view.project(s.x, s.h + 0.5, s.z);
-    if (!ok) continue;
-    const d = Math.hypot(x - innerWidth / 2, y - innerHeight / 2);
-    if (d < bd) { bd = d; best = s.id; }
-  }
-  return best;
-}
-function tryTele() {
-  if (!active() || !heroOn()) return;
-  const id = aimSpire();
-  if (id) { act.tele(id); return; }
-  sound.play('error');
-  note(spires().length < 2 ? 'Kestrel can only jump between Uplink Spires. Build a second one.' : 'Aim at another Uplink Spire to jump to it.');
-}
-function castSkill(i: number) { if (active() && heroOn()) { view.aimPoint(aim); act.skill(i, aim); } }
-
-// ---------- area skills: aim first, then cast ----------
-// Q (Arrow Rain) and E (Singularity) do not land straight away: the key arms the skill and its area follows the
-// crosshair on the ground, at its real size. The left mouse button (touch: Cast) lets it go there; the right button,
-// Escape or the same key again put it away. Rail Shot is a straight shot through the crosshair, so it stays instant.
-let armed = 0;
-const SAND_HEX = 0xe3dc92;
-const SKILL_LOOK = [0, SAND_HEX, 0xa58bff];
-const SKILL_NAME = ['', 'Arrow Rain', 'Singularity', 'Rail Shot'];
-/** Rail Shot (armed 3): holding the right button zooms in and charges the bow; letting go of the left button fires */
-let railFire = false, railT = 0;
-const RAIL_CHARGE = 0.35;
-function armSkill(i: number) {
-  if (!active() || !heroOn() || i < 1 || i > 3) return;
-  if (armed === i) { disarm(); sound.play('click'); return; }
-  const p = sim.players[me];
-  if (!p || p.cds[i === 3 ? 0 : i] > 0) { sound.play('error'); return; }
-  disarm();
-  if (building) closeBuild();
-  dropDraw();
-  armed = i;
-  document.body.classList.add('arming');
-  document.body.dataset.armed = String(i);
-  $('t-fire').setAttribute('aria-label', `Cast ${SKILL_NAME[i]}`);
-  $('bl-name').textContent = SKILL_NAME[i];
-  $('bl-why').textContent = touchUi() ? (i === 3 ? 'tap Fire' : 'tap Cast') : i === 3 ? 'release LMB to fire' : 'LMB cast / RMB cancel';
-  railFire = false; railT = 0;
-  sound.play('click');
-  updateArm();
-}
-function disarm() {
-  if (!armed) return;
-  armed = 0;
-  railFire = false; railT = 0;
-  view.aimZoom = 0; view.railCharge = 0;
-  document.body.classList.remove('arming');
-  delete document.body.dataset.armed;
-  view.setSkillArea(null);
-  $('t-fire').setAttribute('aria-label', 'Draw the bow. Hold, then let go to loose.');
-}
-function fireArmed() {
-  const i = armed;
-  disarm();
-  castSkill(i === 3 ? 0 : i);
-}
-/** Every frame while a skill is armed: its area where the skill would land now (the sim pulls it in to 48 from the Spire). */
-function updateArm(dt = 0) {
-  const p = sim.players[me], o = sim.heroOrigin(me);
-  if (!armed || !p || !o || !heroOn() || !active() || paused || shown('cards')) { disarm(); return; }
-  if (armed === 3) {
-    railT += dt;
-    view.aimZoom = 1; view.railCharge = Math.min(1, railT / RAIL_CHARGE);
-    document.body.style.setProperty('--rail', view.railCharge.toFixed(3));
-    return;
-  }
-  view.aimPoint(aim);
-  let x = aim.x, z = aim.z;
-  const d = Math.hypot(x - o.x, z - o.z);
-  if (d > 48) { x = o.x + ((x - o.x) / d) * 48; z = o.z + ((z - o.z) / d) * 48; }
-  const r = armed === 1 ? 4.5 * Math.sqrt(p.stats.rain) : 5.5 * Math.sqrt(p.stats.sing);
-  view.setSkillArea({ x, y: sim.deckAt(x, aim.y, z), z, r, kind: armed, color: SKILL_LOOK[armed] });
-}
-
-// ---------- Uplink mode: building from the Spire ----------
-// B or a tower key opens build mode. The crosshair marks the hex it looks at, the ghost shows the chosen tower there and
-// a click places it; build mode stays open for the next one. The bow rests meanwhile, and a solo game runs at a quarter
-// of its speed so there is time to look around. Q, E and the Spire jump work as always.
-const BUILD_SLOW = 0.25;
-/** seconds for the game speed to ease into the slow-down and back out of it */
-const BUILD_EASE = 0.15;
-/** The bow comes down without an arrow: opening build mode never looses a half-drawn one. */
-function dropDraw() {
-  mouseFire = false; touchFire = false; localDraw = 0;
-  const p = sim.players[me];
-  if (isClient) { if (aimSentDraw) { net?.send({ t: 'in', a: 'drop' }); aimSentDraw = false; } }
-  else if (p) { p.drawing = false; p.draw = 0; }
-}
-/** Open build mode, or with `t` choose that tower (open or not). A locked tower can be chosen: the line under the crosshair says why it cannot be built. */
-function openBuild(t?: TowerType) {
-  if (!upMode() || !heroOn() || !active()) return;
-  disarm();
-  if (t) upTower = t;
-  else if (!sim.unlocked.has(upTower)) upTower = TOWER_TYPES.find((x) => sim.unlocked.has(x)) || 'pulse';
-  sound.play('click');
-  if (!building) {
-    building = true;
-    dropDraw();
-    document.body.classList.add('building');
-    view.buildView = true;
-    $('t-fire').setAttribute('aria-label', 'Place the tower');
-  }
-  updateBuild();
-}
-function closeBuild() {
-  if (!building) return;
-  building = false;
-  selected = 0;
-  bhex.cx = bhex.cz = -1; bhex.tower = 0; bhex.ok = false;
-  document.body.classList.remove('building');
-  $('hud').classList.remove('bbad', 'bsel');
-  delete cache.bline; delete cache.bcls;
-  view.buildView = false;
-  view.setGhost(null); view.setSelected(null);
-  $('t-fire').setAttribute('aria-label', 'Draw the bow. Hold, then let go to loose.');
-}
-/** B and the touch Build button. */
-function toggleBuild() {
-  if (building) { closeBuild(); sound.play('click'); } else openBuild();
-}
-/** The mouse wheel in build mode: the next or the previous tower that is unlocked. */
-function stepBuild(dir: number) {
-  const list = TOWER_TYPES.filter((x) => sim.unlocked.has(x));
-  if (!list.length) return;
-  const i = list.indexOf(upTower);
-  upTower = list[i < 0 ? 0 : (i + dir + list.length) % list.length];
-  sound.play('hover');
-  updateBuild();
-}
-const SELL_WHY = { hero: 'Kestrel stands here', last: 'the last Spire', '': '' };
-const GRID_WHY = ['', 'road', 'taken', 'wreckage'];
-/** Every frame while build mode is open: the hex in the crosshair, the ghost or the marked tower on it, and the line under the crosshair. */
-function updateBuild() {
-  const hit = view.buildPick(gp);
-  let t = hit > 0 ? sim.towerById(hit) : undefined, cx = -1, cz = -1;
-  if (t) { cx = t.cx; cz = t.cz; }
-  else if (hit === 0) { [cx, cz] = worldToCell(gp.x, gp.z); t = sim.towers.find((x) => x.cx === cx && x.cz === cz); }
-  const inb = cx >= 0 && cz >= 0 && cx < GW && cz < GH;
-  if (!inb) t = undefined;
-  bhex.cx = inb ? cx : -1; bhex.cz = inb ? cz : -1; bhex.tower = t ? t.id : 0;
-  bhex.ok = inb && !t && sim.canBuild(upTower, cx, cz);
-  // a tower on the hex is marked like a selection in the command view (updateTowerPanel draws its rings)
-  selected = bhex.tower;
-  if (t) view.setGhost(null);
-  else {
-    view.setSelected(null);
-    if (inb) view.setGhost(upTower, cx, cz, bhex.ok, sim.range({ type: upTower, lvl: 1 } as Parameters<Sim['range']>[0]));
-    else view.setGhost(null);
-  }
-  // one line under the crosshair: the tower and its price and why it cannot go here, or what stands on the hex
-  const d = TOWERS[upTower], cost = sim.cost(upTower), kb = !touchUi();
-  let name = `${d.name} ${cost}`, why = '';
-  if (t) {
-    const sb = sim.sellBlock(t);
-    name = `${TOWERS[t.type].name} Mk ${t.lvl}`;
-    const sell = sb ? `cannot be sold, ${SELL_WHY[sb]}` : `${kb ? 'X sell' : 'Sell'} +${sim.sellValue(t)}`;
-    why = kb ? `${sell} / ${t.lvl >= 3 ? 'max level' : `U upgrade ${sim.upCost(t)}`}` : sell;
-  } else if (!inb) why = 'aim at the grid';
-  else if (!sim.unlocked.has(upTower)) why = 'locked, find its blueprint';
-  else if (sim.grid[cz * GW + cx] !== 0) why = GRID_WHY[sim.grid[cz * GW + cx]] || 'taken';
-  else if (sim.gold < cost) why = 'not enough credits';
-  const ut = upTarget(), uw = !ut ? 'Upgrade' : ut.lvl >= 3 ? `${t ? '' : 'Spire '}max` : `${t ? '' : 'Spire '}${sim.upCost(ut)}`;
-  if (cache.bup !== uw) { cache.bup = uw; $('bk-up').textContent = ut ? `Upgrade ${uw}` : uw; $('t-bup').querySelector('b')!.textContent = ut ? `Upgrade ${uw}` : 'Upgrade'; }
-  const line = name + '|' + why;
-  if (cache.bline !== line) { cache.bline = line; $('bl-name').textContent = name; $('bl-why').textContent = why; }
-  const cls = t ? 'sel' : bhex.ok ? 'ok' : 'bad';
-  if (cache.bcls !== cls) { cache.bcls = cls; $('hud').classList.toggle('bbad', cls === 'bad'); $('hud').classList.toggle('bsel', cls === 'sel'); }
-}
-/** Left mouse or the touch Place button: build the chosen tower on the marked hex. A hex it cannot go on only gets the deny sound. */
-function placeAt() {
-  if (!building) return;
-  updateBuild(); // the hex as it is now, not as it was at the last frame
-  if (!bhex.ok || !act.build(upTower, bhex.cx, bhex.cz)) { sound.play('error'); return; }
-  updateBuild();
-}
-/** X, or the touch Sell button: sell the marked tower, or say why it cannot be sold. */
-function sellMarked() {
-  const t = sim.towerById(bhex.tower);
-  if (!t) { sound.play('error'); return; }
-  if (act.sell(t.id)) updateBuild();
-}
-/** The tower U acts on: the one the crosshair marks in build mode, otherwise the Spire the player stands on
- *  (the crosshair never marks that one, it is under the player's feet). */
-function upTarget() {
-  return sim.towerById(building ? bhex.tower : 0) ?? sim.towerById(sim.players[me]?.heroTower ?? 0);
-}
-/** U: upgrade that tower when it has a level left and the credits are there. */
-function upgradeMarked() {
-  const t = upTarget();
-  if (!t || t.lvl >= 3 || sim.gold < sim.upCost(t)) { sound.play('error'); return; }
-  act.upgrade(t.id);
-}
-/** Keys on the Spire in Uplink mode, other than the skills and the jump. */
-function upKey(k: string) {
-  const t = TOWER_TYPES.find((x) => TOWERS[x].key === k);
-  if (k === 'b') toggleBuild();
-  else if (t) { if (building && upTower === t) toggleBuild(); else openBuild(t); }
-  else if (k === 'n') act.wave();
-  else if (k === 'x' && building) sellMarked();
-  else if (k === 'u') upgradeMarked();
-}
-/** Uplink mode: the player has just been put on a Spire (the start of the run, or another Spire after theirs was lost). */
-function uplinkOn() {
-  // The mouse is captured right away while the press on Start still counts as the player's own. Later (a guest whose
-  // start came over the network, a Spire lost mid-run) the browser would refuse, so the next click captures it instead.
-  if (active() && (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation?.isActive) lockPointer();
-  if (bot || store.tips.uplink) return;
-  store.tips.uplink = true; save();
-  tutor(touchUi() ? 'Tap Build to put towers down from up here. Build a second Spire and jump to it to reach the rest of the grid.'
-    : 'Press B or a tower key to build from up here. Build a second Spire and jump to it (F) to reach the rest of the grid.');
-}
-function look(dx: number, dy: number) {
-  const s = 0.0022 * (settings.sens / 100) * view.lookScale;
-  view.yaw -= dx * s;
-  view.pitch = clamp(view.pitch - dy * s, -1.25, 0.6);
-}
-/** Without a captured pointer: the cursor held at a screen edge keeps the view turning. */
-function edgeLook(dt: number) {
-  if (document.pointerLockElement || byTouch || !edgeArmed) return;
-  const m = 40, W = innerWidth, H = innerHeight, x = lastMouse.x, y = lastMouse.y;
-  const ex = x < m ? (x - m) / m : x > W - m ? (x - (W - m)) / m : 0;
-  const ey = y < m ? (y - m) / m : y > H - m ? (y - (H - m)) / m : 0;
-  if (ex || ey) look(clamp(ex, -1, 1) * 760 * dt, clamp(ey, -1, 1) * 420 * dt);
-}
 const TAU = Math.PI * 2;
 /** A growing cam.rot turns the board counter-clockwise on screen (the camera circles clockwise, seen from above). */
 const ROT_SIGN = -1;
@@ -1706,7 +1257,7 @@ const zoomS = { on: false, target: 48, rate: 0, anchor: false, x: 0, y: 0, gx: 0
 function zoomAt(factor: number, x: number, y: number, eased: boolean) {
   if (!(factor > 0) || !Number.isFinite(factor)) return;
   const c = bird();
-  zoomS.target = clamp((zoomS.on ? zoomS.target : c.dist) / factor, 20, 84);
+  zoomS.target = clamp((zoomS.on ? zoomS.target : c.dist) / factor, 14, 84);
   zoomS.rate = eased ? 16 : 0;
   // several steps toward the same point keep the first anchor: the camera on screen is a frame behind the numbers
   if (!zoomS.on || !zoomS.anchor || Math.abs(x - zoomS.x) > 2 || Math.abs(y - zoomS.y) > 2) {
@@ -1742,28 +1293,85 @@ const keyV = { x: 0, y: 0, r: 0 };
 function hoverAt(clientX: number, clientY: number) {
   lastMouse.x = clientX; lastMouse.y = clientY;
   view.groundPoint(clientX, clientY, gp);
-  [hover.cx, hover.cz] = worldToCell(gp.x, gp.z);
+  const [cx, cz] = worldToCell(gp.x, gp.z), moved = cx !== hover.cx || cz !== hover.cz;
+  hover.cx = cx; hover.cz = cz;
+  if (moved && painting) paintTo(cx, cz);
   refreshGhost();
 }
-/** A click or tap on the board in the command view: build with the chosen tower, else select what is there. */
+const inBoard = (cx: number, cz: number) => cx >= 0 && cz >= 0 && cx < GW && cz < GH;
+const FAC_WHY_CREDITS = 'not enough credits';
+/** Place the chosen factory building on a tile. Says why not when it cannot go there. */
+function placeFac(cx: number, cz: number, quiet = false): Fac | null {
+  if (!buildFac) return null;
+  const why = sim.facBlock(buildFac, cx, cz);
+  if (why) { if (!quiet) { sound.play('error'); note(`${FACS[buildFac].name}: ${why === FAC_WHY_CREDITS ? 'Not enough credits.' : `cannot go here (${why}).`}`); } return null; }
+  return act.fac(buildFac, cx, cz, facDir);
+}
+/**
+ * The button is held while placing belts or pipes: each tile the cursor enters gets one. A belt laid this way points the
+ * way the line goes (the one before it is turned to lead into it), so a drag lays a working conveyor.
+ */
+function paintTo(cx: number, cz: number) {
+  if (!buildFac || !inBoard(cx, cz)) return;
+  const prev = paintAt.cx >= 0 ? sim.factory.facAt(paintAt.cx, paintAt.cz) : undefined;
+  // the cursor may skip tiles on a fast drag: fill in along a straight hex line where there is one, else step by step
+  let path: [number, number][] = [[cx, cz]];
+  if (paintAt.cx >= 0) {
+    const d = lineDir(paintAt.cx, paintAt.cz, cx, cz);
+    if (d >= 0) { path = []; let c: [number, number] = [paintAt.cx, paintAt.cz]; for (let i = 0; i < 40 && (c[0] !== cx || c[1] !== cz); i++) { c = neighbor(c[0], c[1], d); path.push(c); } }
+  }
+  let last = prev;
+  for (const [x, z] of path) {
+    let dir = facDir;
+    if (paintAt.cx >= 0) {
+      const d = lineDir(paintAt.cx, paintAt.cz, x, z);
+      if (d >= 0) dir = d;
+    }
+    if (buildFac === 'belt') {
+      facDir = dir;
+      if (last && last.type === 'belt') act.turnFac(last.id, dir);
+    }
+    const f = sim.factory.facAt(x, z) ?? placeFac(x, z, true);
+    paintAt.cx = x; paintAt.cz = z; paintAt.id = f ? f.id : 0;
+    last = f && (f.type === buildFac) ? f : undefined;
+  }
+}
+/** R, or the Turn button: the building about to be placed turns (a belt's direction, a producer's output side), or the selected one does. */
+function turnSelected() {
+  const f = selFac ? sim.factory.facById(selFac) : undefined;
+  if (f && turns(f.type) && !buildFac) { act.turnFac(f.id, f.dir + 1); sound.play('click'); return; }
+  facDir = (facDir + 1) % 6; sound.play('click'); refreshGhost();
+}
+/** A click or tap on the board: build with what is chosen, else select what is there. */
 function boardTap(clientX: number, clientY: number, keep: boolean) {
   hoverAt(clientX, clientY);
+  if (buildFac) {
+    // a tap on a belt with a belt chosen turns it to the direction a new one would face
+    const there = sim.factory.facAt(hover.cx, hover.cz);
+    if (there && there.type === 'belt' && buildFac === 'belt') { act.turnFac(there.id, facDir); sound.play('click'); return; }
+    if (placeFac(hover.cx, hover.cz) && !keep && buildFac !== 'belt' && buildFac !== 'pipe' && buildFac !== 'pole') { buildFac = null; view.setFacGhost(null); }
+    refreshGhost();
+    return;
+  }
   if (buildType) {
     if (act.build(buildType, hover.cx, hover.cz)) { if (!keep) { buildType = null; view.setGhost(null); } }
     else {
       sound.play('error');
-      const free = hover.cx >= 0 && hover.cz >= 0 && hover.cx < GW && hover.cz < GH && sim.grid[hover.cz * GW + hover.cx] === 0;
-      note(!free ? 'You cannot build there.' : sim.gold < sim.cost(buildType) ? 'Not enough credits.' : 'You cannot build there.');
+      const free = inBoard(hover.cx, hover.cz) && sim.grid[hover.cz * GW + hover.cx] === 0;
+      note(!free ? 'You cannot build there.' : sim.gold < sim.cost(buildType) ? 'Not enough credits.' : sim.mats < sim.matCost(buildType) ? 'Not enough building materials. Deliver Frames to a Depot.' : 'You cannot build there.');
     }
     refreshGhost();
     return;
   }
   const t = sim.towers.find((x) => x.cx === hover.cx && x.cz === hover.cz);
-  selected = t ? t.id : 0;
-  if (t) sound.play('click');
+  const f = t ? undefined : sim.factory.facAt(hover.cx, hover.cz);
+  selected = t ? t.id : 0; selFac = f ? f.id : 0;
+  if (t || f) sound.play('click');
 }
 /** Any press skips the opening camera move, if the view has one running. */
 function skipIntro() { if (vx.introActive?.()) { vx.skipIntro?.(); return true; } return false; }
+/** Drop whatever is chosen for building. */
+function dropBuild() { buildType = null; buildFac = null; painting = false; view.setGhost(null); view.setFacGhost(null); }
 
 addEventListener('keydown', (e) => {
   if (cine) cine = null; // any key or click hands the camera back during the Titan's entrance
@@ -1782,174 +1390,78 @@ addEventListener('keydown', (e) => {
   if (shown('cards')) { if (!e.repeat && k >= '1' && k <= '3') pickCard(+k - 1); return; }
   if (k === 'escape') {
     if (e.repeat) return;
-    if (armed) { disarm(); sound.play('click'); buildEscAt = performance.now(); return; }
-    // Escape closes build mode first; only the next press pauses
-    if (building) { closeBuild(); sound.play('click'); buildEscAt = performance.now(); return; }
-    // the browser may just have released the mouse for this same press, which already opened the pause sheet
-    if (performance.now() - autoPauseAt < 400) return;
-    if (!heroOn() && (buildType || selected)) { buildType = null; selected = 0; view.setGhost(null); } else togglePause();
+    if (buildType || buildFac || selected || selFac) { dropBuild(); selected = 0; selFac = 0; } else togglePause();
     return;
   }
   if (k === 'p') { togglePause(); return; }
   if (paused || menuOpen()) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
-  if (k === ' ') { e.preventDefault(); if (!e.repeat) tryUlt(); return; }
-  if (heroOn()) {
-    if (e.repeat) return;
-    if (k === 'q') armSkill(1); else if (k === 'e') armSkill(2); else if (k === 'f') tryTele();
-    else if (upMode()) upKey(k);
-    return;
-  }
-  // Uplink mode before the first step (the board still assembles): nothing is built from the bird view
-  if (upMode()) return;
-  const t = TOWER_TYPES.find((x) => TOWERS[x].key === k);
-  if (t) pickBuild(t);
+  if (k === ' ') { e.preventDefault(); if (!e.repeat && selected) act.special(selected); return; }
+  if (k === 'f' && !e.repeat) { sound.play('click'); setTab(barTab === 'towers' ? 'factory' : 'towers'); return; }
+  if (barTab === 'factory') { const f = FAC_TYPES.find((x) => FACS[x].key === k); if (f) { pickFac(f); return; } }
+  else { const t = TOWER_TYPES.find((x) => TOWERS[x].key === k); if (t) { pickBuild(t); return; } }
+  if (k === 'r' && !e.repeat) turnSelected();
   else if (k === 'u' && selected) act.upgrade(selected);
   else if (k === 'x' && selected) { if (act.sell(selected)) selected = 0; }
+  else if (k === 'x' && selFac) { if (act.sellFac(selFac)) selFac = 0; }
   else if (k === 'n') act.wave();
   else if (k === 'g' && mode === 'solo') pressSpeed();
-  else if (k === 'r' && !e.repeat) { const c = bird(), turn = Math.round((c.rot || 0) / TAU) * TAU; frameBoard(); if (typeof c.rot === 'number') c.rot = turn; }
+  else if (k === 'home' && !e.repeat) { const c = bird(), turn = Math.round((c.rot || 0) / TAU) * TAU; frameBoard(); if (typeof c.rot === 'number') c.rot = turn; }
 });
 addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
-addEventListener('blur', () => { if (armed === 3) disarm(); keys.clear(); mouseFire = false; dragging = false; rotating = false; mouseBtns = 0; });
-addEventListener('focus', () => { lockAt = performance.now(); });
+addEventListener('blur', () => { keys.clear(); dragging = false; rotating = false; painting = false; mouseBtns = 0; });
 
-document.documentElement.addEventListener('mouseleave', (e) => {
-  mouseIn = false;
-  // a free cursor that slides off the window (onto the next display) counts as resting on that edge: the view keeps turning
-  if (heroOn() && edgeArmed) { lastMouse.x = clamp(e.clientX, 0, innerWidth); lastMouse.y = clamp(e.clientY, 0, innerHeight); }
-});
-// Mouse movement is read from the whole page, not only the canvas: a HUD element under the cursor must never stop the view.
+// Mouse movement is read from the whole page, not only the canvas: a HUD element under the cursor must never stop a drag.
 document.addEventListener('mousemove', (e) => {
-  const first = !mouseIn;
-  mouseIn = true;
   lastMouse.x = e.clientX; lastMouse.y = e.clientY;
   if (!playing()) return;
-  if (heroOn()) {
-    // a mouseup the page never got (the capture changed hands mid-press): the left button is up, so the draw ends
-    if (mouseFire && !(e.buttons & 1)) mouseFire = false;
-    if (byTouch || !active()) return;
-    const locked = !!document.pointerLockElement;
-    if (!locked) {
-      // edge turning starts once the cursor has been away from the edges, so a cursor resting on the Uplink bar does nothing
-      if (e.clientX > 60 && e.clientX < innerWidth - 60 && e.clientY > 60 && e.clientY < innerHeight - 60) edgeArmed = true;
-      if (first) return; // the jump from where the cursor left the window to where it came back is not a turn
-    }
-    // Some systems send one wild sample when the pointer is captured or the window gets its focus back. Only that
-    // moment is filtered. Anything else passes: a fast turn with a high-resolution mouse is many hundreds of counts
-    // in one frame, and dropping those would make the view stick exactly when the hand moves fastest.
-    const big = Math.max(Math.abs(e.movementX), Math.abs(e.movementY));
-    if (big > 5000 || (big > 300 && performance.now() - lockAt < 250)) { diag.dropped++; return; }
-    diag.mx += e.movementX; diag.my += e.movementY; diag.mn++;
-    // The movement itself turns the view at once. What the desktop's curve held back of a slow movement follows
-    // within a few frames (see the frame loop), so a single pixel of travel does not become one visible jump.
-    const g = undo.gain(e.movementX, e.movementY, e.timeStamp, curveMode());
-    if (g > 1) { owed.x += e.movementX * (g - 1); owed.y += e.movementY * (g - 1); look(e.movementX, e.movementY); }
-    else look(e.movementX * g, e.movementY * g);
-    return;
-  }
-  if (upMode()) return; // Uplink mode: the bird view is only there while the board assembles
+  if (painting && !(e.buttons & 1)) painting = false;
   if (rotating) rotateCam(-e.movementX * 0.006); // the near side of the board follows the mouse
   else if (dragging) panBy(e.clientX - e.movementX, e.clientY - e.movementY, e.clientX, e.clientY);
-  if (e.target === canvas || dragging || rotating) hoverAt(e.clientX, e.clientY);
-});
-/** A mouse press during the Uplink: grab the pointer again if it got away, then draw the bow. */
-function heroMouse(e: MouseEvent) {
-  if (!document.pointerLockElement) lockPointer();
-  if (armed === 3) {
-    // Rail Shot held ready: the left button arms the shot, and letting go of it fires (see mouseup)
-    if (e.button === 0) railFire = true;
-    else if (e.button === 1) { e.preventDefault(); tryTele(); }
-    return;
-  }
-  if (armed) {
-    // an armed skill: the left button casts it, the right one puts it away. The bow stays down.
-    if (e.button === 0) fireArmed();
-    else if (e.button === 2) { disarm(); sound.play('click'); }
-    else if (e.button === 1) { e.preventDefault(); tryTele(); }
-    return;
-  }
-  if (building) {
-    // build mode: the left button places, the right one closes it. Neither draws the bow or casts a skill.
-    if (e.button === 0) placeAt();
-    else if (e.button === 2) { closeBuild(); sound.play('click'); }
-    else if (e.button === 1) { e.preventDefault(); tryTele(); }
-    return;
-  }
-  if (e.button === 0) mouseFire = true;
-  else if (e.button === 2) armSkill(3);
-  else if (e.button === 1) { e.preventDefault(); tryTele(); }
-}
-// During the Uplink a press anywhere on the page belongs to the bow, unless it lands on a real control.
-document.addEventListener('mousedown', (e) => {
-  if (!heroOn() || byTouch) return;
-  sound.init();
-  if (!active()) return;
-  if (e.target instanceof Element && e.target.closest('button, a, input, select, textarea, .mu-dock')) return;
-  if (skipIntro()) return;
-  heroMouse(e);
+  if (e.target === canvas || dragging || rotating || painting) hoverAt(e.clientX, e.clientY);
 });
 canvas.addEventListener('mousedown', (e) => {
   if (cine) cine = null; // any key or click hands the camera back during the Titan's entrance
   sound.init();
-  if (!active() || heroOn()) return;
-  if (skipIntro() || upMode()) return;
+  if (!active() || skipIntro()) return;
   if (e.button === 1) { e.preventDefault(); rotating = true; return; } // middle-drag turns the view
-  if (e.button === 2) { if (buildType) { buildType = null; view.setGhost(null); } else selected = 0; dragging = true; return; }
+  if (e.button === 2) { if (buildType || buildFac) dropBuild(); else { selected = 0; selFac = 0; } dragging = true; return; }
   if (e.button !== 0) return;
   boardTap(e.clientX, e.clientY, e.shiftKey);
+  // belts, pipes and poles: keep the button down and drag to lay a line
+  if (buildFac === 'belt' || buildFac === 'pipe') { painting = true; paintAt.cx = hover.cx; paintAt.cz = hover.cz; }
 });
 addEventListener('mouseup', (e) => {
-  // the bow: letting go of the left button looses the arrow (the frame loop sees the draw end)
-  if (e.button === 0 || !(e.buttons & 1)) mouseFire = false;
-  // Rail Shot: letting go of the left button fires; letting go of the right one first puts it away
-  if (armed === 3 && e.button === 0 && railFire) fireArmed();
-  else if (armed === 3 && e.button === 2 && !railFire) { disarm(); sound.play('click'); }
+  if (e.button === 0) { painting = false; paintAt.cx = paintAt.cz = -1; }
   if (e.button === 2) dragging = false; if (e.button === 1) rotating = false;
 });
-document.addEventListener('contextmenu', (e) => { if (e.target === canvas || heroOn()) e.preventDefault(); });
+document.addEventListener('contextmenu', (e) => { if (e.target === canvas) e.preventDefault(); });
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
-  if (heroOn() || !active()) return;
+  if (!active()) return;
   // One notch of a wheel is about 100 units and zooms by about 12%. A touchpad sends many small steps, which add up
   // to the same. Lines and pages are converted, and a pinch on a touchpad (it arrives with Ctrl set) is scaled up.
   const unit = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 300 : 1;
   const d = clamp(e.deltaY * unit * (e.ctrlKey ? 4 : 1), -300, 300);
   if (d) zoomAt(Math.exp(-d * 0.0012), e.clientX, e.clientY, true);
 }, { passive: false });
-// Build mode: the wheel steps through the towers, one per notch. A touchpad's small steps add up to a notch first.
-// It listens on the whole page, since a free cursor may rest over the HUD; a sideways scroll is left to the tower bar.
-let wheelAcc = 0, wheelAt = 0;
-addEventListener('wheel', (e) => {
-  if (!building || !active() || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
-  e.preventDefault();
-  if (e.timeStamp - wheelAt > 250) wheelAcc = 0;
-  wheelAt = e.timeStamp;
-  wheelAcc += e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 300 : 1);
-  if (Math.abs(wheelAcc) >= 50) { stepBuild(Math.sign(wheelAcc)); wheelAcc = 0; }
-}, { passive: false });
 addEventListener('resize', () => view.resize());
 
 // Touch: the same actions as above, driven by the touch module.
 const touchApi = {
   canvas,
-  isHero: heroOn,
-  // Touch only: the look slows by a quarter while the crosshair is on an enemy. It never moves the view by itself.
-  look(dx: number, dy: number) { if (active() && heroOn()) { const k = settings.friction && aimHot ? 0.75 : 1; look(dx * k, dy * k); } },
-  // in build mode the Draw button is Place: a press builds, and the bow stays down
-  fire(on: boolean) { if (on) sound.init(); if (armed === 3) { touchFire = false; if (on) railFire = true; else if (railFire) fireArmed(); return; } if (armed) { touchFire = false; if (on) fireArmed(); return; } if (building) { touchFire = false; if (on) placeAt(); return; } touchFire = on; },
-  skill(i: number) { armSkill(i === 0 ? 3 : i); },
-  teleport: tryTele,
-  ult() { sound.init(); tryUlt(); },
-  build() { sound.init(); if (active() && heroOn() && upMode()) toggleBuild(); },
-  sell() { sound.init(); if (active() && building) sellMarked(); },
-  upgrade() { sound.init(); if (active() && heroOn() && upMode()) upgradeMarked(); },
-  exitHero() { if (active() && heroOn()) act.exit(); },
-  tap(clientX: number, clientY: number) { sound.init(); if (!active() || heroOn() || upMode() || skipIntro()) return; boardTap(clientX, clientY, false); },
-  hoverAt(clientX: number, clientY: number) { if (active() && !heroOn() && !upMode()) hoverAt(clientX, clientY); },
-  pan(dx: number, dy: number, x: number, y: number) { if (active() && !heroOn()) pan(dx, dy, x, y); },
-  zoom(factor: number, x = innerWidth / 2, y = innerHeight / 2) { if (active() && !heroOn()) zoomAt(factor, x, y, false); },
-  rotate(angle: number) { if (active() && !heroOn()) rotateCam(angle); },
+  turn() { sound.init(); if (active()) turnSelected(); },
+  // a finger that held and dragged the ghost lays belts on the way, like a held mouse button
+  hoverEnd() { painting = false; paintAt.cx = paintAt.cz = -1; },
+  tap(clientX: number, clientY: number) { sound.init(); if (!active() || skipIntro()) return; boardTap(clientX, clientY, false); },
+  hoverAt(clientX: number, clientY: number) {
+    if (!active()) return;
+    if (!painting && (buildFac === 'belt' || buildFac === 'pipe')) { hoverAt(clientX, clientY); painting = true; paintAt.cx = hover.cx; paintAt.cz = hover.cz; placeFac(hover.cx, hover.cz, true); return; }
+    hoverAt(clientX, clientY);
+  },
+  pan(dx: number, dy: number, x: number, y: number) { if (active()) pan(dx, dy, x, y); },
+  zoom(factor: number, x = innerWidth / 2, y = innerHeight / 2) { if (active()) zoomAt(factor, x, y, false); },
+  rotate(angle: number) { if (active()) rotateCam(angle); },
   pause: pressPause,
   speed: pressSpeed,
 };
@@ -1969,121 +1481,83 @@ initTouch(touchApi);
   sync();
 }
 
-// ---------- the bow ----------
-// Hold to draw, let go to loose. The sim owns the draw; this passes on whether the button is held and where the
-// crosshair points, every frame. A co-op guest sends the same to the host: on every change, and at most 20 times
-// a second while drawing so the aim point stays fresh.
-let aimT = 0, aimSentDraw = false, localDraw = 0, aimHot = false;
-function aimBow(drawing: boolean, dt: number) {
-  if (isClient) {
-    aimT += dt;
-    if (drawing !== aimSentDraw || (drawing && aimT >= 0.05)) { aimT = 0; aimSentDraw = drawing; net?.send({ t: 'in', a: 'aim', d: drawing ? 1 : 0, x: aim.x, y: aim.y, z: aim.z }); }
-  } else {
-    const s = sim as unknown as SimX;
-    if (s.heroAim) s.heroAim(me, drawing, aim.x, aim.y, aim.z);
-    else if (drawing) s.heroFire?.(me, aim.x, aim.y, aim.z); // a sim without the draw yet
-  }
-  // the gauge: the sim's own value, or a local estimate for a guest (snapshots are too coarse to animate from)
-  localDraw = drawing ? Math.min(1, localDraw + dt / DRAW_TIME) : 0;
-  const pd = (sim.players[me] as unknown as { draw?: unknown }).draw;
-  const g = !isClient && typeof pd === 'number' && Number.isFinite(pd) ? clamp(pd, 0, 1) : localDraw;
-  const cls = g <= 0.01 ? '' : g >= 0.995 ? 'on full' : g < MIN_DRAW ? 'on weak' : 'on';
-  if (cache.drawcls !== cls) { cache.drawcls = cls; $('draw').setAttribute('class', cls); if (cls === 'on full') sound.play('drawfull'); }
-  const off = (100 - g * 100).toFixed(0);
-  if (cache.drawoff !== off) { cache.drawoff = off; $('draw-arc').style.strokeDashoffset = off; }
-}
-
 // ---------- diagnostics (F3) ----------
-// A small readout for hunting down a sluggish view: frame times, whether the mouse is captured and raw, what the
-// mouse sent in the last frame and how far the view turned for it. It costs nothing while it is off.
-const diag = { on: false, last: 0, t: 0, n: 0, sum: 0, worst: 0, fps: 0, avg: 0, max: 0, mx: 0, my: 0, mn: 0, yaw: 0, pitch: 0, dropped: 0, slow: '', fast: '' };
+// A small readout for hunting down a sluggish frame. It costs nothing while it is off.
+const diag = { on: false, last: 0, t: 0, n: 0, sum: 0, worst: 0, fps: 0, avg: 0, max: 0, text: '' };
 function toggleDiag() {
   diag.on = !diag.on;
-  diag.last = 0; diag.t = 0; diag.n = 0; diag.sum = 0; diag.worst = 0; diag.slow = ''; diag.fast = '';
-  diag.yaw = view.yaw; diag.pitch = view.pitch;
+  diag.last = 0; diag.t = 0; diag.n = 0; diag.sum = 0; diag.worst = 0; diag.text = '';
   show('diag', diag.on);
 }
 /** Called once a frame. The game caps its own step at 100 ms, so the time is read from the clock here: a long stall shows at its real length. */
 function diagFrame(dt: number) {
-  if (!diag.on) { diag.mx = diag.my = diag.mn = 0; return; }
-  const now = performance.now(), ms = diag.last ? now - diag.last : dt * 1000, deg = 180 / Math.PI;
+  if (!diag.on) return;
+  const now = performance.now(), ms = diag.last ? now - diag.last : dt * 1000;
   diag.last = now;
   diag.n++; diag.sum += ms; diag.t += ms; if (ms > diag.worst) diag.worst = ms;
-  // frame times: the average and the worst frame of the last second
-  if (diag.t >= 1000 || !diag.slow) {
-    if (diag.n) { diag.avg = diag.sum / diag.n; diag.fps = 1000 / Math.max(0.01, diag.avg); diag.max = diag.worst; }
-    diag.t = 0; diag.n = 0; diag.sum = 0; diag.worst = 0;
-    const c = canvas, post = (view as unknown as { post?: { ao?: { enabled?: boolean } | null } }).post;
-    const ao = view.quality === 'high' && !!post?.ao?.enabled;
-    diag.slow = `F3 diagnostics\nfps ${diag.fps.toFixed(0)}   frame ${diag.avg.toFixed(1)} ms avg, ${diag.max.toFixed(1)} ms worst (1 s)\n`
-      + `pointer ${document.pointerLockElement ? 'locked' : 'free'}   raw input ${rawMouse === 'unasked' ? 'not asked yet' : rawMouse}\n`
-      + `dpr ${(window.devicePixelRatio || 1).toFixed(2)}   canvas ${c.width} x ${c.height}\n`
-      + `quality ${view.quality}   ambient occlusion ${ao ? 'on' : 'off'}\n`
-      + `sensitivity ${settings.sens}%   dropped samples ${diag.dropped}\n`
-      + `mouse aim ${freeAim() ? 'free cursor' : 'captured'}   response ${curveMode()}`;
-  }
-  // the mouse: what arrived since the last frame, and the turn it produced
-  const dy = (view.yaw - diag.yaw) * deg, dp = (view.pitch - diag.pitch) * deg;
-  diag.yaw = view.yaw; diag.pitch = view.pitch;
-  const fast = `mouse dx ${diag.mx.toFixed(0).padStart(5)} dy ${diag.my.toFixed(0).padStart(5)}  (${diag.mn} events)\nlook  ${dy.toFixed(2).padStart(7)} deg ${dp.toFixed(2).padStart(7)} deg\npointer ${(undo.speed * 1000).toFixed(0).padStart(5)} px/s   curve undo x${undo.factor.toFixed(2)}`;
-  diag.mx = diag.my = diag.mn = 0;
-  if (fast !== diag.fast || diag.t === 0) { diag.fast = fast; $('diag').textContent = diag.slow + '\n' + fast; }
+  if (diag.t < 1000 && diag.text) return;
+  if (diag.n) { diag.avg = diag.sum / diag.n; diag.fps = 1000 / Math.max(0.01, diag.avg); diag.max = diag.worst; }
+  diag.t = 0; diag.n = 0; diag.sum = 0; diag.worst = 0;
+  const c = canvas, post = (view as unknown as { post?: { ao?: { enabled?: boolean } | null } }).post;
+  const ao = view.quality === 'high' && !!post?.ao?.enabled;
+  let items = 0;
+  for (const f of sim.factory.facs) items += f.items.length;
+  diag.text = `F3 diagnostics\nfps ${diag.fps.toFixed(0)}   frame ${diag.avg.toFixed(1)} ms avg, ${diag.max.toFixed(1)} ms worst (1 s)\n`
+    + `dpr ${(window.devicePixelRatio || 1).toFixed(2)}   canvas ${c.width} x ${c.height}\n`
+    + `quality ${view.quality}   ambient occlusion ${ao ? 'on' : 'off'}\n`
+    + `factory ${sim.factory.facs.length} buildings, ${items} items on belts, ${sim.factory.powerNets.length} power grids, ${sim.factory.pipeNets.length} pipe networks`;
+  $('diag').textContent = diag.text;
 }
 
 // ---------- frame ----------
 let nextKey = '';
+/** Power drawn and available over all grids. */
+function powerLine(): string {
+  let cap = 0, dem = 0;
+  for (const n of sim.factory.powerNets) { cap += n.cap; dem += n.demand; }
+  return `${Math.round(Math.min(cap, dem))} / ${Math.round(cap)}`;
+}
 function updateHud() {
-  const p = sim.players[me];
   setText('wave', String(sim.wave));
   setText('wave-sub', sim.campaign ? '/ ' + sim.winWave : '');
   setText('lives', String(Math.max(0, sim.lives)));
   setText('gold', String(Math.floor(sim.gold)));
+  setText('mats', sim.opts.free ? '-' : String(Math.floor(sim.mats)));
+  setText('power', powerLine());
   setText('level', String(sim.level));
   setW('xpbar', sim.xp / sim.xpNext);
-  setText('bow', BOW_TIERS[sim.tier].name);
-  const hero = p.heroActive;
-  // Overlink: while the Titan stands the Uplink is held open. The meter stays full and the timer does not run.
-  const held = !!sim.overlink;
-  if (cache.ultheld !== String(held)) { cache.ultheld = String(held); $('ult').classList.toggle('held', held); $('hero-time').classList.toggle('held', held); }
-  setW('ultbar', held ? 1 : p.energy / MAX_ENERGY);
-  const ready = (held || p.energy >= MAX_ENERGY) && !hero;
-  $('ult').classList.toggle('ready', ready);
-  setText('ult-label', held ? (hero ? 'OVERLINK - UPLINK HELD OPEN' : touchUi() ? 'OVERLINK - UPLINK HELD OPEN' : 'OVERLINK - HELD OPEN - PRESS SPACE')
-    : ready ? (touchUi() ? 'UPLINK READY' : 'UPLINK READY - PRESS SPACE') : `UPLINK ${Math.floor((p.energy / MAX_ENERGY) * 100)}%`);
-  if (held) readyShown = true; // the Overlink has its own announcement
-  if (ready && !readyShown && !bot) { readyShown = true; sound.play('ready'); announce('Uplink ready', touchUi() ? 'Tap Uplink to stand on a Spire' : 'Press Space to stand on a Spire'); }
-  if (!ready && !hero) readyShown = readyShown && p.energy > 50;
   const waiting = isClient ? sim.nextWaveIn >= 0 : !sim.queue.length;
   const canCall = waiting && !sim.over && !(sim.wave >= sim.winWave && sim.campaign);
-  // The slot of the button stays reserved (see #btn-wave.off), so the Uplink bar next to it never moves.
+  // The slot of the button stays reserved (see #btn-wave.off), so the bar next to it never moves.
   const first = sim.wave === 0, wb = $<HTMLButtonElement>('btn-wave'), wk = `${canCall}:${first}`;
   if (cache.wavecls !== wk) { cache.wavecls = wk; wb.classList.toggle('off', !canCall); wb.classList.toggle('first', canCall && first); wb.disabled = !canCall; }
-  // Uplink mode shows it on the Spire, but not over build mode (its tower bar has the button and the timer)
-  const up = upMode(), prep = canCall && first && !ended && (up ? hero && !building : !hero);
+  const prep = canCall && first && !ended;
   if (canCall) {
-    const left = Math.max(0, Math.ceil(sim.nextWaveIn)), sx = sim as unknown as SimX;
-    // what calling now pays, straight from the sim; an older sim pays two credits a second, and nothing before wave 1
-    const raw = sx.callBonus ? sx.callBonus() : first ? 0 : Math.max(0, sim.nextWaveIn) * 2;
+    const left = Math.max(0, Math.ceil(sim.nextWaveIn)), raw = sim.callBonus();
     const bonus = Number.isFinite(raw) ? Math.max(0, Math.round(raw)) : 0;
     setText('wave-label', first ? 'Call first wave' : 'Call wave');
     setText('wave-timer', bonus > 0 ? `${left}s, +${bonus} cr` : `starts in ${left}s`);
-    if (prep) {
-      setText('prep-sub', up ? (touchUi() ? `Tap Build to build from the Spire. The wave starts by itself in ${left}s.` : `B builds from the Spire. The wave starts by itself in ${left}s, or press N.`)
-        : touchUi() ? `It starts by itself in ${left}s. Tap Call first wave when you are ready.` : `It starts by itself in ${left}s. Press N or the button when you are ready.`);
-    }
+    if (prep) setText('prep-sub', touchUi() ? `It starts by itself in ${left}s. Tap Call first wave when you are ready.` : `It starts by itself in ${left}s. Press N or the button when you are ready.`);
   }
   if (cache.prep !== String(prep)) { cache.prep = String(prep); show('prep', prep); }
   for (const t of TOWER_TYPES) {
-    const b = buildBtns[t], locked = !sim.unlocked.has(t), cost = sim.cost(t);
+    const b = buildBtns[t], locked = !sim.unlocked.has(t), cost = sim.cost(t), mt = sim.matCost(t);
     b.classList.toggle('locked', locked);
-    b.classList.toggle('poor', !locked && sim.gold < cost);
-    b.classList.toggle('sel', (building ? upTower : buildType) === t);
-    const c = b.lastElementChild as HTMLElement, s = String(cost);
-    if (c.textContent !== s) c.textContent = s;
+    b.classList.toggle('poor', !locked && (sim.gold < cost || sim.mats < mt));
+    b.classList.toggle('sel', buildType === t);
+    const c = b.lastElementChild as HTMLElement, txt = mt ? `${cost} +${mt}m` : String(cost);
+    if (c.textContent !== txt) c.textContent = txt;
   }
-  // tooltip: the tower under the pointer, else the one picked for building (touch has no hover); on the Spire only in build mode
-  const tipFor = hero ? (building ? tipHover || upTower : null) : tipHover || buildType, tipKey = tipFor ? tipFor + (sim.unlocked.has(tipFor) ? '' : ':locked') : '';
-  if (cache.tip !== tipKey) { cache.tip = tipKey; if (tipFor) towerTip(tipFor); else show('tip', false); }
+  for (const t of FAC_TYPES) {
+    const b = facBtns[t], cost = sim.facCost(t);
+    b.classList.toggle('poor', sim.gold < cost);
+    b.classList.toggle('sel', buildFac === t);
+    const c = b.lastElementChild as HTMLElement, txt = String(cost);
+    if (c.textContent !== txt) c.textContent = txt;
+  }
+  // tooltip: the building under the pointer, else the one picked for building (touch has no hover)
+  const tipFor = tipHover || buildType || buildFac, tipKey = tipFor ? tipFor + (Object.hasOwn(TOWERS, tipFor) && !sim.unlocked.has(tipFor as TowerType) ? ':locked' : '') : '';
+  if (cache.tip !== tipKey) { cache.tip = tipKey; if (!tipFor) show('tip', false); else if (Object.hasOwn(TOWERS, tipFor)) towerTip(tipFor as TowerType); else facTip(tipFor as FacType); }
 
   // next wave summary in the top bar
   const pv = sim.preview;
@@ -2096,25 +1570,13 @@ function updateHud() {
     if (!enemyChips($('next-row'), pv.wave > 0 ? sum : []).length) $('next-row').appendChild(el('span', 'none', sim.campaign && sim.wave >= sim.winWave ? 'Last wave' : 'Nothing yet'));
   }
 
-  updateTowerPanel(hero);
-  if (hero) {
-    setW('herobar', held ? 1 : p.heroTime / p.heroDur);
-    setText('hero-label', held ? 'OVERLINK - HELD OPEN WHILE THE TITAN STANDS' : `UPLINK ACTIVE - ${Math.max(0, p.heroTime).toFixed(1)}s`);
-    for (let s = 0; s < 3; s++) {
-      const f = clamp(Math.max(0, p.cds[s]) / (SKILL_CD[s] * p.stats.cdr), 0, 1), h = (f * 100).toFixed(0) + '%';
-      // "0%" is reached a moment before the cooldown is over: the key also holds whether it still runs
-      const ck = h + (f > 0 ? ':cd' : '');
-      if (cache['cd' + s] === ck) continue;
-      cache['cd' + s] = ck;
-      // the keyboard skill row and the touch buttons show the same cooldown
-      for (const id of ['sk-' + s, 't-s' + s]) { const box = $(id); (box.lastElementChild as HTMLElement).style.height = h; box.classList.toggle('cd', f > 0); }
-    }
-    if (!store.tips.node && !bot && sim.towers.some((t) => sim.specialReady(t))) { store.tips.node = true; save(); tutor('Shoot the glowing node on a tower to fire its special'); }
-  }
+  const sf = selFac ? sim.factory.facById(selFac) : undefined, placing = !!buildFac || !!(sf && turns(sf.type));
+  if (cache.placing !== String(placing)) { cache.placing = String(placing); document.body.classList.toggle('placing', placing); }
+  updateTowerPanel();
+  updateFacPanel();
   updateTitan();
-  updateMarks(hero);
-  updateIntel(hero);
-  updateHints(hero);
+  updateMarks();
+  updateIntel();
   if (mode === 'versus') setText('vs-status', `Core ${rival.l} / Wave ${rival.w} / ${rival.k} kills`);
 }
 
@@ -2140,17 +1602,23 @@ function updateTitan() {
   }
 }
 
-function updateTowerPanel(hero: boolean) {
+/** Put a panel on the left when it would lie over the core, unless what it describes stands there itself. Decided once per selection. */
+function dockPanel(id: string, key: string, x: number, y: number, z: number) {
+  if (cache[key] === id) return;
+  cache[key] = id;
+  const [cx, , cok] = view.project(sim.map.core.x, 1, sim.map.core.z), [tx] = view.project(x, y, z);
+  $(key === 'tdock' ? 'tower' : 'fpanel').classList.toggle('left', cok && cx > innerWidth - 330 && tx > 300);
+}
+/** One supply line of the tower panel: label, value, and whether it is short. */
+function supLine(box: HTMLElement, k: string, v: string, bad: boolean) {
+  box.append(el('span', bad ? 'bad' : '', k), el('b', bad ? 'bad' : '', v));
+}
+function updateTowerPanel() {
   const t = selected ? sim.towerById(selected) : undefined;
-  if (!t) { selected = 0; view.setSelected(null); cache.tdock = ''; }
-  show('tower', !!t && !hero);
+  if (!t) { selected = 0; if (!selFac) view.setSelected(null); cache.tdock = ''; }
+  show('tower', !!t);
   if (!t) return;
-  if (cache.tdock !== String(t.id)) {
-    // decided once per selection: the panel goes to the left when it would lie over the core, unless the tower itself is there
-    cache.tdock = String(t.id);
-    const [cx, , cok] = view.project(sim.map.core.x, 1, sim.map.core.z), [tx] = view.project(t.x, t.h * 0.5, t.z);
-    $('tower').classList.toggle('left', cok && cx > innerWidth - 330 && tx > 300);
-  }
+  dockPanel(String(t.id), 'tdock', t.x, t.h * 0.5, t.z);
   view.setSelected(t, sim.range(t));
   const d = TOWERS[t.type], sp = d.special;
   setText('t-name', `${d.name} / Mk ${t.lvl}`);
@@ -2159,8 +1627,7 @@ function updateTowerPanel(hero: boolean) {
     cache.tstats = key;
     const st = $('t-stats'); st.textContent = '';
     const line = (k: string, v: string) => { st.append(k + ' ', el('b', '', v), el('br')); };
-    if (t.type === 'spire') line('Arrow damage', `+${Math.round(15 * (t.lvl - 1))}%`);
-    else if (t.type === 'beacon') line('Boost', `+${Math.round(sim.beaconBoost(t) * 100)}% damage`);
+    if (t.type === 'beacon') line('Boost', `+${Math.round(sim.beaconBoost(t) * 100)}% damage`);
     else {
       if (d.dmg > 0) line('Damage', sim.towerDmg(t).toFixed(0));
       line(d.dmg > 0 ? 'Fire rate' : 'Pulse rate', sim.towerRate(t).toFixed(2) + '/s');
@@ -2168,39 +1635,106 @@ function updateTowerPanel(hero: boolean) {
     if (d.range > 0) line('Range', sim.range(t).toFixed(1));
     if (t.buff > 0) line('Beacon', 'boosted');
   }
+  // supply: what it runs on and how much it has
+  const n = d.needs, sup = $('t-sup');
+  const sk = sim.opts.free ? 'free' : `${n.item ? t.stock + ':' + Math.ceil(t.ammo) : ''}|${n.fluid ? Math.round(t.tank) : ''}|${n.power ? Math.round(t.pwr * 100) : ''}`;
+  if (cache.tsup !== sk) {
+    cache.tsup = sk;
+    sup.textContent = '';
+    if (sim.opts.free) supLine(sup, 'Supply', 'not needed', false);
+    else {
+      if (n.item) supLine(sup, ITEMS[n.item].name, `${t.stock}/${TOWER_STOCK} + ${Math.ceil(t.ammo)} shots`, t.stock <= 0 && t.ammo <= 0);
+      if (n.fluid) supLine(sup, FLUIDS[n.fluid].name, `${Math.round(t.tank)}/${TANK}`, t.tank < 1);
+      if (n.power) supLine(sup, 'Power', t.pwr <= 0 ? 'none: build a Pole or Generator within 2 tiles' : `${Math.round(t.pwr * 100)}% of ${n.power}`, t.pwr < 0.05);
+    }
+  }
   // special: name, what it does, charge, and what the tower is doing right now
   const box = $('t-spec');
   if (sp) {
     const total = sp.down * sim.mods.reboot;
     setText('t-spec-name', sp.name);
     setText('t-spec-desc', sp.desc);
-    show('t-spec-bar', true);
     // stunned by the Titan's landing or jammed by mites comes first: the tower neither fires nor charges
-    const state = t.stun > 0 ? 'stun' : t.jam > 0 ? 'jam' : t.down > 0 ? 'down' : t.spec > 0 ? 'run' : t.charge >= 1 ? 'ready' : 'charge';
+    const state = t.stun > 0 ? 'stun' : t.jam > 0 ? 'jam' : t.dry ? 'dry' : t.down > 0 ? 'down' : t.spec > 0 ? 'run' : t.charge >= 1 ? 'ready' : 'charge';
     if (cache.tspec !== state) { cache.tspec = state; box.className = state; }
-    setW('t-spec-bar', state === 'stun' ? 1 - t.stun / TITAN_STUN : state === 'down' ? 1 - t.down / Math.max(0.1, total) : state === 'charge' ? t.charge : 1);
-    setText('t-spec-state', state === 'stun' ? `Stunned - back in ${Math.ceil(t.stun)}s` : state === 'jam' ? 'Jammed by mites. Shoot them off.'
+    setW('t-spec-bar', state === 'stun' ? 1 - t.stun / TITAN_STUN : state === 'down' ? 1 - t.down / Math.max(0.1, total) : state === 'charge' || state === 'dry' ? t.charge : 1);
+    setText('t-spec-state', state === 'stun' ? `Stunned - back in ${Math.ceil(t.stun)}s` : state === 'jam' ? 'Jammed by mites.' : state === 'dry' ? 'Out of supply. It does not charge.'
       : state === 'down' ? `Offline - rebooting ${Math.ceil(t.down)}s` : state === 'run' ? `Running - ${Math.ceil(t.spec)}s left`
-      : state === 'ready' ? 'Ready. Shoot its node during an Uplink.' : `Charging ${Math.floor(t.charge * 100)}%`);
-  } else {
-    setText('t-spec-name', 'Uplink point');
-    setText('t-spec-desc', 'Kestrel stands here during the Uplink and can jump to other Spires. Each upgrade adds 15% arrow damage.');
-    if (cache.tspec !== 'spire') { cache.tspec = 'spire'; box.className = 'spire'; }
-    setW('t-spec-bar', 0);
-    setText('t-spec-state', t.stun > 0 ? `Stunned - back in ${Math.ceil(t.stun)}s` : sim.players.some((q) => q.heroActive && q.heroTower === t.id) ? 'Kestrel is here.' : '');
+      : state === 'ready' ? 'Ready to fire.' : `Charging ${Math.floor(t.charge * 100)}%`);
+    $<HTMLButtonElement>('t-special').disabled = state !== 'ready';
+    setText('t-special', touchUi() ? 'Fire special' : 'Fire special (Space)');
   }
   const up = $<HTMLButtonElement>('t-up');
-  setText('t-up', t.lvl >= 3 ? 'Max level' : `Upgrade${touchUi() ? '' : ' (U)'} - ${sim.upCost(t)}`);
-  up.disabled = t.lvl >= 3 || sim.gold < sim.upCost(t);
-  const why = sellReason(t);
-  setText('t-sell', `Sell${touchUi() ? '' : ' (X)'} +${sim.sellValue(t)}`);
-  $<HTMLButtonElement>('t-sell').disabled = !!why;
-  setText('t-note', why);
+  setText('t-up', t.lvl >= 3 ? 'Max level' : `Upgrade${touchUi() ? '' : ' (U)'} - ${sim.upCost(t)}${sim.upMat(t) ? ` +${sim.upMat(t)}m` : ''}`);
+  up.disabled = t.lvl >= 3 || sim.gold < sim.upCost(t) || sim.mats < sim.upMat(t);
+  setText('t-sell', `Sell${touchUi() ? '' : ' (X)'} +${sim.sellValue(t)}${sim.sellMats(t) ? ` +${sim.sellMats(t)}m` : ''}`);
+  setText('t-note', '');
 }
 
-// Small markers over towers: a chevron where an upgrade is affordable (command view only), and in both views a
-// spider over a tower that mites have jammed and a bolt over one the Titan has stunned.
-const MARK_ICON: Record<string, string> = { up: 'M8 3l6 8H2z', jam: MITE_PATH, stun: 'M9.6 0.6L3 9h3.7l-1.2 6.4L12.8 7H8.9z' };
+const FAC_STATE: Record<string, string> = {
+  ok: 'Working', idle: 'Idle', nopower: 'No power: build a Pole or Generator within 2 tiles', noinput: 'Waiting for input', nofuel: 'No fuel: it needs coal (or petrol from a pipe)', full: 'Output full: nothing takes it', nodeposit: 'Not on a deposit',
+};
+const RECIPE_BTNS: HTMLButtonElement[] = [];
+for (const r of RECIPES) {
+  const b = el('button', 'chip') as HTMLButtonElement;
+  b.type = 'button'; b.dataset.v = r.id;
+  const inp = Object.entries(r.inp).map(([k, n]) => `${n} ${ITEMS[k as ItemType].short}`).concat(r.fluid ? [`${r.fluid[1]} ${FLUIDS[r.fluid[0]].name.toLowerCase()}`] : []).join(' + ');
+  b.title = `${inp} -> ${r.n} ${ITEMS[r.out].name}, ${r.time}s`;
+  b.style.setProperty('--c', hex(ITEMS[r.out].color));
+  b.append(el('span', '', r.name), el('small', '', inp));
+  b.addEventListener('click', () => { sound.init(); sound.play('click'); if (selFac) act.recipe(selFac, r.id); });
+  RECIPE_BTNS.push(b);
+  $('f-recipes').appendChild(b);
+}
+/** Inventory line: item counts. */
+const invText = (inv: Partial<Record<ItemType, number>>) => Object.entries(inv).filter(([, n]) => n && n > 0).map(([k, n]) => `${n} ${ITEMS[k as ItemType].short}`).join(', ') || 'empty';
+function updateFacPanel() {
+  const f = selFac ? sim.factory.facById(selFac) : undefined;
+  if (!f) { if (selFac) view.setSelectedCell(0, 0, false); selFac = 0; cache.fdock = ''; }
+  show('fpanel', !!f);
+  if (!f) return;
+  dockPanel(String(f.id), 'fdock', f.x, 1, f.z);
+  view.setSelectedCell(f.cx, f.cz, true, f.type === 'pole' || f.type === 'generator' ? SUPPLY * 2 + 1 : 0);
+  const d = FACS[f.type];
+  setText('f-name', d.name + (f.ore && (f.type === 'mine' || f.type === 'pump') ? ` / ${ORES[f.ore].name}` : ''));
+  setText('f-state', FAC_STATE[f.state] || f.state);
+  $('f-state').className = f.state === 'ok' ? 'ok' : f.state === 'idle' || f.state === 'full' || f.state === 'noinput' ? 'warn' : 'bad';
+  const st = $('f-stats');
+  const lines: [string, string][] = [];
+  switch (f.type) {
+    case 'belt': lines.push(['Carrying', f.items.map((i) => ITEMS[i.it].short).join(', ') || 'nothing']); break;
+    case 'pipe': { const pf = sim.factory.pipeFluid(f); lines.push(['Network', pf.fluid ? `${FLUIDS[pf.fluid].name}, ${Math.round(pf.fill * 100)}% full` : 'empty']); break; }
+    case 'pole': case 'generator': {
+      const n = sim.factory.powerNet(f.net);
+      if (n) lines.push(['Grid', `${Math.round(Math.min(n.cap, n.demand))} of ${Math.round(n.demand)} power drawn, ${Math.round(n.cap)} available`]);
+      if (f.type === 'generator') lines.push(['Fuel', `${invText(f.inv)}${f.tin > 0 ? `, ${Math.round(f.tin)} petrol` : ''}, ${Math.max(0, f.fuel).toFixed(0)}s burning`]);
+      lines.push(['Reach', `wires to poles within ${POLE_REACH} tiles, powers what is within ${SUPPLY}`]);
+      break;
+    }
+    case 'mine': lines.push(['Output', f.out.length ? `${f.out.length}/${OUT_CAP} waiting` : 'none waiting']); break;
+    case 'pump': lines.push(['Crude', `${Math.round(f.tout)}/${TANK}`], ['Power', `${Math.round(f.pwr * 100)}%`]); break;
+    case 'smelter': lines.push(['Input', invText(f.inv)], ['Output', f.out.length ? `${f.out.length}/${OUT_CAP} plates waiting` : 'none waiting']); break;
+    case 'fab': { const r = RECIPE_BY_ID[f.recipe]; lines.push(['Making', r ? `${r.n} ${ITEMS[r.out].name} from ${Object.entries(r.inp).map(([k, n]) => `${n} ${ITEMS[k as ItemType].short}`).join(' + ')}${r.fluid ? ` + ${r.fluid[1]} petrol` : ''}` : '-'], ['Input', invText(f.inv) + (r?.fluid ? `, ${Math.round(f.tin)} petrol` : '')], ['Power', `${Math.round(f.pwr * 100)}%`]); break; }
+    case 'refinery': lines.push(['Crude', `${Math.round(f.tin)}/${TANK}`], ['Petrol', `${Math.round(f.tout)}/${TANK}`], ['Power', `${Math.round(f.pwr * 100)}%`]); break;
+    case 'depot': lines.push(['Materials', `${Math.floor(sim.mats)} in store`]); break;
+  }
+  const lk = lines.map((l) => l.join(':')).join('|');
+  if (cache.fstats !== lk) { cache.fstats = lk; st.textContent = ''; for (const [k, v] of lines) st.append(k + ' ', el('b', '', v), el('br')); }
+  show('f-recipes', f.type === 'fab');
+  if (f.type === 'fab') for (const b of RECIPE_BTNS) b.classList.toggle('on', b.dataset.v === f.recipe);
+  show('f-turn', turns(f.type));
+  setText('f-sell', `Remove${touchUi() ? '' : ' (X)'} +${sim.facSellValue(f.id)}`);
+  setText('f-desc', d.desc);
+}
+
+// Small markers over towers: a chevron where an upgrade is affordable, a spider over a tower that mites have jammed,
+// a bolt over one the Titan has stunned, and the missing supply over a tower that ran dry. (A ready special shows on the tower's own node.)
+const MARK_ICON: Record<string, string> = {
+  up: 'M8 3l6 8H2z', jam: MITE_PATH, stun: 'M9.6 0.6L3 9h3.7l-1.2 6.4L12.8 7H8.9z',
+  ammo: 'M3 6h3v8H3zM7 4h3v10H7zM11 6h3v8h-3zM3.5 3.5L4.5 2 5.5 3.5zM7.5 1.5L8.5 0 9.5 1.5zM11.5 3.5l1-1.5 1 1.5z',
+  power: 'M9.6 0.6L3 9h3.7l-1.2 6.4L12.8 7H8.9z',
+  petrol: 'M8 1C8 1 3 7 3 10a5 5 0 0 0 10 0C13 7 8 1 8 1z',
+};
 const marks: { el: HTMLElement; kind: string }[] = [];
 function mark(n: number, kind: string, x: number, y: number) {
   let m = marks[n];
@@ -2209,21 +1743,27 @@ function mark(n: number, kind: string, x: number, y: number) {
   m.el.style.transform = `translate(${x.toFixed(0)}px, ${y.toFixed(0)}px)`;
   m.el.style.display = 'block';
 }
-function updateMarks(hero: boolean) {
+/** What a dry tower is missing first: power, petrol or ammunition. */
+function missing(t: Tower): string {
+  const n = TOWERS[t.type].needs;
+  if (n.power && t.pwr < 0.05) return 'power';
+  if (n.fluid && t.tank < 1) return 'petrol';
+  return 'ammo';
+}
+function updateMarks() {
   let n = 0;
   if (!ended) {
     // Upgrade chevrons: not before the first wave. The starting credits are for towers, not for the one upgrade they happen to cover.
-    // On the Spire only in build mode (Uplink mode), where U upgrades the tower in the crosshair.
-    const ups = sim.wave > 0 && (building || (!hero && view.heroBlend < 0.05));
+    const ups = sim.wave > 0;
     for (const t of sim.towers) {
-      if (n >= 48) break;
-      const off = t.stun > 0 ? 'stun' : t.jam > 0 ? 'jam' : '';
+      if (n >= 60) break;
+      const off = t.stun > 0 ? 'stun' : t.jam > 0 ? 'jam' : t.dry ? missing(t) : '';
       if (off) {
         const [x, y, ok] = view.project(t.x, t.h + 0.7, t.z);
         if (ok) mark(n++, off, x, y);
         continue;
       }
-      if (!ups || t.lvl >= 3 || sim.gold < sim.upCost(t)) continue;
+      if (!ups || t.lvl >= 3 || sim.gold < sim.upCost(t) || sim.mats < sim.upMat(t)) continue;
       // beside the model, not on top of it
       const [x, y, ok] = view.project(t.x, t.h * 0.8, t.z);
       if (ok) mark(n++, 'up', x + 15, y);
@@ -2235,7 +1775,7 @@ function updateMarks(hero: boolean) {
 // Wave intel: a tag over each spawn gate with what the next wave sends down that road.
 const intel: { box: HTMLElement; n: number; cls: string; w: number; h: number }[] = [];
 let intelKey = '';
-function updateIntel(hero: boolean) {
+function updateIntel() {
   const pv = sim.preview, lanes = sim.map.lanes;
   const key = lanes.length + '/' + nextKey;
   if (key !== intelKey) {
@@ -2254,20 +1794,16 @@ function updateIntel(hero: boolean) {
     });
   }
   const W = innerWidth, H = innerHeight, phone = H <= 480;
-  const top = (phone ? 50 : 62) + 28, bottom = H - (hero ? 16 : (phone ? 74 : 92) + 16);
-  const blend = view.heroBlend;
-  // full strength up close, fainter when zoomed far out, and only a faint dot from the Spire
-  const alpha = hero || blend > 0.3 ? 0.45 : 1 - 0.55 * clamp((view.cam.dist - 58) / 24, 0, 1);
+  const top = (phone ? 50 : 62) + 28, bottom = H - ((phone ? 74 : 92) + 16);
+  // full strength up close, fainter when zoomed far out
+  const alpha = 1 - 0.55 * clamp((view.cam.dist - 58) / 24, 0, 1);
   for (let i = 0; i < intel.length; i++) {
     const tag = intel[i], s = tag.box.style;
     if (!tag.n || i >= lanes.length || ended) { s.display = 'none'; continue; }
     const g = lanes[i].pts[0];
     const [x, y, ok] = view.project(g[0], (lanes[i].ys[0] || 0) + 2.6, g[1]);
-    // from the Spire a gate can be behind the camera: then there is nothing sensible to point at
-    if (!ok && (hero || blend > 0.3)) { s.display = 'none'; continue; }
     // A gate just past the edge of the view keeps its tag, pushed back inside. Further out it becomes a dot on the edge.
-    const off = !ok || x < -40 || x > W + 40 || y < top - 40 || y > H + 20;
-    const dot = off || hero || blend > 0.3;
+    const dot = !ok || x < -40 || x > W + 40 || y < top - 40 || y > H + 20;
     const cls = 'itag' + tag.cls + (dot ? ' dot' : '');
     if (tag.box.className !== cls) tag.box.className = cls;
     s.display = '';
@@ -2276,57 +1812,6 @@ function updateIntel(hero: boolean) {
     const hw = dot ? 14 : tag.w / 2 + 8;
     s.transform = `translate(${clamp(x, hw, W - hw).toFixed(0)}px, ${clamp(y, top + (dot ? 0 : tag.h), bottom).toFixed(0)}px)`;
   }
-}
-
-// Uplink hints: a small marker over every tower whose special is ready, and on the beacon of the other Spires.
-// Only the marker nearest the crosshair carries a label. Markers fade next to anything with weak points, so the
-// Colossus is never buried under them, and a marker behind Kestrel's own platform is not drawn at all.
-const hints: { box: HTMLElement; label: HTMLElement; cls: string; text: string; want: string }[] = [];
-const BIG = new Float32Array(8 * 3);
-function updateHints(hero: boolean) {
-  let n = 0, nearI = -1;
-  if (hero && !ended) {
-    const p = sim.players[me], cx = innerWidth / 2, cy = innerHeight / 2;
-    let nb = 0;
-    for (const e of sim.enemies) {
-      if (nb >= 8) break;
-      if (!e.alive || !ENEMIES[e.type].weak) continue;
-      const [x, y, ok] = view.project(e.x, e.y, e.z);
-      if (!ok) continue;
-      const [, y2] = view.project(e.x, e.y + e.r, e.z);
-      BIG[nb * 3] = x; BIG[nb * 3 + 1] = y; BIG[nb * 3 + 2] = Math.max(34, Math.abs(y - y2) * 1.5 + 14); nb++;
-    }
-    const o = sim.heroOrigin(me), cp = vx.camera?.position;
-    let nearD = 90;
-    for (const t of sim.towers) {
-      if (n >= 24) break;
-      const spire = t.type === 'spire';
-      if (spire ? t.id === p.heroTower : !sim.specialReady(t)) continue;
-      nodePos(t, P3);
-      const hy = spire ? t.h + 1.7 : P3.y;
-      if (o && cp) {
-        const dx = P3.x - cp.x, dy = hy - cp.y, dz = P3.z - cp.z, L = Math.hypot(dx, dy, dz) || 1;
-        const u = raySphere(cp.x, cp.y, cp.z, dx / L, dy / L, dz / L, o.x, o.y - 0.5, o.z, 1.2);
-        if (u >= 0 && u < L) continue;
-      }
-      const [x, y, ok] = view.project(P3.x, hy, P3.z);
-      if (!ok) continue;
-      let h = hints[n];
-      if (!h) { const box = el('i', 'hint'), label = el('b'); box.append(el('s'), label); $('hints').appendChild(box); h = hints[n] = { box, label, cls: '', text: '', want: '' }; }
-      const dc = Math.hypot(x - cx, y - cy);
-      if (dc < nearD) { nearD = dc; nearI = n; }
-      let faint = false;
-      for (let k = 0; k < nb && !faint; k++) faint = Math.hypot(x - BIG[k * 3], y - BIG[k * 3 + 1]) < BIG[k * 3 + 2];
-      h.want = 'hint ' + (spire ? 'spire' : 'node') + (faint ? ' faint' : '');
-      const text = spire ? 'Spire beacon' : `${TOWERS[t.type].special?.name || 'Special'} ready`;
-      if (h.text !== text) { h.text = text; h.label.textContent = text; }
-      h.box.style.transform = `translate(${x.toFixed(0)}px, ${y.toFixed(0)}px)`;
-      h.box.style.display = 'block';
-      n++;
-    }
-    for (let i = 0; i < n; i++) { const h = hints[i], cls = h.want + (i === nearI ? ' near' : ''); if (h.cls !== cls) { h.cls = cls; h.box.className = cls; } }
-  }
-  for (let i = n; i < hints.length; i++) hints[i].box.style.display = 'none';
 }
 
 /**
@@ -2346,14 +1831,9 @@ function frame(dt: number) {
   if (CAPTURE) sound.clock += dt;
   diagFrame(dt);
   if (!paused) titanCamera(dt);
-  if (overlinkCue > 0 && !paused) { overlinkCue -= dt; if (overlinkCue <= 0) overlinkSay(); }
-  // Uplink mode: the sim's first step puts the players on their Spires, so it waits until the board has assembled
-  const hold = upMode() && !isClient && sim.time === 0 && !!vx.introActive?.();
-  // build mode slows a solo game to a quarter, eased in and out; co-op runs on, and the music and the beat never slow
-  const slowTo = building && mode === 'solo' ? BUILD_SLOW : 1, ease = dt * (1 - BUILD_SLOW) / BUILD_EASE;
-  buildSlow = slowTo < buildSlow ? Math.max(slowTo, buildSlow - ease) : Math.min(slowTo, buildSlow + ease);
-  if (!paused && !hold) {
-    acc += dt * (mode === 'attract' ? 1.4 : sim.players[me]?.heroActive ? 1 : speed) * titanSlow() * buildSlow;
+  if (titanCue > 0 && !paused) { titanCue -= dt; if (titanCue <= 0) titanSay(); }
+  if (!paused) {
+    acc += dt * (mode === 'attract' ? 1.4 : speed) * titanSlow();
     let n = 0;
     const cap = dt > 0.2 ? 70 : 10; // a hidden tab is stepped in big chunks so a multiplayer match keeps running
     while (acc >= STEP && n < cap) { bot?.step(STEP); if (!isClient) sim.step(STEP); acc -= STEP; n++; }
@@ -2361,72 +1841,36 @@ function frame(dt: number) {
     squadT += dt; if (squadT > 1.5) { squadT = 0; squadTokens = Math.min(3, squadTokens + 1); }
     if (isClient) for (const p of sim.projs) { p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; }
   }
-  const p = sim.players[me];
-  if (bot) { view.yaw = p.yaw; view.pitch = p.pitch; }
-  // A captured pointer belongs to the Uplink. If none followed (a guest's request the host turned down), give it back.
-  if (document.pointerLockElement && !p?.heroActive) { lockIdle += dt; if (lockIdle > 1) unlockPointer(); } else lockIdle = 0;
-  if (mode === 'attract' && sim.over) { sim = new Sim({ pauseOnCards: false }); bot = new Bot(sim, 0, 1); fastForward(150); view.setSim(sim, 0); }
-  // free cursor aim: nothing captures the mouse, so the cursor is hidden for as long as it steers the view
-  const hide = !byTouch && !!p?.heroActive && active() && freeAim();
-  if (hide !== cursorHidden) { cursorHidden = hide; document.body.classList.toggle('aimfree', hide); }
+  if (mode === 'attract' && sim.over) { sim = new Sim({ pauseOnCards: false, free: true }); bot = new Bot(sim, 0, 1); fastForward(150); view.setSim(sim, 0); }
 
   if (active()) {
-    if (p.heroActive) {
-      if (owed.x || owed.y) {
-        const k = Math.abs(owed.x) + Math.abs(owed.y) < 0.02 ? 1 : 1 - Math.exp(-dt / 0.04);
-        look(owed.x * k, owed.y * k); owed.x *= 1 - k; owed.y *= 1 - k;
-      }
-      edgeLook(dt);
-      if (!isClient) { p.yaw = view.yaw; p.pitch = view.pitch; }
-      view.aimPoint(aim);
-      aimBow((mouseFire || touchFire) && !building && !armed, dt);
-      if (building) updateBuild();
-      if (armed) updateArm(dt);
-      // touch aim friction needs to know whether the crosshair rests on an enemy; the mouse never asks
-      aimHot = false;
-      if (byTouch && settings.friction) for (const e of sim.enemies) if (e.alive && Math.hypot(e.x - aim.x, e.y - aim.y, e.z - aim.z) <= e.r + 0.2) { aimHot = true; break; }
-      const tp = sim.towerById(aimSpire());
-      view.setTele(tp || null);
-      const tk = tp ? 'tp' : '';
-      if (cache.tele !== tk) { cache.tele = tk; $('cross').classList.toggle('tp', !!tp); $('t-tp').classList.toggle('on', !!tp); }
-      setText('hero-hint', tp ? (byTouch ? 'TAP JUMP OR SHOOT THE BEACON' : 'F OR SHOOT THE BEACON TO JUMP') : '');
-      // no captured pointer after the first moment: say how to get one, or how to turn without
-      const free = !byTouch && !document.pointerLockElement && performance.now() - heroSince > 500;
-      setText('lock-hint', !free ? '' : freeAim() ? (performance.now() - heroSince < 6000 ? 'Free cursor: hold it at a screen edge to keep turning' : '')
-        : lockFailed ? 'The mouse cannot be captured here. Hold the cursor at a screen edge to keep turning.' : 'Click to capture the mouse');
-    } else {
-      // The pan speed follows the zoom, so the board crosses the screen at the same pace at any distance.
-      const c = bird(), sp = c.dist * 0.9 * dt;
-      let tx = (keys.has('d') || keys.has('arrowright') ? 1 : 0) - (keys.has('a') || keys.has('arrowleft') ? 1 : 0);
-      let ty = (keys.has('s') || keys.has('arrowdown') ? 1 : 0) - (keys.has('w') || keys.has('arrowup') ? 1 : 0);
-      if (tx && ty) { tx *= Math.SQRT1_2; ty *= Math.SQRT1_2; }
-      const ek = 1 - Math.exp(-dt * 14);
-      keyV.x += (tx - keyV.x) * ek; keyV.y += (ty - keyV.y) * ek;
-      const mx = Math.abs(keyV.x) > 0.01 ? keyV.x : 0, my = Math.abs(keyV.y) > 0.01 ? keyV.y : 0;
-      if (mx || my) {
-        // screen right on the ground, whichever way the camera is turned; screen up is at a right angle to it
-        const cx = innerWidth / 2, cy = innerHeight / 2;
-        view.groundPoint(cx, cy, ga); view.groundPoint(cx + 80, cy, gb);
-        let rx = gb.x - ga.x, rz = gb.z - ga.z;
-        const rl = Math.hypot(rx, rz);
-        if (rl > 1e-6 && Number.isFinite(rl)) { rx /= rl; rz /= rl; } else { rx = 1; rz = 0; }
-        c.x += (rx * mx - rz * my) * sp; c.z += (rz * mx + rx * my) * sp;
-        clampCam();
-      }
-      // E swings the camera to the right, Q to the left. The turn eases in and runs out, it does not start and stop dead.
-      keyV.r += ((keys.has('e') ? 1 : 0) - (keys.has('q') ? 1 : 0) - keyV.r) * (1 - Math.exp(-dt * 9));
-      if (Math.abs(keyV.r) > 0.004) rotateCam(-keyV.r * 1.9 * dt);
-      zoomStep(dt);
+    // The pan speed follows the zoom, so the board crosses the screen at the same pace at any distance.
+    const c = bird(), sp = c.dist * 0.9 * dt;
+    let tx = (keys.has('d') || keys.has('arrowright') ? 1 : 0) - (keys.has('a') || keys.has('arrowleft') ? 1 : 0);
+    let ty = (keys.has('s') || keys.has('arrowdown') ? 1 : 0) - (keys.has('w') || keys.has('arrowup') ? 1 : 0);
+    if (tx && ty) { tx *= Math.SQRT1_2; ty *= Math.SQRT1_2; }
+    const ek = 1 - Math.exp(-dt * 14);
+    keyV.x += (tx - keyV.x) * ek; keyV.y += (ty - keyV.y) * ek;
+    const mx = Math.abs(keyV.x) > 0.01 ? keyV.x : 0, my = Math.abs(keyV.y) > 0.01 ? keyV.y : 0;
+    if (mx || my) {
+      // screen right on the ground, whichever way the camera is turned; screen up is at a right angle to it
+      const cx = innerWidth / 2, cy = innerHeight / 2;
+      view.groundPoint(cx, cy, ga); view.groundPoint(cx + 80, cy, gb);
+      let rx = gb.x - ga.x, rz = gb.z - ga.z;
+      const rl = Math.hypot(rx, rz);
+      if (rl > 1e-6 && Number.isFinite(rl)) { rx /= rl; rz /= rl; } else { rx = 1; rz = 0; }
+      c.x += (rx * mx - rz * my) * sp; c.z += (rz * mx + rx * my) * sp;
+      clampCam();
     }
+    // E swings the camera to the right, Q to the left. The turn eases in and runs out, it does not start and stop dead.
+    keyV.r += ((keys.has('e') ? 1 : 0) - (keys.has('q') ? 1 : 0) - keyV.r) * (1 - Math.exp(-dt * 9));
+    if (Math.abs(keyV.r) > 0.004) rotateCam(-keyV.r * 1.9 * dt);
+    zoomStep(dt);
   } else { keyV.x = keyV.y = keyV.r = 0; }
 
   // networking
   if (net && mode === 'coop') {
-    if (isClient) { lookT += dt; if (lookT > 0.08 && p.heroActive) { lookT = 0; net.send({ t: 'in', a: 'look', y: view.yaw, p: view.pitch }); } }
-    else {
-      // the guest's bow, as last reported; the sim decides what a draw is worth and when an arrow may fly
-      const g = sim.players[1];
-      if (g?.heroActive && !sim.over) (sim as unknown as SimX).heroAim?.(1, guestAim.d, guestAim.x, guestAim.y, guestAim.z); else guestAim.d = false;
+    if (!isClient) {
       for (const e of sim.events) if (e.k !== 'dmg' || e.p === 1) netEvs.push(e);
       if (netEvs.length > 300) netEvs = netEvs.slice(-300);
       snapT += dt;
@@ -2453,11 +1897,9 @@ function frame(dt: number) {
       else endGame(sim.won);
     }
   }
-  // the score's tense layer runs while the player stands on a Spire and while the Titan is on the field
+  // the score's tense layer runs while the Titan is on the field
   const tp = sim.titan ? sim.titan.phase : 'none';
-  // (in Uplink mode the player is always on a Spire: there the layer follows the fight, not the Spire)
-  const fight = upMode() ? sim.enemies.some((e) => e.alive) : !!p?.heroActive;
-  sound.intense = mode !== 'attract' && !ended && (fight || tp === 'landing' || tp === 'walk') ? 1 : 0;
+  sound.intense = mode !== 'attract' && !ended && (tp === 'landing' || tp === 'walk') ? 1 : 0;
   // the built-in score stays quiet for as long as the player's own music is playing
   sound.setScoreMuted(music.isExternalPlaying());
   // the beat reaches the view only while it is switched on and has somewhere to show
@@ -2483,16 +1925,15 @@ function frame(dt: number) {
       demo(seed: number, ff: number, mapId?: string) {
         // mapId may be a pre-made id or 'gen-<tier>-<seed>' for a generated map
         const g = /^gen-([1-3])-(\d{1,9})$/.exec(mapId || '');
-        startGame('solo', { demo: true, seed, map: g ? generateMap(+g[2], +g[1]) : mapById(mapId) || MAPS[0], diff: 'normal', survival: false }); sound.stopMusic(); fastForward(ff); sim.exitHero(0); sim.events.length = 0; view.setSim(sim, 0); },
+        startGame('solo', { demo: true, seed, map: g ? generateMap(+g[2], +g[1]) : mapById(mapId) || MAPS[0], diff: 'normal', survival: false }); sound.stopMusic(); fastForward(ff); sim.events.length = 0; view.setSim(sim, 0); },
       attract() { startAttract(); show('menu', false); },
       menu() { startAttract(); },
-      energy(v: number) { sim.players[0].energy = v; },
       sound,
       /** hand control from the bot to the "player" so the card picker can be shown */
       takeover() { bot = null; sim.opts.pauseOnCards = true; },
       /** run the bot-played match forward without drawing; the view is reset afterwards like in demo() */
       skip(seconds: number) { fastForward(seconds); },
-      resync() { sim.exitHero(0); sim.events.length = 0; view.setSim(sim, 0); },
+      resync() { sim.events.length = 0; view.setSim(sim, 0); },
       async renderAudio(seconds: number, hot: [number, number][]) {
         const cues = sound.cueLog || [];
         sound.cueLog = null;
@@ -2515,9 +1956,8 @@ function frame(dt: number) {
   if (import.meta.env.DEV) {
     (window as unknown as Record<string, unknown>).__dbg = {
       get sim() { return sim; }, view, act, startGame, sound, diag, zoomS, touch: touchApi,
-      /** Uplink mode build mode as the controller sees it; pick() reads the hex under the crosshair again right away */
-      get build() { return { open: building, type: upTower, cx: bhex.cx, cz: bhex.cz, tower: bhex.tower, ok: bhex.ok, slow: buildSlow, paused }; },
-      pick() { if (building) updateBuild(); },
+      /** what the controller has chosen for building and selected */
+      get build() { return { tower: buildType, fac: buildFac, dir: facDir, selected, selFac, tab: barTab, hover: { ...hover } }; },
     };
   }
   let last = performance.now();

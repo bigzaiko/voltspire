@@ -1,37 +1,38 @@
-// Three.js view of a Sim: models, cameras (bird view + third person on an Uplink Spire), effects.
+// Three.js view of a Sim: models, the bird camera, the factory (see facview.ts), effects.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, ENEMY_SCALE, BOW_TIERS, TITAN_LAND, GW, GH, cellX, cellZ, worldToCell } from './data.ts';
-import type { TowerType, EnemyType } from './data.ts';
+import { TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, ENEMY_SCALE, TITAN_LAND, GW, GH, cellX, cellZ, worldToCell } from './data.ts';
+import type { TowerType, EnemyType, FacType } from './data.ts';
 import { HEX_SIZE, BOARD_W, BOARD_D, HEX_CORNERS } from './hex.ts';
-import { Sim, TOWER_SCALE, TOWER_H, HERO_SCALE, SKILL_CAST, NODE_R, ARROW_PAD, FIRE_RING, SPIRE_R, standY, nodePos, weakPos, spireTarget, raySphere } from './sim.ts';
+import { Sim, TOWER_SCALE, NODE_R, FIRE_RING, nodePos } from './sim.ts';
+import { FacView } from './facview.ts';
 import type { Ev, Tower, Enemy, TitanState } from './sim.ts';
 import type { GameMap } from './map.ts';
 import { Fx, makeBeam, placeBeam, fireMat, reticleMat, FIRE_CLOCK } from './fx.ts';
 import { buildWorld, noAO, FX_LAYER } from './world.ts';
 import { Post } from './post.ts';
 import { lightPool, glowTexture, POOL_GEO } from './tex.ts';
-import { makeEnemyRig, resetEnemy, updateEnemy, makeTowerRig, updateTower, towerShot, makeHeroRig, updateHero, heroTrigger, resetHero, BOSS_REACH } from './anim.ts';
-import type { EnemyRig, TowerRig, TowerState, HeroRig, HeroEvent } from './anim.ts';
+import { makeEnemyRig, resetEnemy, updateEnemy, makeTowerRig, updateTower, towerShot, BOSS_REACH } from './anim.ts';
+import type { EnemyRig, TowerRig, TowerState } from './anim.ts';
 
-const MODEL_NAMES = [...TOWER_TYPES.map((t) => 'tower_' + t), ...ENEMY_TYPES.map((t) => 'enemy_' + t), 'hero', 'core', 'prop_barrier', 'prop_lamp', 'prop_crate'];
+/** Factory buildings with a model file (belts and pipes are built in facview.ts). */
+const FAC_MODELS = ['mine', 'pump', 'smelter', 'refinery', 'fab', 'depot', 'generator', 'pole'].map((t) => 'fac_' + t);
+const MODEL_NAMES = [...TOWER_TYPES.map((t) => 'tower_' + t), ...ENEMY_TYPES.map((t) => 'enemy_' + t), 'core', 'prop_barrier', 'prop_lamp', 'prop_crate', ...FAC_MODELS];
 
-// Ember palette. Defenders are warm, the Static is cold, verdigris belongs to the Uplink.
-const SAND = 0xe3dc92, APRICOT = 0xf68b56, RUST = 0xce6b44, UPLINK = 0x6fe0c8;
+// Ember palette. Defenders are warm, the Static is cold.
+const SAND = 0xe3dc92, APRICOT = 0xf68b56, RUST = 0xce6b44;
 const STATIC = 0x8fd0ff, VIOLET = 0x8a7dff, FROST = 0xdff0ff;
 const HEAT = 0xffa24a; // hot metal sparks
 const SINGC = 0xa99cff; // a singularity is cold violet and white, whoever throws it
 const HSL = { h: 0, s: 0, l: 0 };
 const DUST = 0x8f866c; // sand that has been kicked up
-const TRAIL = 0x596066; // what an Arrow Rain shaft leaves in the air: cold white, kept dim so nine of them do not burn out the picture
-const V = new THREE.Vector3(), V2 = new THREE.Vector3(), RO = new THREE.Vector3(), RD = new THREE.Vector3();
-const V3 = new THREE.Vector3(), ZA = new THREE.Vector3(0, 0, 1), YA = new THREE.Vector3(0, 1, 0), M4 = new THREE.Matrix4(), M5 = new THREE.Matrix4(), M6 = new THREE.Matrix4();
+const V = new THREE.Vector3(), V2 = new THREE.Vector3();
+const V3 = new THREE.Vector3(), YA = new THREE.Vector3(0, 1, 0), M4 = new THREE.Matrix4(), M5 = new THREE.Matrix4(), M6 = new THREE.Matrix4();
 const C1 = new THREE.Color(), C2 = new THREE.Color(), Q1 = new THREE.Quaternion(), Q2 = new THREE.Quaternion();
 const W3 = { x: 0, y: 0, z: 0 }, PT = { x: 0, z: 0 };
 const wrapA = (a: number) => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
 const ST: TowerState = { down: false, spec: false, power: 1, heat: 0 };
 const TAU = Math.PI * 2;
-const DMG = new Float64Array(96);
 const sat = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const ease = (u: number) => { u = sat(u); return u * u * (3 - 2 * u); };
 const damp = (cur: number, to: number, rate: number, dt: number) => cur + (to - cur) * (1 - Math.exp(-rate * dt));
@@ -58,14 +59,8 @@ interface WorldApi {
   groundY?(x: number, z: number): number;
 }
 
-// Third-person camera: an orbit round a point above and to the right of Kestrel's head.
-const CAM_BACK = 3.0, CAM_SIDE = 0.85, CAM_UP = 1.5;
-// Uplink mode, building: how far the camera rises and pulls back for a look at the ground (see View.buildView).
-const LIFT_UP = 1.4, LIFT_BACK = 2.6;
 /** Enemies are drawn no closer to the core's centre than this plus 0.6 of their radius: its plinth is in the way. */
 const CORE_STAND = 1.6;
-/** How far the aim ray reaches when it hits nothing. */
-const AIM_FAR = 150;
 
 // ---------- shared geometry and materials (never disposed) ----------
 const hexFlat = (g: THREE.BufferGeometry) => g.rotateX(-Math.PI / 2);
@@ -139,17 +134,6 @@ const guardMat = () => new THREE.ShaderMaterial({
   blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, side: THREE.DoubleSide,
 });
 
-// Arrow Rain: the volley climbs for RAIN_CLIMB seconds after the release, hangs for RAIN_HANG and comes down in RAIN_DIVE
-const RAIN_CLIMB = 0.3, RAIN_HANG = 0.1, RAIN_DIVE = 0.17, RAIN_N = 9;
-/** Seconds from the cast to the first shafts landing: the ground marker fills over this time. */
-const RAIN_LAND = SKILL_CAST[1] + RAIN_CLIMB + RAIN_HANG + RAIN_DIVE;
-const SHAFTS = 96;
-/** One shaft of Arrow Rain. mode 0 free, 1 climbing with the volley, 2 hanging at the top, 3 coming down, 4 stuck in the deck. */
-interface Shaft {
-  mode: number; t: number; T: number; pow: number; tr: number; gy: number;
-  p0: THREE.Vector3; p1: THREE.Vector3; p2: THREE.Vector3; to: THREE.Vector3; pos: THREE.Vector3; dir: THREE.Vector3; d0: THREE.Vector3; last: THREE.Vector3;
-}
-
 // accretion disc of a singularity: streaks that wind inward, white at the inner edge
 const accMat = () => new THREE.ShaderMaterial({
   uniforms: { time: FIRE_CLOCK, color: { value: new THREE.Color(SINGC) }, gain: { value: 1 } },
@@ -182,12 +166,11 @@ const lensMat = () => new THREE.ShaderMaterial({
 });
 
 interface Glow { m: THREE.MeshStandardMaterial; i0: number }
-interface WeakVis { core: THREE.Mesh; ring: THREE.Mesh; mat: THREE.MeshBasicMaterial; rmat: THREE.ShaderMaterial }
 /** Gyre guard: its own strip lights, the blur rings and shimmer discs on both faces, the smoothed spin, and a short flare */
 interface GuardVis { strips: Glow[]; rmat: THREE.MeshBasicMaterial; dmat: THREE.ShaderMaterial; parts: THREE.Mesh[]; lvl: number; surge: number; em: number }
 interface EVis {
   obj: THREE.Object3D; rig: EnemyRig; sx: number; sz: number; glow: THREE.Mesh; back: THREE.Sprite; bar: THREE.Sprite; sbar: THREE.Sprite | null; bubble: THREE.Mesh | null;
-  ice: THREE.Mesh | null; weak: WeakVis[]; wglow: Glow[]; type: EnemyType; phase: number; seen: number; fresh: boolean; lx: number; lz: number; lgy: number; tilt: number; em: number;
+  ice: THREE.Mesh | null; wglow: Glow[]; type: EnemyType; phase: number; seen: number; fresh: boolean; lx: number; lz: number; lgy: number; tilt: number; em: number;
   /** hit flash: the meshes and their own materials, and the seconds the flash still has to run */
   meshes: THREE.Mesh[]; mats: (THREE.Material | THREE.Material[])[]; hitT: number;
   guard: GuardVis | null;
@@ -226,19 +209,13 @@ interface Roam {
 interface Wreck { v: EVis; t: number; tick: number; x: number; z: number; gy: number; down: boolean }
 const CITY_NEAR = [[1, 0], [-1, 0], [0, -1], [-1, -1], [0, 1], [-1, 1]], CITY_NEAR_ODD = [[1, 0], [-1, 0], [1, -1], [0, -1], [1, 1], [0, 1]];
 const cityKey = (c: number, r: number) => (r + 64) * 256 + c + 64;
-/** tele > 0: still dissolving at the spire she is leaving; out: playing the uplink-end animation at `pos` */
-interface HVis { obj: THREE.Object3D; rig: HeroRig | null; pos: THREE.Vector3; tele: number; out: boolean; shown: boolean; tiers: { n: number; o: THREE.Object3D }[] }
 interface ZVis {
   obj: THREE.Group; kind: string; seen: number; t: number; mats: THREE.Material[]; halo: THREE.Object3D | null; c: number; tick: number; x: number; y: number; z: number; r: number; core: THREE.Object3D | null; lens: THREE.Mesh | null; life: number;
-  /** Arrow Rain: the soft fill that grows while the volley is in the air, and the side the shower comes in from */
-  fill: THREE.Mesh | null; ax: number; az: number;
 }
 /** A wall of fire between two Firewall Pylons (sim.walls). */
 interface WallLike { a: number; b: number; ax: number; az: number; bx: number; bz: number; on: boolean; hot: boolean }
 interface WVis { obj: THREE.Group; sheet: THREE.Mesh; mat: THREE.ShaderMaterial; glow: THREE.Mesh; gmat: THREE.MeshBasicMaterial; seen: number; on: number; heat: number; em: number; len: number }
-/** Jump target above a Spire. */
-interface BVis { obj: THREE.Group; ret: THREE.Mesh; mat: THREE.ShaderMaterial; dia: THREE.Mesh; key: THREE.Sprite; hot: number }
-/** An effect held back until the hero's pose reaches its release beat. */
+/** An effect held back for a moment (a ripple that follows a blast). */
 interface Later { t: number; fn: () => void }
 
 /** Half-length of road (before and after a corner) over which each type swings through its turn, and the hardest it can turn (rad/s). */
@@ -285,6 +262,7 @@ function roundedPose(map: GameMap, lane: number, d: number, off: number, a: numb
 /** Stand-in for a model file that is missing. Same node and material names as the real ones, so rigs and tuning work. */
 function fallbackModel(name: string): THREE.Object3D {
   const g = new THREE.Group();
+  if (name.startsWith('fac_')) return g; // empty: the factory view builds the building from plain shapes instead
   const hull = new THREE.MeshStandardMaterial({ color: 0x2a231e, roughness: 0.5, metalness: 0.6, name: 'hull' });
   const trim = new THREE.MeshStandardMaterial({ color: 0x6b6258, roughness: 0.35, metalness: 0.9, name: 'trim' });
   const glow = (c: number, n = 'glow_main') => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 3, name: n });
@@ -292,74 +270,11 @@ function fallbackModel(name: string): THREE.Object3D {
   const group = (parent: THREE.Object3D, n: string, x = 0, y = 0, z = 0) => { const o = new THREE.Group(); o.name = n; o.position.set(x, y, z); parent.add(o); return o; };
   const alongZ = (geo: THREE.BufferGeometry) => geo.rotateX(Math.PI / 2);
   if (name.startsWith('tower_')) {
-    const t = name.slice(6) as TowerType, c = TOWERS[t].color, H = TOWER_H[t] / TOWER_SCALE;
+    const t = name.slice(6) as TowerType, c = TOWERS[t].color;
     const paint = new THREE.MeshStandardMaterial({ color: c, roughness: 0.5, metalness: 0.5, name: 'paint' });
-    const lit = glow(c);
     const base = group(g, 'base');
     part(base, new THREE.CylinderGeometry(0.7, 0.86, 0.4, 6), hull, 0, 0.2, 0);
     part(base, new THREE.CylinderGeometry(0.72, 0.72, 0.06, 6), paint, 0, 0.43, 0);
-    if (t === 'spire') {
-      part(base, new THREE.CylinderGeometry(0.26, 0.42, H - 0.5, 6), hull, 0, 0.4 + (H - 0.5) / 2, 0);
-      for (let i = 0; i < 3; i++) {
-        const a = (i * TAU) / 3, s = part(base, new THREE.BoxGeometry(0.08, H * 0.5, 0.08), trim, Math.cos(a) * 0.5, H * 0.27, Math.sin(a) * 0.5);
-        s.rotation.set(Math.sin(a) * 0.12, 0, -Math.cos(a) * 0.12);
-      }
-      part(base, new THREE.CylinderGeometry(1.0, 0.8, 0.14, 6), hull, 0, H - 0.07, 0);
-      part(base, new THREE.CylinderGeometry(0.84, 0.84, 0.05, 6), lit, 0, H - 0.17, 0);
-      part(base, new THREE.CylinderGeometry(0.02, 0.03, 1.1, 5), trim, -0.86, H + 0.5, -0.3);
-      part(base, new THREE.SphereGeometry(0.06, 8, 6), lit, -0.86, H + 1.08, -0.3);
-      const dish = group(g, 'spin_1', 0, H * 0.62, 0);
-      part(dish, new THREE.CylinderGeometry(0.2, 0.05, 0.12, 8), trim, 0.5, 0, 0).rotation.z = -Math.PI / 2;
-      part(dish, new THREE.BoxGeometry(0.5, 0.05, 0.05), trim, 0.25, 0, 0);
-    } else if (t === 'gravity') {
-      for (let i = 0; i < 3; i++) {
-        const a = (i * TAU) / 3 + 0.5, p = part(base, new THREE.BoxGeometry(0.14, H * 0.8, 0.2), hull, Math.cos(a) * 0.58, H * 0.42, Math.sin(a) * 0.58);
-        p.rotation.set(-0.2, Math.PI / 2 - a, 0, 'YXZ');
-        part(base, new THREE.BoxGeometry(0.1, 0.1, 0.1), lit, Math.cos(a) * 0.42, H * 0.84, Math.sin(a) * 0.42);
-      }
-      const orb = group(g, 'orb', 0, H * 0.66, 0);
-      part(orb, new THREE.SphereGeometry(0.36, 16, 12), new THREE.MeshStandardMaterial({ color: 0x0c0a12, roughness: 0.25, metalness: 0.9, name: 'hull' }));
-      const r1 = group(g, 'spin_1', 0, H * 0.66, 0);
-      part(r1, new THREE.TorusGeometry(0.56, 0.025, 6, 32), lit).rotation.x = Math.PI / 2;
-      const r2 = group(g, 'spin_2', 0, H * 0.66, 0); r2.rotation.z = 0.5;
-      part(r2, new THREE.TorusGeometry(0.46, 0.02, 6, 28), trim).rotation.x = Math.PI / 2;
-    } else {
-      const ty = t === 'lance' ? H * 0.78 : t === 'arc' || t === 'beacon' ? H * 0.8 : H * 0.62;
-      part(base, new THREE.CylinderGeometry(t === 'lance' ? 0.2 : 0.34, t === 'lance' ? 0.3 : 0.46, ty - 0.4, 6), hull, 0, 0.4 + (ty - 0.4) / 2, 0);
-      const tur = group(g, 'turret', 0, ty, 0);
-      if (t === 'flame') {
-        part(tur, new THREE.BoxGeometry(0.62, 0.44, 0.7), hull);
-        for (const s of [-1, 1]) part(tur, new THREE.CylinderGeometry(0.15, 0.15, 0.6, 10), paint, s * 0.2, 0.3, -0.3).rotation.x = Math.PI / 2;
-        const b = group(tur, 'barrel', 0, 0, 0.35);
-        part(b, alongZ(new THREE.CylinderGeometry(0.24, 0.12, 0.62, 10)), trim, 0, 0, 0.3);
-        part(b, alongZ(new THREE.TorusGeometry(0.2, 0.03, 6, 16).rotateX(Math.PI / 2)), lit, 0, 0, 0.6);
-      } else if (t === 'lance') {
-        part(tur, new THREE.BoxGeometry(0.4, 0.36, 0.6), hull);
-        part(tur, new THREE.BoxGeometry(0.44, 0.08, 0.3), paint, 0, 0.2, -0.1);
-        const b = group(tur, 'barrel', 0, 0, 0.3);
-        part(b, alongZ(new THREE.CylinderGeometry(0.05, 0.07, 1.3, 8)), trim, 0, 0, 0.65);
-        for (let i = 0; i < 3; i++) part(b, new THREE.TorusGeometry(0.11, 0.02, 5, 14), trim, 0, 0, 0.35 + i * 0.4);
-        part(b, new THREE.SphereGeometry(0.09, 10, 8), lit, 0, 0, 1.32);
-      } else if (t === 'missile') {
-        part(tur, new THREE.BoxGeometry(0.36, 0.4, 0.5), hull);
-        for (const s of [-1, 1]) {
-          const b = group(tur, s < 0 ? 'barrel_1' : 'barrel_2', s * 0.42, 0.12, 0); b.rotation.x = -0.5;
-          part(b, new THREE.BoxGeometry(0.42, 0.42, 0.86), hull);
-          part(b, new THREE.BoxGeometry(0.44, 0.1, 0.5), paint, 0, 0.2, -0.1);
-          for (let i = 0; i < 4; i++) part(b, alongZ(new THREE.CylinderGeometry(0.07, 0.07, 0.04, 8)), i === 0 ? lit : trim, ((i % 2) - 0.5) * 0.2, ((i >> 1) - 0.5) * 0.2, 0.44);
-        }
-      } else if (t === 'arc' || t === 'beacon') {
-        const o = group(tur, t === 'arc' ? 'orb' : 'spin_1');
-        if (t === 'arc') part(o, new THREE.SphereGeometry(0.3, 14, 10), lit);
-        else { part(o, new THREE.BoxGeometry(0.9, 0.06, 0.14), trim); part(o, new THREE.SphereGeometry(0.12, 10, 8), lit, 0, 0.2, 0); }
-        for (let i = 0; i < 3; i++) { const a = (i * TAU) / 3; part(tur, new THREE.BoxGeometry(0.06, 0.5, 0.06), trim, Math.cos(a) * 0.36, -0.2, Math.sin(a) * 0.36); }
-      } else {
-        part(tur, new THREE.BoxGeometry(0.8, 0.5, 1.0), hull);
-        part(tur, new THREE.BoxGeometry(0.84, 0.08, 0.5), paint, 0, 0.27, -0.15);
-        const b = group(tur, 'barrel', 0, 0, 0.5);
-        part(b, new THREE.BoxGeometry(0.2, 0.2, 0.9), lit, 0, 0, 0.3);
-      }
-    }
   } else if (name.startsWith('enemy_')) {
     const t = name.slice(6) as EnemyType, d = ENEMIES[t];
     const dark = new THREE.MeshStandardMaterial({ color: 0x1c2230, roughness: 0.5, metalness: 0.5, name: 'hull' });
@@ -377,13 +292,12 @@ function fallbackModel(name: string): THREE.Object3D {
       return g;
     }
     if (t === 'titan') {
-      // a hull on four posts with a long head; the weak points sit where the game tests them
+      // a hull on four posts with a long head
       const body = group(g, 'body', 0, 9.6, 0);
       part(body, new THREE.BoxGeometry(3.4, 2.6, 4.4), dark);
       const head = group(body, 'head', 0, 3.8, 2.2);
       part(head, new THREE.BoxGeometry(1.8, 0.6, 5), dark, 0, 1.1, 1.4);
       for (const sx of [-1, 1]) for (const sz of [-1, 1]) part(g, new THREE.CylinderGeometry(0.3, 0.4, 9, 6), trim, sx * 4, 4.5, sz * 3.5);
-      (d.weak || []).forEach((w, i) => part(group(g, 'weak_' + (i + 1), w.x, w.y, w.z), new THREE.SphereGeometry(w.r * 0.82, 12, 8), glow(VIOLET, 'glow_weak')));
       return g;
     }
     if (t === 'mite') {
@@ -399,10 +313,6 @@ function fallbackModel(name: string): THREE.Object3D {
     }
     const b = part(g, new THREE.CapsuleGeometry(d.r * 0.7, d.r, 4, 10), dark, 0, t === 'drone' ? 0 : d.r * 1.2, 0);
     part(g, new THREE.SphereGeometry(d.r * 0.3, 8, 6), glow(STATIC), 0, b.position.y + d.r * 0.3, d.r * 0.6);
-  } else if (name === 'hero') {
-    part(g, new THREE.CapsuleGeometry(0.3, 1.1, 4, 10), new THREE.MeshStandardMaterial({ color: 0xd8cfb4 }), 0, 0.9, 0);
-    const bow = part(g, new THREE.TorusGeometry(0.6, 0.04, 6, 20, Math.PI), glow(BOW_TIERS[0].color, 'glow_bow'), -0.3, 1.2, 0.5);
-    bow.name = 'bow'; bow.rotation.set(0, Math.PI / 2, Math.PI / 2);
   } else if (name === 'core') {
     part(g, new THREE.CylinderGeometry(2, 2.3, 1, 6), hull, 0, 0.5, 0);
     part(g, new THREE.SphereGeometry(1.3, 20, 14), glow(SAND, 'glow_core'), 0, 2.8, 0);
@@ -427,11 +337,8 @@ export class View {
   /** Bird camera: look target on the deck, distance from it, and the angle it has been turned round it (radians). The tilt follows the distance. */
   cam = { x: 0, z: 1.5, dist: 48, rot: 0 };
   orbit = false;
-  yaw = 0; pitch = -0.25;
-  heroBlend = 0;
-  /** Uplink mode: build mode is open. The third-person camera eases up and back while it is (lift 0..1). */
-  buildView = false;
-  private lift = 0;
+  /** the factory: deposits, buildings, belts with their items, pipes and power lines */
+  fac: FacView;
   shake = 0;
   time = 0;
   quality: 'high' | 'low' = 'high';
@@ -443,42 +350,25 @@ export class View {
   private pv = new Map<number, PVis>(); private ppool: Record<string, PVis[]> = {};
   private zv = new Map<number, ZVis>();
   private wv = new Map<string, WVis>();
-  private beacons: BVis[] = [];
-  private teleId = 0;
-  private dmgN = 0;
-  private keyTex: THREE.Texture | null = null;
   private coreGlows: Glow[] = [];
   /** seconds since the core last took a hit (it flinches), and since it last fired its discharge */
   private coreHit = 9; private coreZap = 9;
-  // one shared flash for a model that was just hit by an arrow: pale and brief, white for a weak point
-  private hitMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xbfe0ff).multiplyScalar(0.8) });
-  private critMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xffffff).multiplyScalar(0.92) });
-  private heroes: HVis[] = [];
   private coreSpins: THREE.Object3D[] = [];
   private coreObj: THREE.Object3D | null = null;
   private dyn = new THREE.Group();
   private barMats: THREE.SpriteMaterial[];
   private projGeo: Record<string, THREE.BufferGeometry>;
   private projMat: Record<string, THREE.Material>;
-  private skillMark!: THREE.Mesh; private skillMat!: THREE.ShaderMaterial;
   private rangeRing: THREE.Mesh; private cellMark: THREE.Group; private cellFill: THREE.Mesh; private cellEdge: THREE.Mesh; private cellCross: THREE.Group;
   private ghost = new THREE.Group(); private ghostType = ''; private ghostMat: THREE.MeshStandardMaterial;
-  private selRing: THREE.Mesh; private teleMark: THREE.Group; private hoverMark: THREE.Mesh;
-  private bowMats: THREE.MeshStandardMaterial[] = [];
-  /** Rail Shot held ready (set by the page each frame): aimZoom 1 narrows the view, railCharge 0..1 draws and lights the bow */
-  aimZoom = 0; railCharge = 0; private zoomS = 0;
-  /** how much a mouse movement turns the view right now: less while zoomed in, so the crosshair stays as steady on screen */
-  get lookScale() { return 1 - 0.5 * this.zoomS; }
+  private selRing: THREE.Mesh; private hoverMark: THREE.Mesh;
   private enemyGlow = new THREE.MeshBasicMaterial({ map: glowTexture(), color: new THREE.Color(STATIC).multiplyScalar(0.4), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
   private bubbleMat = new THREE.MeshBasicMaterial({ color: 0x4a86c8, transparent: true, opacity: 0.2, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
   private haloMats = new Map<TowerType, THREE.SpriteMaterial>();
   private metricsOf = new Map<TowerType, { r: number; tb: THREE.Box3 | null }>();
   private world: WorldApi;
-  private topPos = new THREE.Vector3(); private topQ = new THREE.Quaternion();
-  private heroPos = new THREE.Vector3(); private heroQ = new THREE.Quaternion();
+  private topPos = new THREE.Vector3();
   private dummy = new THREE.PerspectiveCamera();
-  private lastHeroAnchor = new THREE.Vector3();
-  private bow = new THREE.Vector3();
   private core = { x: 0, z: 0 };
   private scenery = new THREE.Group();
   private lamps: THREE.Object3D[] = [];
@@ -487,12 +377,8 @@ export class View {
   private intro = false;
   private beatLevel = 0;
   private later: Later[] = [];
-  /** Skill zones whose visuals wait for the cast pose: [x, z, delay]. */
-  private zoneWait: number[][] = [];
   /** Seconds left in which arcs are drawn as a Thunderhead and missile blasts as a Swarm. */
   private thunder = 0; private swarm = 0;
-  /** Arrow Rain: the shafts in the air or stuck in the deck (one instanced mesh), and the seconds since this player's own cast (the camera eases back a little for it). */
-  private shafts: Shaft[] = []; private shaftMesh: THREE.InstancedMesh; private shaftN = 0; private rainT = 9;
   /** Mites: their state by enemy id, and the instanced meshes they are drawn with (built from the model on first use). */
   private mites = new Map<number, MVis>(); private miteParts: { mesh: THREE.InstancedMesh; swing: number; pivot: THREE.Vector3 }[] = [];
   /** The Titan while it roams and leaps, and its wreck after it has died. */
@@ -531,20 +417,14 @@ export class View {
 
     // hp bars: sand, apricot, rust by health; cold blue for a shield; a dark strip behind them
     this.barMats = [SAND, APRICOT, RUST, STATIC, 0x14110f].map((c, i) => new THREE.SpriteMaterial({ color: c, depthWrite: false, fog: false, transparent: i === 4, opacity: i === 4 ? 0.7 : 1 }));
-    const arrow = new THREE.CylinderGeometry(0.035, 0.035, 2.6, 5); arrow.rotateX(Math.PI / 2);
     const bolt = new THREE.SphereGeometry(0.11, 8, 6); bolt.scale(1, 1, 4.2);
     const missile = new THREE.CapsuleGeometry(0.075, 0.5, 3, 6); missile.rotateX(Math.PI / 2);
-    this.projGeo = { arrow, bolt, missile, shell: new THREE.SphereGeometry(0.2, 14, 10) };
+    this.projGeo = { bolt, missile, shell: new THREE.SphereGeometry(0.2, 14, 10) };
     this.projMat = {
       bolt: new THREE.MeshBasicMaterial({ color: new THREE.Color(TOWERS.pulse.color).multiplyScalar(2.0) }),
       shell: new THREE.MeshBasicMaterial({ color: new THREE.Color(TOWERS.mortar.color).multiplyScalar(2.2) }),
       missile: new THREE.MeshBasicMaterial({ color: new THREE.Color(TOWERS.missile.color).multiplyScalar(0.7) }),
     };
-    BOW_TIERS.forEach((b, i) => { this.projMat['arrow' + i] = new THREE.MeshBasicMaterial({ color: new THREE.Color(b.color).lerp(new THREE.Color(0xffffff), 0.25).multiplyScalar(2.3) }); });
-    // Arrow Rain shafts: slim cold-white arrows, all in one draw call
-    this.shaftMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.022, 0.03, 2.2, 5).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ color: new THREE.Color(FROST).multiplyScalar(1.35), fog: false }), SHAFTS);
-    this.shaftMesh.count = 0; this.shaftMesh.frustumCulled = false; this.shaftMesh.layers.set(FX_LAYER); this.scene.add(this.shaftMesh);
-    for (let i = 0; i < SHAFTS; i++) this.shafts.push({ mode: 0, t: 0, T: 1, pow: 1, tr: 0, gy: 0, p0: new THREE.Vector3(), p1: new THREE.Vector3(), p2: new THREE.Vector3(), to: new THREE.Vector3(), pos: new THREE.Vector3(), dir: new THREE.Vector3(), d0: new THREE.Vector3(), last: new THREE.Vector3() });
 
     const flat = (geo: THREE.BufferGeometry, color: number, opacity = 1) => {
       const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, side: THREE.DoubleSide }));
@@ -553,40 +433,6 @@ export class View {
     };
     const put = <T extends THREE.Object3D>(o: T) => { o.visible = false; this.scene.add(o); return o; };
     this.rangeRing = put(flat(hexFlat(new THREE.RingGeometry(0.985, 1, 128)), 0xffffff, 0.7));
-    // the area of an armed skill (Arrow Rain, Singularity): a lit disc on the ground under the crosshair, its size the
-    // skill's own. Drawn over everything, so a tower or a bridge in front never hides where the skill will land.
-    this.skillMat = new THREE.ShaderMaterial({
-      uniforms: { uTime: { value: 0 }, uColor: { value: new THREE.Color(SAND) }, uKind: { value: 1 }, uR: { value: 1 } },
-      vertexShader: 'varying vec2 vP; void main() { vP = position.xz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-      fragmentShader: `
-        uniform float uTime, uKind, uR; uniform vec3 uColor; varying vec2 vP;
-        void main() {
-          float r = length(vP);
-          if (r > 1.0) discard;
-          float aa = 1.5 * fwidth(r), ang = atan(vP.y, vP.x);
-          // rim, and a fine dashed ring just inside it
-          float rim = smoothstep(0.955 - aa, 0.97, r) * (1.0 - smoothstep(1.0 - aa, 1.0, r));
-          float dash = step(0.88, r) * step(r, 0.9) * step(0.5, fract(ang / 6.2831853 * floor(uR * 9.0)));
-          // the fill rises towards the edge
-          float fill = 0.04 + 0.15 * r * r * r;
-          float move;
-          if (uKind < 1.5) {
-            // Arrow Rain: rings close in from the rim, one after another
-            float w = fract(r * 2.0 + uTime * 0.9);
-            move = exp(-pow((w - 0.5) * 9.0, 2.0)) * 0.22 * r;
-          } else {
-            // Singularity: three arms wind in towards the middle
-            float arm = sin(ang * 3.0 + 7.0 / (r + 0.25) - uTime * 3.2);
-            move = smoothstep(0.55, 1.0, arm) * 0.32 * (1.0 - r * 0.6);
-          }
-          float centre = (1.0 - smoothstep(0.02, 0.02 + aa * 2.0, r)) * 0.9;
-          float a = fill + rim * 0.9 + dash * 0.3 + move + centre;
-          gl_FragColor = vec4(mix(uColor, vec3(1.0), rim * 0.35 + centre * 0.4), clamp(a, 0.0, 1.0));
-        }`,
-      transparent: true, depthWrite: false, depthTest: false,
-    });
-    this.skillMark = put(new THREE.Mesh(new THREE.CircleGeometry(1, 96).rotateX(-Math.PI / 2), this.skillMat));
-    this.skillMark.renderOrder = 20;
     this.selRing = put(flat(G_HEX_RING, SAND, 0.85));
     this.hoverMark = put(flat(G_HEX_LINE, SAND, 0.45));
     // build marker: a tile-sized plate with a rim, plus a cross when the tile cannot take a tower
@@ -598,12 +444,7 @@ export class View {
     // placement ghost: pale, lit, and it writes depth so the model keeps its form instead of stacking into a blob
     this.ghostMat = new THREE.MeshStandardMaterial({ color: 0xcfc8a4, roughness: 0.75, metalness: 0.05, transparent: true, opacity: 0.62, emissive: SAND, emissiveIntensity: 0.1, envMapIntensity: 0.4 });
     this.ghost.visible = false; this.scene.add(this.ghost);
-    // where a jump will land her: a verdigris column and a ring on the platform of the Spire the controller has picked
-    this.teleMark = new THREE.Group();
-    const tm = new THREE.MeshBasicMaterial({ color: new THREE.Color(UPLINK).multiplyScalar(1.7), transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
-    const col = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 30, 6), tm); col.position.y = 17; this.teleMark.add(col);
-    const tr = new THREE.Mesh(new THREE.TorusGeometry(1.15, 0.04, 6, 6), tm); tr.rotation.x = Math.PI / 2; tr.position.y = 0.12; this.teleMark.add(tr);
-    this.teleMark.visible = false; this.scene.add(noAO(this.teleMark));
+    this.fac = new FacView(this.scene, () => this.models);
     this.resize();
   }
 
@@ -614,7 +455,7 @@ export class View {
       let obj: THREE.Object3D;
       try { obj = (await loader.loadAsync(import.meta.env.BASE_URL + 'models/' + name + '.glb')).scene; }
       catch { obj = fallbackModel(name); }
-      const enemy = name.startsWith('enemy_'), tower = name.startsWith('tower_') ? (name.slice(6) as TowerType) : null;
+      const enemy = name.startsWith('enemy_'), tower = name.startsWith('tower_') ? (name.slice(6) as TowerType) : null, fac = name.startsWith('fac_');
       obj.traverse((o) => {
         const m = o as THREE.Mesh;
         if (!m.isMesh) return;
@@ -627,14 +468,15 @@ export class View {
           mat.userData.tuned = true;
           if (mat.emissive.getHex() === 0) mat.emissive.copy(mat.color);
           // emissive accents: bright enough to cross the bloom threshold, capped so they never white out
-          mat.emissiveIntensity = name === 'core' ? 0.7 : name === 'hero' ? 1.7 : name.startsWith('prop_') ? 1.6 : enemy ? 2.1 : 2.0;
+          // factory: accent strips stay low (there are many buildings), working lights and the status lamp read clearly
+          mat.emissiveIntensity = name === 'core' ? 0.7 : name.startsWith('prop_') ? 1.6 : enemy ? 2.1
+            : fac ? (mat.name === 'glow_work' ? 2.2 : mat.name === 'glow_lamp' ? 2.0 : 1.3) : 2.0;
           mat.emissive.getHSL(HSL);
           if (name === 'prop_lamp') { mat.emissive.setHex(0xffb070); mat.color.setHex(0xffb070); mat.emissiveIntensity = 2.6; } // sodium lamps
           else if (enemy) { if (HSL.h < 0.2 || HSL.h > 0.88) { mat.emissive.setHex(STATIC); mat.color.setHex(STATIC); } } // the Static glows cold, whatever the file says
           else if (tower && (mat.name === 'glow_main' || mat.name === 'glow_node')) { mat.emissive.setHex(TOWERS[tower].color); mat.color.setHex(TOWERS[tower].color); }
           else if (!mat.name.startsWith('glow_bow')) mat.emissive.setHSL(HSL.h, HSL.s * 0.82, HSL.l);
           mat.color.multiplyScalar(0.25);
-          if (name === 'hero' && mat.name.startsWith('glow_bow') && !this.bowMats.includes(mat)) this.bowMats.push(mat);
           return;
         }
         if (mat.userData.tuned) return;
@@ -653,13 +495,10 @@ export class View {
           // near-black hulls vanish against the dark deck: lift them to gunmetal and let reflections do the work
           mat.color.setHSL(HSL.h, HSL.s * 0.5, Math.max(HSL.l, 0.1));
           mat.metalness = 0.85; mat.roughness = enemy ? 0.58 : 0.42; mat.envMapIntensity = 1.3;
-          // the spire's platform floor fills the bottom of the third-person view: keep it matte or it mirrors the sky into the bloom
-          if (name === 'tower_spire') { mat.metalness = 0.6; mat.roughness = 0.7; mat.envMapIntensity = 0.55; }
         } else if (mat.name === 'trim') {
           mat.color.setHSL(HSL.h, HSL.s * 0.6, Math.min(0.5, Math.max(HSL.l, 0.3)));
           // enemy plates swing through the sun as they walk: a mirror finish there blooms to a white flash
           mat.metalness = enemy ? 0.8 : 0.95; mat.roughness = enemy ? 0.55 : 0.3; mat.envMapIntensity = enemy ? 1.1 : 1.4;
-          if (name === 'tower_spire') { mat.roughness = 0.6; mat.envMapIntensity = 0.6; }
         } else {
           mat.envMapIntensity = 1.1;
         }
@@ -698,19 +537,16 @@ export class View {
     for (const [id, v] of this.pv) { v.mesh.visible = false; (this.ppool[v.kind] ||= []).push(v); this.pv.delete(id); }
     for (const [id, v] of this.zv) { this.dropZone(v, false); this.zv.delete(id); }
     for (const [id, v] of this.wv) { this.dropWall(v); this.wv.delete(id); }
-    for (const b of this.beacons) b.obj.visible = false;
     this.mites.clear(); for (const m of this.miteParts) m.mesh.count = 0;
     if (this.roam.v) { this.poolEnemy(this.roam.v); this.roam.v = null; }
     if (this.wreck) { this.poolEnemy(this.wreck.v); this.wreck = null; }
     this.roam.leap = -1; this.roam.off = false; this.roam.owe = false;
     this.world.cityRestore?.();
     this.coreHit = this.coreZap = 9;
-    for (const h of this.heroes) { h.obj.visible = false; h.out = false; h.shown = false; h.tele = 0; if (h.rig) resetHero(h.rig); }
-    this.later.length = 0; this.zoneWait.length = 0;
-    for (const sh of this.shafts) sh.mode = 0;
-    this.shaftMesh.count = 0; this.rainT = 9;
-    this.heroBlend = 0; this.thunder = 0; this.swarm = 0; this.buildView = false; this.lift = 0;
-    this.setGhost(null); this.setSelected(null); this.setTele(null);
+    this.later.length = 0;
+    this.thunder = 0; this.swarm = 0;
+    this.setGhost(null); this.setSelected(null);
+    this.fac.setSim(sim);
     this.hoverMark.visible = false;
     if (!sim) return;
     this.elev = sim.map.lanes.some((l) => l.ys.some((y) => y > 0));
@@ -814,21 +650,6 @@ export class View {
     return best;
   }
   private reveal(x: number, z: number) { return this.intro && this.world.revealAt ? ease(this.world.revealAt(x, z)) : 1; }
-  /** Distance along a ray to the deck (flat or raised), or Infinity. */
-  private rayDeck(o: THREE.Vector3, d: THREE.Vector3, max: number) {
-    if (!this.elev) return d.y < -1e-4 ? -o.y / d.y : Infinity;
-    const step = 0.5;
-    for (let t = step; t <= max; t += step) {
-      const y = o.y + d.y * t;
-      if (y > 8 && d.y >= 0) break;
-      if (y <= this.deckY(o.x + d.x * t, o.z + d.z * t)) {
-        let lo = t - step, hi = t;
-        for (let i = 0; i < 7; i++) { const m = (lo + hi) / 2; if (o.y + d.y * m <= this.deckY(o.x + d.x * m, o.z + d.z * m)) hi = m; else lo = m; }
-        return hi;
-      }
-    }
-    return Infinity;
-  }
 
   // ---------- picking ----------
   groundPoint(clientX: number, clientY: number, out = new THREE.Vector3()) {
@@ -836,108 +657,6 @@ export class View {
     V.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1, 0.5).unproject(this.camera).sub(this.camera.position).normalize();
     const u = V.y < -1e-4 ? -this.camera.position.y / V.y : 200;
     return out.copy(this.camera.position).addScaledVector(V, u);
-  }
-  /** Third-person camera position and view direction for the look angles as they are right now. */
-  private camPose(pos: THREE.Vector3, dir: THREE.Vector3) {
-    const cp = Math.cos(this.pitch), fx = Math.sin(this.yaw) * cp, fy = Math.sin(this.pitch), fz = Math.cos(this.yaw) * cp;
-    const rx = -Math.cos(this.yaw), rz = Math.sin(this.yaw), a = this.lastHeroAnchor;
-    const back = CAM_BACK + LIFT_BACK * this.lift;
-    // looking up swings the camera down: stop above the platform floor
-    pos.set(a.x - fx * back + rx * CAM_SIDE, Math.max(a.y + 0.6, a.y + CAM_UP + LIFT_UP * this.lift - fy * back), a.z - fz * back + rz * CAM_SIDE);
-    dir.set(fx, fy, fz);
-  }
-  /**
-   * Uplink mode, building: what the crosshair looks at. The deck point is written to `out` (raised roads and bridges
-   * included) and the result is the id of the tower whose body the ray meets first, 0 for bare deck, or -1 when the ray
-   * meets nothing at all. Enemies and power nodes are looked through: they never stand on a hex. The player's own Spire
-   * is left out, or a steep look down past her feet would always land on it.
-   */
-  buildPick(out = new THREE.Vector3()): number {
-    this.camPose(RO, RD);
-    const o = RO, d = RD, sim = this.sim;
-    const deck = this.rayDeck(o, d, AIM_FAR);
-    let best = Math.min(AIM_FAR, deck), id = deck <= AIM_FAR ? 0 : -1;
-    const own = sim?.players[this.me]?.heroTower ?? -1, R = HEX_SIZE * 0.72;
-    if (sim) for (const t of sim.towers) {
-      if (t.id === own) continue;
-      // the tower as an upright column on its hex: its side, or its top when the ray comes down onto it
-      const wx = o.x - t.x, wz = o.z - t.z, a = d.x * d.x + d.z * d.z, b = wx * d.x + wz * d.z, c = wx * wx + wz * wz - R * R;
-      let u = 0;
-      if (c > 0) {
-        const disc = b * b - a * c;
-        if (a < 1e-9 || disc < 0) continue;
-        u = (-b - Math.sqrt(disc)) / a;
-        if (u < 0) continue;
-      }
-      if (o.y + d.y * u > t.h) {
-        if (d.y > -1e-6) continue;
-        u = (t.h - o.y) / d.y;
-        const px = wx + d.x * u, pz = wz + d.z * u;
-        if (px * px + pz * pz > R * R) continue;
-      }
-      if (u > 0 && u < best) { best = u; id = t.id; }
-    }
-    out.copy(o).addScaledVector(d, best);
-    return id;
-  }
-  /**
-   * The point under the crosshair. A plain ray cast with no help: enemy bodies at their true radius, weak points,
-   * tower power nodes and the deck (raised roads included). Hits nothing: a point far along the ray.
-   */
-  /** Show the area of an armed skill centred on (x, y, z) with radius r (kind 1 Arrow Rain, 2 Singularity), or hide it with null. */
-  setSkillArea(a: { x: number; y: number; z: number; r: number; kind: number; color: number } | null) {
-    this.skillMark.visible = !!a;
-    if (!a) return;
-    this.skillMark.position.set(a.x, a.y + 0.08, a.z);
-    this.skillMark.scale.setScalar(a.r);
-    const u = this.skillMat.uniforms;
-    u.uTime.value = performance.now() / 1000; u.uKind.value = a.kind; u.uR.value = a.r; (u.uColor.value as THREE.Color).setHex(a.color);
-  }
-  aimPoint(out = new THREE.Vector3()) {
-    this.camPose(RO, RD);
-    const o = RO, d = RD, sim = this.sim;
-    let best = Math.min(AIM_FAR, this.rayDeck(o, d, AIM_FAR));
-    const near = (CAM_BACK + LIFT_BACK * this.lift) * 0.8;
-    const hit = (x: number, y: number, z: number, r: number) => {
-      const u = raySphere(o.x, o.y, o.z, d.x, d.y, d.z, x, y, z, r);
-      // anything nearer than Kestrel herself is behind the bow
-      if (u > near && u < best) best = u;
-    };
-    if (sim) {
-      for (const e of sim.enemies) {
-        if (!e.alive) continue;
-        hit(e.x, e.y, e.z, e.r);
-        const wk = ENEMIES[e.type].weak;
-        if (wk) for (let i = 0; i < wk.length; i++) if (weakPos(e, i, W3)) hit(W3.x, W3.y, W3.z, wk[i].r * ENEMY_SCALE[e.type]);
-      }
-      const me = sim.players[this.me];
-      for (const t of sim.towers) {
-        if (TOWERS[t.type].special) { nodePos(t, W3); hit(W3.x, W3.y, W3.z, NODE_R); }
-        // the jump target above every other Spire: an arrow through it carries her over
-        else if (t.type === 'spire' && me && me.heroActive && t.id !== me.heroTower) { spireTarget(t, W3); hit(W3.x, W3.y, W3.z, SPIRE_R); }
-      }
-    }
-    return out.copy(o).addScaledVector(d, best);
-  }
-  /** Spire under the crosshair (teleport target), or 0. Only other Uplink Spires count. */
-  aimTower(): number {
-    if (!this.sim) return 0;
-    const p = this.sim.players[this.me];
-    this.camPose(RO, RD);
-    let best = 0, bu = Infinity;
-    for (const t of this.sim.towers) {
-      if (t.type !== 'spire' || t.id === p.heroTower) continue;
-      // closest approach of the ray to the spire's axis (ground to a little above the platform)
-      const wx = RO.x - t.x, wz = RO.z - t.z, top = t.h + 1.4;
-      const a = RD.x * RD.x + RD.z * RD.z;
-      let u = a > 1e-6 ? -(wx * RD.x + wz * RD.z) / a : 0;
-      if (u < 0) continue;
-      let y = RO.y + RD.y * u;
-      if (y > top && RD.y < -1e-4) { u = (top - RO.y) / RD.y; y = top; } else if (y < 0 && RD.y > 1e-4) { u = -RO.y / RD.y; y = 0; }
-      if (y > top + 0.01 || y < -0.01) continue;
-      if (Math.hypot(wx + RD.x * u, wz + RD.z * u) < 1.25 && u < bu) { bu = u; best = t.id; }
-    }
-    return best;
   }
   project(x: number, y: number, z: number): [number, number, boolean] {
     V.set(x, y, z).project(this.camera);
@@ -977,70 +696,36 @@ export class View {
     this.rangeRing.visible = range > 0; this.rangeRing.position.set(t.x, 0.06, t.z); this.rangeRing.scale.setScalar(Math.max(0.01, range));
     (this.rangeRing.material as THREE.MeshBasicMaterial).color.setHex(TOWERS[t.type].color);
   }
+  /** The placement marker for a factory building: its ghost, the tile plate, and a cross where it cannot go. */
+  setFacGhost(type: FacType | null, cx = 0, cz = 0, dir = 0, ok = true) {
+    this.fac.setGhost(type, cx, cz, dir, ok);
+    this.cellMark.visible = !!type;
+    if (!type) return;
+    const x = cellX(cx, cz), z = cellZ(cz), y = this.deckY(x, z);
+    this.cellMark.position.set(x, y + 0.045, z);
+    this.cellCross.visible = !ok;
+    (this.cellFill.material as THREE.MeshBasicMaterial).color.setHex(ok ? SAND : RUST);
+    (this.cellEdge.material as THREE.MeshBasicMaterial).color.setHex(ok ? SAND : RUST);
+  }
+  /** Mark a selected factory building (null clears it). Shares the ring of a selected tower. */
+  setSelectedCell(cx: number, cz: number, on: boolean, reach = 0) {
+    this.selRing.visible = on;
+    if (!on) { if (!this.ghost.visible && !this.cellMark.visible) this.rangeRing.visible = false; return; }
+    const x = cellX(cx, cz), z = cellZ(cz);
+    this.selRing.position.set(x, 0.08, z);
+    this.rangeRing.visible = reach > 0; this.rangeRing.position.set(x, 0.06, z); this.rangeRing.scale.setScalar(Math.max(0.01, reach));
+    (this.rangeRing.material as THREE.MeshBasicMaterial).color.setHex(0x9ccf6a);
+  }
   setHover(cx: number, cz: number, show: boolean) {
     this.hoverMark.visible = show;
     if (show) this.hoverMark.position.set(cellX(cx, cz), 0.05, cellZ(cz));
   }
-  /** Mark a Spire as the jump target the controller has picked (its beacon lights up, a column shows where she will land). */
-  setTele(t: Tower | null) {
-    this.teleMark.visible = !!t && t.type === 'spire';
-    this.teleId = t && t.type === 'spire' ? t.id : 0;
-    if (t) this.teleMark.position.set(t.x, standY(t), t.z);
-  }
 
   // ---------- events to effects ----------
-  /** Route a sim event to player p's hero rig. */
-  private heroAnim(p: unknown, ev: HeroEvent, pw = 1) {
-    const h = this.heroes[p as number];
-    if (h && h.rig) heroTrigger(h.rig, ev, pw);
-  }
-  /** The enemy a player damaged at (x, z) in the batch of events being handled, or -1. tol = how far off the spot may be (squared). */
-  private dmgId(x: number, z: number, tol: number) {
-    let id = -1;
-    for (let i = 0; i < this.dmgN; i++) { const d = (DMG[i * 3 + 1] - x) * (DMG[i * 3 + 1] - x) + (DMG[i * 3 + 2] - z) * (DMG[i * 3 + 2] - z); if (d < tol) { tol = d; id = DMG[i * 3]; } }
-    return id;
-  }
   /**
-   * An arrow struck at (x, y, z): the model it hit flashes for an instant and sparks leave along the arrow's path.
-   * crit = a weak point. id = the enemy it hit, or -1 for the deck.
+   * Camera shake that falls off with distance from the camera.
    */
-  private arrowHit(x: number, y: number, z: number, color: number, crit: boolean, id: number) {
-    const sim = this.sim, fx = this.fx;
-    if (!sim) return;
-    const v = id >= 0 ? this.ev.get(id) : undefined;
-    if (v) this.flashEnemy(v, crit);
-    // direction of travel: from the bow of whoever is linked (her own first)
-    let o = sim.players[this.me]?.heroActive ? sim.heroOrigin(this.me) : null;
-    for (let i = 0; !o && i < sim.players.length; i++) if (sim.players[i].heroActive) o = sim.heroOrigin(i);
-    let dx = 0, dy = 0.4, dz = 0;
-    if (o) { dx = x - o.x; dy = y - o.y; dz = z - o.z; const l = Math.hypot(dx, dy, dz) || 1; dx /= l; dy /= l; dz /= l; }
-    if (crit) {
-      // weak point: a hard cold star, and the far side of the hull comes out with it
-      fx.star(x, y, z, 1.5, FROST, 7, 0.2);
-      fx.flash(x, y, z, 0.9, 0xffffff, 0.12);
-      fx.spray(x, y, z, dx, dy, dz, 16, 13, SINGC, 0.5, 0.26, 0.35);
-      fx.spray(x, y, z, -dx, -dy, -dz, 6, 6, HEAT, 0.5, 0.18, 0.6);
-    } else {
-      fx.flash(x, y, z, v ? 0.55 : 0.35, color, 0.09);
-      fx.spray(x, y, z, dx, dy, dz, v ? 6 : 3, 9, color, 0.3, 0.2, 0.35);
-      fx.spray(x, y, z, -dx * 0.6, 0.5, -dz * 0.6, v ? 4 : 3, 5, HEAT, 0.35, 0.14, 0.6);
-    }
-  }
-  private flashEnemy(v: EVis, crit: boolean) {
-    // the Titan is hit almost without pause and fills the screen: a whole-model flash would leave it a white cut-out.
-    // Its hits show as sparks and bursts at the point instead.
-    if (v.type === 'titan') return;
-    const m = crit ? this.critMat : this.hitMat;
-    if (v.hitT <= 0) for (const o of v.meshes) o.material = m;
-    else if (crit) for (const o of v.meshes) o.material = m;
-    v.hitT = crit ? 0.085 : 0.05;
-  }
-  /**
-   * Camera shake that falls off with distance from the camera. In the Uplink only big events (a special going off, the
-   * core being hit) reach the camera at all: her own arrows, hits and ordinary blasts never move the picture she aims with.
-   */
-  private bump(a: number, x: number, z: number, big = false) {
-    if (this.heroBlend > 0.5 && !big) return;
+  private bump(a: number, x: number, z: number, _big = false) {
     const d = Math.hypot(x - this.camera.position.x, z - this.camera.position.z);
     this.shake = Math.max(this.shake, a * Math.max(0.12, Math.min(1, 1.5 - d / 30)));
   }
@@ -1048,12 +733,8 @@ export class View {
   handle(evs: Ev[]) {
     const fx = this.fx, sim = this.sim;
     // a special's own effects (the chain of a Thunderhead, the first missiles of a Swarm) sit in the same batch ahead of its event
-    this.dmgN = 0;
-    for (const e of evs) {
-      if (e.k === 'special') { if (e.t === 'arc') this.thunder = 0.2; else if (e.t === 'missile') this.swarm = 5; }
-      // who a player hurt in this batch: lets an arrow's 'hit' find the model it struck
-      else if (e.k === 'dmg' && e.p >= 0 && typeof e.id === 'number' && this.dmgN < 32) { DMG[this.dmgN * 3] = e.id; DMG[this.dmgN * 3 + 1] = e.x; DMG[this.dmgN * 3 + 2] = e.z; this.dmgN++; }
-    }
+    for (const e of evs) if (e.k === 'special') { if (e.t === 'arc') this.thunder = 0.2; else if (e.t === 'missile') this.swarm = 5; }
+    this.fac.handle(evs);
     for (const e of evs) {
       switch (e.k) {
         case 'shot': {
@@ -1073,12 +754,8 @@ export class View {
           break;
         }
         case 'hit':
-          // a turret bolt: a couple of sparks. An arrow: the model answers (see arrowHit)
-          {
-            const id = this.dmgId(e.x, e.z, 1e-4);
-            if (id >= 0 || e.y <= 0.11) this.arrowHit(e.x, e.y, e.z, e.c, false, id);
-            else { fx.burst(e.x, e.y, e.z, 3, 4, e.c, 0.2, 0.22, 6); fx.burst(e.x, e.y, e.z, 2, 5, HEAT, 0.3, 0.14, 12); }
-          }
+          // a turret bolt: a couple of sparks
+          fx.burst(e.x, e.y, e.z, 3, 4, e.c, 0.2, 0.22, 6); fx.burst(e.x, e.y, e.z, 2, 5, HEAT, 0.3, 0.14, 12);
           break;
         case 'cryo': {
           const tv = this.tv.get(e.id); if (tv) towerShot(tv.rig);
@@ -1167,8 +844,6 @@ export class View {
           break;
         }
         case 'titanDie': this.titanDie(e.x, e.y, e.z); break;
-        case 'crit': this.arrowHit(e.x, e.y, e.z, FROST, true, this.dmgId(e.x, e.z, 16)); break;
-        case 'crack': fx.star(e.x, e.y, e.z, 2.6, VIOLET, 9, 0.35); fx.burst(e.x, e.y, e.z, 26, 8, VIOLET, 0.8, 0.3, 9); fx.smoke(e.x, e.y, e.z, 3, 1.2, 1); break;
 
         case 'shieldbreak': fx.burst(e.x, e.y, e.z, 14, 7, STATIC, 0.5, 0.24, 3); fx.flash(e.x, e.y, e.z, 1.5, STATIC, 0.18); break;
         case 'deflect': this.deflectFx(e.x, e.y, e.z); break;
@@ -1193,33 +868,6 @@ export class View {
         case 'build': if (this.reveal(e.x, e.z) < 0.5) break; // placed before its tile has arrived (a bot at second zero)
           fx.ring(e.x, 0.1, e.z, 2.0, e.c, 0.5); fx.burst(e.x, 0.3, e.z, 12, 4, e.c, 0.6, 0.24, -3, 1); fx.smoke(e.x, 0.2, e.z, 3, 1, 1.6, 0.35); this.pulse(e.x, e.z, e.c, 3.5, 0.6); break;
         case 'sell': fx.burst(e.x, 0.8, e.z, 12, 5, SAND, 0.6, 0.24, 9); fx.smoke(e.x, 0.4, e.z, 3, 1.1, 1.2, 0.5); break;
-        case 'arrow': {
-          // the release is as strong as the draw was: a weak loose is a twitch of the string, a full one cracks
-          // (no flash at the bow: nothing of her own shot may get between the player and the target)
-          this.heroAnim(e.p, 'arrow', typeof e.pw === 'number' ? sat(e.pw) : 1);
-          break;
-        }
-        case 'heroOn': { const h = this.hero(+e.p); h.out = false; h.tele = 0; h.pos.set(e.x, e.y, e.z); this.heroAnim(e.p, 'on'); }
-          // a slim shaft of light: a wide column would hide the whole materialise animation from the camera behind her
-          fx.beam(e.x, e.y, e.z, e.x, e.y + 30, e.z, UPLINK, 0.2, 0.45); this.shake = Math.max(this.shake, 0.3); this.pulse(e.x, e.z, UPLINK, 9, 1); break;
-        case 'heroOff': { const h = this.heroes[+e.p]; if (h && h.rig && h.shown) { h.out = true; h.tele = 0; h.pos.set(e.x, e.y, e.z); heroTrigger(h.rig, 'off'); } }
-          fx.beam(e.x, e.y, e.z, e.x, e.y + 18, e.z, UPLINK, 0.2, 0.5); break;
-        case 'tele': { const h = this.heroes[+e.p]; if (h && h.rig) { h.tele = 0.13; h.pos.set(e.fx, e.fy, e.fz); heroTrigger(h.rig, 'teleOut'); } }
-          fx.beam(e.fx, e.fy, e.fz, e.fx, e.fy + 12, e.fz, UPLINK, 0.2, 0.4); fx.beam(e.x, e.y, e.z, e.x, e.y + 22, e.z, UPLINK, 0.2, 0.45); this.pulse(e.x, e.z, UPLINK, 6, 0.7); break;
-        case 'skill': {
-          const rain = e.s === 1, wait = SKILL_CAST[rain ? 1 : 2];
-          this.heroAnim(e.p, rain ? 'rain' : 'sing');
-          if (rain) {
-            // the marker is on the ground at once and fills while the volley is up; the volley leaves on the release beat
-            if (+e.p === this.me) this.rainT = 0;
-            this.later.push({ t: wait, fn: () => this.rainVolley(+e.p, e.x, typeof e.y === 'number' ? e.y : this.deckY(e.x, e.z), e.z) });
-            this.later.push({ t: RAIN_LAND, fn: () => this.pulse(e.x, e.z, SAND, 8, 1) });
-            break;
-          }
-          this.zoneWait.push([e.x, e.z, wait]);
-          this.later.push({ t: wait, fn: () => { fx.ring(e.x, this.deckY(e.x, e.z) + 0.15, e.z, 5, UPLINK, 0.5, 1.4, 0.6); this.pulse(e.x, e.z, UPLINK, -10, 1); } });
-          break;
-        }
         case 'lance': {
           const v = this.tv.get(e.id);
           if (!v) break;
@@ -1290,15 +938,13 @@ export class View {
     }
   }
 
-  /** Rail beams: a tower's shot, a tower's Overcharge (big, no player) and Kestrel's Rail Shot (big, with a player). */
+  /** Rail beams: a tower's shot, and a tower's Overcharge (big). */
   private railFx(e: Ev) {
     const fx = this.fx;
-    const hero = e.big && e.p !== undefined && this.heroes[+e.p] && this.heroes[+e.p].rig;
-    const over = e.big && e.p === undefined;
+    const over = !!e.big;
     const fire = () => {
       let x = e.x, y = e.y, z = e.z;
       const dx = e.tx - x, dy = e.ty - y, dz = e.tz - z, L = Math.hypot(dx, dy, dz) || 1;
-      if (hero) { x += dx / L * 0.5; y += dy / L * 0.5 + 0.1; z += dz / L * 0.5; } // leaves from the bow, not from the middle of her body
       fx.beam(x, y, z, e.tx, e.ty, e.tz, e.c, over ? 0.9 : e.big ? 0.3 : 0.2, over ? 0.9 : e.big ? 0.5 : 0.32);
       fx.burst(e.tx, e.ty, e.tz, e.big ? 14 : 5, 6, HEAT, 0.45, 0.2, 10);
       if (!e.big) return;
@@ -1314,14 +960,9 @@ export class View {
           if (gy < 0.1) fx.scorch(px, pz, 1.3, e.c, 5, gy);
           this.pulse(px, pz, e.c, 5, 0.9);
         }
-      } else {
-        // Rail Shot: the deck answers where the ray meets it
-        const u = dy < -1e-4 ? Math.min(1, -y / dy) : 1;
-        this.pulse(x + dx * u, z + dz * u, e.c, 7, 1);
       }
     };
-    // Rail Shot: the pose winds up first, the beam leaves on the release beat
-    if (hero) { this.heroAnim(e.p, 'rail'); this.later.push({ t: SKILL_CAST[0], fn: fire }); } else fire();
+    fire();
   }
 
   /** A tower's special goes off: the node bursts, then each type does its own thing (the long ones carry on in sync). */
@@ -1530,7 +1171,7 @@ export class View {
       this.syncFireRing(t, v, dt, !linked && !off && v.grow >= 1, spec);
     }
     ST.down = off || jam || stun; ST.spec = spec; ST.power = mul; ST.heat = t.heat;
-    updateTower(v.rig, yaw, t.cd, t.type === 'beacon' || t.type === 'spire' ? 0 : sim.towerRate(t), dt, ST);
+    updateTower(v.rig, yaw, t.cd, t.type === 'beacon' ? 0 : sim.towerRate(t), dt, ST);
     for (const g of v.glows) if (g.m !== v.rig.glow) g.m.emissiveIntensity = g.i0 * mul;
     // offline: the pool on the deck turns to a slow rust warning light
     if (off) (v.pad.material as THREE.MeshBasicMaterial).color.setHex(RUST).multiplyScalar(0.1 + 0.08 * Math.sin(this.time * 5 + t.id));
@@ -1680,9 +1321,9 @@ export class View {
   }
 
   /**
-   * Power node: a target reticle, seen in the Uplink view only. The ring fills with the charge; ready, it is bright,
-   * breathes and shows its brackets; it flashes when it is hit and fires, fizzles when it is hit with nothing to reach,
-   * and is a dead rust arc while the tower is offline.
+   * Power node: a small reticle over the tower while its special is ready (fire it from the tower panel or with Space),
+   * running, or rebooting. Ready, it is bright, breathes and shows its brackets; it flashes when the special fires, fizzles
+   * when there was nothing to reach, and is a dead rust arc while the tower is offline.
    */
   private syncNode(t: Tower, v: TVis, b: number) {
     const c = TOWERS[t.type].color, held = t.jam > 0 || t.stun > 0, off = t.down > 0 || held, spec = t.spec > 0, ready = t.charge >= 1 && !off && !spec;
@@ -1690,7 +1331,8 @@ export class View {
     for (const g of v.mnode) g.m.emissiveIntensity = g.i0 * (off ? 0.01 : spec ? 0.2 + 3 * Math.max(0, 1 - v.fired / 0.35) : ready ? 0.3 + 0.1 * beat : 0.03 + (0.1 + 0.2 * b) * t.charge * t.charge);
     const node = v.node;
     if (!node) return;
-    node.visible = b > 0.02 && v.grow >= 1;
+    // in the bird view the node only shows when there is something to see: a special ready to fire, running, or the reboot after it
+    node.visible = b > 0.02 && v.grow >= 1 && (ready || spec || t.down > 0);
     if (!node.visible) return;
     node.quaternion.copy(this.camera.quaternion);
     const flash = Math.max(0, 1 - v.fired / 0.35), deny = v.deny > 0 ? v.deny / 0.45 : 0;
@@ -1745,7 +1387,7 @@ export class View {
         const mat = m.material as THREE.MeshStandardMaterial;
         if (Array.isArray(mat) || !mat.name.startsWith('glow') || wglow.some((g) => g.m === mat)) continue;
         let c = mine.get(mat.uuid);
-        if (!c) { c = mat.clone(); c.emissiveIntensity *= 0.5; mine.set(mat.uuid, c); own.push({ m: c, i0: c.emissiveIntensity }); }   // its light strips are metres long: at a small machine's brightness they burn out the view from a Spire
+        if (!c) { c = mat.clone(); c.emissiveIntensity *= 0.5; mine.set(mat.uuid, c); own.push({ m: c, i0: c.emissiveIntensity }); }   // its light strips are metres long: at a small machine's brightness they burn out the view
         m.material = c;
       }
     }
@@ -1765,21 +1407,9 @@ export class View {
       bubble = new THREE.Mesh(G_SPH, this.bubbleMat);
       bubble.scale.setScalar(d.r * 1.7 / sc); bubble.position.y = d.y / sc; bubble.layers.set(FX_LAYER); obj.add(bubble);
     }
-    const weak: WeakVis[] = [];
-    for (const w of d.weak || []) {
-      const r = w.r * sc;
-      const mat = new THREE.MeshBasicMaterial({ color: FROST, fog: false });
-      // a three-bracket reticle that is drawn over the hull, so the target reads from any side it can be hit from
-      const rmat = reticleMat(3, false);
-      rmat.uniforms.mark.value = 1;
-      const core = new THREE.Mesh(G_OCTA, mat); core.scale.setScalar(r * 0.5);
-      const ring = new THREE.Mesh(G_QUAD, rmat); ring.scale.setScalar(r); ring.renderOrder = 3;
-      for (const m of [core, ring]) { m.layers.set(FX_LAYER); m.visible = false; this.dyn.add(m); }
-      weak.push({ core, ring, mat, rmat });
-    }
     this.dyn.add(obj);
     // the hp bars, glow and bubble were added after the traverse: only the model's own meshes flash
-    return { obj, rig, sx: 0, sz: 0, back, bar, sbar, bubble, glow, ice: null, weak, wglow, type, phase: Math.random() * 6.28, seen: 0, fresh: true, lx: 0, lz: 0, lgy: 0, tilt: 0, em: 0,
+    return { obj, rig, sx: 0, sz: 0, back, bar, sbar, bubble, glow, ice: null, wglow, type, phase: Math.random() * 6.28, seen: 0, fresh: true, lx: 0, lz: 0, lgy: 0, tilt: 0, em: 0,
       meshes, mats: meshes.map((m) => m.material), hitT: 0, guard, own, hp0: -1, dim: 0 };
   }
   /**
@@ -1838,11 +1468,10 @@ export class View {
   private poolEnemy(v: EVis) {
     if (v.hitT > 0) { v.hitT = 0; for (let i = 0; i < v.meshes.length; i++) v.meshes[i].material = v.mats[i]; }
     v.obj.visible = false;
-    for (const w of v.weak) w.core.visible = w.ring.visible = false;
     (this.epool[v.type] ||= []).push(v);
   }
 
-  private syncEnemy(e: Enemy, v: EVis, dt: number, k: number, b: number, aim: boolean) {
+  private syncEnemy(e: Enemy, v: EVis, dt: number, k: number) {
     const sim = this.sim!, d = ENEMIES[e.type], sc = ENEMY_SCALE[e.type];
     // visual pose: the sim walks hard-cornered lanes; the view rounds every corner into an arc and limits the turn rate
     let dist = e.dist, lane = e.lane, off = e.off;
@@ -1901,11 +1530,11 @@ export class View {
     }
     const titan = e.type === 'titan';
     if (titan) {
-      // its head follows the nearest Spire that has someone on it, eye to eye
+      // its head follows the nearest tower, eye to eye
       let bd = 1e9;
-      for (const p of sim.players) {
-        const t = p.heroActive ? sim.towerById(p.heroTower) : undefined, dd = t ? Math.hypot(t.x - e.x, t.z - e.z) : 1e9;
-        if (t && dd < bd) { bd = dd; look = Math.atan2(t.x - e.x, t.z - e.z); v.rig.lookPitch = Math.max(-0.3, Math.min(0.6, Math.atan2(gy + 13.4 - (t.h + 0.8), Math.max(3, dd - 2.2)))); }
+      for (const t of sim.towers) {
+        const dd = Math.hypot(t.x - e.x, t.z - e.z);
+        if (dd < bd) { bd = dd; look = Math.atan2(t.x - e.x, t.z - e.z); v.rig.lookPitch = Math.max(-0.3, Math.min(0.6, Math.atan2(gy + 13.4 - (t.h + 0.8), Math.max(3, dd - 2.2)))); }
       }
     }
     const frozen = e.frz > 0 && !titan, strike = atCore || (e.breach || 0) > 0;
@@ -1940,48 +1569,15 @@ export class View {
     // frozen solid: a shell of ice. Burning: flames lick up off the hull
     if (frozen && !v.ice) { v.ice = new THREE.Mesh(G_ICE, M_ICE); v.ice.scale.setScalar(d.r * 1.15 / sc); v.ice.position.y = (fly ? 0 : d.y) / sc; v.ice.rotation.set(v.phase, v.phase * 2, 0); v.obj.add(v.ice); }
     if (v.ice) v.ice.visible = frozen;
-    if (e.burnT > 0 || e.crackT > 0) {
+    if (e.burnT > 0) {
       v.em += dt * 14;
       while (v.em >= 1) {
         v.em -= 1;
         const a = Math.random() * TAU, rr = e.r * 0.7;
         if (e.burnT > 0) this.fx.spark(e.x + Math.cos(a) * rr, e.y + (Math.random() - 0.3) * e.r, e.z + Math.sin(a) * rr, 0, 1.6 + Math.random(), 0, 0.4, 0.3, APRICOT, -2);
-        if (e.crackT > 0) this.fx.spark(e.x + Math.cos(a) * rr, e.y + Math.random() * e.r, e.z + Math.sin(a) * rr, Math.cos(a) * 2, 1, Math.sin(a) * 2, 0.5, 0.2, VIOLET, 5);
       }
     }
 
-    // weak points: drawn where the sim tests them, in the Uplink view only
-    const wk = d.weak;
-    if (wk) {
-      const beat = 0.5 + 0.5 * Math.sin(this.time * 6 + v.phase);
-      let hot = 0;
-      for (let i = 0; i < v.weak.length; i++) {
-        const w = v.weak[i], show = b > 0.05 && !!weakPos(e, i, W3) && (!aim || this.weakOpen(e, wk[i].r * sc));
-        w.core.visible = w.ring.visible = show;
-        if (!show) continue;
-        // how close the crosshair is, in weak-point radii
-        let near = 0;
-        if (aim) {
-          const ex = W3.x - RO.x, ey = W3.y - RO.y, ez = W3.z - RO.z, u = ex * RD.x + ey * RD.y + ez * RD.z;
-          const miss = Math.hypot(ex - RD.x * u, ey - RD.y * u, ez - RD.z * u) / (wk[i].r * sc);
-          near = u > 0 ? sat(1.6 - miss * 0.4) : 0;
-        }
-        hot = Math.max(hot, near);
-        const rad = wk[i].r * sc;
-        w.core.position.set(W3.x, W3.y, W3.z); w.ring.position.copy(w.core.position);
-        w.core.rotation.set(this.time * 2, this.time * 2.6, 0);
-        w.core.scale.setScalar(rad * (0.3 + 0.07 * beat + 0.12 * near) * b);
-        w.ring.quaternion.copy(this.camera.quaternion);
-        // the brackets close on the point and stop turning as the crosshair comes onto it
-        w.ring.scale.setScalar(rad * (1.5 - 0.3 * near) * b);
-        w.mat.color.setHex(FROST).multiplyScalar(0.8 + 0.3 * beat + 0.9 * near);
-        const ru = w.rmat.uniforms;
-        (ru.color.value as THREE.Color).setHex(near > 0.6 ? 0xffffff : STATIC);
-        ru.gain.value = 0.55 + 0.2 * beat + 0.8 * near;
-        ru.spin.value = w.ring.userData.s = (w.ring.userData.s || v.phase) + dt * 1.4 * (1 - near);
-      }
-      for (const g of v.wglow) g.m.emissiveIntensity = g.i0 * (0.7 + 0.4 * beat + 0.8 * hot * b);
-    }
   }
 
   /**
@@ -2014,15 +1610,6 @@ export class View {
     }
   }
 
-  /**
-   * Can an arrow from the bow reach the weak point at W3 before the hull stops it? Same test as the sim's arrow step,
-   * so a marker is only drawn where a hit on it would count.
-   */
-  private weakOpen(e: Enemy, r: number) {
-    const o = this.bow, dx = W3.x - o.x, dy = W3.y - o.y, dz = W3.z - o.z, L = Math.hypot(dx, dy, dz) || 1;
-    const ub = raySphere(o.x, o.y, o.z, dx / L, dy / L, dz / L, e.x, e.y, e.z, e.r + ARROW_PAD);
-    return ub < 0 || L - r - 0.1 <= ub + 0.35;
-  }
 
   // ---------- mites ----------
   /** The mite model as instanced meshes: one per part and material, the two leg sets with their pivot taken out so they can swing. */
@@ -2094,13 +1681,13 @@ export class View {
     fx.burst(x, gy + 0.2, z, 10, 5, DUST, 0.5, 0.26, 10, 0.3);
     if (deck) { this.pulse(x, z, STATIC, 7, 0.75); this.bump(0.3, x, z, true); }
   }
-  /** The Titan on the deck: its footfalls, and how it shows a hit that got through (a weak point, a tower special). */
+  /** The Titan on the deck: its footfalls, and how it shows a hit that got through. */
   private titanWalkFx(e: Enemy, v: EVis, dt: number) {
     const fx = this.fx, steps = v.rig.steps;
     if (steps) for (let i = 0; i < steps.length; i += 2) this.footfall(steps[i], steps[i + 1], true);
     if (v.hp0 >= 0 && e.hp < v.hp0 - 1e-6) {
       const big = (v.hp0 - e.hp) / e.maxHp > 0.015;
-      this.flashEnemy(v, true); v.dim = 1;
+      v.dim = 1;
       fx.burst(e.x, e.y + 1, e.z, big ? 40 : 14, 11, VIOLET, 0.8, 0.34, 9); fx.burst(e.x, e.y, e.z, big ? 20 : 8, 8, HEAT, 0.9, 0.22, 12);
       if (big) { fx.flash(e.x, e.y + 1, e.z, 6, VIOLET, 0.22); fx.smoke(e.x, e.y + 1.5, e.z, 4, 2, 3, 1); this.bump(0.45, e.x, e.z, true); }
     }
@@ -2275,7 +1862,6 @@ export class View {
     this.shake = Math.max(this.shake, 1.6); this.pulse(x, z, VIOLET, 40, 1);
     if (!v) return;
     if (this.wreck) this.poolEnemy(this.wreck.v);
-    for (const w of v.weak) w.core.visible = w.ring.visible = false;
     if (v.hitT > 0) { v.hitT = 0; for (let i = 0; i < v.meshes.length; i++) v.meshes[i].material = v.mats[i]; }
     v.bar.visible = v.back.visible = false; v.glow.visible = false;
     v.rig.dead = 1e-3; v.rig.snap = null; v.rig.ground = null;
@@ -2332,12 +1918,10 @@ export class View {
   private sync(dt: number) {
     const sim = this.sim;
     if (!sim) return;
-    const fx = this.fx, f = ++this.frame, k = 1 - Math.exp(-dt * 18), b = this.heroBlend;
+    const fx = this.fx, f = ++this.frame, k = 1 - Math.exp(-dt * 18);
     for (let i = 0; i < this.later.length; i++) { const l = this.later[i]; if ((l.t -= dt) <= 1e-6) { this.later.splice(i--, 1); l.fn(); } }
-    if (this.zoneWait.length > 8) this.zoneWait.shift();
     this.thunder -= dt; this.swarm -= dt;
-    const me = sim.players[this.me], aim = !!me && me.heroActive && b > 0.5;
-    if (aim) { this.camPose(RO, RD); const o = sim.heroOrigin(this.me); if (o) this.bow.set(o.x, o.y, o.z); }
+    this.fac.sync(dt, this.time, this.intro ? (x: number, z: number) => this.reveal(x, z) : null);
 
     // deck assembly: the core, wreckage and lamps come in with their tiles (one last pass at full size when it ends)
     if (this.intro) {
@@ -2359,7 +1943,7 @@ export class View {
         this.ev.set(e.id, v);
       }
       v.seen = f;
-      this.syncEnemy(e, v, dt, k, b, aim);
+      this.syncEnemy(e, v, dt, k);
     }
     for (const [id, v] of this.ev) if (v.seen !== f) { this.poolEnemy(v); this.ev.delete(id); }
     this.syncMites(dt, f);
@@ -2370,10 +1954,8 @@ export class View {
     for (const t of sim.towers) {
       const v = this.tv.get(t.id) || this.makeTower(t);
       v.seen = f;
-      let linked = false;
-      if (t.type === 'spire') for (const p of sim.players) if (p.heroActive && p.heroTower === t.id) linked = true;
-      this.syncTower(t, v, dt, linked);
-      this.syncNode(t, v, b);
+      this.syncTower(t, v, dt, false);
+      this.syncNode(t, v, 0.6);
     }
     for (const [id, v] of this.tv) if (v.seen !== f) { this.dropTower(v); this.tv.delete(id); }
 
@@ -2383,15 +1965,13 @@ export class View {
       if (!v) {
         const pool = this.ppool[p.kind];
         if (pool && pool.length) { v = pool.pop()!; v.mesh.visible = true; v.fresh = true; }
-        else { const mesh = new THREE.Mesh(this.projGeo[p.kind] || this.projGeo.bolt, this.projMat[p.kind] || this.projMat.arrow0); mesh.frustumCulled = false; mesh.layers.set(FX_LAYER); this.dyn.add(mesh); v = { mesh, kind: p.kind, seen: 0, fresh: true, em: 0 }; }
-        if (p.kind === 'arrow') v.mesh.material = this.projMat['arrow' + p.tier] || this.projMat.arrow0;
+        else { const mesh = new THREE.Mesh(this.projGeo[p.kind] || this.projGeo.bolt, this.projMat[p.kind] || this.projMat.bolt); mesh.frustumCulled = false; mesh.layers.set(FX_LAYER); this.dyn.add(mesh); v = { mesh, kind: p.kind, seen: 0, fresh: true, em: 0 }; }
         this.pv.set(p.id, v);
       }
       v.seen = f;
       v.mesh.position.set(p.x, p.y, p.z);
       if (p.vx || p.vy || p.vz) { V.set(p.x + p.vx, p.y + p.vy, p.z + p.vz); v.mesh.lookAt(V); }
-      if (p.kind === 'arrow') { const w = 1 + 0.18 * (p.tier || 0); v.mesh.scale.set(w, w, 1); fx.spark(p.x, p.y, p.z, (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 2, 0.24 + 0.03 * (p.tier || 0), 0.17 + 0.04 * (p.tier || 0), (BOW_TIERS[p.tier] || BOW_TIERS[0]).color); }
-      else if (p.kind === 'shell') fx.spark(p.x, p.y, p.z, 0, 0.5, 0, 0.4, 0.3, APRICOT);
+      if (p.kind === 'shell') fx.spark(p.x, p.y, p.z, 0, 0.5, 0, 0.4, 0.3, APRICOT);
       else if (p.kind === 'missile') {
         // exhaust flame and a thin smoke trail behind the motor
         const sp = Math.hypot(p.vx, p.vy, p.vz) || 1, bx = p.x - (p.vx / sp) * 0.35, by = p.y - (p.vy / sp) * 0.35, bz = p.z - (p.vz / sp) * 0.35;
@@ -2411,9 +1991,9 @@ export class View {
       const zy = z.y || 0;
       if (!v) {
         const obj = new THREE.Group();
-        const c = z.kind === 'burn' ? APRICOT : z.kind === 'rain' ? SAND : SINGC;
+        const c = z.kind === 'burn' ? APRICOT : SINGC;
         const mats: THREE.Material[] = [];
-        let halo: THREE.Object3D | null = null, core: THREE.Object3D | null = null, lens: THREE.Mesh | null = null, fill: THREE.Mesh | null = null, ax = 0.88, az = 0.47;
+        let halo: THREE.Object3D | null = null, core: THREE.Object3D | null = null, lens: THREE.Mesh | null = null;
         const rim = new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(z.kind === 'sing' ? 0.5 : 0.7), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
         const ring = new THREE.Mesh(G_RING, rim); ring.scale.setScalar(z.r); obj.add(ring);
         mats.push(rim);
@@ -2429,15 +2009,6 @@ export class View {
           lens = new THREE.Mesh(G_QUAD, m5); lens.scale.setScalar(1.6); lens.renderOrder = 2; core.add(lens);
           obj.add(core);
           mats.push(shade, m3, m4, m5);
-        } else if (z.kind === 'rain') {
-          // a soft pool of light that grows from the middle while the volley is in the air
-          const m1 = new THREE.MeshBasicMaterial({ map: glowTexture(), color: 0x000000, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
-          fill = new THREE.Mesh(POOL_GEO, m1); fill.position.y = -0.01; obj.add(fill);
-          mats.push(m1);
-          rim.color.setHex(0x000000);
-          // the shower comes in from the side the volley was loosed from
-          const o = z.owner >= 0 ? sim.heroOrigin(z.owner) : null, l = o ? Math.hypot(o.x - z.x, o.z - z.z) : 0;
-          if (o && l > 0.5) { ax = (o.x - z.x) / l; az = (o.z - z.z) / l; }
         } else {
           const m1 = new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: 0.1, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
           const disc = new THREE.Mesh(G_DISC, m1); disc.scale.setScalar(z.r); obj.add(disc);
@@ -2445,12 +2016,8 @@ export class View {
         }
         obj.position.set(z.x, zy + 0.07, z.z);
         this.dyn.add(noAO(obj));
-        v = { obj, kind: z.kind, seen: f, t: 0, mats, halo, c, tick: 0, x: z.x, y: zy, z: z.z, r: z.r, core, lens, life: z.life, fill, ax, az };
-        // a rain zone that is already old (a guest joined late, a snapshot) has its shower running
-        if (z.kind === 'rain' && z.life < 3.5 - RAIN_LAND) v.t = RAIN_LAND;
-        // a zone thrown by the hero shows up when her pose releases it
-        for (let i = this.zoneWait.length - 1; i >= 0; i--) { const w = this.zoneWait[i]; if (Math.abs(w[0] - z.x) < 0.01 && Math.abs(w[1] - z.z) < 0.01) { v.t = -w[2]; this.zoneWait.splice(i, 1); break; } }
-        if (z.kind === 'sing' && z.owner < 0) {
+        v = { obj, kind: z.kind, seen: f, t: 0, mats, halo, c, tick: 0, x: z.x, y: zy, z: z.z, r: z.r, core, lens, life: z.life };
+        if (z.kind === 'sing') {
           // Collapse: the well reaches out to its victim and the space round it folds in
           let src: Tower | null = null;
           for (const t of sim.towers) if (t.type === 'gravity' && t.spec > 0 && (!src || Math.hypot(t.x - z.x, t.z - z.z) < Math.hypot(src.x - z.x, src.z - z.z))) src = t;
@@ -2463,26 +2030,7 @@ export class View {
       v.seen = f; v.t += dt; v.life = z.life;
       v.obj.visible = v.t >= 0;
       if (v.t < 0) continue;
-      if (z.kind === 'rain') {
-        // marker: the rim fades in, the pool fills until the first shafts land, then both sit low under the shower and fade with it
-        const k = ease(v.t / RAIN_LAND), end = Math.min(1, z.life / 0.5), landed = ease((v.t - RAIN_LAND) / 0.4);
-        (v.mats[0] as THREE.MeshBasicMaterial).color.setHex(SAND).multiplyScalar(ease(v.t / 0.25) * (0.75 - 0.3 * landed) * end);
-        if (v.fill) {
-          v.fill.scale.setScalar(z.r * (0.2 + 1.05 * k));
-          (v.fill.material as THREE.MeshBasicMaterial).color.setHex(SAND).multiplyScalar((0.1 + 0.5 * k * (1 - 0.7 * landed)) * end);
-        }
-        // the shower: shafts come down all over the zone, a few at a time, for as long as it lasts
-        if (v.t >= RAIN_LAND - 0.12 && z.life > 0.2) {
-          v.tick += dt * 24;
-          while (v.tick >= 1) {
-            v.tick -= 1;
-            const a = Math.random() * TAU, r = Math.sqrt(Math.random()) * z.r * 0.96, x = z.x + Math.cos(a) * r, zz = z.z + Math.sin(a) * r, sh = this.shaft();
-            sh.mode = 3; sh.t = 0; sh.T = 0.19 + Math.random() * 0.04; sh.pow = 1; sh.gy = zy; sh.tr = 0;
-            sh.to.set(x, zy, zz); sh.p0.set(x + v.ax * 3.6 + (Math.random() - 0.5) * 1.2, zy + 13, zz + v.az * 3.6 + (Math.random() - 0.5) * 1.2);
-            sh.pos.copy(sh.p0); sh.last.copy(sh.p0); sh.dir.subVectors(sh.to, sh.p0).normalize();
-          }
-        }
-      } else if (z.kind === 'sing' && v.core) {
+      if (z.kind === 'sing' && v.core) {
         // it opens fast, feeds for as long as it lives and shrinks to a point just before it goes
         const open = ease(v.t / 0.18) * (z.life < 0.22 ? Math.max(0.05, z.life / 0.22) : 1), cy = zy + 1.7;
         v.core.scale.setScalar(open * (1 + 0.04 * Math.sin(v.t * 23)));
@@ -2506,229 +2054,17 @@ export class View {
     }
     for (const [id, v] of this.zv) if (v.seen !== f) { this.dropZone(v, v.life < 0.3); this.zv.delete(id); }
 
-    this.syncShafts(dt);
-
-    // jump targets above the other Spires
-    this.syncBeacons(dt, aim);
-
-    // heroes
-    const tier = BOW_TIERS[sim.tier];
-    // a Rail Shot held ready makes the bow burn brighter, with a fast flicker once it is fully charged
-    const rc = this.railCharge, flick = rc >= 1 ? 0.85 + 0.15 * Math.sin(performance.now() / 33) : 1;
-    for (const m of this.bowMats) {
-      m.color.setHex(tier.color).multiplyScalar(0.25); m.emissive.setHex(tier.color);
-      m.userData.ei ??= m.emissiveIntensity;
-      m.emissiveIntensity = m.userData.ei * (1 + 2.5 * rc * flick);
-    }
-    sim.players.forEach((p, i) => {
-      const h = this.hero(i);
-      const t = p.heroActive ? sim.towerById(p.heroTower) : undefined;
-      if (t) h.out = false;
-      h.obj.visible = h.shown = !!t || h.out;
-      if (!h.shown) return;
-      for (const tr of h.tiers) tr.o.visible = sim.tier + 1 >= tr.n;
-      const yaw = i === this.me ? this.yaw : p.yaw, pitch = i === this.me ? this.pitch : p.pitch;
-      if (h.tele > 0) { h.tele -= dt; if (h.tele <= 0 && h.rig) heroTrigger(h.rig, 'teleIn'); }
-      // she stands on the platform of the spire she is linked to
-      if (t && h.tele <= 0) h.pos.set(t.x, standY(t), t.z);
-      h.obj.position.copy(h.pos);
-      h.obj.rotation.y = yaw;
-      // the rig owns scale (squash / materialise) and the teleport flicker
-      // and the bow shows the tension the player holds in it
-      let pull = p.heroActive && typeof p.draw === 'number' ? p.draw : -1;
-      if (i === this.me && p.heroActive && this.railCharge > 0) pull = Math.max(pull, this.railCharge); // Rail Shot: the string comes back with the charge
-      if (h.rig) { if (!updateHero(h.rig, yaw, pitch, dt, HERO_SCALE, pull)) { h.out = false; h.obj.visible = h.shown = false; } }
-    });
-  }
-
-  private hero(i: number): HVis {
-    let h = this.heroes[i];
-    if (!h) {
-      const obj = this.models.hero.clone();
-      obj.scale.setScalar(HERO_SCALE); obj.visible = false;
-      const tiers: HVis['tiers'] = [];
-      obj.traverse((o) => { const m = /^tier([2-5])(_|$)/.exec(o.name); if (m) tiers.push({ n: +m[1], o }); });
-      this.dyn.add(obj);
-      h = this.heroes[i] = { obj, rig: makeHeroRig(obj), pos: new THREE.Vector3(), tele: 0, out: false, shown: false, tiers };
-    }
-    return h;
-  }
-
-  /**
-   * In the Uplink every other Spire carries a jump target at spireTarget(): a verdigris reticle with the F key under it
-   * (shoot it or press F). The one under the crosshair, or picked by the controller, lights up and closes its brackets.
-   */
-  private syncBeacons(dt: number, aim: boolean) {
-    const sim = this.sim!, me = sim.players[this.me], b = this.heroBlend;
-    let n = 0;
-    if (aim && me) for (const t of sim.towers) {
-      if (t.type !== 'spire' || t.id === me.heroTower || t.down > 0) continue;
-      let v = this.beacons[n];
-      if (!v) {
-        const obj = new THREE.Group(), mat = reticleMat(4);
-        const ret = new THREE.Mesh(G_QUAD, mat); ret.scale.setScalar(SPIRE_R * 1.2);
-        const dia = new THREE.Mesh(G_OCTA, new THREE.MeshBasicMaterial({ color: new THREE.Color(UPLINK).multiplyScalar(1.4), fog: false })); dia.scale.set(0.13, 0.2, 0.13);
-        const key = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.keyTexture(), color: UPLINK, transparent: true, depthWrite: false, fog: false })); key.center.set(0.5, 1);
-        obj.add(ret, dia, key);
-        this.dyn.add(noAO(obj));
-        v = this.beacons[n] = { obj, ret, mat, dia, key, hot: 0 };
-      }
-      n++;
-      spireTarget(t, W3);
-      const u = raySphere(RO.x, RO.y, RO.z, RD.x, RD.y, RD.z, W3.x, W3.y, W3.z, SPIRE_R), on = u > 0 || t.id === this.teleId;
-      v.hot = damp(v.hot, on ? 1 : 0, 16, dt);
-      const hot = v.hot, d = Math.hypot(W3.x - RO.x, W3.y - RO.y, W3.z - RO.z);
-      v.obj.visible = true;
-      v.obj.position.set(W3.x, W3.y, W3.z);
-      v.obj.scale.setScalar(Math.max(0.01, b));
-      v.ret.quaternion.copy(this.camera.quaternion);
-      v.ret.scale.setScalar(SPIRE_R * (1.2 - 0.12 * hot));
-      const uu = v.mat.uniforms;
-      (uu.color.value as THREE.Color).setHex(UPLINK).lerp(C1.setHex(0xffffff), 0.35 * hot);
-      uu.gain.value = 0.6 + 0.12 * Math.sin(this.time * 3 + t.id) + 1.0 * hot;
-      uu.mark.value = 0.45 + 0.55 * hot;
-      uu.spin.value = v.ret.userData.s = (v.ret.userData.s || 0) + dt * (0.5 + 2.5 * hot);
-      v.dia.rotation.y += dt * (1.5 + 4 * hot);
-      (v.dia.material as THREE.MeshBasicMaterial).color.setHex(UPLINK).multiplyScalar(1.1 + 1.2 * hot);
-      // the key cap keeps a readable size at any distance
-      const ks = Math.max(0.5, d * 0.032) * (1 + 0.15 * hot);
-      v.key.scale.set(ks, ks, 1); v.key.position.y = -SPIRE_R * 1.15;
-      (v.key.material as THREE.SpriteMaterial).opacity = 0.6 + 0.4 * hot;
-    }
-    for (let i = n; i < this.beacons.length; i++) this.beacons[i].obj.visible = false;
-  }
-  /** A small key cap with an F on it, drawn once. */
-  private keyTexture() {
-    if (this.keyTex) return this.keyTex;
-    const c = document.createElement('canvas'); c.width = c.height = 64;
-    const g = c.getContext('2d')!;
-    g.strokeStyle = '#ffffff'; g.fillStyle = 'rgba(8,14,13,0.75)'; g.lineWidth = 4;
-    g.beginPath(); g.roundRect(8, 8, 48, 48, 9); g.fill(); g.stroke();
-    g.fillStyle = '#ffffff'; g.font = '700 32px monospace'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('F', 32, 34);
-    this.keyTex = new THREE.CanvasTexture(c); this.keyTex.colorSpace = THREE.SRGBColorSpace;
-    return this.keyTex;
-  }
-
-  /** A free Arrow Rain shaft (the oldest one in use when all are taken). */
-  private shaft(): Shaft {
-    for (const s of this.shafts) if (!s.mode) return s;
-    return this.shafts[this.shaftN++ % SHAFTS];
-  }
-  /**
-   * The Arrow Rain volley leaves the bow (the sim only knows the zone it lands in): a tight fan of shafts that climbs fast,
-   * slows into its top above the road between her and the zone, tips over there and comes down spread across the zone.
-   */
-  private rainVolley(pi: number, zx: number, zy: number, zz: number) {
-    const sim = this.sim, p = sim && sim.players[pi], o = sim && p && p.heroActive ? sim.heroOrigin(pi) : null;
-    if (!o || !sim) return;
-    let r = 4.5;
-    for (const z of sim.zones) if (z.kind === 'rain' && Math.abs(z.x - zx) < 0.01 && Math.abs(z.z - zz) < 0.01) r = z.r;
-    const d = Math.hypot(zx - o.x, zz - o.z), yaw = d > 0.5 ? Math.atan2(zx - o.x, zz - o.z) : pi === this.me ? this.yaw : p!.yaw;
-    const hx = Math.sin(yaw), hz = Math.cos(yaw);
-    // the top of the climb: part of the way to the zone, well above the bow. For the player who loosed it the top stays
-    // inside the picture: looking steeply down at a near zone, the volley goes out in a low arc instead of leaving the screen
-    const run = Math.min(d * 0.5, 9);
-    let rise = Math.max(5, Math.min(10, 4.5 + 0.2 * d));
-    if (pi === this.me && this.heroBlend > 0.5) rise = Math.max(1.3, Math.min(rise, this.camera.position.y - o.y + Math.tan(Math.min(1.2, this.pitch + 0.4)) * (run + CAM_BACK)));
-    const reach = Math.hypot(run, rise) * 0.6;
-    // the shafts leave along the bow, which points high; a low arc bends over sooner
-    const el = Math.min(1.08, Math.atan2(rise, run) + 0.45), cu = Math.cos(el), su = Math.sin(el);
-    const bx = o.x + hx * cu * 0.5, by = o.y + su * 0.5 + 0.1, bz = o.z + hz * cu * 0.5;
-    for (let i = 0; i < RAIN_N; i++) {
-      const k = i - (RAIN_N - 1) / 2, ak = Math.abs(k), s = this.shaft();
-      const a = Math.random() * TAU, rr = Math.sqrt(Math.random()) * r * 0.9;
-      s.mode = 1; s.t = 0; s.T = RAIN_CLIMB * (1 + 0.03 * ak); s.pow = 2; s.gy = zy; s.tr = 0;
-      s.p0.set(bx + hz * k * 0.03, by, bz - hx * k * 0.03);
-      s.p1.set(bx + hx * cu * reach + hz * k * 0.3, by + su * reach, bz + hz * cu * reach - hx * k * 0.3);
-      s.p2.set(o.x + hx * (run - ak * 0.22) + hz * k * 0.6, o.y + rise - ak * 0.14 + Math.random() * 0.3, o.z + hz * (run - ak * 0.22) - hx * k * 0.6);
-      s.to.set(zx + Math.cos(a) * rr, zy, zz + Math.sin(a) * rr);
-      s.pos.copy(s.p0); s.last.copy(s.p0); s.dir.set(hx * cu, su, hz * cu);
-    }
-    this.fx.burst(bx, by, bz, 4, 2.5, FROST, 0.22, 0.14, 0);
-  }
-  /** Move the Arrow Rain shafts: climb, hang, fall, strike (sparks, a dust ring), then stand in the deck a moment and sink. */
-  private syncShafts(dt: number) {
-    const fx = this.fx, mesh = this.shaftMesh;
-    let n = 0;
-    for (const s of this.shafts) {
-      if (!s.mode) continue;
-      s.t += dt;
-      let len = 1;
-      if (s.mode === 1) {
-        // fast off the string, slowing all the way up
-        const u = Math.min(1, s.t / s.T), e = 1 - Math.pow(1 - u, 2.3), q = 1 - e;
-        s.pos.set(q * q * s.p0.x + 2 * e * q * s.p1.x + e * e * s.p2.x, q * q * s.p0.y + 2 * e * q * s.p1.y + e * e * s.p2.y, q * q * s.p0.z + 2 * e * q * s.p1.z + e * e * s.p2.z);
-        s.dir.set(q * (s.p1.x - s.p0.x) + e * (s.p2.x - s.p1.x), q * (s.p1.y - s.p0.y) + e * (s.p2.y - s.p1.y), q * (s.p1.z - s.p0.z) + e * (s.p2.z - s.p1.z)).normalize();
-        len = 1 + 0.5 * q;
-        if (u >= 1) { s.mode = 2; s.t = 0; s.d0.copy(s.dir); }
-      } else if (s.mode === 2) {
-        // the beat at the top: the shaft drifts on a little and tips its head toward the zone
-        const u = Math.min(1, s.t / RAIN_HANG), e = ease(u);
-        s.pos.copy(s.p2).addScaledVector(s.d0, 0.3 * Math.sin(u * Math.PI * 0.5)); s.pos.y -= 0.25 * u * u;
-        s.dir.subVectors(s.to, s.pos).normalize().multiplyScalar(e).addScaledVector(s.d0, 1 - e).normalize();
-        if (u >= 1) { s.mode = 3; s.t = 0; s.T = RAIN_DIVE * (0.85 + 0.5 * Math.random()); s.p0.copy(s.pos); }
-      } else if (s.mode === 3) {
-        const u = Math.min(1, s.t / s.T), e = s.pow === 1 ? u : u * u;
-        s.pos.lerpVectors(s.p0, s.to, e);
-        s.dir.subVectors(s.to, s.p0).normalize();
-        len = 1.45;
-        if (u >= 1) {
-          const x = s.to.x, z = s.to.z, gy = s.gy;
-          s.mode = 4; s.t = 0; s.T = 0.4 + Math.random() * 0.35;
-          fx.burst(x, gy + 0.08, z, 3, 3.2, SAND, 0.28, 0.2, 7);
-          fx.spark(x, gy + 0.12, z, 0, 0.4, 0, 0.12, 0.5, FROST);
-          if (this.shaftN++ & 1) fx.ring(x, gy + 0.06, z, 0.5 + Math.random() * 0.3, DUST, 0.3, 0.25, 0.8);
-          else if (Math.random() < 0.5) fx.puff(x, gy + 0.12, z, 0.34, 0.5, 0.4);
-        }
-      }
-      if (s.mode === 4) {
-        // stuck: a third of it in the deck, then it sinks away
-        const k = Math.min(1, (s.T - s.t) / 0.15);
-        len = 0.7;
-        s.pos.copy(s.to).addScaledVector(s.dir, 0.3 - 0.77 * k);
-        if (s.t >= s.T) { s.mode = 0; continue; }
-      } else {
-        // a thin trail: one short segment every few hundredths of a second
-        s.tr += dt;
-        if (s.tr >= 0.035) { s.tr = 0; fx.beam(s.last.x, s.last.y, s.last.z, s.pos.x, s.pos.y, s.pos.z, s.mode === 3 ? FROST : TRAIL, 0.034, s.mode === 3 ? 0.13 : 0.3); s.last.copy(s.pos); }
-      }
-      mesh.setMatrixAt(n++, M4.compose(s.pos, Q1.setFromUnitVectors(ZA, s.dir), V3.set(1, 1, len)));
-    }
-    if (n || mesh.count) { mesh.count = n; mesh.instanceMatrix.needsUpdate = true; }
   }
 
   private updateCamera(dt: number) {
-    const sim = this.sim, p = sim ? sim.players[this.me] : null;
-    const t = p && p.heroActive && sim ? sim.towerById(p.heroTower) : undefined;
-    const target = t ? 1 : 0;
-    this.heroBlend += Math.max(-dt * 2.4, Math.min(dt * 2.4, target - this.heroBlend));
-    // bird view
+    // the bird view: an orbit for the attract screen, else the camera the page steers (cam)
     if (this.orbit) { const a = this.time * 0.06; this.topPos.set(Math.sin(a) * 46, 30 + Math.sin(a * 1.7) * 4, Math.cos(a) * 40 + 4); V.set(2, 0, 0); }
     else { const c = this.cam, tl = this.tiltOf(c.dist), h = c.dist * Math.cos(tl); this.topPos.set(c.x + Math.sin(c.rot) * h, c.dist * Math.sin(tl), c.z + Math.cos(c.rot) * h); V.set(c.x, 0, c.z); }
-    this.dummy.position.copy(this.topPos); this.dummy.lookAt(V); this.topQ.copy(this.dummy.quaternion);
-    // build mode lifts the camera for a look at the ground: eased both ways, never a cut
-    this.lift += ((this.buildView && t ? 1 : 0) - this.lift) * (1 - Math.exp(-dt * 8));
-    if (this.lift < 1e-3) this.lift = 0;
-    // third person: the anchor glides only when she changes spire; the look angles are used as they are, unsmoothed
-    if (t) this.lastHeroAnchor.lerp(V.set(t.x, standY(t), t.z), this.heroBlend < 0.05 ? 1 : 1 - Math.exp(-dt * 14));
-    this.camPose(this.heroPos, V2);
-    this.dummy.position.copy(this.heroPos); this.dummy.lookAt(V.copy(this.heroPos).add(V2)); this.heroQ.copy(this.dummy.quaternion);
-    const b = this.heroBlend, s = b * b * (3 - 2 * b);
-    this.camera.position.lerpVectors(this.topPos, this.heroPos, s);
-    this.camera.position.y += Math.sin(s * Math.PI) * 6;
-    this.camera.quaternion.slerpQuaternions(this.topQ, this.heroQ, s);
-    // Arrow Rain: the camera eases straight back a little and opens up, then returns. It moves along the line of sight
-    // only, so the crosshair and the aim stay exactly where the mouse has them.
-    this.rainT += dt;
-    const nudge = this.rainT < 1.3 ? ease(this.rainT / 0.3) * (1 - ease((this.rainT - 0.5) / 0.8)) * s : 0;
-    if (nudge > 0) this.camera.position.addScaledVector(V2, -0.5 * nudge);
-    // Rail Shot held ready: the view narrows to about half
-    this.zoomS += (this.aimZoom * s - this.zoomS) * (1 - Math.exp(-dt * 12));
-    const fov = (this.orbit ? 50 : 42) + (66 - 42) * s + 2.5 * nudge - 32 * this.zoomS;
+    this.camera.position.copy(this.topPos); this.camera.lookAt(V);
+    const fov = this.orbit ? 50 : 42;
     if (Math.abs(fov - this.camera.fov) > 0.01) { this.camera.fov = fov; this.camera.updateProjectionMatrix(); }
     if (this.shake > 0.001) {
-      // a nudge of the camera position only: the view direction, and with it the aim, never moves
-      const a = this.shake * (0.3 - 0.22 * s);
+      const a = this.shake * 0.3;
       this.camera.position.x += (Math.random() - 0.5) * a; this.camera.position.y += (Math.random() - 0.5) * a; this.camera.position.z += (Math.random() - 0.5) * a;
       this.shake *= Math.exp(-dt * 7);
     }

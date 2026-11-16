@@ -587,8 +587,8 @@ function attempt(r: Rng, tier: number, seed: number): MapDef | null {
     id: `gen-${tier}-${seed}`, name: sectorName(r), desc: '', tier, lanes, core,
     gold, lives: roads.length === 3 ? 22 : 20, towers: [], blocked: [],
   };
-  for (const [cx, cz] of pickSpires(def, tier === 3 ? 2 : 1, r, tier === 3 ? 14 : 20)) def.towers.push({ t: 'spire', cx, cz });
-  if (def.towers.length !== (tier === 3 ? 2 : 1)) return null;
+  // (the spot a Spire used to take is still drawn from the stream, so every seed keeps giving the map it always gave)
+  pickSpires(def, tier === 3 ? 2 : 1, r, tier === 3 ? 14 : 20);
   const gates: Cell[] = [];
   for (const c of cells) { let n = 0; for (const p of c) if (inBoard(p[0], p[1]) && n++ < 4) gates.push(p); }
   def.blocked = scatter(def, gates, r);
@@ -617,13 +617,13 @@ const FALLBACK: Omit<MapDef, 'id' | 'name'>[] = [
   {
     desc: 'One long winding road from the south, 86 tiles from gate to core.', tier: 1,
     lanes: [[[2, 21], [4, 17], [7, 17], [6, 14], [3, 14], [1, 11], [3, 8], [1, 5], [3, 2], [9, 2], [10, 5], [7, 11], [10, 17], [22, 17], [24, 14], [21, 14], [19, 11], [21, 8], [18, 8], [15, 14], [12, 14], [13, 11], [13, 10]]],
-    core: [12, 8], gold: 180, lives: 20, towers: [{ t: 'spire', cx: 15, cz: 12 }],
+    core: [12, 8], gold: 180, lives: 20, towers: [],
     blocked: [[22, 7], [23, 8], [19, 3], [19, 2], [18, 3], [18, 2], [6, 1], [7, 0], [23, 1], [23, 0], [18, 15], [17, 15], [18, 16], [19, 16]],
   },
   {
     desc: 'One road from the north that loops back and bridges over itself. 63 tiles to hold.', tier: 2,
     lanes: [[[4, -2], [6, 3], [9, 3], [11, 6], [8, 12], [5, 12], [3, 15], [2, 12], [3, 9], [6, 9], [5, 6], [8, 6, 1], [11, 12, 1], [9, 15], [11, 18], [14, 18], [12, 15], [15, 15], [14, 12], [14, 11]]],
-    core: [15, 9], gold: 180, lives: 20, towers: [{ t: 'spire', cx: 9, cz: 11 }],
+    core: [15, 9], gold: 180, lives: 20, towers: [],
     blocked: [[8, 16], [8, 17], [8, 15], [7, 16], [15, 2], [14, 1], [15, 0], [15, 1], [18, 6], [18, 7], [17, 6], [23, 10], [22, 9], [22, 10], [22, 11], [23, 11], [24, 10]],
   },
   {
@@ -632,7 +632,7 @@ const FALLBACK: Omit<MapDef, 'id' | 'name'>[] = [
       [[27, 7, 2], [24, 7, 2], [23, 10, 2], [21, 7, 1], [15, 7, 1], [14, 10, 2], [17, 16, 2], [14, 16, 1], [12, 13], [9, 7], [7, 11]],
       [[20, 21], [23, 16], [20, 10], [17, 10], [20, 4], [17, 4, 1], [12, 4, 1], [9, 4], [8, 4], [3, 13], [4, 13]],
     ],
-    core: [6, 13], gold: 310, lives: 20, towers: [{ t: 'spire', cx: 17, cz: 8 }, { t: 'spire', cx: 10, cz: 10 }],
+    core: [6, 13], gold: 310, lives: 20, towers: [],
     blocked: [[6, 16], [5, 17], [6, 18], [6, 17], [6, 3], [5, 3], [4, 3], [11, 2], [11, 3]],
   },
 ];
