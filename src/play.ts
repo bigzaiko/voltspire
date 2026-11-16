@@ -378,7 +378,7 @@ for (const t of TOWER_TYPES) {
   b.style.setProperty('--c', hex(d.color));
   b.setAttribute('aria-label', `${d.name}, key ${d.key.toUpperCase()}`);
   b.append(el('kbd', '', d.key), el('div', 'ico'), el('div', 'nm', d.name), el('div', 'cost'));
-  b.addEventListener('click', () => { sound.init(); if (building) openBuild(t); else pickBuild(t); });
+  b.addEventListener('click', () => { sound.init(); if (building) openBuild(t); else if (!upMode()) pickBuild(t); });
   // A tooltip opens when the mouse moves over the button, not when a button appears under a resting pointer.
   // Fingers have no hover: the tooltip of the tower picked for building is shown instead.
   b.addEventListener('pointermove', (e) => { if (e.pointerType !== 'touch' && (e.movementX || e.movementY)) tipHover = t; });
@@ -1551,6 +1551,8 @@ function updateBuild() {
   else if (!sim.unlocked.has(upTower)) why = 'locked, find its blueprint';
   else if (sim.grid[cz * GW + cx] !== 0) why = GRID_WHY[sim.grid[cz * GW + cx]] || 'taken';
   else if (sim.gold < cost) why = 'not enough credits';
+  const ut = upTarget(), uw = !ut ? 'Upgrade' : ut.lvl >= 3 ? `${t ? '' : 'Spire '}max` : `${t ? '' : 'Spire '}${sim.upCost(ut)}`;
+  if (cache.bup !== uw) { cache.bup = uw; $('bk-up').textContent = ut ? `Upgrade ${uw}` : uw; $('t-bup').querySelector('b')!.textContent = ut ? `Upgrade ${uw}` : 'Upgrade'; }
   const line = name + '|' + why;
   if (cache.bline !== line) { cache.bline = line; $('bl-name').textContent = name; $('bl-why').textContent = why; }
   const cls = t ? 'sel' : bhex.ok ? 'ok' : 'bad';
@@ -1569,9 +1571,14 @@ function sellMarked() {
   if (!t) { sound.play('error'); return; }
   if (act.sell(t.id)) updateBuild();
 }
-/** U: upgrade the marked tower when it has a level left and the credits are there. */
+/** The tower U acts on: the one the crosshair marks in build mode, otherwise the Spire the player stands on
+ *  (the crosshair never marks that one, it is under the player's feet). */
+function upTarget() {
+  return sim.towerById(building ? bhex.tower : 0) ?? sim.towerById(sim.players[me]?.heroTower ?? 0);
+}
+/** U: upgrade that tower when it has a level left and the credits are there. */
 function upgradeMarked() {
-  const t = sim.towerById(bhex.tower);
+  const t = upTarget();
   if (!t || t.lvl >= 3 || sim.gold < sim.upCost(t)) { sound.play('error'); return; }
   act.upgrade(t.id);
 }
@@ -1582,7 +1589,7 @@ function upKey(k: string) {
   else if (t) { if (building && upTower === t) toggleBuild(); else openBuild(t); }
   else if (k === 'n') act.wave();
   else if (k === 'x' && building) sellMarked();
-  else if (k === 'u' && building) upgradeMarked();
+  else if (k === 'u') upgradeMarked();
 }
 /** Uplink mode: the player has just been put on a Spire (the start of the run, or another Spire after theirs was lost). */
 function uplinkOn() {
@@ -1850,9 +1857,10 @@ const touchApi = {
   ult() { sound.init(); tryUlt(); },
   build() { sound.init(); if (active() && heroOn() && upMode()) toggleBuild(); },
   sell() { sound.init(); if (active() && building) sellMarked(); },
+  upgrade() { sound.init(); if (active() && heroOn() && upMode()) upgradeMarked(); },
   exitHero() { if (active() && heroOn()) act.exit(); },
-  tap(clientX: number, clientY: number) { sound.init(); if (!active() || heroOn() || skipIntro()) return; boardTap(clientX, clientY, false); },
-  hoverAt(clientX: number, clientY: number) { if (active() && !heroOn()) hoverAt(clientX, clientY); },
+  tap(clientX: number, clientY: number) { sound.init(); if (!active() || heroOn() || upMode() || skipIntro()) return; boardTap(clientX, clientY, false); },
+  hoverAt(clientX: number, clientY: number) { if (active() && !heroOn() && !upMode()) hoverAt(clientX, clientY); },
   pan(dx: number, dy: number, x: number, y: number) { if (active() && !heroOn()) pan(dx, dy, x, y); },
   zoom(factor: number, x = innerWidth / 2, y = innerHeight / 2) { if (active() && !heroOn()) zoomAt(factor, x, y, false); },
   rotate(angle: number) { if (active() && !heroOn()) rotateCam(angle); },

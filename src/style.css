@@ -367,13 +367,15 @@ body.hero #t-ult { display: none; }
 #touch:not(.hidden) ~ #herohud #skills, #touch:not(.hidden) ~ #herohud #bkeys { display: none !important; }
 /* Uplink mode: Build sits where Exit would be. In build mode Draw becomes Place (dimmed where the tower cannot go),
    Sell shows above the buttons while the crosshair is on a tower, and the tower bar leaves the buttons their corner. */
-#t-build, #t-bsell { width: auto; height: 44px; min-width: 72px; padding: 0 14px; border-radius: var(--r); }
-#t-build b, #t-bsell b { font-size: 14px; }
+#t-build, #t-bsell, #t-bup { width: auto; height: 44px; min-width: 72px; padding: 0 14px; border-radius: var(--r); }
+#t-build b, #t-bsell b, #t-bup b { font-size: 14px; }
 #t-build { right: calc(12px + var(--safe-r)); top: calc(var(--top-h) + 6px); }
-body:not(.uplink) #t-build, #t-bsell { display: none; }
+body:not(.uplink) #t-build, #t-bsell, #t-bup { display: none; }
+body.building #t-bup { display: grid; }
 body.building #t-build { color: var(--ink); background: var(--sand); border-color: var(--sand); }
 body.building #hud.bsel #t-bsell { display: grid; }
 #t-bsell { right: calc(44px + var(--safe-r)); bottom: calc(214px + var(--safe-b)); color: var(--apricot); border-color: var(--rust); }
+#t-bup { right: calc(12px + var(--safe-r)); top: calc(var(--top-h) + 58px); }
 #t-fire .place, body.building #t-fire .draw { display: none; }
 body.building #t-fire .place { display: inline; }
 #hud.bbad #t-fire, #hud.bsel #t-fire { color: var(--muted); background: var(--soot-3); box-shadow: inset 0 0 0 1.5px var(--line-2), 0 0 0 4px rgba(16, 14, 12, 0.6); }

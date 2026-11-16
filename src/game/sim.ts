@@ -527,9 +527,12 @@ export class Sim {
     const core = this.map.def.core, seen = new Set<number>();
     for (let pi = 0; pi < this.opts.players; pi++) {
       const apart = (x: number, z: number) => this.home.every((id) => { const h = this.towerById(id)!; return Math.hypot(h.x - x, h.z - z) >= UPLINK_APART; });
+      // a new Spire right beside one the map already has would only see what that one sees: then the map's own is the choice
+      const clear = (x: number, z: number) => this.towers.every((t) => t.type !== 'spire' || this.home.includes(t.id) || Math.hypot(t.x - x, t.z - z) >= UPLINK_APART / 2);
       let best = -1, bs = 0;
       for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) {
-        if (this.grid[cz * GW + cx] !== 0 || Math.max(Math.abs(cx - core[0]), Math.abs(cz - core[1])) <= 2 || !apart(cellX(cx, cz), cellZ(cz))) continue;
+        const x = cellX(cx, cz), z = cellZ(cz);
+        if (this.grid[cz * GW + cx] !== 0 || Math.max(Math.abs(cx - core[0]), Math.abs(cz - core[1])) <= 2 || !apart(x, z) || !clear(x, z)) continue;
         const s = this.uplinkView(cx, cz, seen);
         if (s > bs) { bs = s; best = cz * GW + cx; }
       }

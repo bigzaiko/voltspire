@@ -104,10 +104,14 @@ const screenHex = (p) => p.evaluate(() => {
 const ghostHex = (p) => p.evaluate(() => { const v = window.__dbg.view; return { x: v.ghost.position.x, z: v.ghost.position.z, mark: v.cellMark.visible, model: v.ghost.visible, cross: v.cellCross.visible }; });
 const same = (a, b) => a[0] === b[0] && a[1] === b[1];
 const cellOf = (pt) => worldToCell(pt.x, pt.z);
-/** sim seconds per real second over about a second of animation frames */
+/** sim seconds per second of game time, over about a second of animation frames. Measured against the same clamped
+ *  frame time the game steps with (a frame never counts for more than 0.1 s), so a slow frame on a busy machine is no failure. */
 const rate = (p, ms = 1000) => p.evaluate((ms) => new Promise((res) => {
-  const s = window.__dbg.sim, t0 = s.time, w0 = performance.now();
-  setTimeout(() => res((s.time - t0) / ((performance.now() - w0) / 1000)), ms);
+  const s = window.__dbg.sim, t0 = s.time;
+  let last = performance.now(), sum = 0;
+  const end = last + ms;
+  const f = (now) => { sum += Math.min(0.1, (now - last) / 1000); last = now; if (now < end) requestAnimationFrame(f); else res((s.time - t0) / sum); };
+  requestAnimationFrame(f);
 }), ms);
 
 // ---------- mouse and keyboard ----------
@@ -139,8 +143,11 @@ const rate = (p, ms = 1000) => p.evaluate((ms) => new Promise((res) => {
 
   // the intro: the board assembles in the bird view and the sim waits for it; then the player is on the Spire
   const during = [];
-  while (await p.evaluate(() => window.__dbg.view.introActive())) {
-    during.push(await p.evaluate(() => ({ t: window.__dbg.sim.time, hero: window.__dbg.sim.players[0].heroActive })));
+  for (;;) {
+    // one sample per poll, read in a single step, so the intro cannot end between reading it and reading the sim
+    const q = await p.evaluate(() => ({ intro: window.__dbg.view.introActive(), t: window.__dbg.sim.time, hero: window.__dbg.sim.players[0].heroActive }));
+    if (!q.intro) break;
+    during.push(q);
     await wait(150);
     if (Date.now() - t0 > 15000) break;
   }
@@ -152,7 +159,7 @@ const rate = (p, ms = 1000) => p.evaluate((ms) => new Promise((res) => {
   let s = await state(p);
   ok(s.hero && s.spire === 'spire' && onS - introS < 1, `start: on the Spire ${f(onS - introS, 2)} s after the intro ended (${f(onS, 2)} s after Start)`);
   const hidden = { speed: !(await shown(p, '#btn-speed')), ult: !(await shown(p, '#ult')), time: !(await shown(p, '#hero-time')), build: await shown(p, '#sk-build'), prep: await shown(p, '#prep') };
-  ok(hidden.speed && hidden.ult && hidden.time && hidden.build, `HUD: speed button hidden ${hidden.speed}, Uplink bar hidden ${hidden.ult}, Uplink timer hidden ${hidden.time}, build key hint shown ${hidden.build}, first wave note shown ${hidden.prep}`);
+  ok(hidden.speed && hidden.ult && hidden.time && hidden.build && hidden.prep, `HUD: speed button hidden ${hidden.speed}, Uplink bar hidden ${hidden.ult}, Uplink timer hidden ${hidden.time}, build key hint shown ${hidden.build}, first wave note shown ${hidden.prep}`);
   const tip = await p.evaluate(() => (document.getElementById('tutor').classList.contains('hidden') ? '' : document.getElementById('tutor-text').textContent));
   ok(/build/i.test(tip) && /Spire/.test(tip), `tip: "${tip}"`);
   await K(' ');
@@ -199,7 +206,7 @@ const rate = (p, ms = 1000) => p.evaluate((ms) => new Promise((res) => {
   await wait(300);
   const b1 = await state(p);
   const built = await p.evaluate((cx, cz) => window.__dbg.sim.towers.filter((t) => t.cx === cx && t.cz === cz).map((t) => ({ id: t.id, type: t.type })), b0.cx, b0.cz);
-  ok(!!near && b1.towers === b0.towers + 1 && built.length === 1 && built[0].type === 'cryo' && b0.gold - b1.gold === cost && b1.looses === 0 && !b1.drawing,
+  ok(!!near && b1.towers === b0.towers + 1 && built.length === 1 && built[0].type === 'cryo' && b0.gold - b1.gold === cost && b1.looses === 0 && !b1.drawing && b1.open,
     `click: ${b1.towers - b0.towers} tower built, a ${built[0]?.type} on (${b0.cx},${b0.cz}); credits ${b0.gold} to ${b1.gold} (cost ${cost}); arrows loosed ${b1.looses}; still open ${b1.open}`);
   const cryoId = built[0]?.id || -1;
 
@@ -236,7 +243,8 @@ const rate = (p, ms = 1000) => p.evaluate((ms) => new Promise((res) => {
   const slow = await rate(p);
   await K('b');
   const easing = [];
-  for (let i = 0; i < 4; i++) { await wait(45); easing.push((await state(p)).slow); }
+  // the ease back to full speed, sampled until it gets there (it takes about 150 ms; a busy machine gets 600)
+  for (let i = 0; i < 20; i++) { await wait(30); easing.push((await state(p)).slow); if (easing[easing.length - 1] === 1) break; }
   await wait(200);
   const full = await rate(p);
   s = await state(p);
@@ -305,7 +313,22 @@ const rate = (p, ms = 1000) => p.evaluate((ms) => new Promise((res) => {
   await wait(100);
   const toast = await p.evaluate(() => [...document.querySelectorAll('#toasts .toast')].map((t) => t.textContent).pop() || '');
   ok(refused === false && /Spire/.test(toast) && (await p.evaluate((id) => !!window.__dbg.sim.towerById(id), own)), `selling the Spire she stands on is refused: "${toast}"`);
+  // with no tower in the crosshair U upgrades the Spire the player stands on (the crosshair never marks that one),
+  // in build mode and outside it
+  await p.evaluate(() => { window.__dbg.sim.gold += 3000; });
+  await frames(p);
+  const spLvl = () => p.evaluate((id) => window.__dbg.sim.towerById(id)?.lvl, own);
+  const sp0 = await spLvl(), upLabel = await p.evaluate(() => document.getElementById('bk-up').textContent), g0u = (await state(p)).gold;
+  await K('u');
+  await wait(200);
+  const sp1 = await spLvl(), g1u = (await state(p)).gold;
   await K('b');
+  await wait(200);
+  await K('u');
+  await wait(200);
+  const sp2 = await spLvl();
+  ok((await state(p)).tower === 0 && sp1 === sp0 + 1 && sp2 === sp1 + 1 && g0u > g1u && /Upgrade Spire \d+/.test(upLabel),
+    `own Spire: the U label read "${upLabel}"; U in build mode took the Spire from Mk ${sp0} to Mk ${sp1} (${g0u - g1u} credits), U outside it to Mk ${sp2}`);
 
   // the free cursor aim mode: nothing captures the mouse and the cursor is hidden, so it cannot click the tower bar;
   // a click still builds on the hex under the crosshair
@@ -426,6 +449,15 @@ const rate = (p, ms = 1000) => p.evaluate((ms) => new Promise((res) => {
   const s1 = await state(p);
   const gone = await p.evaluate((id) => !window.__dbg.sim.towerById(id), built?.id);
   ok(sellShown && gone && s1.gold > g0, `touch: Sell shows on the marked tower (${sellShown}) and sells it, credits ${g0} to ${s1.gold}`);
+  // Upgrade: with the crosshair on the empty hex the tower stood on, it upgrades the player's own Spire
+  await p.evaluate(() => { window.__dbg.sim.gold += 3000; });
+  const mine = await p.evaluate(() => window.__dbg.sim.players[0].heroTower);
+  const tl0 = await p.evaluate((id) => window.__dbg.sim.towerById(id)?.lvl, mine);
+  const upShown = await shown(p, '#t-bup');
+  await tapOn('#t-bup');
+  await wait(300);
+  const tl1 = await p.evaluate((id) => window.__dbg.sim.towerById(id)?.lvl, mine);
+  ok(upShown && tl1 === tl0 + 1, `touch: Upgrade shows in build mode (${upShown}) and, with no tower marked, takes her Spire from Mk ${tl0} to Mk ${tl1}`);
   await tapOn('#t-build');
   await wait(200);
   ok(!(await state(p)).open && !(await shown(p, '#bottom')), 'touch: Build again closes build mode and the bar');

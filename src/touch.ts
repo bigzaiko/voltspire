@@ -21,6 +21,8 @@ export interface TouchApi {
   build(): void;
   /** Uplink mode, build mode: sell the tower under the crosshair */
   sell(): void;
+  /** Uplink mode, build mode: upgrade the tower under the crosshair, or the player's own Spire */
+  upgrade(): void;
   /** bird view: a tap at client coordinates (build / select) */
   tap(clientX: number, clientY: number): void;
   /** bird view: finger moved over the board without lifting (hover / ghost preview) */
@@ -285,6 +287,7 @@ export function initTouch(api: TouchApi): void {
   press(byId('t-exit'), () => { if (api.isHero()) api.exitHero(); });
   press(byId('t-build'), () => { if (api.isHero()) api.build(); });
   press(byId('t-bsell'), () => { if (api.isHero()) api.sell(); });
+  press(byId('t-bup'), () => { if (api.isHero()) api.upgrade(); });
   press(byId('t-ult'), () => { if (!api.isHero()) api.ult(); });
   // Pause and speed act on press as well, so a second finger reaches them while the first holds Draw or aims.
   press(byId('btn-pause'), () => api.pause());

@@ -80,6 +80,7 @@
       <!-- Uplink mode: build mode, and selling the tower it has marked -->
       <button id="t-build" class="tb" type="button" aria-label="Build mode"><b>Build</b></button>
       <button id="t-bsell" class="tb" type="button" aria-label="Sell the marked tower"><b>Sell</b></button>
+      <button id="t-bup" class="tb" type="button" aria-label="Upgrade the marked tower, or your own Spire"><b>Upgrade</b></button>
       <button id="t-tp" class="tb" type="button" aria-label="Teleport"><b>Jump</b></button>
       <button id="t-s0" class="tb" type="button" aria-label="Rail Shot"><b>Rail</b><i></i></button>
       <button id="t-s1" class="tb" type="button" aria-label="Arrow Rain"><b>Rain</b><i></i></button>
@@ -107,7 +108,7 @@
         <div class="skill"><kbd>LMB</kbd><span>Place</span></div>
         <div class="skill"><em><kbd>Wheel</kbd> <kbd>1</kbd>-<kbd>0</kbd></em><span>Tower</span></div>
         <div class="skill"><kbd>X</kbd><span>Sell</span></div>
-        <div class="skill"><kbd>U</kbd><span>Upgrade</span></div>
+        <div class="skill"><kbd>U</kbd><span id="bk-up">Upgrade</span></div>
         <div class="skill"><em><kbd>RMB</kbd> <kbd>B</kbd></em><span>Close</span></div>
       </div>
       <div id="hero-hint"></div>
@@ -279,8 +280,8 @@
           <p class="kbd-only">Aim at another Spire and press <kbd>F</kbd>, or shoot its beacon, to jump there. <kbd>Space</kbd> ends early and refunds charge.</p>
           <p class="tap-only">Drag anywhere to aim. Hold Draw to pull the bow and let go to loose: a full draw hits hardest. The round buttons are your skills. Shoot the beacon of another Spire, or tap Jump, to move there.</p>
           <p>Towers charge a special. Shoot the glowing node on top of a charged tower to fire it. The tower then reboots for a few seconds. Brutes and the Colossus have weak points that take extra arrow damage.</p>
-          <p class="kbd-only">Uplink mode plays the whole run from the Spire. <kbd>B</kbd> or a tower key opens build mode: the crosshair marks a hex, <kbd>LMB</kbd> builds there, the wheel picks the tower, <kbd>X</kbd> sells and <kbd>U</kbd> upgrades the tower it marks, <kbd>RMB</kbd> or <kbd>B</kbd> closes it. A solo game slows down while it is open. Build a second Spire and jump to it to reach the rest of the grid.</p>
-          <p class="tap-only">Uplink mode plays the whole run from the Spire. Tap Build, pick a tower in the bar, aim at a hex and tap Place. Sell takes down the tower you aim at. Build a second Spire and jump to it to reach the rest of the grid.</p>
+          <p class="kbd-only">Uplink mode plays the whole run from the Spire. <kbd>B</kbd> or a tower key opens build mode: the crosshair marks a hex, <kbd>LMB</kbd> builds there, the wheel picks the tower, <kbd>X</kbd> sells and <kbd>U</kbd> upgrades the tower it marks (with nothing marked, <kbd>U</kbd> upgrades your own Spire), <kbd>RMB</kbd> or <kbd>B</kbd> closes it. A solo game slows down while it is open. Build a second Spire and jump to it to reach the rest of the grid.</p>
+          <p class="tap-only">Uplink mode plays the whole run from the Spire. Tap Build, pick a tower in the bar, aim at a hex and tap Place. Sell takes down the tower you aim at, Upgrade improves it (or your own Spire when you aim at no tower). Build a second Spire and jump to it to reach the rest of the grid.</p>
         </div>
         <div class="panel"><h3>Cards and the bow</h3>
           <p>Every level you pick one of three cards: tower blueprints, tower upgrades, hero powers or economy.</p>
