@@ -263,16 +263,44 @@ const rate = (p, ms = 1000) => p.evaluate((ms) => new Promise((res) => {
   ok(drawn.drawing && drawn.draw > 0.3 && after.open && !after.drawing && after.draw === 0 && after.looses === 0,
     `bow: drawn to ${f(drawn.draw, 2)} when B opened build mode; after letting go drawing ${after.drawing}, tension ${after.draw}, arrows loosed ${after.looses}`);
 
-  // Q still casts; the right button closes build mode and casts no Rail Shot
+  // Q in build mode closes it and arms Arrow Rain: its area shows under the crosshair and nothing is cast yet;
+  // the left button casts it there and looses no arrow
+  const skillState = async () => ({ ...(await state(p)), area: await p.evaluate(() => window.__dbg.view.skillMark.visible), cds: await p.evaluate(() => [...window.__dbg.sim.players[0].cds]) });
   const cd0 = await p.evaluate(() => [...window.__dbg.sim.players[0].cds]);
   await K('q');
+  await wait(200);
+  const a1 = await skillState(), aLine = await lineText(p);
+  await p.screenshot({ path: `${SHOTS}/skill-rain.png` });
+  shots.push(`${SHOTS}/skill-rain.png`);
+  await mid();
+  await wait(200);
+  const a2 = await skillState();
+  ok(!a1.open && a1.area && a1.cds[1] <= cd0[1] && /Arrow Rain/.test(aLine) && a2.cds[1] > cd0[1] + 1 && !a2.area && a2.looses === 0 && !a2.drawing,
+    `skills: Q in build mode closes it and shows the Arrow Rain area ("${aLine}", nothing cast yet); LMB casts it (cooldown ${f(a2.cds[1], 1)} s), no arrow loosed`);
+  // E shows the Singularity area; E again puts it away without casting, and so does the right button
+  await K('e');
+  await wait(200);
+  const g1 = await skillState();
+  await p.screenshot({ path: `${SHOTS}/skill-singularity.png` });
+  shots.push(`${SHOTS}/skill-singularity.png`);
+  await K('e');
   await wait(150);
-  const cd1 = await p.evaluate(() => [...window.__dbg.sim.players[0].cds]);
+  const g2 = await skillState();
+  await K('e');
+  await wait(150);
+  await mid('right');
+  await wait(200);
+  const g3 = await skillState();
+  ok(g1.area && !g2.area && !g3.area && g3.cds[2] <= 0 && g3.cds[0] <= 0 && g3.looses === 0,
+    `skills: E shows the Singularity area (${g1.area}); E again (${!g2.area}) or RMB (${!g3.area}) puts it away, nothing cast (Singularity ${f(Math.max(0, g3.cds[2]), 1)} s, Rail Shot ${f(Math.max(0, g3.cds[0]), 1)} s)`);
+  // the right button in build mode closes it and casts no Rail Shot
+  await K('b');
+  await wait(200);
   await mid('right');
   await wait(200);
   const cd2 = await p.evaluate(() => [...window.__dbg.sim.players[0].cds]);
   s = await state(p);
-  ok(cd1[1] > cd0[1] + 1 && !s.open && cd2[0] <= 0 && s.looses === 0, `skills: Q in build mode starts Arrow Rain (cooldown ${f(cd1[1], 1)} s); a right click closes build mode (open ${s.open}) and Rail Shot stays ready (${f(Math.max(0, cd2[0]), 1)} s)`);
+  ok(!s.open && cd2[0] <= 0 && s.looses === 0, `a right click closes build mode (open ${s.open}) and Rail Shot stays ready (${f(Math.max(0, cd2[0]), 1)} s)`);
 
   // Escape closes build mode without pausing; the next Escape pauses
   await K('b');
@@ -461,6 +489,15 @@ const rate = (p, ms = 1000) => p.evaluate((ms) => new Promise((res) => {
   await tapOn('#t-build');
   await wait(200);
   ok(!(await state(p)).open && !(await shown(p, '#bottom')), 'touch: Build again closes build mode and the bar');
+  // Rain: its area shows and Draw reads Cast; Cast lets it go
+  const rc0 = await p.evaluate(() => window.__dbg.sim.players[0].cds[1]);
+  await tapOn('#t-s1');
+  await wait(200);
+  const armedT = await p.evaluate(() => window.__dbg.view.skillMark.visible), castT = await shown(p, '#t-fire .cast');
+  await tapOn('#t-fire');
+  await wait(250);
+  const rc1 = await p.evaluate(() => window.__dbg.sim.players[0].cds[1]), goneT = await p.evaluate(() => !window.__dbg.view.skillMark.visible);
+  ok(armedT && castT && rc1 > rc0 + 1 && goneT, `touch: Rain shows its area (${armedT}) and Draw reads Cast (${castT}); Cast lets it go (cooldown ${f(rc1, 1)} s)`);
   await p.close();
 }
 

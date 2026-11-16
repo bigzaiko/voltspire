@@ -1031,7 +1031,7 @@ export class Sim {
     return true;
   }
   /** Height of the road deck under a point: of the roads passing within 2.5 of it, the one closest to height y (0 when there is none). */
-  private deckAt(x: number, y: number, z: number): number {
+  deckAt(x: number, y: number, z: number): number {
     let best = 0, bd = Infinity;
     for (const L of this.map.lanes) for (let i = 1; i < L.pts.length; i++) {
       const a = L.pts[i - 1], b = L.pts[i];

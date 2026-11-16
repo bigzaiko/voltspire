@@ -376,8 +376,13 @@ body.building #t-build { color: var(--ink); background: var(--sand); border-colo
 body.building #hud.bsel #t-bsell { display: grid; }
 #t-bsell { right: calc(44px + var(--safe-r)); bottom: calc(214px + var(--safe-b)); color: var(--apricot); border-color: var(--rust); }
 #t-bup { right: calc(12px + var(--safe-r)); top: calc(var(--top-h) + 58px); }
-#t-fire .place, body.building #t-fire .draw { display: none; }
+#t-fire .place, #t-fire .cast, body.building #t-fire .draw { display: none; }
 body.building #t-fire .place { display: inline; }
+/* an armed area skill: Draw reads Cast, and the line under the crosshair says how to let it go */
+body.arming #t-fire .draw, body.arming #t-fire .place { display: none; }
+body.arming #t-fire .cast { display: inline; }
+body.arming #build-line { display: flex; }
+body[data-armed="1"] #sk-1, body[data-armed="2"] #sk-2, body[data-armed="1"] #t-s1, body[data-armed="2"] #t-s2 { border-color: var(--sand); box-shadow: 0 0 0 1px var(--sand), 0 0 14px rgba(227, 220, 146, 0.35); }
 #hud.bbad #t-fire, #hud.bsel #t-fire { color: var(--muted); background: var(--soot-3); box-shadow: inset 0 0 0 1.5px var(--line-2), 0 0 0 4px rgba(16, 14, 12, 0.6); }
 body.touch.building #bottom { right: calc(262px + var(--safe-r)); }
 body.building #t-look { display: none; }

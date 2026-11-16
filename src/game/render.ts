@@ -460,6 +460,7 @@ export class View {
   private barMats: THREE.SpriteMaterial[];
   private projGeo: Record<string, THREE.BufferGeometry>;
   private projMat: Record<string, THREE.Material>;
+  private skillMark!: THREE.Mesh; private skillMat!: THREE.ShaderMaterial;
   private rangeRing: THREE.Mesh; private cellMark: THREE.Group; private cellFill: THREE.Mesh; private cellEdge: THREE.Mesh; private cellCross: THREE.Group;
   private ghost = new THREE.Group(); private ghostType = ''; private ghostMat: THREE.MeshStandardMaterial;
   private selRing: THREE.Mesh; private teleMark: THREE.Group; private hoverMark: THREE.Mesh;
@@ -548,6 +549,40 @@ export class View {
     };
     const put = <T extends THREE.Object3D>(o: T) => { o.visible = false; this.scene.add(o); return o; };
     this.rangeRing = put(flat(hexFlat(new THREE.RingGeometry(0.985, 1, 128)), 0xffffff, 0.7));
+    // the area of an armed skill (Arrow Rain, Singularity): a lit disc on the ground under the crosshair, its size the
+    // skill's own. Drawn over everything, so a tower or a bridge in front never hides where the skill will land.
+    this.skillMat = new THREE.ShaderMaterial({
+      uniforms: { uTime: { value: 0 }, uColor: { value: new THREE.Color(SAND) }, uKind: { value: 1 }, uR: { value: 1 } },
+      vertexShader: 'varying vec2 vP; void main() { vP = position.xz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `
+        uniform float uTime, uKind, uR; uniform vec3 uColor; varying vec2 vP;
+        void main() {
+          float r = length(vP);
+          if (r > 1.0) discard;
+          float aa = 1.5 * fwidth(r), ang = atan(vP.y, vP.x);
+          // rim, and a fine dashed ring just inside it
+          float rim = smoothstep(0.955 - aa, 0.97, r) * (1.0 - smoothstep(1.0 - aa, 1.0, r));
+          float dash = step(0.88, r) * step(r, 0.9) * step(0.5, fract(ang / 6.2831853 * floor(uR * 9.0)));
+          // the fill rises towards the edge
+          float fill = 0.04 + 0.15 * r * r * r;
+          float move;
+          if (uKind < 1.5) {
+            // Arrow Rain: rings close in from the rim, one after another
+            float w = fract(r * 2.0 + uTime * 0.9);
+            move = exp(-pow((w - 0.5) * 9.0, 2.0)) * 0.22 * r;
+          } else {
+            // Singularity: three arms wind in towards the middle
+            float arm = sin(ang * 3.0 + 7.0 / (r + 0.25) - uTime * 3.2);
+            move = smoothstep(0.55, 1.0, arm) * 0.32 * (1.0 - r * 0.6);
+          }
+          float centre = (1.0 - smoothstep(0.02, 0.02 + aa * 2.0, r)) * 0.9;
+          float a = fill + rim * 0.9 + dash * 0.3 + move + centre;
+          gl_FragColor = vec4(mix(uColor, vec3(1.0), rim * 0.35 + centre * 0.4), clamp(a, 0.0, 1.0));
+        }`,
+      transparent: true, depthWrite: false, depthTest: false,
+    });
+    this.skillMark = put(new THREE.Mesh(new THREE.CircleGeometry(1, 96).rotateX(-Math.PI / 2), this.skillMat));
+    this.skillMark.renderOrder = 20;
     this.selRing = put(flat(G_HEX_RING, SAND, 0.85));
     this.hoverMark = put(flat(G_HEX_LINE, SAND, 0.45));
     // build marker: a tile-sized plate with a rim, plus a cross when the tile cannot take a tower
@@ -845,6 +880,15 @@ export class View {
    * The point under the crosshair. A plain ray cast with no help: enemy bodies at their true radius, weak points,
    * tower power nodes and the deck (raised roads included). Hits nothing: a point far along the ray.
    */
+  /** Show the area of an armed skill centred on (x, y, z) with radius r (kind 1 Arrow Rain, 2 Singularity), or hide it with null. */
+  setSkillArea(a: { x: number; y: number; z: number; r: number; kind: number; color: number } | null) {
+    this.skillMark.visible = !!a;
+    if (!a) return;
+    this.skillMark.position.set(a.x, a.y + 0.08, a.z);
+    this.skillMark.scale.setScalar(a.r);
+    const u = this.skillMat.uniforms;
+    u.uTime.value = performance.now() / 1000; u.uKind.value = a.kind; u.uR.value = a.r; (u.uColor.value as THREE.Color).setHex(a.color);
+  }
   aimPoint(out = new THREE.Vector3()) {
     this.camPose(RO, RD);
     const o = RO, d = RD, sim = this.sim;
