@@ -5,7 +5,7 @@
 **Play:** https://bigzaiko.github.io/beatspire/
 
 - **Command view** - build and upgrade eleven tower types on the hexes beside the roads. Tags over the spawn gates show what the next wave sends down each road. A Colossus arrives every fifth wave, a Gyre mini-boss in between.
-- **Uplink** - kills charge your ultimate. Press Space to stand on an Uplink Spire as Kestrel: arrows, Rail Shot, Arrow Rain, Singularity. She can only use Spires and teleports between them.
+- **Uplink** - kills charge your ultimate. Press Space to stand on an Uplink Spire as Kestrel: arrows, Rail Shot (hold RMB to zoom and charge, let go of LMB to fire), and Arrow Rain and Singularity, which show their area on the ground before you cast them. She can only use Spires and teleports between them.
 - **Uplink mode** - the whole campaign from the Spire. Press B to build: the crosshair marks a hex and a click puts the tower down. Build a second Spire and jump to it to reach the rest of the grid.
 - **Tower specials** - every combat tower charges a special. During the Uplink, shoot the power node on top of a charged tower to fire it. The tower then reboots for a few seconds.
 - **Weak points** - Brutes and the Colossus have exposed spots that take extra arrow damage.

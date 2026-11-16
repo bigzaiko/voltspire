@@ -1472,12 +1472,16 @@ function castSkill(i: number) { if (active() && heroOn()) { view.aimPoint(aim); 
 let armed = 0;
 const SAND_HEX = 0xe3dc92;
 const SKILL_LOOK = [0, SAND_HEX, 0xa58bff];
-const SKILL_NAME = ['', 'Arrow Rain', 'Singularity'];
+const SKILL_NAME = ['', 'Arrow Rain', 'Singularity', 'Rail Shot'];
+/** Rail Shot (armed 3): holding the right button zooms in and charges the bow; letting go of the left button fires */
+let railFire = false, railT = 0;
+const RAIL_CHARGE = 0.35;
 function armSkill(i: number) {
-  if (!active() || !heroOn() || (i !== 1 && i !== 2)) return;
+  if (!active() || !heroOn() || i < 1 || i > 3) return;
   if (armed === i) { disarm(); sound.play('click'); return; }
   const p = sim.players[me];
-  if (!p || p.cds[i] > 0) { sound.play('error'); return; }
+  if (!p || p.cds[i === 3 ? 0 : i] > 0) { sound.play('error'); return; }
+  disarm();
   if (building) closeBuild();
   dropDraw();
   armed = i;
@@ -1485,13 +1489,16 @@ function armSkill(i: number) {
   document.body.dataset.armed = String(i);
   $('t-fire').setAttribute('aria-label', `Cast ${SKILL_NAME[i]}`);
   $('bl-name').textContent = SKILL_NAME[i];
-  $('bl-why').textContent = touchUi() ? 'tap Cast' : 'LMB cast / RMB cancel';
+  $('bl-why').textContent = touchUi() ? (i === 3 ? 'tap Fire' : 'tap Cast') : i === 3 ? 'release LMB to fire' : 'LMB cast / RMB cancel';
+  railFire = false; railT = 0;
   sound.play('click');
   updateArm();
 }
 function disarm() {
   if (!armed) return;
   armed = 0;
+  railFire = false; railT = 0;
+  view.aimZoom = 0; view.railCharge = 0;
   document.body.classList.remove('arming');
   delete document.body.dataset.armed;
   view.setSkillArea(null);
@@ -1500,12 +1507,18 @@ function disarm() {
 function fireArmed() {
   const i = armed;
   disarm();
-  castSkill(i);
+  castSkill(i === 3 ? 0 : i);
 }
 /** Every frame while a skill is armed: its area where the skill would land now (the sim pulls it in to 48 from the Spire). */
-function updateArm() {
+function updateArm(dt = 0) {
   const p = sim.players[me], o = sim.heroOrigin(me);
   if (!armed || !p || !o || !heroOn() || !active() || paused || shown('cards')) { disarm(); return; }
+  if (armed === 3) {
+    railT += dt;
+    view.aimZoom = 1; view.railCharge = Math.min(1, railT / RAIL_CHARGE);
+    document.body.style.setProperty('--rail', view.railCharge.toFixed(3));
+    return;
+  }
   view.aimPoint(aim);
   let x = aim.x, z = aim.z;
   const d = Math.hypot(x - o.x, z - o.z);
@@ -1652,7 +1665,7 @@ function uplinkOn() {
     : 'Press B or a tower key to build from up here. Build a second Spire and jump to it (F) to reach the rest of the grid.');
 }
 function look(dx: number, dy: number) {
-  const s = 0.0022 * (settings.sens / 100);
+  const s = 0.0022 * (settings.sens / 100) * view.lookScale;
   view.yaw -= dx * s;
   view.pitch = clamp(view.pitch - dy * s, -1.25, 0.6);
 }
@@ -1798,7 +1811,7 @@ addEventListener('keydown', (e) => {
   else if (k === 'r' && !e.repeat) { const c = bird(), turn = Math.round((c.rot || 0) / TAU) * TAU; frameBoard(); if (typeof c.rot === 'number') c.rot = turn; }
 });
 addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
-addEventListener('blur', () => { keys.clear(); mouseFire = false; dragging = false; rotating = false; mouseBtns = 0; });
+addEventListener('blur', () => { if (armed === 3) disarm(); keys.clear(); mouseFire = false; dragging = false; rotating = false; mouseBtns = 0; });
 addEventListener('focus', () => { lockAt = performance.now(); });
 
 document.documentElement.addEventListener('mouseleave', (e) => {
@@ -1841,6 +1854,12 @@ document.addEventListener('mousemove', (e) => {
 /** A mouse press during the Uplink: grab the pointer again if it got away, then draw the bow. */
 function heroMouse(e: MouseEvent) {
   if (!document.pointerLockElement) lockPointer();
+  if (armed === 3) {
+    // Rail Shot held ready: the left button arms the shot, and letting go of it fires (see mouseup)
+    if (e.button === 0) railFire = true;
+    else if (e.button === 1) { e.preventDefault(); tryTele(); }
+    return;
+  }
   if (armed) {
     // an armed skill: the left button casts it, the right one puts it away. The bow stays down.
     if (e.button === 0) fireArmed();
@@ -1856,7 +1875,7 @@ function heroMouse(e: MouseEvent) {
     return;
   }
   if (e.button === 0) mouseFire = true;
-  else if (e.button === 2) castSkill(0);
+  else if (e.button === 2) armSkill(3);
   else if (e.button === 1) { e.preventDefault(); tryTele(); }
 }
 // During the Uplink a press anywhere on the page belongs to the bow, unless it lands on a real control.
@@ -1878,7 +1897,12 @@ canvas.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
   boardTap(e.clientX, e.clientY, e.shiftKey);
 });
-addEventListener('mouseup', (e) => { if (e.button === 0) mouseFire = false; if (e.button === 2) dragging = false; if (e.button === 1) rotating = false; });
+addEventListener('mouseup', (e) => {
+  // Rail Shot: letting go of the left button fires; letting go of the right one first puts it away
+  if (armed === 3 && e.button === 0 && railFire) fireArmed();
+  else if (armed === 3 && e.button === 2 && !railFire) { disarm(); sound.play('click'); }
+  if (e.button === 2) dragging = false; if (e.button === 1) rotating = false;
+});
 document.addEventListener('contextmenu', (e) => { if (e.target === canvas || heroOn()) e.preventDefault(); });
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
@@ -1909,8 +1933,8 @@ const touchApi = {
   // Touch only: the look slows by a quarter while the crosshair is on an enemy. It never moves the view by itself.
   look(dx: number, dy: number) { if (active() && heroOn()) { const k = settings.friction && aimHot ? 0.75 : 1; look(dx * k, dy * k); } },
   // in build mode the Draw button is Place: a press builds, and the bow stays down
-  fire(on: boolean) { if (on) sound.init(); if (armed) { touchFire = false; if (on) fireArmed(); return; } if (building) { touchFire = false; if (on) placeAt(); return; } touchFire = on; },
-  skill(i: number) { if (i === 0) castSkill(0); else armSkill(i); },
+  fire(on: boolean) { if (on) sound.init(); if (armed === 3) { touchFire = false; if (on) railFire = true; else if (railFire) fireArmed(); return; } if (armed) { touchFire = false; if (on) fireArmed(); return; } if (building) { touchFire = false; if (on) placeAt(); return; } touchFire = on; },
+  skill(i: number) { armSkill(i === 0 ? 3 : i); },
   teleport: tryTele,
   ult() { sound.init(); tryUlt(); },
   build() { sound.init(); if (active() && heroOn() && upMode()) toggleBuild(); },
@@ -2353,7 +2377,7 @@ function frame(dt: number) {
       view.aimPoint(aim);
       aimBow((mouseFire || touchFire) && !building && !armed, dt);
       if (building) updateBuild();
-      if (armed) updateArm();
+      if (armed) updateArm(dt);
       // touch aim friction needs to know whether the crosshair rests on an enemy; the mouse never asks
       aimHot = false;
       if (byTouch && settings.friction) for (const e of sim.enemies) if (e.alive && Math.hypot(e.x - aim.x, e.y - aim.y, e.z - aim.z) <= e.r + 0.2) { aimHot = true; break; }

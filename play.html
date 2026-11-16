@@ -85,7 +85,7 @@
       <button id="t-s0" class="tb" type="button" aria-label="Rail Shot"><b>Rail</b><i></i></button>
       <button id="t-s1" class="tb" type="button" aria-label="Arrow Rain"><b>Rain</b><i></i></button>
       <button id="t-s2" class="tb" type="button" aria-label="Singularity"><b>Well</b><i></i></button>
-      <button id="t-fire" class="tb" type="button" aria-label="Draw the bow. Hold, then let go to loose."><b class="draw">Draw</b><b class="place">Place</b><b class="cast">Cast</b></button>
+      <button id="t-fire" class="tb" type="button" aria-label="Draw the bow. Hold, then let go to loose."><b class="draw">Draw</b><b class="place">Place</b><b class="cast">Cast</b><b class="fire">Fire</b></button>
     </div>
 
     <div id="herohud" class="hidden">
@@ -93,6 +93,8 @@
       <!-- build mode: the crosshair becomes a hex, with the tower and the reason it cannot go there underneath -->
       <svg id="reticle" viewBox="0 0 40 40" aria-hidden="true"><polygon points="20,4 33.9,12 33.9,28 20,36 6.1,28 6.1,12" /></svg>
       <div id="build-line"><b id="bl-name"></b><span id="bl-why"></span></div>
+      <!-- Rail Shot held ready: the edges darken and a ring round the crosshair closes as the shot charges -->
+      <div id="rail-scope" aria-hidden="true"><svg viewBox="0 0 100 100"><circle class="track" cx="50" cy="50" r="44" /><circle class="charge" cx="50" cy="50" r="44" pathLength="100" /></svg></div>
       <svg id="draw" viewBox="0 0 64 64" aria-hidden="true"><circle class="trk" cx="32" cy="32" r="27" /><circle id="draw-arc" cx="32" cy="32" r="27" pathLength="100" /></svg>
       <div id="lock-hint"></div>
       <div id="hero-time"><span id="hero-label">UPLINK ACTIVE</span><div class="bar big"><i id="herobar"></i></div></div>
@@ -276,7 +278,7 @@
         </div>
         <div class="panel uplink"><h3>Uplink</h3>
           <p>Kills charge the Uplink. When it is full <span class="kbd-only">press <kbd>Space</kbd></span><span class="tap-only">tap the Uplink button</span> to stand on an Uplink Spire as Kestrel. She can only use Spires, so keep at least one.</p>
-          <p class="kbd-only">Hold <kbd>LMB</kbd> to draw the bow, aim, let go to loose. A full draw hits hardest. <kbd>RMB</kbd> Rail Shot. <kbd>Q</kbd> Arrow Rain and <kbd>E</kbd> Singularity first show where they will land: aim, then <kbd>LMB</kbd> casts, <kbd>RMB</kbd> or the key again puts it away.</p>
+          <p class="kbd-only">Hold <kbd>LMB</kbd> to draw the bow, aim, let go to loose. A full draw hits hardest. Hold <kbd>RMB</kbd> to zoom in and charge Rail Shot, let go of <kbd>LMB</kbd> to fire it. <kbd>Q</kbd> Arrow Rain and <kbd>E</kbd> Singularity first show where they will land: aim, then <kbd>LMB</kbd> casts, <kbd>RMB</kbd> or the key again puts it away.</p>
           <p class="kbd-only">Aim at another Spire and press <kbd>F</kbd>, or shoot its beacon, to jump there. <kbd>Space</kbd> ends early and refunds charge.</p>
           <p class="tap-only">Drag anywhere to aim. Hold Draw to pull the bow and let go to loose: a full draw hits hardest. The round buttons are your skills. Shoot the beacon of another Spire, or tap Jump, to move there.</p>
           <p>Towers charge a special. Shoot the glowing node on top of a charged tower to fire it. The tower then reboots for a few seconds. Brutes and the Colossus have weak points that take extra arrow damage.</p>

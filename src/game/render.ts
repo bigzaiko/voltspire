@@ -465,6 +465,10 @@ export class View {
   private ghost = new THREE.Group(); private ghostType = ''; private ghostMat: THREE.MeshStandardMaterial;
   private selRing: THREE.Mesh; private teleMark: THREE.Group; private hoverMark: THREE.Mesh;
   private bowMats: THREE.MeshStandardMaterial[] = [];
+  /** Rail Shot held ready (set by the page each frame): aimZoom 1 narrows the view, railCharge 0..1 draws and lights the bow */
+  aimZoom = 0; railCharge = 0; private zoomS = 0;
+  /** how much a mouse movement turns the view right now: less while zoomed in, so the crosshair stays as steady on screen */
+  get lookScale() { return 1 - 0.5 * this.zoomS; }
   private enemyGlow = new THREE.MeshBasicMaterial({ map: glowTexture(), color: new THREE.Color(STATIC).multiplyScalar(0.4), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
   private bubbleMat = new THREE.MeshBasicMaterial({ color: 0x4a86c8, transparent: true, opacity: 0.2, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
   private haloMats = new Map<TowerType, THREE.SpriteMaterial>();
@@ -2509,7 +2513,13 @@ export class View {
 
     // heroes
     const tier = BOW_TIERS[sim.tier];
-    for (const m of this.bowMats) { m.color.setHex(tier.color).multiplyScalar(0.25); m.emissive.setHex(tier.color); }
+    // a Rail Shot held ready makes the bow burn brighter, with a fast flicker once it is fully charged
+    const rc = this.railCharge, flick = rc >= 1 ? 0.85 + 0.15 * Math.sin(performance.now() / 33) : 1;
+    for (const m of this.bowMats) {
+      m.color.setHex(tier.color).multiplyScalar(0.25); m.emissive.setHex(tier.color);
+      m.userData.ei ??= m.emissiveIntensity;
+      m.emissiveIntensity = m.userData.ei * (1 + 2.5 * rc * flick);
+    }
     sim.players.forEach((p, i) => {
       const h = this.hero(i);
       const t = p.heroActive ? sim.towerById(p.heroTower) : undefined;
@@ -2525,7 +2535,8 @@ export class View {
       h.obj.rotation.y = yaw;
       // the rig owns scale (squash / materialise) and the teleport flicker
       // and the bow shows the tension the player holds in it
-      const pull = p.heroActive && typeof p.draw === 'number' ? p.draw : -1;
+      let pull = p.heroActive && typeof p.draw === 'number' ? p.draw : -1;
+      if (i === this.me && p.heroActive && this.railCharge > 0) pull = Math.max(pull, this.railCharge); // Rail Shot: the string comes back with the charge
       if (h.rig) { if (!updateHero(h.rig, yaw, pitch, dt, HERO_SCALE, pull)) { h.out = false; h.obj.visible = h.shown = false; } }
     });
   }
@@ -2711,7 +2722,9 @@ export class View {
     this.rainT += dt;
     const nudge = this.rainT < 1.3 ? ease(this.rainT / 0.3) * (1 - ease((this.rainT - 0.5) / 0.8)) * s : 0;
     if (nudge > 0) this.camera.position.addScaledVector(V2, -0.5 * nudge);
-    const fov = (this.orbit ? 50 : 42) + (66 - 42) * s + 2.5 * nudge;
+    // Rail Shot held ready: the view narrows to about half
+    this.zoomS += (this.aimZoom * s - this.zoomS) * (1 - Math.exp(-dt * 12));
+    const fov = (this.orbit ? 50 : 42) + (66 - 42) * s + 2.5 * nudge - 32 * this.zoomS;
     if (Math.abs(fov - this.camera.fov) > 0.01) { this.camera.fov = fov; this.camera.updateProjectionMatrix(); }
     if (this.shake > 0.001) {
       // a nudge of the camera position only: the view direction, and with it the aim, never moves

@@ -293,6 +293,32 @@ const rate = (p, ms = 1000) => p.evaluate((ms) => new Promise((res) => {
   const g3 = await skillState();
   ok(g1.area && !g2.area && !g3.area && g3.cds[2] <= 0 && g3.cds[0] <= 0 && g3.looses === 0,
     `skills: E shows the Singularity area (${g1.area}); E again (${!g2.area}) or RMB (${!g3.area}) puts it away, nothing cast (Singularity ${f(Math.max(0, g3.cds[2]), 1)} s, Rail Shot ${f(Math.max(0, g3.cds[0]), 1)} s)`);
+  // Rail Shot: holding the right button zooms in and charges the bow; letting go of the left one fires it.
+  // Letting go of the right button without the left puts it away.
+  const fov0 = await p.evaluate(() => window.__dbg.view.camera.fov);
+  await p.mouse.down({ button: 'right' });
+  await wait(600);
+  const rs1 = await p.evaluate(() => ({ fov: window.__dbg.view.camera.fov, charge: window.__dbg.view.railCharge, scope: getComputedStyle(document.getElementById('rail-scope')).display, cd: window.__dbg.sim.players[0].cds[0] }));
+  await p.screenshot({ path: `${SHOTS}/skill-rail.png` });
+  shots.push(`${SHOTS}/skill-rail.png`);
+  await p.mouse.down();
+  await wait(60);
+  const r2cd = await p.evaluate(() => window.__dbg.sim.players[0].cds[0]);
+  await p.mouse.up();
+  await wait(150);
+  const rs3 = await skillState();
+  await p.mouse.up({ button: 'right' });
+  await wait(400);
+  const fov2 = await p.evaluate(() => window.__dbg.view.camera.fov);
+  ok(rs1.fov < fov0 - 20 && rs1.charge === 1 && rs1.scope === 'block' && rs1.cd <= 0 && r2cd <= 0 && rs3.cds[0] > 1 && rs3.looses === 0 && Math.abs(fov2 - fov0) < 1,
+    `Rail Shot: holding RMB zooms from ${f(fov0, 0)} to ${f(rs1.fov, 0)} degrees and charges the bow (${rs1.charge}); nothing fires on LMB down, LMB up fires it (cooldown ${f(rs3.cds[0], 1)} s), the view opens again (${f(fov2, 0)})`);
+  await wait(Math.ceil(rs3.cds[0] * 1000) + 300);
+  await p.mouse.down({ button: 'right' });
+  await wait(200);
+  await p.mouse.up({ button: 'right' });
+  await wait(200);
+  const rs4 = await skillState();
+  ok(rs4.cds[0] <= 0 && !rs4.area, `Rail Shot: RMB pressed and let go without LMB fires nothing (cooldown ${f(Math.max(0, rs4.cds[0]), 1)} s)`);
   // the right button in build mode closes it and casts no Rail Shot
   await K('b');
   await wait(200);
