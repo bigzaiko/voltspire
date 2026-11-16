@@ -1826,6 +1826,8 @@ document.addEventListener('mousemove', (e) => {
   lastMouse.x = e.clientX; lastMouse.y = e.clientY;
   if (!playing()) return;
   if (heroOn()) {
+    // a mouseup the page never got (the capture changed hands mid-press): the left button is up, so the draw ends
+    if (mouseFire && !(e.buttons & 1)) mouseFire = false;
     if (byTouch || !active()) return;
     const locked = !!document.pointerLockElement;
     if (!locked) {
@@ -1898,6 +1900,8 @@ canvas.addEventListener('mousedown', (e) => {
   boardTap(e.clientX, e.clientY, e.shiftKey);
 });
 addEventListener('mouseup', (e) => {
+  // the bow: letting go of the left button looses the arrow (the frame loop sees the draw end)
+  if (e.button === 0 || !(e.buttons & 1)) mouseFire = false;
   // Rail Shot: letting go of the left button fires; letting go of the right one first puts it away
   if (armed === 3 && e.button === 0 && railFire) fireArmed();
   else if (armed === 3 && e.button === 2 && !railFire) { disarm(); sound.play('click'); }
