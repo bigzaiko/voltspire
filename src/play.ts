@@ -1053,6 +1053,8 @@ function openMusic(from: string) {
 const click = (id: string, fn: () => void) => $(id).addEventListener('click', () => { sound.init(); sound.play('click'); fn(); });
 let helpFrom = 'menu', setFrom = 'menu';
 click('m-solo', () => openSetup('solo'));
+// the tutorial from the menu: the first map on the easiest setting, with the guide switched back on
+click('m-tutorial', () => { store.tips.tutorial = false; save(); show('menu', false); startGame('solo', { map: MAPS[0], diff: 'easy', survival: false }); });
 click('m-editor', () => openEditorScreen());
 click('l-change', () => openSetup('lobby'));
 click('setup-back', () => { show('setup', false); show(setupFor === 'solo' ? 'menu' : 'lobby'); });
