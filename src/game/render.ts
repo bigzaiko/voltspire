@@ -116,11 +116,14 @@ const M_ADD_TRIM = new THREE.MeshStandardMaterial({ color: 0x70675c, roughness: 
 const M_ICE = new THREE.MeshStandardMaterial({ color: 0xcfeaf2, roughness: 0.25, metalness: 0.1, transparent: true, opacity: 0.42, flatShading: true, emissive: 0x3a6a80, emissiveIntensity: 0.4, depthWrite: false });
 const M_BUFF = new THREE.MeshBasicMaterial({ color: new THREE.Color(TOWERS.beacon.color).multiplyScalar(0.9), transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
 
+/** The clock of the shaders that run all the time (FIRE_CLOCK, the fire's own, stands still with the factory between waves). */
+const SHADER_CLOCK = { value: 0 };
+
 // Gyre guard, in the plane of its wheel (the rim node's local YZ): the light strips blurred into a ring, and a shimmer over the face
 const G_GUARD_RING = new THREE.RingGeometry(0.79, 0.855, 56).rotateY(Math.PI / 2);
 const G_GUARD_DISC = new THREE.RingGeometry(0.12, 1.07, 56, 1).rotateY(Math.PI / 2);
 const guardMat = () => new THREE.ShaderMaterial({
-  uniforms: { time: FIRE_CLOCK, color: { value: new THREE.Color(STATIC) }, gain: { value: 0 }, seed: { value: Math.random() * 40 } },
+  uniforms: { time: SHADER_CLOCK, color: { value: new THREE.Color(STATIC) }, gain: { value: 0 }, seed: { value: Math.random() * 40 } },
   vertexShader: 'varying vec2 vP; void main(){ vP = position.zy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
   fragmentShader: `uniform float time, gain, seed; uniform vec3 color; varying vec2 vP;
     void main(){ float r = length(vP), a = atan(vP.y, vP.x);
@@ -136,7 +139,7 @@ const guardMat = () => new THREE.ShaderMaterial({
 
 // accretion disc of a singularity: streaks that wind inward, white at the inner edge
 const accMat = () => new THREE.ShaderMaterial({
-  uniforms: { time: FIRE_CLOCK, color: { value: new THREE.Color(SINGC) }, gain: { value: 1 } },
+  uniforms: { time: SHADER_CLOCK, color: { value: new THREE.Color(SINGC) }, gain: { value: 1 } },
   vertexShader: 'varying vec2 vP; void main(){ vP = position.xz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
   fragmentShader: `uniform float time, gain; uniform vec3 color; varying vec2 vP;
     void main(){ float r = length(vP), a = atan(vP.y, vP.x);
@@ -341,6 +344,8 @@ export class View {
   fac: FacView;
   shake = 0;
   time = 0;
+  /** the clock of the fire of Firewall Pylons: it stands still between waves (sim.planning), like the belts */
+  fireT = 0;
   quality: 'high' | 'low' = 'high';
   /** Live settings for the deck effects (the same object the world reads). */
   fxOptions: FxOptions;
@@ -707,8 +712,9 @@ export class View {
     (this.cellFill.material as THREE.MeshBasicMaterial).color.setHex(ok ? SAND : RUST);
     (this.cellEdge.material as THREE.MeshBasicMaterial).color.setHex(ok ? SAND : RUST);
   }
-  /** Mark a selected factory building (null clears it). Shares the ring of a selected tower. */
+  /** Mark a selected factory building (on false clears it). Shares the ring of a selected tower; the factory view adds what it connects to. */
   setSelectedCell(cx: number, cz: number, on: boolean, reach = 0) {
+    this.fac.setSelected(cx, cz, on);
     this.selRing.visible = on;
     if (!on) { if (!this.ghost.visible && !this.cellMark.visible) this.rangeRing.visible = false; return; }
     const x = cellX(cx, cz), z = cellZ(cz);
@@ -1164,10 +1170,10 @@ export class View {
       // a pylon with no partner sweeps slowly and burns a ring round itself instead
       const linked = v.wSeen >= this.frame - 1;
       if (linked && v.wTo === v.wTo) { let d = v.wTo - v.wYaw; d -= Math.round(d / (Math.PI / 2)) * (Math.PI / 2); v.wYaw += d * (1 - Math.exp(-7 * dt)); }
-      else if (!off) v.wYaw += dt * 0.5;
+      else if (!off && !sim.planning) v.wYaw += dt * 0.5;
       if (!linked) v.wHeat = 0;
       yaw = v.wYaw;
-      if (v.wHeat > 0 && !off) mul *= v.wHeat > 1 ? 1.9 + 0.3 * Math.sin(this.time * 31 + t.id) : 1.35 + 0.08 * Math.sin(this.time * 9 + t.id);
+      if (v.wHeat > 0 && !off) mul *= v.wHeat > 1 ? 1.9 + 0.3 * Math.sin(this.fireT * 31 + t.id) : 1.35 + 0.08 * Math.sin(this.fireT * 9 + t.id);
       this.syncFireRing(t, v, dt, !linked && !off && v.grow >= 1, spec);
     }
     ST.down = off || jam || stun; ST.spec = spec; ST.power = mul; ST.heat = t.heat;
@@ -1262,8 +1268,9 @@ export class View {
     fm.uniforms.on.value = k; fm.uniforms.heat.value = damp(fm.uniforms.heat.value, hot ? 1 : 0, 6, dt);
     const heat = fm.uniforms.heat.value as number;
     fire.scale.set(FIRE_RING, 0.95 + 0.9 * heat, FIRE_RING);
-    gm.color.setHex(APRICOT).multiplyScalar((0.07 + 0.12 * heat) * k * (1 + 0.08 * Math.sin(this.time * 13 + t.id)));
-    v.em2 += dt * (10 + 40 * heat) * k;
+    gm.color.setHex(APRICOT).multiplyScalar((0.07 + 0.12 * heat) * k * (1 + 0.08 * Math.sin(this.fireT * 13 + t.id)));
+    // (between waves the fire stands still: no embers)
+    if (!this.sim!.planning) v.em2 += dt * (10 + 40 * heat) * k;
     while (v.em2 >= 1) {
       v.em2 -= 1;
       const a = Math.random() * TAU, r = FIRE_RING * (0.96 + Math.random() * 0.1);
@@ -1307,7 +1314,9 @@ export class View {
       v.sheet.scale.set(L, h, 0.8 + 0.5 * v.heat);
       v.mat.uniforms.len.value = L; v.mat.uniforms.heat.value = v.heat; v.mat.uniforms.on.value = v.on;
       v.glow.position.x = L / 2; v.glow.scale.set(L + 2.2, 1, 3 + 1.6 * v.heat);
-      v.gmat.color.setHex(APRICOT).multiplyScalar((0.1 + 0.14 * v.heat) * v.on * (1 + 0.07 * Math.sin(this.time * 11 + w.a)));
+      v.gmat.color.setHex(APRICOT).multiplyScalar((0.1 + 0.14 * v.heat) * v.on * (1 + 0.07 * Math.sin(this.fireT * 11 + w.a)));
+      // between waves the wall stands still, like the belts: its sheet keeps its shape (FIRE_CLOCK stops), no embers, no scorch
+      if (sim.planning) continue;
       v.em += dt * L * (4 + 13 * v.heat) * v.on;
       while (v.em >= 1) {
         v.em -= 1;
@@ -2074,7 +2083,8 @@ export class View {
     this.time += dt;
     this.sync(dt);
     this.updateCamera(dt);
-    FIRE_CLOCK.value = this.time;
+    if (this.sim && !this.sim.planning) this.fireT += dt;
+    FIRE_CLOCK.value = this.fireT; SHADER_CLOCK.value = this.time;
     // the core: hit, it drops and shudders and its light stutters; when it discharges, its rings spin up and it flares
     this.coreHit += dt; this.coreZap += dt;
     const flinch = Math.max(0, 1 - this.coreHit / 0.45), zap = Math.max(0, 1 - this.coreZap / 0.5);

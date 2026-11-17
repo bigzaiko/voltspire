@@ -50,7 +50,7 @@
         <p class="eyebrow">Tower defense <i></i> Factory building <i></i> Free in your browser</p>
         <h1 class="wordmark"><span class="wm-a">BEAT</span><span class="wm-b">SPIRE</span></h1>
         <p class="tagline">Build the grid. Become the storm.</p>
-        <p class="pitch">Defend the last power core of Nyx-9 on a hex grid. Build towers beside the roads, then keep them firing. It starts with a mine and a turret; every new tower adds one more step: power lines, oil and pipes, smelters, presses and plants. Waves come when you call them. A run lasts 20, 25 or 30 waves depending on the difficulty.</p>
+        <p class="pitch">Defend the last power core of Nyx-9 on a hex grid. Build towers beside the roads, then keep them firing. It starts with a mine and a turret; every new tower adds one more step: power lines, oil and pipes, smelters, presses and plants. Waves come when you call them, and between waves time stands still while you build. A run lasts 20, 25 or 30 waves depending on the difficulty.</p>
         <div class="cta">
           <a class="btn btn-lg" href="./play.html">Play free in your browser</a>
           <a class="btn btn-ghost btn-lg" href="#game">How it plays</a>
@@ -59,7 +59,7 @@
           <li><b>10</b><span>tower types</span></li>
           <li><b>20-30</b><span>waves per run</span></li>
           <li><b>38</b><span>maps, plus generated ones</span></li>
-          <li><b>12</b><span>factory buildings</span></li>
+          <li><b>15</b><span>factory buildings</span></li>
           <li><b>8</b><span>items, 2 fluids, 1 power grid</span></li>
         </ul>
       </div>
@@ -85,7 +85,7 @@
             <ul class="ticks">
               <li>You start with a few tower types and unlock the rest as blueprint cards</li>
               <li>The stronger towers cost building materials from a Frame Works on top of credits</li>
-              <li>Waves start when you call them, so there is always time to build. Auto waves is a switch</li>
+              <li>Waves start when you call them. Between waves time stands still: build, plan, and see what each tower will get. Auto waves is a switch</li>
               <li>A Colossus arrives every fifth wave. Hold 20, 25 or 30 waves to win, then keep going if you like</li>
             </ul>
           </div>
@@ -96,13 +96,14 @@
           <div class="beat-txt">
             <span class="num num-hot" aria-hidden="true">02</span>
             <h3>The factory</h3>
-            <p>A tower fires only what it is fed, and it starts empty. Supply crates on the deck feed a tower built right next to them, but a crate runs out. The Pulse Turret runs on iron ore, so the first supply line is one Mine and maybe a belt.</p>
-            <p>Each blueprint card unlocks a tower together with the buildings its supply needs, a step at a time: a Generator for the Cryo Emitter and the Arc Pylon, a Pumpjack and pipes for the Firewall Pylon, a Smelter for the Railgun's copper plates, a Shell Press for the Mortar, a Cell Plant for the Lance, a Refinery and a Missile Works for the Missile Battery.</p>
+            <p>A tower fires only what it is fed, and it starts empty. It keeps one item in hand and pulls the next off its belt as it fires. Supply crates on the deck feed a tower built right next to them, but a crate runs out. The Pulse Turret runs on iron ore, so the first supply line is one Mine and maybe a belt. Mines and plants work slowly; upgrade them twice to work faster.</p>
+            <p>Between waves the factory stands still with everything else. A marker over each tower and building says whether it will get what it needs when the wave starts, and its panel says what is missing.</p>
+            <p>Each blueprint card unlocks a tower together with the buildings its supply needs, a step at a time: a Generator for the Cryo Emitter and the Arc Pylon, a Pumpjack and pipes for the Firewall Pylon, a Smelter for the Railgun's copper plates, a Shell Press for the Mortar, a Cell Plant for the Lance, a Refinery and a Missile Works for the Missile Battery. At Mk3 the Pulse Turret switches to plasma shells and the Firewall Pylon to petrol.</p>
             <ul class="skills">
-              <li><kbd>Belt</kbd><span><b>Conveyor belts</b> Drag to lay a line. Nothing needs pointing: buildings load a belt when something further down it needs what they make, and a belt feeds every tower it points at or runs past.</span></li>
+              <li><kbd>Belt</kbd><span><b>Conveyor belts</b> Drag to lay a line. Nothing needs pointing: buildings load a belt when something further down it needs what they make, and a belt feeds every tower it points at or runs past. Belts merge, and a Splitter deals items out to several lines.</span></li>
               <li><kbd>Pipe</kbd><span><b>Pipes</b> Pumpjacks fill them with crude oil, refineries with petrol.</span></li>
               <li><kbd>Pole</kbd><span><b>Power lines</b> Generators burn coal. Poles wire up to 5 tiles apart, also across roads, and power everything within 2 tiles.</span></li>
-              <li><kbd>Under</kbd><span><b>Underpass</b> A card that lets belts and pipes cross under a road.</span></li>
+              <li><kbd>Tunnel</kbd><span><b>Tunnels</b> A card that unlocks Belt and Pipe Tunnels: they pass up to 4 tiles under roads, towers and buildings.</span></li>
             </ul>
           </div>
         </article>
@@ -254,10 +255,10 @@
             <dl>
               <div><dt><kbd>1</kbd>-<kbd>0</kbd></dt><dd>Pick a tower or factory building, then click a hex to build. Hold <kbd>Shift</kbd> to keep building.</dd></div>
               <div><dt><kbd>F</kbd></dt><dd>Switch the build bar between towers and the factory.</dd></div>
-              <div><dt><kbd>R</kbd></dt><dd>Turn the belt you are placing or have selected. Drag to lay a line of belts or pipes.</dd></div>
-              <div><dt><kbd>U</kbd> <kbd>X</kbd></dt><dd>Upgrade or sell the selected tower, or remove a factory building.</dd></div>
+              <div><dt><kbd>R</kbd></dt><dd>Turn the belt or tunnel you are placing or have selected. Drag to lay a line of belts or pipes.</dd></div>
+              <div><dt><kbd>U</kbd> <kbd>X</kbd></dt><dd>Upgrade or sell the selected tower; upgrade or remove the selected factory building.</dd></div>
               <div><dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>Pan the camera, or drag with the right mouse button. Wheel zooms.</dd></div>
-              <div><dt><kbd>N</kbd></dt><dd>Call the next wave.</dd></div>
+              <div><dt><kbd>N</kbd></dt><dd>Call the next wave. Until then, time stands still.</dd></div>
               <div><dt><kbd>Space</kbd></dt><dd>Fire the special of the selected tower when it is charged.</dd></div>
               <div><dt><kbd>Esc</kbd> <kbd>P</kbd></dt><dd>Pause.</dd></div>
             </dl>

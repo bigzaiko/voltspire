@@ -14,7 +14,7 @@
 export interface TrackInfo { id: string; name: string; key: string; bpm: number }
 export interface Cue { t: number; name: string; g?: number; pan?: number }
 
-interface Tone { f: number; to?: number; dur: number; vol: number; type?: OscillatorType; when?: number; att?: number; rel?: number; flat?: boolean; lp?: number; lpTo?: number; q?: number; det?: number; uni?: number; glide?: number; out?: AudioNode }
+interface Tone { f: number; to?: number; dur: number; vol: number; type?: OscillatorType; when?: number; att?: number; rel?: number; flat?: boolean; lp?: number; lpTo?: number; q?: number; det?: number; uni?: number; glide?: number; vib?: number; vibD?: number; out?: AudioNode }
 interface Noise { dur: number; vol: number; freq: number; to?: number; q?: number; when?: number; type?: BiquadFilterType; att?: number; flat?: boolean; out?: AudioNode }
 interface Inst { name: string; pri: number; end: number; level: number; g: GainNode; srcs: AudioScheduledSourceNode[]; dead: boolean }
 
@@ -23,7 +23,8 @@ const LEAD = 0.012;
 /** most instances alive at once, and most of the lowest priority (tower chatter) among them */
 const INST_MAX = 26, CHATTER_MAX = 12;
 
-// Per effect: priority (3 hero actions and warnings, 2 notable, 1 tower chatter), most instances at once,
+// Per effect: priority (3 hero actions and warnings, 2 notable, 1 tower chatter, 0 factory ambience that never pushes anything
+// else out), most instances at once,
 // shortest gap between two triggers in ms, bus (h hero, s chatter, u interface).
 type Meta = [pri: number, max: number, gap: number, bus: 'h' | 's' | 'u'];
 const DEF: Meta = [2, 2, 60, 's'];
@@ -37,6 +38,7 @@ const META: Record<string, Meta> = {
   wave: [3, 1, 400, 'h'], boss: [3, 1, 400, 'h'], leak: [3, 2, 150, 'h'], breach: [3, 2, 120, 'h'], clear: [3, 1, 400, 'h'], levelup: [3, 1, 400, 'h'], jam: [3, 2, 200, 'h'],
   titanLand: [3, 1, 1000, 'h'], titanImpact: [3, 1, 1000, 'h'], titanSmash: [2, 1, 1500, 's'], titanDie: [3, 1, 1000, 'h'], win: [3, 1, 1000, 'h'], lose: [3, 1, 1000, 'h'],
   card: [3, 1, 80, 'u'], error: [2, 1, 90, 'u'], click: [2, 2, 30, 'u'], hover: [1, 1, 45, 'u'],
+  take: [0, 2, 110, 's'], mats: [1, 2, 220, 's'],
 };
 /** how far the score steps back for a big moment: depth, seconds held */
 const DUCK: Record<string, [number, number]> = { heroOn: [0.5, 1.6], boss: [0.55, 2], titanLand: [0.45, 2.4], titanImpact: [0.3, 2.2], titanDie: [0.3, 3.2], bossdie: [0.55, 1.6], win: [0.25, 4], lose: [0.25, 4] };
@@ -105,6 +107,8 @@ export class Sound {
   ctx: AudioContext | null = null;
   private mix!: GainNode; private master!: GainNode; private sfxG!: GainNode; private heroG!: GainNode; private musG!: GainNode; private uiG!: GainNode; private musDuck!: GainNode;
   private last: Record<string, number> = {};
+  /** per effect: a count of recent triggers that decays over half a second, and the audio time it was last updated */
+  private busy: Record<string, [number, number]> = {};
   private noiseBuf!: AudioBuffer;
   private live: Inst[] = [];
   /** the instance being built, and the audio time its layers are measured from */
@@ -178,7 +182,7 @@ export class Sound {
     this.noiseBuf = c.createBuffer(1, c.sampleRate * 2, c.sampleRate);
     const d = this.noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-    this.live = []; this.mb = null;
+    this.live = []; this.mb = null; this.busy = {};
   }
   private glide(p: AudioParam, v: number) {
     const c = this.ctx;
@@ -225,8 +229,9 @@ export class Sound {
     g.linearRampToValueAtTime(0, t + dur + rel);
     return t + dur + rel;
   }
-  private keep(src: AudioScheduledSourceNode, t: number, stop: number) {
-    src.start(t); src.stop(stop);
+  private keep(src: AudioScheduledSourceNode, t: number, stop: number, off = -1) {
+    if (off >= 0) (src as AudioBufferSourceNode).start(t, off); else src.start(t);
+    src.stop(stop);
     const v = this.cur;
     if (v) { v.srcs.push(src); if (stop > v.end) v.end = stop; }
   }
@@ -245,6 +250,8 @@ export class Sound {
       osc.type = o.type || 'sine'; osc.frequency.value = o.f; osc.frequency.setValueAtTime(o.f, t);
       if (det) osc.detune.value = det;
       if (o.to && o.to !== o.f) osc.frequency.exponentialRampToValueAtTime(Math.max(18, o.to), t + (o.glide || o.dur));
+      // vibrato: `vib` times a second, `vibD` Hz either way (the warp of the gravity pulse, the flutter of a flame)
+      if (o.vib) { const l = c.createOscillator(), d = c.createGain(); l.frequency.value = o.vib; d.gain.value = o.vibD || 5; l.connect(d).connect(osc.frequency); this.keep(l, t, end + 0.02); }
       osc.connect(head);
       this.keep(osc, t, end + 0.02);
     }
@@ -259,9 +266,63 @@ export class Sound {
     const g = c.createGain();
     const end = this.env(g.gain, t, o.vol, Math.max(0.003, o.att ?? 0.003), o.dur, o.flat);
     s.connect(f).connect(g).connect(o.out || this.cur!.g);
-    s.start(t, Math.random() * 1.5); s.stop(end + 0.02);
-    const v = this.cur;
-    if (v) { v.srcs.push(s); if (end + 0.02 > v.end) v.end = end + 0.02; }
+    if (this.cur) this.keep(s, t, end + 0.02, Math.random() * 1.5); else { s.start(t, Math.random() * 1.5); s.stop(end + 0.02); }
+  }
+  /**
+   * Sparks: one band of bright noise opened for a few milliseconds at `n` random moments over `dur`, thinning out
+   * toward the end. One source for the whole crackle, so it costs as much as a single noise layer.
+   */
+  private crackle(dur: number, vol: number, n: number, hp = 3000, when = 0) {
+    const c = this.ctx!, t = this.base + when;
+    const f = c.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp; f.Q.value = 0.7;
+    const g = c.createGain(), p = g.gain;
+    p.value = 0; p.setValueAtTime(0, t);
+    const at: number[] = [];
+    for (let i = 0; i < n; i++) at.push(Math.pow(Math.random(), 1.5) * dur);
+    at.sort((a, b) => a - b);
+    let free = 0;
+    for (const a of at) {
+      // every spark is over before the next one opens, so the automation never overlaps
+      const s0 = Math.max(a, free), len = 0.002 + Math.random() * 0.007, v = vol * (0.25 + Math.random() * 0.75) * Math.max(0.25, 1 - (0.6 * s0) / dur);
+      p.setValueAtTime(0, t + s0); p.linearRampToValueAtTime(v, t + s0 + 0.0008); p.linearRampToValueAtTime(0, t + s0 + len);
+      free = s0 + len + 0.001;
+    }
+    const s = c.createBufferSource(); s.buffer = this.noiseBuf; s.loop = true;
+    s.connect(f).connect(g).connect(this.cur!.g);
+    this.keep(s, t, t + free + 0.02, Math.random() * 1.5);
+  }
+  /**
+   * A tesla coil's discharge: a sawtooth at `f` (the low hum) heard through a band around its upper harmonics, and the
+   * same saw chopping a band of bright noise f times a second, which is the rasp of a real coil. The two are switched on
+   * in `bursts` of [start, length, level] that must not overlap; each burst snaps on and sags before it cuts.
+   */
+  private buzz(f: number, bursts: [number, number, number][], vol: number, o: { bp?: number; hp?: number; hum?: number; rasp?: number; att?: number; when?: number } = {}) {
+    const c = this.ctx!, t = this.base + (o.when || 0);
+    const gate = c.createGain(), p = gate.gain;
+    p.value = 0; p.setValueAtTime(0, t);
+    let end = t;
+    for (const [at, len, a] of bursts) {
+      const s = t + at, v = vol * a, att = Math.min(o.att ?? 0.002, len * 0.4);
+      p.setValueAtTime(0, s); p.linearRampToValueAtTime(v, s + att); p.linearRampToValueAtTime(v * 0.45, s + len - 0.005); p.linearRampToValueAtTime(0, s + len);
+      end = Math.max(end, s + len);
+    }
+    const osc = c.createOscillator(); osc.type = 'sawtooth'; osc.frequency.value = f;
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = o.bp ?? f * 6; bp.Q.value = 0.9;
+    const hum = c.createGain(); hum.gain.value = o.hum ?? 0.7;
+    osc.connect(bp).connect(hum).connect(gate);
+    // and the body: the lowest few harmonics, the part of a coil you feel more than hear
+    const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = f * 3; lp.Q.value = 0.7;
+    const body = c.createGain(); body.gain.value = (o.hum ?? 0.7) * 0.8;
+    osc.connect(lp).connect(body).connect(gate);
+    const n = c.createBufferSource(); n.buffer = this.noiseBuf; n.loop = true;
+    const hp = c.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = o.hp ?? 2500; hp.Q.value = 0.7;
+    // the saw swings -1..1, so 0.5 + 0.5 * saw opens the noise from nothing to full once per cycle
+    const am = c.createGain(), depth = c.createGain(); am.gain.value = 0.5; depth.gain.value = 0.5;
+    osc.connect(depth).connect(am.gain);
+    const rasp = c.createGain(); rasp.gain.value = o.rasp ?? 0.6;
+    n.connect(hp).connect(am).connect(rasp).connect(gate);
+    gate.connect(this.cur!.g);
+    this.keep(osc, t, end + 0.02); this.keep(n, t, end + 0.02, Math.random() * 1.5);
   }
   /** Two-operator FM: metal, glass, bells and electric buzz. `index` is the modulation depth at the start, it decays with the note. */
   private fm(f: number, ratio: number, index: number, dur: number, vol: number, when = 0, out?: AudioNode) {
@@ -317,8 +378,10 @@ export class Sound {
       if (v.dead) continue;
       alive++;
       if (v.name === name) { same++; if (!first) first = v; }
-      if (v.pri <= 1) { low++; if (!firstLow) firstLow = v; }
+      if (v.pri <= 1) { low++; if (!firstLow || v.pri < firstLow.pri) firstLow = v; }
     }
+    // factory ambience only plays into free room: it never fades out a shot or a kill
+    if (pri <= 0 && (low >= CHATTER_MAX - 2 || alive >= INST_MAX - 2 || same >= max)) return false;
     if (same >= max && first) { this.steal(first, t); alive--; if (first.pri <= 1) { low--; if (firstLow === first) firstLow = null; } }
     if (pri <= 1 && low >= CHATTER_MAX) { if (!firstLow) return false; this.steal(firstLow, t); alive--; }
     if (alive >= INST_MAX) {
@@ -334,12 +397,20 @@ export class Sound {
     const t0 = c.currentTime + LEAD + this.offset;
     if (!this.room(name, pri, max, t0)) return;
     level = Math.max(0.05, Math.min(1, Number.isFinite(level) ? level : 1));
-    const g = c.createGain(); g.gain.value = level;
+    // An effect that is triggered over and over (forty towers firing) plays each instance a little softer, so a barrage
+    // stays a texture instead of a wall. Its distance filter still follows `level`, so it is not dulled.
+    let gain = level;
+    if (pri <= 1) {
+      const [n0, t1] = this.busy[name] || [0, t0], n = n0 * Math.exp(-Math.max(0, t0 - t1) / 0.5) + 1;
+      this.busy[name] = [n, t0];
+      gain *= 1 / Math.sqrt(1 + 0.2 * Math.max(0, n - 2));
+    }
+    const g = c.createGain(); g.gain.value = gain;
     let tail: AudioNode = g;
     if (level < 0.85) { const f = c.createBiquadFilter(); f.type = 'lowpass'; f.Q.value = 0.5; f.frequency.value = 900 + 13000 * level * level; tail.connect(f); tail = f; }
     if (pan && Number.isFinite(pan) && c.createStereoPanner) { const p = c.createStereoPanner(); p.pan.value = Math.max(-1, Math.min(1, pan)); tail.connect(p); tail = p; }
     tail.connect(busId === 'h' ? this.heroG : busId === 'u' ? this.uiG : this.sfxG);
-    const inst: Inst = { name, pri, end: t0, level, g, srcs: [], dead: false };
+    const inst: Inst = { name, pri, end: t0, level: gain, g, srcs: [], dead: false };
     this.cur = inst; this.base = t0;
     this.recipe(name);
     this.cur = null;
@@ -354,19 +425,107 @@ export class Sound {
     const T = (o: Tone) => this.tone(o), N = (o: Noise) => this.noise(o);
     switch (name) {
       // --- tower chatter ---
-      case 'shot': N({ dur: 0.035, vol: 0.1, freq: 2500 * b, q: 1.4 }); T({ f: 330 * r, to: 110, dur: 0.075, vol: 0.09, type: 'square', lp: 1900 * b, lpTo: 500 }); N({ dur: 0.1, vol: 0.03, freq: 900, to: 300, type: 'lowpass', att: 0.01 }); break;
-      case 'arcshot': N({ dur: 0.15, vol: 0.08, freq: 5000 * b, to: 1700, q: 2, type: 'highpass' }); this.fm(180 * r, 7.1, 6, 0.13, 0.06); N({ dur: 0.035, vol: 0.08, freq: 3200, when: 0.06 }); T({ f: 92, dur: 0.2, vol: 0.07, type: 'sawtooth', lp: 300 }); break;
-      case 'mortar': this.thump(80 * r, 0.38, 0.34); N({ dur: 0.24, vol: 0.1, freq: 1200 * b, to: 200, type: 'lowpass' }); T({ f: 240 * r, to: 120, dur: 0.1, vol: 0.05, type: 'triangle' }); break;
-      case 'rail': N({ dur: 0.22, vol: 0.13, freq: 6500, to: 1200, q: 0.8, type: 'highpass' }); T({ f: 60, to: 30, dur: 0.42, vol: 0.24, type: 'sawtooth', lp: 420, uni: 12 }); T({ f: 1500 * r, to: 200, dur: 0.15, vol: 0.05 }); this.fm(240 * r, 1.5, 5, 0.2, 0.05); break;
-      case 'cryo': N({ dur: 0.33, vol: 0.085, freq: 5600 * b, to: 2600, q: 1.6, att: 0.03 }); this.fm(880 * r, 2.41, 2, 0.26, 0.04); T({ f: 520 * r, to: 260, dur: 0.3, vol: 0.04 }); break;
-      case 'missile': N({ dur: 0.34, vol: 0.08, freq: 700, to: 3200 * b, q: 1.1, att: 0.05 }); T({ f: 130 * r, to: 70, dur: 0.2, vol: 0.1 }); N({ dur: 0.05, vol: 0.06, freq: 2200, q: 1.2 }); break;
-      case 'flame': N({ dur: 0.3, vol: 0.065, freq: 900 * b, to: 420, q: 0.6, att: 0.05, type: 'lowpass' }); N({ dur: 0.22, vol: 0.02, freq: 2600, q: 0.7, att: 0.04 }); break;
-      case 'lance': T({ f: 310 * r, to: 330 * r, dur: 0.24, vol: 0.04, type: 'sawtooth', lp: 1400, att: 0.05, uni: 9 }); break;
-      case 'gravity': T({ f: 70, to: 38, dur: 0.6, vol: 0.12, att: 0.12 }); N({ dur: 0.5, vol: 0.035, freq: 300, to: 120, q: 1.4, att: 0.2 }); this.fm(55, 0.5, 3, 0.5, 0.04); break;
-      case 'boom': this.thump(66 * r, 0.6, 0.45); N({ dur: 0.7, vol: 0.17, freq: 700 * b, to: 90, type: 'lowpass' }); N({ dur: 0.26, vol: 0.05, freq: 2400, to: 600, q: 0.8, when: 0.05, att: 0.02 }); break;
-      case 'die': N({ dur: 0.1, vol: 0.08, freq: 1000 * b, q: 0.9 }); T({ f: 300 * r, to: 80, dur: 0.16, vol: 0.06, type: 'triangle' }); T({ f: 125, to: 48, dur: 0.14, vol: 0.1 }); this.fm(420 * r, 1.4, 3, 0.09, 0.03); break;
-      case 'mitedie': N({ dur: 0.04, vol: 0.05, freq: 4000 * b, type: 'highpass' }); T({ f: 900 * r, to: 300, dur: 0.06, vol: 0.04 }); break;
-      case 'shield': T({ f: 1400 * r, to: 620, dur: 0.25, vol: 0.045 }); N({ dur: 0.2, vol: 0.05, freq: 5200, type: 'highpass' }); this.fm(900 * r, 3.1, 3, 0.2, 0.03); break;
+      case 'shot':
+        // Pulse Turret: a click, a tight bolt that drops fast, a knock under it and a short ring. Pitch, brightness and the
+        // ring's note change every shot, so a row of turrets sounds like a texture rather than one sample on repeat.
+        N({ dur: 0.008, vol: 0.07, freq: 5200 * b, type: 'highpass', att: 0.001 });
+        T({ f: 1250 * r, to: 240 * r, glide: 0.045, dur: 0.07, vol: 0.07, type: 'square', lp: 4200 * b, lpTo: 700 });
+        T({ f: 190 * r, to: 70, glide: 0.04, dur: 0.07, vol: 0.12 });
+        T({ f: [660, 740, 880, 990][Math.floor(Math.random() * 4)] * r, dur: 0.1, vol: 0.014, type: 'triangle', when: 0.01 });
+        break;
+      case 'arcshot': {
+        // Arc Pylon: a tesla coil. A low hum (70 to 125 Hz) that rasps, fired in two to four bursts with sparks over
+        // them. Hum pitch, colour and the burst pattern are new on every discharge.
+        const f = 70 + Math.random() * 55, k = 2 + Math.floor(Math.random() * 3), bursts: [number, number, number][] = [];
+        let at = 0;
+        for (let i = 0; i < k; i++) { const len = i ? 0.02 + Math.random() * 0.05 : 0.05 + Math.random() * 0.06; bursts.push([at, len, i ? 0.45 + Math.random() * 0.5 : 1]); at += len + 0.008 + Math.random() * 0.03; }
+        this.buzz(f, bursts, 0.21, { bp: f * (4 + Math.random() * 5), hp: 1800 * b, hum: 1, rasp: 0.5 });
+        this.crackle(at, 0.09, 6 + Math.floor(Math.random() * 6), 3000);
+        N({ dur: 0.006, vol: 0.08, freq: 4000, type: 'highpass', att: 0.001 });
+        break;
+      }
+      case 'mortar':
+        // Mortar: a deep tube thump, the chuff of the charge, and the faint whistle of the shell climbing away
+        T({ f: 150 * r, to: 46, glide: 0.09, dur: 0.34, vol: 0.32 });
+        N({ dur: 0.07, vol: 0.12, freq: 520 * b, q: 1.2 });
+        N({ dur: 0.28, vol: 0.06, freq: 2400 * b, to: 260, type: 'lowpass', att: 0.01 });
+        T({ f: 1500 * r, to: 2600 * r, dur: 0.42, vol: 0.012, when: 0.05, att: 0.12 });
+        break;
+      case 'rail':
+        // Railgun: the crack of the slug, a falling electric zing, a heavy sub, a metal ring and a short buzz of spent coils
+        N({ dur: 0.035, vol: 0.2, freq: 3200, type: 'highpass', att: 0.001 });
+        T({ f: 3600 * r, to: 380, glide: 0.14, dur: 0.2, vol: 0.05 });
+        T({ f: 70 * r, to: 30, dur: 0.45, vol: 0.2, type: 'sawtooth', lp: 380, uni: 12 });
+        this.fm(240 * r, 2.76, 5, 0.32, 0.045);
+        this.buzz(150 * r, [[0.03, 0.09, 1]], 0.07, { bp: 1400, hp: 3000 });
+        break;
+      case 'cryo': {
+        // Cryo: an icy, crystalline burst. Frost hiss, a cold puff, and three glassy chimes at random high pitches.
+        N({ dur: 0.3, vol: 0.04, freq: 8000, to: 4200, type: 'highpass', att: 0.008 });
+        N({ dur: 0.12, vol: 0.09, freq: 1800 * b, to: 600, q: 0.9 });
+        T({ f: 900 * r, to: 420, dur: 0.12, vol: 0.05, type: 'triangle' });
+        const ice = [1760, 2093, 2637, 3136, 3520];
+        for (let i = 0; i < 3; i++) this.fm(ice[Math.floor(Math.random() * 5)] * r, 3.01, 0.9, 0.22 + Math.random() * 0.12, 0.034, i * 0.022 + Math.random() * 0.01);
+        break;
+      }
+      case 'missile':
+        // Missile: an ignition pop, then the rocket's whoosh sweeping up and away over a rough, sputtering roar
+        N({ dur: 0.03, vol: 0.09, freq: 1600 * b, q: 1.2 });
+        T({ f: 120 * r, to: 55, dur: 0.14, vol: 0.12 });
+        N({ dur: 0.5, vol: 0.11, freq: 450, to: 3800 * b, q: 1.6, att: 0.07 });
+        N({ dur: 0.55, vol: 0.06, freq: 1400, to: 300, type: 'lowpass', att: 0.04 });
+        this.crackle(0.35, 0.035, 8, 2500, 0.03);
+        break;
+      case 'flame':
+        // Firewall: a low, rough roar with a fluttering rumble under it and sparks spitting out of it
+        N({ dur: 0.55, vol: 0.11, freq: 700 * b, to: 380, type: 'lowpass', q: 0.9, att: 0.05 });
+        N({ dur: 0.4, vol: 0.04, freq: 1800, q: 0.6, att: 0.04 });
+        T({ f: 62, to: 48, dur: 0.5, vol: 0.035, att: 0.05, vib: 11, vibD: 6 });
+        this.crackle(0.45, 0.05, 10, 2800);
+        break;
+      case 'lance':
+        // Lance: a sizzling beam. A frying hum, a bright detuned beam tone over it, and sparks.
+        this.buzz(55 + Math.random() * 20, [[0, 0.24, 1]], 0.07, { bp: 700 * b, hp: 4500, att: 0.03, rasp: 0.5 });
+        T({ f: 310 * r, to: 300 * r, dur: 0.26, vol: 0.045, type: 'sawtooth', lp: 1800, att: 0.03, uni: 11, flat: true, rel: 0.06 });
+        this.crackle(0.24, 0.035, 8, 4000);
+        break;
+      case 'gravity':
+        // Graviton Well: a deep warping pulse. A wobbling sub falls away, a growl under it, and space rushes back in after.
+        T({ f: 96, to: 30, dur: 0.85, vol: 0.24, vib: 6.5, vibD: 9 });
+        T({ f: 48, to: 30, dur: 0.7, vol: 0.1, type: 'sawtooth', lp: 700, lpTo: 90, q: 4, vib: 6.5, vibD: 4 });
+        this.fm(55, 0.5, 4, 0.6, 0.05);
+        N({ dur: 0.45, vol: 0.05, freq: 200, to: 1400, type: 'lowpass', att: 0.25, flat: true, when: 0.15 });
+        break;
+      case 'boom':
+        // a shell lands: a sub thump, a dull blast that closes, a crack, and debris
+        this.thump(62 * r, 0.6, 0.42);
+        N({ dur: 0.55, vol: 0.15, freq: 1600 * b, to: 90, type: 'lowpass' });
+        N({ dur: 0.04, vol: 0.1, freq: 2600 * b, q: 0.9 });
+        this.crackle(0.4, 0.05, 9, 1800, 0.03);
+        break;
+      case 'die':
+        // A machine destroyed, the reward the whole game pays out: a crisp snap, a round pop, a crunch of debris, a sub
+        // knock and a faint glassy shard. Short, and never quite the same twice, so it can be heard hundreds of times.
+        N({ dur: 0.012, vol: 0.09, freq: 3600 * b, q: 1.1, att: 0.001 });
+        T({ f: 560 * r, to: 150, glide: 0.05, dur: 0.08, vol: 0.11, type: 'triangle' });
+        N({ dur: 0.13, vol: 0.09, freq: 5200 * b, to: 700, type: 'lowpass', q: 1.4 });
+        T({ f: 120 * r, to: 46, dur: 0.17, vol: 0.12 });
+        this.crackle(0.09, 0.07, 5, 1500);
+        this.fm(2400 * b, 1.41, 2, 0.09, 0.014, 0.01);
+        break;
+      case 'mitedie':
+        // a mite squashed: a tiny snap, a chirp and a crunch
+        N({ dur: 0.02, vol: 0.08, freq: 3600 * b, q: 1.5, att: 0.001 });
+        T({ f: 1300 * r, to: 360, glide: 0.03, dur: 0.05, vol: 0.075, type: 'triangle' });
+        T({ f: 200 * r, to: 90, dur: 0.06, vol: 0.05 });
+        this.crackle(0.05, 0.045, 3, 2500);
+        break;
+      case 'shield':
+        // a shield breaks: glass shatters (scattered pings and a hiss) and the dome collapses with a soft falling tone
+        N({ dur: 0.18, vol: 0.07, freq: 6500 * b, to: 3000, type: 'highpass', att: 0.001 });
+        for (let i = 0; i < 4; i++) this.fm((2200 + Math.random() * 3000) * r, 2.76, 1.5, 0.12 + Math.random() * 0.1, 0.02, i * 0.018 + Math.random() * 0.012);
+        T({ f: 520 * r, to: 140, dur: 0.22, vol: 0.06, type: 'triangle' });
+        break;
       case 'deflect': this.fm(1250 * r, 3.53, 3, 0.24, 0.06); N({ dur: 0.03, vol: 0.07, freq: 4500, type: 'highpass' }); T({ f: 2100 * r, to: 1500, dur: 0.13, vol: 0.022, type: 'triangle' }); break;
       case 'spindown': T({ f: 260, to: 70, dur: 0.9, vol: 0.12, type: 'sawtooth', lp: 900, lpTo: 200, uni: 10 }); N({ dur: 0.8, vol: 0.05, freq: 1800, to: 300, q: 1.2 }); this.thump(110, 0.18, 0.2, 0.78); break;
       case 'spinup': T({ f: 80, to: 300, dur: 0.8, vol: 0.1, type: 'sawtooth', lp: 1200, att: 0.25, flat: true, rel: 0.15, uni: 10 }); N({ dur: 0.8, vol: 0.04, freq: 400, to: 2400, q: 1.2, att: 0.5 }); break;
@@ -378,10 +537,31 @@ export class Sound {
         break;
       case 'unjam': T({ f: 220, to: 520, dur: 0.22, vol: 0.09, type: 'triangle' }); N({ dur: 0.04, vol: 0.08, freq: 3000, q: 2, when: 0.2 }); this.fm(1320, 2, 1.5, 0.3, 0.04, 0.2); break;
       case 'special': this.thump(84, 0.7, 0.42); this.horn([110, 164.8], 1.0, 0.2, 900); N({ dur: 0.5, vol: 0.1, freq: 600, to: 4200, q: 1, att: 0.3 }); this.fm(220, 3, 4, 0.5, 0.05); break;
-      case 'down': T({ f: 220, to: 60, dur: 0.5, vol: 0.1, type: 'sawtooth', lp: 500, lpTo: 120, uni: 9 }); N({ dur: 0.3, vol: 0.03, freq: 1600, to: 300, q: 1 }); break;
-      case 'up': T({ f: 160, to: 320, dur: 0.3, vol: 0.08, type: 'triangle' }); N({ dur: 0.05, vol: 0.08, freq: 3000, q: 2, when: 0.26 }); break;
-      case 'build': this.thump(118, 0.16, 0.26); N({ dur: 0.05, vol: 0.08, freq: 2600 * b, q: 2 }); T({ f: 180, to: 320, dur: 0.22, vol: 0.05, type: 'triangle', when: 0.05 }); N({ dur: 0.06, vol: 0.06, freq: 3400, q: 2, when: 0.24 }); break;
-      case 'sell': N({ dur: 0.06, vol: 0.07, freq: 2800, q: 2 }); this.thump(100, 0.14, 0.18, 0.04); T({ f: 330, to: 250, dur: 0.35, vol: 0.04, type: 'triangle', when: 0.06 }); break;
+      case 'down':
+        // power lost or a tower ran dry: the hum winds down and sputters out in shrinking bursts
+        T({ f: 240, to: 60, dur: 0.45, vol: 0.09, type: 'sawtooth', lp: 900, lpTo: 150, uni: 9 });
+        this.buzz(70, [[0, 0.06, 1], [0.09, 0.04, 0.6], [0.17, 0.03, 0.35]], 0.06, { bp: 500, hp: 2000 });
+        break;
+      case 'up':
+        // power restored or a tower fed again: a rising tone that lands on a click and a small chime
+        T({ f: 180, to: 360, dur: 0.18, vol: 0.09, type: 'triangle' });
+        N({ dur: 0.02, vol: 0.06, freq: 3200, q: 2, when: 0.16, att: 0.001 });
+        this.fm(1318.5, 2, 1, 0.3, 0.022, 0.16);
+        break;
+      case 'build':
+        // a part set down: a solid clunk, two ratchet ticks as it is bolted, and a warm rising chime
+        this.thump(110, 0.18, 0.26);
+        N({ dur: 0.03, vol: 0.08, freq: 2400 * b, q: 1.5, att: 0.001 });
+        N({ dur: 0.015, vol: 0.05, freq: 3400 * b, q: 3, when: 0.07, att: 0.001 });
+        N({ dur: 0.015, vol: 0.05, freq: 3800 * b, q: 3, when: 0.12, att: 0.001 });
+        this.fm(523.3, 2, 0.9, 0.35, 0.03, 0.12); this.fm(784, 2, 0.8, 0.45, 0.028, 0.18);
+        break;
+      case 'sell':
+        // taken apart and refunded: a release whoosh, a soft knock and two coin clinks falling
+        N({ dur: 0.14, vol: 0.05, freq: 3000, to: 700, q: 1.2, att: 0.01 });
+        this.thump(96, 0.14, 0.16, 0.03);
+        this.fm(1975.5 * r, 2.01, 1.2, 0.18, 0.03, 0.05); this.fm(1568 * r, 2.01, 1.2, 0.26, 0.03, 0.12);
+        break;
       case 'titanSmash': this.thump(50, 1.4, 0.3); N({ dur: 1.7, vol: 0.14, freq: 500, to: 60, type: 'lowpass', att: 0.08 }); N({ dur: 0.9, vol: 0.04, freq: 1400, to: 300, q: 0.7, when: 0.2, att: 0.1 }); break;
 
       // --- Kestrel and the bow ---
@@ -391,7 +571,7 @@ export class Sound {
       case 'sing': T({ f: 36, to: 95, dur: 1.5, vol: 0.28, type: 'sawtooth', lp: 240, att: 0.5, uni: 10 }); N({ dur: 1.5, vol: 0.12, freq: 200, to: 2600, q: 1.2, att: 0.9 }); this.fm(72, 0.5, 4, 1.4, 0.08); break;
       case 'crit': N({ dur: 0.05, vol: 0.1, freq: 3600, type: 'highpass' }); this.fm(1320 * r, 2.76, 2, 0.2, 0.06); this.thump(120, 0.18, 0.2); break;
       case 'drawfull': N({ dur: 0.022, vol: 0.09, freq: 4600, q: 2.5 }); T({ f: 1320, dur: 0.09, vol: 0.04, type: 'triangle' }); break;
-      case 'nospec': N({ dur: 0.04, vol: 0.05, freq: 620, q: 1.6 }); T({ f: 150, to: 110, dur: 0.07, vol: 0.05 }); break;
+      case 'nospec': N({ dur: 0.03, vol: 0.05, freq: 620, q: 1.6 }); T({ f: 180, to: 120, dur: 0.08, vol: 0.06, type: 'triangle' }); break;
       case 'heroOn': N({ dur: 0.7, vol: 0.18, freq: 300, to: 5200, q: 0.9, att: 0.55 }); this.thump(64, 1.3, 0.6, 0.6); this.horn([73.4, 110, 146.8], 2.2, 0.34, 700, 0.6); N({ dur: 1.4, vol: 0.12, freq: 4000, to: 200, type: 'lowpass', when: 0.6 }); this.fm(880, 2, 1, 1.2, 0.03, 0.6); break;
       case 'heroOff': T({ f: 260, to: 55, dur: 0.8, vol: 0.16, type: 'sawtooth', lp: 500, lpTo: 120, uni: 9 }); N({ dur: 0.6, vol: 0.07, freq: 2400, to: 200, type: 'lowpass' }); break;
       case 'tele': N({ dur: 0.3, vol: 0.12, freq: 500, to: 4000, q: 1.3, att: 0.18 }); this.thump(92, 0.35, 0.26, 0.2); T({ f: 420, to: 1100, dur: 0.22, vol: 0.04 }); this.fm(660, 1.5, 3, 0.25, 0.04, 0.2); break;
@@ -399,14 +579,48 @@ export class Sound {
       case 'overlink': this.horn([110, 164.8, 220], 1.6, 0.3, 900); this.horn([146.8, 220, 293.7], 2.0, 0.3, 1100, 0.4); this.thump(58, 0.9, 0.3); for (let i = 0; i < 4; i++) this.fm([880, 1174.7, 1318.5, 1760][i], 2, 1.2, 0.9, 0.022, 0.4 + i * 0.11); break;
 
       // --- the run: warnings and milestones ---
-      case 'wave': this.horn([73.4, 110], 1.7, 0.32, 520); this.thump(58, 0.9, 0.36); N({ dur: 0.9, vol: 0.04, freq: 400, to: 2400, q: 0.8, att: 0.6 }); break;
+      case 'wave':
+        // a wave is called: the horn over a deep gong, and the air rising
+        this.horn([73.4, 110], 1.7, 0.32, 520); this.thump(58, 0.9, 0.36); this.fm(73.4, 1.41, 3, 1.5, 0.06);
+        N({ dur: 0.9, vol: 0.04, freq: 400, to: 2400, q: 0.8, att: 0.6 });
+        break;
       case 'boss': this.horn([55, 58.3, 82.4], 2.8, 0.44, 400); this.thump(48, 1.6, 0.5); this.thump(48, 1.2, 0.4, 0.7); break;
-      case 'bossdie': this.thump(58, 2, 0.6); T({ f: 44, to: 26, dur: 2.4, vol: 0.32, type: 'sawtooth', lp: 260, uni: 12 }); N({ dur: 2.2, vol: 0.26, freq: 1500, to: 70, type: 'lowpass' }); this.thump(88, 0.6, 0.34, 0.35); break;
-      case 'leak': this.thump(88, 0.5, 0.4); T({ f: 98, to: 78, dur: 0.6, vol: 0.18, type: 'sawtooth', lp: 320 }); T({ f: 440, to: 330, dur: 0.18, vol: 0.05, type: 'square', lp: 1200 }); break;
-      // the core's discharge that destroys a machine attacking it
-      case 'breach': N({ dur: 0.12, vol: 0.13, freq: 5200, to: 1400, q: 1.4, type: 'highpass' }); this.thump(96, 0.35, 0.36); T({ f: 660 * r, to: 180, dur: 0.3, vol: 0.06, type: 'sawtooth', lp: 1600, lpTo: 300 }); this.fm(140, 9, 8, 0.25, 0.06); N({ dur: 0.5, vol: 0.05, freq: 2000, to: 200, type: 'lowpass', when: 0.05, att: 0.02 }); break;
-      case 'clear': this.horn([146.8, 220, 293.7], 1.4, 0.2, 800); this.fm(880, 2, 1, 1.2, 0.02, 0.1); break;
-      case 'levelup': this.horn([146.8, 174.6, 220, 293.7], 1.6, 0.3, 950); this.thump(62, 0.8, 0.26); for (let i = 0; i < 4; i++) this.fm([587.3, 740, 880, 1174.7][i], 2, 1.5, 0.7, 0.025, 0.1 + i * 0.09); break;
+      case 'bossdie':
+        // a Colossus falls: the blast, the hull groaning, debris raining for a second, two secondary blasts, and a bright glint to close
+        this.thump(52, 2.2, 0.6);
+        T({ f: 44, to: 24, dur: 2.4, vol: 0.3, type: 'sawtooth', lp: 260, uni: 12 });
+        N({ dur: 2.2, vol: 0.24, freq: 2200, to: 70, type: 'lowpass' });
+        N({ dur: 0.05, vol: 0.16, freq: 3000, q: 0.9 });
+        this.fm(70, 1.41, 7, 1.6, 0.08, 0.05);
+        this.crackle(1.2, 0.08, 26, 1500, 0.05);
+        this.thump(88, 0.6, 0.3, 0.35); this.thump(72, 0.6, 0.28, 0.7);
+        this.fm(1174.7, 2, 1, 1.4, 0.02, 0.4); this.fm(1568, 2, 1, 1.4, 0.016, 0.52);
+        break;
+      case 'leak':
+        // a machine reached the core: a heavy hit and a two-note alarm that falls a semitone
+        this.thump(80, 0.5, 0.4);
+        T({ f: 98, to: 78, dur: 0.6, vol: 0.16, type: 'sawtooth', lp: 380 });
+        T({ f: 466.2, dur: 0.12, vol: 0.05, type: 'square', lp: 1500, flat: true, rel: 0.03 });
+        T({ f: 440, dur: 0.16, vol: 0.05, type: 'square', lp: 1300, flat: true, rel: 0.05, when: 0.13 });
+        break;
+      case 'breach':
+        // the core's discharge that destroys a machine attacking it: a tesla strike, a crack, a body hit and sparks
+        this.buzz(95 * r, [[0, 0.07, 1], [0.085, 0.04, 0.6], [0.14, 0.05, 0.45]], 0.24, { bp: 1100, hp: 2400 });
+        N({ dur: 0.01, vol: 0.16, freq: 3500, type: 'highpass', att: 0.001 });
+        this.thump(90, 0.35, 0.36);
+        this.crackle(0.25, 0.08, 12, 3000);
+        N({ dur: 0.45, vol: 0.05, freq: 2000, to: 200, type: 'lowpass', when: 0.05, att: 0.02 });
+        break;
+      case 'clear':
+        // a wave cleared: a soft chord and three bells climbing over it
+        this.horn([146.8, 220, 293.7], 1.4, 0.2, 800); this.thump(70, 0.5, 0.16);
+        for (let i = 0; i < 3; i++) this.fm([880, 1108.7, 1318.5][i], 2, 1.1, 1.0, 0.024, 0.06 + i * 0.09);
+        break;
+      case 'levelup':
+        this.horn([146.8, 174.6, 220, 293.7], 1.6, 0.3, 950); this.thump(62, 0.8, 0.26);
+        for (let i = 0; i < 4; i++) this.fm([587.3, 740, 880, 1174.7][i], 2, 1.5, 0.7, 0.028, 0.1 + i * 0.09);
+        N({ dur: 0.5, vol: 0.03, freq: 3000, to: 9000, type: 'highpass', att: 0.3, when: 0.1 });
+        break;
       case 'jam':
         // a mite has latched on: the tower's hum chokes in three stutters
         T({ f: 420, to: 110, dur: 0.36, vol: 0.08, type: 'sawtooth', lp: 1400, lpTo: 300, uni: 14 });
@@ -438,9 +652,19 @@ export class Sound {
       case 'lose': this.thump(52, 2, 0.6); T({ f: 110, to: 49, dur: 3.6, vol: 0.3, type: 'sawtooth', lp: 320, lpTo: 90, uni: 20 }); T({ f: 116.5, to: 52, dur: 3.6, vol: 0.2, type: 'sawtooth', lp: 320, lpTo: 90 }); break;
 
       // --- interface ---
-      case 'card': this.thump(80, 0.45, 0.3); this.fm(587.3, 2, 1.5, 0.9, 0.04); this.fm(880, 2, 1.2, 1.1, 0.025, 0.08); break;
-      case 'error': T({ f: 110, to: 84, dur: 0.12, vol: 0.12, type: 'square', lp: 700 }); T({ f: 96, to: 72, dur: 0.14, vol: 0.12, type: 'square', lp: 700, when: 0.11 }); break;
-      case 'click': N({ dur: 0.025, vol: 0.06, freq: 3200 * b, q: 1.5 }); T({ f: 150, to: 95, dur: 0.05, vol: 0.08 }); break;
+      case 'card':
+        // a card is taken: a short whoosh into a soft hit and a chord of bells
+        N({ dur: 0.12, vol: 0.05, freq: 900, to: 4800, q: 1.1, att: 0.06 });
+        this.thump(80, 0.4, 0.26, 0.05);
+        this.fm(587.3, 2, 1.5, 0.9, 0.04, 0.05); this.fm(880, 2, 1.2, 1.1, 0.028, 0.11); this.fm(1174.7, 2, 1, 1.0, 0.016, 0.17);
+        break;
+      case 'error': T({ f: 220, to: 196, dur: 0.07, vol: 0.06, type: 'square', lp: 900 }); T({ f: 185, to: 165, dur: 0.1, vol: 0.06, type: 'square', lp: 800, when: 0.09 }); T({ f: 90, to: 70, dur: 0.12, vol: 0.08 }); break;
+      case 'click': N({ dur: 0.01, vol: 0.06, freq: 3800 * b, q: 2, att: 0.001 }); T({ f: 1100, to: 700, dur: 0.025, vol: 0.03, type: 'triangle' }); T({ f: 170, to: 110, dur: 0.04, vol: 0.06 }); break;
+      // --- factory ---
+      // a tower picks an item off a belt: a soft, quiet tick
+      case 'take': N({ dur: 0.012, vol: 0.055, freq: 2600 * b, q: 3, att: 0.001 }); T({ f: 720 * r, to: 520, dur: 0.03, vol: 0.03, type: 'triangle' }); break;
+      // a building delivers materials: two small clinks and a knock
+      case 'mats': this.fm(1318.5 * r, 2.01, 1, 0.16, 0.022); this.fm(1760 * r, 2.01, 1, 0.2, 0.018, 0.06); T({ f: 140, to: 90, dur: 0.07, vol: 0.05 }); break;
       case 'hover': N({ dur: 0.02, vol: 0.055, freq: 4200, q: 2 }); break;
     }
   }

@@ -34,7 +34,7 @@
         <div class="stat"><label>Credits</label><b id="gold">0</b></div>
         <div class="stat" title="Building materials from a Frame Works: the stronger towers cost them"><label>Materials</label><b id="mats">0</b></div>
         <div class="stat wide"><label>Level <span id="level">1</span></label><div class="bar"><i id="xpbar"></i></div></div>
-        <div class="stat power" title="Power drawn / available on all grids"><label>Power</label><b id="power" class="sm">0 / 0</b></div>
+        <div class="stat power" title="Power on all grids. Between waves: what everything needs at full load / what the fuelled generators will give. During a wave: drawn / available."><label id="power-label">Power</label><b id="power" class="sm">0 / 0</b></div>
         <div class="stat next" id="next"><label id="next-label">Next wave</label><div id="next-row"></div></div>
       </div>
       <div class="spacer"></div>
@@ -59,6 +59,7 @@
       <h3 id="t-name"></h3>
       <div id="t-stats"></div>
       <div id="t-sup"></div>
+      <div id="t-diag" class="diag"></div>
       <div id="t-spec">
         <b id="t-spec-name"></b>
         <p id="t-spec-desc"></p>
@@ -66,6 +67,7 @@
         <span id="t-spec-state"></span>
         <button id="t-special" class="btn small" type="button">Fire special (Space)</button>
       </div>
+      <p id="t-next"></p>
       <div id="t-btns">
         <button id="t-up" class="btn small"></button>
         <button id="t-sell" class="btn small ghost"></button>
@@ -77,8 +79,10 @@
       <h3 id="f-name"></h3>
       <p id="f-state"></p>
       <div id="f-stats"></div>
+      <div id="f-diag" class="diag"></div>
       <div id="t-btns2">
-        <button id="f-turn" class="btn small ghost hidden" type="button">Turn belt (R)</button>
+        <button id="f-up" class="btn small hidden" type="button"></button>
+        <button id="f-turn" class="btn small ghost hidden" type="button">Turn (R)</button>
         <button id="f-sell" class="btn small ghost" type="button"></button>
       </div>
       <p id="f-desc" class="muted small"></p>
@@ -102,7 +106,8 @@
     <div id="intel"></div>
     <div id="hints"></div>
     <div id="announce"></div>
-    <div id="prep" class="hidden"><span class="kicker">Before wave 1</span><b>Build first. The wave waits for your call.</b><small id="prep-sub"></small></div>
+    <!-- the build phase: between waves time stands still (nothing is made, nothing moves) until the next wave is called -->
+    <div id="prep" class="hidden"><span class="kicker" id="prep-kick">Before wave 1</span><b id="prep-title">Time stands still until you call the wave.</b><small id="prep-sub"></small></div>
     <!-- the guided first run: one step at a time, each ticked off by doing it -->
     <div id="guide" class="hidden" aria-live="polite">
       <span class="kicker" id="guide-step">Tutorial</span>
@@ -260,18 +265,19 @@
       <div class="help-grid">
         <div class="panel"><h3>Command view</h3>
           <p class="kbd-only">Pick a tower or a factory building from the bar (number keys; <kbd>F</kbd> switches between Towers and Factory), then click a free hex to build. <kbd>Shift</kbd> keeps building.</p>
-          <p class="kbd-only">Click something you built to upgrade (<kbd>U</kbd>) or sell (<kbd>X</kbd>) it. The tags over the spawn gates show what the next wave sends down each road.</p>
+          <p class="kbd-only">Click something you built to upgrade (<kbd>U</kbd>) or sell (<kbd>X</kbd>) it: towers, and mines, pumpjacks, plants and generators too. The tags over the spawn gates show what the next wave sends down each road.</p>
           <p class="kbd-only"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or right-drag to pan, wheel to zoom. <kbd>Q</kbd> <kbd>E</kbd> or middle-drag turns the view, <kbd>Home</kbd> resets it.</p>
-          <p class="kbd-only"><kbd>N</kbd> calls the next wave: waves only come when you call them, unless you switch Auto waves on. <kbd>G</kbd> switches the game speed, <kbd>P</kbd> or <kbd>Esc</kbd> pauses.</p>
+          <p class="kbd-only"><kbd>N</kbd> calls the next wave. Between waves time stands still: build, nothing is made and nothing moves until you call (or Auto waves calls for you). <kbd>G</kbd> switches the game speed, <kbd>P</kbd> or <kbd>Esc</kbd> pauses.</p>
           <p class="tap-only lead">Tap a building in the bar, then tap a hex. Hold and drag to move the preview first (a belt follows your finger). Tap something on the board to upgrade or sell it.</p>
-          <p class="tap-only">Drag with one finger to pan. Two fingers either pinch to zoom or twist to turn the view. Waves only come when you tap Call wave, unless you switch Auto waves on.</p>
+          <p class="tap-only">Drag with one finger to pan. Two fingers either pinch to zoom or twist to turn the view. Between waves time stands still until you tap Call wave, unless you switch Auto waves on.</p>
           <button class="btn small ghost" id="h-tutorial" type="button">Replay the tutorial</button>
         </div>
         <div class="panel"><h3>Supplying towers</h3>
-          <p>A tower fires only what it is fed. It starts empty. Supply crates on the deck feed any tower built right next to them, but a crate runs out: every tower needs a supply line of its own in the end.</p>
-          <p>The Pulse Turret runs on iron ore: build a Mine on an iron deposit, right next to the turret or with a belt between them. <span class="kbd-only">Drag to lay a line of belts; <kbd>R</kbd> turns the belt you are placing.</span><span class="tap-only">Hold and drag to lay belts; Turn changes their direction.</span></p>
-          <p>Nothing needs pointing: a building hands what it makes to a neighbour that needs it, or to a belt beside it when something further down that belt needs it. Towers and buildings take what they need from a belt that points at them or runs past them, so one belt can feed a whole row of towers.</p>
-          <p>Each blueprint card unlocks a tower together with the buildings its supply needs, one step at a time: a Generator for power, a Pumpjack and pipes for oil, a Smelter for plates, then presses and plants. A tower's panel says what it is missing. The Underpass card lets belts and pipes cross under a road.</p>
+          <p>A tower fires only what it is fed. It starts empty and keeps just one item in hand, pulling the next off its belt or pipe as it fires. Supply crates on the deck feed any tower built right next to them, but a crate runs out: every tower needs a supply line of its own in the end.</p>
+          <p>The Pulse Turret runs on iron ore: build a Mine on an iron deposit, right next to the turret or with a belt between them. A mine digs about one ore every 3 seconds, enough for one turret. <span class="kbd-only">Drag to lay a line of belts; <kbd>R</kbd> turns the belt you are placing.</span><span class="tap-only">Hold and drag to lay belts; Turn changes their direction.</span></p>
+          <p>Nothing needs pointing: a building hands what it makes to a neighbour that needs it, or to a belt beside it when something further down that belt needs it. Towers and buildings take what they need from a belt that points at them or runs past them, so one belt can feed a whole row of towers. A belt pointing into another merges onto it.</p>
+          <p>Between waves a red marker over a tower or building means it will lack something when the wave starts; click it to see what is missing and what supplies it. The Power gauge shows what the grids need against what they have.</p>
+          <p>Each blueprint card unlocks a tower together with the buildings its supply needs, one step at a time: a Generator for power, a Pumpjack and pipes for oil, a Smelter for plates, then presses and plants, and from tier 2 the Belt Splitter. The Tunnels card adds Belt and Pipe Tunnels that pass up to 4 tiles under roads, towers and buildings. Mines, pumpjacks, plants and generators upgrade twice to work faster. At Mk3 the Pulse Turret fires plasma shells and the Firewall Pylon burns petrol.</p>
         </div>
         <div class="panel"><h3>Cards, specials and the machines</h3>
           <p>Every level you pick one of three cards: tower blueprints, tower upgrades, factory upgrades or economy.</p>

@@ -12,8 +12,10 @@ export interface TowerSpecial { name: string; desc: string; charge: number; down
 /**
  * What a tower has to be supplied with by the factory (see factory.ts). `item`: the ammunition it is fed on a belt (or straight
  * from a neighbouring building), `fluid`: what it draws from a pipe, `power`: units it draws from the grid while it works.
+ * `shots`: shots one item is worth in this tower (else ITEM_SHOTS), `dmg`: damage multiplier this supply gives (a better
+ * ammunition at level 3, see TOWER_NEEDS_L3). Use needsOf() for a tower on the field: its level can change what it needs.
  */
-export interface TowerNeeds { item?: ItemType; fluid?: FluidType; power?: number }
+export interface TowerNeeds { item?: ItemType; fluid?: FluidType; power?: number; shots?: number; dmg?: number }
 export interface TowerDef {
   name: string;
   cost: number;
@@ -43,7 +45,7 @@ export const TOWERS: Record<TowerType, TowerDef> = {
   flame: { name: 'Firewall Pylon', cost: 90, mat: 0, needs: { fluid: 'crude' }, dmg: 15, rate: 2, range: 8, color: 0xffb02e, desc: 'Build two within 4 tiles of each other and a wall of fire burns between them. On its own it only burns a small ring.', key: '7', special: { name: 'Inferno', desc: 'Its walls burn 2.5 times as hard and wider for 5 seconds.', charge: 40, down: 6 } },
   lance: { name: 'Lance Emitter', cost: 160, mat: 5, needs: { item: 'cell', power: 4 }, dmg: 9, rate: 4, range: 9, color: 0xff8fa8, desc: 'A continuous beam that burns hotter the longer it holds a target.', key: '8', special: { name: 'Overload', desc: 'Instantly at full heat, far hotter and piercing for 5 seconds. Comes back online still hot.', charge: 45, down: 6 } },
   missile: { name: 'Missile Battery', cost: 170, mat: 6, needs: { item: 'missile', power: 2 }, dmg: 22, rate: 0.55, range: 13, aoe: 1.5, color: 0xd9a05b, desc: 'Salvos of homing missiles. Prefers flyers.', key: '9', special: { name: 'Swarm', desc: 'Launches two dozen missiles at targets anywhere on the map.', charge: 50, down: 7 } },
-  gravity: { name: 'Graviton Well', cost: 120, mat: 4, needs: { item: 'cell', power: 3 }, dmg: 0, rate: 0.5, range: 5.5, color: 0x7a8cff, desc: 'Deals no damage. Drags enemies back and slows them.', key: '0', special: { name: 'Collapse', desc: 'Opens a singularity on the toughest enemy in range.', charge: 55, down: 9 } },
+  gravity: { name: 'Graviton Well', cost: 120, mat: 4, needs: { item: 'cell', power: 3, shots: 10 }, dmg: 0, rate: 0.5, range: 5.5, color: 0x7a8cff, desc: 'Deals no damage. Drags enemies back and slows them.', key: '0', special: { name: 'Collapse', desc: 'Opens a singularity on the toughest enemy in range.', charge: 55, down: 9 } },
 };
 
 // ---------- the factory ----------
@@ -76,25 +78,54 @@ export const ORES: Record<OreType, { name: string; color: number }> = {
   coal: { name: 'Coal seam', color: 0x5c5650 },
   oil: { name: 'Oil field', color: 0x6a4a9c },
 };
-/** Shots (or for a Lance, beam ticks; for a Graviton Well, pulses) one ammunition item is worth in a tower. */
-export const ITEM_SHOTS: Partial<Record<ItemType, number>> = { iron_ore: 15, copper: 4, shell: 6, cell: 30, missile: 3 };
+/**
+ * Shots (or for a Lance, beam ticks; for a Graviton Well, pulses) one ammunition item is worth in a tower (TowerNeeds.shots
+ * overrides it per tower). Towers keep only one item waiting, so these set the flow a tower pulls off its belt at full rate:
+ * a Pulse Turret burns an ore every 2.8 s, about what one level-1 mine digs; a Missile Battery fires one salvo per pack, so
+ * it fires as fast as its Missile Works builds them (its fire rate is only a cap); Lances and Wells live on their Cell Plant.
+ */
+export const ITEM_SHOTS: Partial<Record<ItemType, number>> = { iron_ore: 9, copper: 3, shell: 4, cell: 24, missile: 1 };
+/**
+ * Level 3 changes what some towers run on: the Pulse Turret Mk3 fires plasma shells from a Shell Press (harder hitting), the
+ * Firewall Pylon Mk3 burns petrol from a Refinery (hotter). On reaching level 3 the old ammunition is dropped.
+ */
+export const TOWER_NEEDS_L3: Partial<Record<TowerType, TowerNeeds>> = {
+  pulse: { item: 'shell', shots: 20, dmg: 1.3 },
+  flame: { fluid: 'petrol', dmg: 1.35 },
+};
+/** The supply buildings a level-3 upgrade unlocks with it (so the new ammunition can always be made). */
+export const TOWER_CHAIN_L3: Partial<Record<TowerType, FacType[]>> = {
+  pulse: ['generator', 'pole', 'smelter', 'press'],
+  flame: ['generator', 'pole', 'pump', 'pipe', 'refinery'],
+};
+/** The level-3 supply line in a few words (for the upgrade button and the tower panel). */
+export const TOWER_SUPPLY_L3: Partial<Record<TowerType, string>> = {
+  pulse: 'Mk3 fires plasma shells instead of ore: iron plates and coal into a Shell Press (unlocked with the upgrade). Power for the press.',
+  flame: 'Mk3 burns petrol instead of crude: crude oil through a Refinery (unlocked with the upgrade), petrol by pipe to the pylon.',
+};
+/** What a tower needs at its level (TOWER_NEEDS_L3 from level 3 on, else TOWERS[type].needs). */
+export const needsOf = (t: { type: TowerType; lvl: number }): TowerNeeds => (t.lvl >= 3 && TOWER_NEEDS_L3[t.type]) || TOWERS[t.type].needs;
 /** Crude oil a Firewall Pylon burns per tick of its fire. */
 export const FUEL_PER_TICK = 0.5;
 
 /**
  * Factory buildings. 'crate' is the supply crate a map starts with (it cannot be built). The order of FAC_TYPES is the order
  * of the build bar: logistics first, then the buildings in the order a run unlocks them.
+ * The Belt Splitter comes with the first tier-2 blueprint (see TOWER_CHAIN), Belt and Pipe Tunnels with the Tunnels card.
  */
-export type FacType = 'belt' | 'mine' | 'generator' | 'pole' | 'pump' | 'pipe' | 'smelter' | 'works' | 'press' | 'cells' | 'refinery' | 'missiles' | 'crate';
-export const FAC_TYPES: FacType[] = ['belt', 'mine', 'generator', 'pole', 'pump', 'pipe', 'smelter', 'works', 'press', 'cells', 'refinery', 'missiles'];
+export type FacType = 'belt' | 'splitter' | 'tunnel' | 'mine' | 'generator' | 'pole' | 'pump' | 'pipe' | 'ptunnel' | 'smelter' | 'works' | 'press' | 'cells' | 'refinery' | 'missiles' | 'crate';
+export const FAC_TYPES: FacType[] = ['belt', 'splitter', 'tunnel', 'mine', 'generator', 'pole', 'pump', 'pipe', 'ptunnel', 'smelter', 'works', 'press', 'cells', 'refinery', 'missiles'];
 export interface FacDef { name: string; cost: number; color: number; desc: string; power?: number }
 export const FACS: Record<FacType, FacDef> = {
-  belt: { name: 'Conveyor Belt', cost: 2, color: 0x8a8174, desc: 'Carries items in the direction of its arrow. Drag to lay a line; R turns it. Buildings put what they make on a belt beside them when something further down the line needs it. Towers and buildings take what they need from a belt that runs past them or points at them.' },
+  belt: { name: 'Conveyor Belt', cost: 2, color: 0x8a8174, desc: 'Carries items in the direction of its arrow. Drag to lay a line; R turns it. Buildings put what they make on a belt beside them when something further down the line needs it. Towers and buildings take what they need from a belt that runs past them or points at them. A belt pointing into another one merges onto it.' },
+  splitter: { name: 'Belt Splitter', cost: 12, color: 0xb9a77c, desc: 'Takes items from every belt pointing into it and deals them out in turn to the belts leading away from it, or to a tower or building beside it that needs them.' },
+  tunnel: { name: 'Belt Tunnel', cost: 10, color: 0x7c7466, desc: 'Build two facing the same way, up to 4 tiles apart: items go in at the first and come out of the second, under whatever stands between (towers, roads, buildings). R turns it.' },
   mine: { name: 'Mine', cost: 15, color: 0x9d8a6a, desc: 'Build it on an iron, copper or coal deposit. Digs without power. It feeds a tower or building right next to it, or a belt.' },
   generator: { name: 'Generator', cost: 25, color: 0x6fe0c8, desc: 'Burns coal for 10 power. It powers everything within 2 tiles and wires to Power Poles up to 5 tiles away.' },
   pole: { name: 'Power Pole', cost: 6, color: 0x9ccf6a, desc: 'Carries power from a Generator: wires reach up to 5 tiles to the next pole, also across roads. Powers everything within 2 tiles.' },
   pump: { name: 'Pumpjack', cost: 30, color: 0x7a5fa0, desc: 'Build it on an oil field. Pumps crude oil into the pipes or the building beside it. Needs power.', power: 2 },
   pipe: { name: 'Pipe', cost: 3, color: 0x6f7b82, desc: 'Joins up with the pipes next to it. Carries crude oil from Pumpjacks, or petrol from a Refinery, to what stands beside it.' },
+  ptunnel: { name: 'Pipe Tunnel', cost: 10, color: 0x5d686e, desc: 'Two in a straight line, up to 4 tiles apart, join their pipes under whatever stands between.' },
   smelter: { name: 'Smelter', cost: 20, color: 0xce6b44, desc: 'Melts iron ore into iron plates and copper ore into copper plates. Burns one coal for every four plates. No power needed.' },
   works: { name: 'Frame Works', cost: 30, color: 0xe3dc92, desc: 'Turns two iron plates into one building material. The stronger towers and their upgrades cost materials on top of credits. Needs power.', power: 2 },
   press: { name: 'Shell Press', cost: 35, color: 0xf68b56, desc: 'Presses an iron plate and a coal into a plasma shell for the Plasma Mortar. Needs power.', power: 2 },
@@ -103,31 +134,38 @@ export const FACS: Record<FacType, FacDef> = {
   missiles: { name: 'Missile Works', cost: 50, color: 0xc9824a, desc: 'Builds a missile pack from an iron plate, a copper plate and petrol. Needs power and a pipe from a Refinery.', power: 3 },
   crate: { name: 'Supply Crate', cost: 0, color: 0xe3dc92, desc: 'A crate of ammunition left on the deck. It feeds a tower built right next to it, or a belt. When it is empty, the tower needs a supply line of its own.' },
 };
-/** What a building makes from what (the Smelter and the Generator have rules of their own, see factory.ts). `mats`: it yields building materials instead of an item. */
+/** What a building makes from what (the Smelter and the Generator have rules of their own, see factory.ts). `mats`: it yields building materials instead of an item. `time`: seconds at level 1. */
 export interface Recipe { inp: Partial<Record<ItemType, number>>; fluid?: [FluidType, number]; out?: ItemType; mats?: number; time: number }
 export const MAKES: Partial<Record<FacType, Recipe>> = {
-  works: { inp: { iron: 2 }, mats: 1, time: 2.5 },
-  press: { inp: { iron: 1, coal: 1 }, out: 'shell', time: 3 },
-  cells: { inp: { copper: 1 }, fluid: ['crude', 10], out: 'cell', time: 3 },
-  missiles: { inp: { iron: 1, copper: 1 }, fluid: ['petrol', 10], out: 'missile', time: 4 },
+  works: { inp: { iron: 2 }, mats: 1, time: 5 },
+  press: { inp: { iron: 1, coal: 1 }, out: 'shell', time: 6 },
+  cells: { inp: { copper: 1 }, fluid: ['crude', 10], out: 'cell', time: 7 },
+  missiles: { inp: { iron: 1, copper: 1 }, fluid: ['petrol', 10], out: 'missile', time: 10 },
 };
+/**
+ * Building levels: a mine, pumpjack, smelter, plant, refinery or generator can be upgraded twice (credits only, see facUpCost).
+ * FAC_LVL_SPEED multiplies its work speed per level (a generator's power output), FAC_UP_COST the building's price per step.
+ */
+export const FAC_LVL_SPEED = [1, 1.6, 2.3];
+export const FAC_UP_COST = [0.6, 1.1];
+export const FAC_UPGRADABLE: ReadonlySet<FacType> = new Set<FacType>(['mine', 'pump', 'smelter', 'works', 'press', 'cells', 'refinery', 'missiles', 'generator']);
 /**
  * The order towers come in: a run starts with tier 0, and blueprints are offered tier by tier, so each new tower adds one
  * step to what the player already runs. 0: ore straight from a mine. 1: power. 2: pipes, or a smelter. 3: a second machine. 4: the long chain.
  */
 export const TOWER_TIER: Record<TowerType, number> = { pulse: 0, cryo: 1, arc: 1, flame: 2, beacon: 2, rail: 2, mortar: 3, lance: 3, gravity: 3, missile: 4 };
-/** The factory buildings a tower's blueprint unlocks with it: everything its supply chain needs. */
+/** The factory buildings a tower's blueprint unlocks with it: everything its supply chain needs. From tier 2 on that includes the Belt Splitter. */
 export const TOWER_CHAIN: Record<TowerType, FacType[]> = {
   pulse: ['mine', 'belt'],
   cryo: ['generator', 'pole'],
   arc: ['generator', 'pole'],
-  beacon: ['generator', 'pole'],
-  flame: ['generator', 'pole', 'pump', 'pipe'],
-  rail: ['generator', 'pole', 'smelter', 'works'],
-  mortar: ['generator', 'pole', 'smelter', 'works', 'press'],
-  lance: ['generator', 'pole', 'smelter', 'works', 'pump', 'pipe', 'cells'],
-  gravity: ['generator', 'pole', 'smelter', 'works', 'pump', 'pipe', 'cells'],
-  missile: ['generator', 'pole', 'smelter', 'works', 'pump', 'pipe', 'refinery', 'missiles'],
+  beacon: ['generator', 'pole', 'splitter'],
+  flame: ['generator', 'pole', 'pump', 'pipe', 'splitter'],
+  rail: ['generator', 'pole', 'smelter', 'works', 'splitter'],
+  mortar: ['generator', 'pole', 'smelter', 'works', 'press', 'splitter'],
+  lance: ['generator', 'pole', 'smelter', 'works', 'pump', 'pipe', 'cells', 'splitter'],
+  gravity: ['generator', 'pole', 'smelter', 'works', 'pump', 'pipe', 'cells', 'splitter'],
+  missile: ['generator', 'pole', 'smelter', 'works', 'pump', 'pipe', 'refinery', 'missiles', 'splitter'],
 };
 /** A tower's supply line in a few words, for its tooltip, its blueprint card and the tutorial. */
 export const TOWER_SUPPLY: Record<TowerType, string> = {
@@ -147,7 +185,7 @@ export const START_MATS = 4;
 /** Credits a run starts with are the map's, times this: the factory has to be paid for too. */
 export const START_GOLD_MUL = 1.5;
 /** Items in a supply crate of each kind. */
-export const CRATE_STOCK: Partial<Record<ItemType, number>> = { iron_ore: 30, copper: 16, shell: 12, cell: 10, missile: 10 };
+export const CRATE_STOCK: Partial<Record<ItemType, number>> = { iron_ore: 45, copper: 20, shell: 16, cell: 12, missile: 24 };
 
 export const LVL_DMG = [1, 1.65, 2.6];
 export const LVL_RANGE = [1, 1.08, 1.16];
@@ -328,8 +366,6 @@ export interface Mods {
   pulseCrit: number; cryoSlow: number; cryoAoe: number; arcSlow: number; mortarAoe: number; railBreak: number;
   /** factory: mine speed, belt speed, crafting speed (smelters, presses, plants, refineries), generator output, extra shots per ammunition item */
   mine: number; belt: number; craft: number; gen: number; ammo: number;
-  /** Underpass: belts and pipes may cross under a road */
-  underpass: number;
   /** tower specials: charge speed, reboot time multiplier, strength */
   specCharge: number; reboot: number; specPow: number;
   /** Firewall Pylons: burn stacks (Sticky Fire), Slag Curtain stacks, extra link reach in tiles */
@@ -340,7 +376,7 @@ export const baseMods = (): Mods => ({
   gold: 1, xp: 1, interest: 0, beacon: 0, cheap: 1,
   tw: Object.fromEntries(TOWER_TYPES.map((t) => [t, { dmg: 1, rate: 1, range: 1 }])) as Mods['tw'],
   pulseCrit: 0, cryoSlow: 0, cryoAoe: 0, arcSlow: 0, mortarAoe: 0, railBreak: 0,
-  mine: 1, belt: 1, craft: 1, gen: 1, ammo: 1, underpass: 0,
+  mine: 1, belt: 1, craft: 1, gen: 1, ammo: 1,
   specCharge: 1, reboot: 1, specPow: 1,
   flameBurn: 0, flameMelt: 0, flameLink: 0, lanceHeat: 0, lanceRamp: 0, missilePods: 0, missileAoe: 0, gravPull: 0, gravVuln: 0,
 });
@@ -422,12 +458,12 @@ export const CARDS: Card[] = [
   { id: 'fab', name: 'Nano Fabricator', desc: 'Towers and upgrades cost 10% less.', rar: 1, kind: 'eco', max: 3, icon: '⬡', apply: (c) => { c.mods.cheap *= 0.9; } },
   // factory
   { id: 'f_drill', name: 'Diamond Drills', desc: 'Mines and pumpjacks work 25% faster.', rar: 0, kind: 'factory', max: 4, icon: '⛏', apply: (c) => { c.mods.mine *= 1.25; } },
-  { id: 'f_belt', name: 'Express Belts', desc: 'Conveyor belts move 30% faster.', rar: 0, kind: 'factory', max: 3, icon: '»', apply: (c) => { c.mods.belt *= 1.3; } },
+  { id: 'f_belt', name: 'Express Belts', desc: 'Conveyor belts, splitters and tunnels move items 40% faster.', rar: 0, kind: 'factory', max: 3, icon: '»', apply: (c) => { c.mods.belt *= 1.4; } },
   { id: 'f_craft', name: 'Assembly Line', desc: 'Smelters, presses, plants and refineries work 20% faster.', rar: 0, kind: 'factory', max: 4, icon: '⚙', apply: (c) => { c.mods.craft *= 1.2; } },
   { id: 'f_gen', name: 'Turbine Upgrade', desc: 'Generators give 30% more power from the same fuel.', rar: 1, kind: 'factory', max: 3, icon: '⚡', apply: (c) => { c.mods.gen *= 1.3; } },
   { id: 'f_ammo', name: 'Dense Packing', desc: 'Every ammunition item lasts 30% longer.', rar: 1, kind: 'factory', max: 3, icon: '▤', apply: (c) => { c.mods.ammo *= 1.3; } },
   { id: 'f_stock', name: 'Material Cache', desc: 'Gain 6 building materials right now.', rar: 0, kind: 'factory', max: 99, icon: '▦', apply: (c) => { c.addMats(6); } },
-  { id: 'underpass', name: 'Underpass', desc: 'Belts and pipes can be laid across a road: they run under it.', rar: 1, kind: 'factory', max: 1, icon: '⇵', apply: (c) => { c.mods.underpass = 1; } },
+  { id: 'tunnels', name: 'Tunnels', desc: 'Unlocks Belt Tunnels and Pipe Tunnels: they carry items and fluids up to 4 tiles under roads, towers and buildings.', rar: 1, kind: 'factory', max: 1, icon: '⇵', apply: (c) => { c.facs.add('tunnel'); c.facs.add('ptunnel'); } },
   // economy
   { id: 'salvage', name: 'Salvage Rights', desc: 'Earn 20% more credits from kills.', rar: 0, kind: 'eco', max: 4, icon: '¤', apply: (c) => { c.mods.gold *= 1.2; } },
   { id: 'drop', name: 'Supply Drop', desc: 'Gain 160 credits right now.', rar: 0, kind: 'eco', max: 99, icon: '▣', apply: (c) => { c.addGold(160); } },

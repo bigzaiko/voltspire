@@ -6,6 +6,7 @@ import {
   TWIN_BOLT, PULSE_CRIT, RAIL_CAP, LANCE_FOCUS, BREACH_TIME, BREACH_TIME_BOSS, BREACH_SHARE, coopScale,
   FIRST_WAVE_IN, NEXT_WAVE_IN, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR,
   FACS, FAC_TYPES, ITEM_SHOTS, FUEL_PER_TICK, START_MATS, START_GOLD_MUL, TOWER_TIER, TOWER_CHAIN, CRATE_STOCK,
+  FAC_UPGRADABLE, FAC_UP_COST, TOWER_NEEDS_L3, TOWER_CHAIN_L3, needsOf,
   WHEEL_GUARD, WHEEL_CRAWL, WHEEL_BLEED, WHEEL_DRAG, WHEEL_SINK, WHEEL_REST, WHEEL_SPINUP, WHEEL_PIERCE, WAVE_POOL, gyreCount, GYRE_WAVE,
   BROOD_EVERY, BROOD_FIRST, BROOD_SIZE, BROOD_REACH, MITE_HOLD, MITE_LIFE, JAM_LINGER,
   TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY, TITAN_STRIKE, TITAN_SLOW, TITAN_WALK, TITAN_PACE, TITAN_LEAD, TITAN_GOLD, TITAN_SURVIVAL, TITAN_AGAIN, TITAN_TOUGHER, TITAN_SMASH,
@@ -15,7 +16,8 @@ import { broodCap } from './data.ts';
 import { GameMap, DEFAULT_MAP, diffById } from './map.ts';
 import type { MapDef, Difficulty, PathOut } from './map.ts';
 import { hexDist, neighbor } from './hex.ts';
-import { Factory, makeDeposits, TOWER_STOCK, TANK } from './factory.ts';
+import { Factory, makeDeposits, TOWER_STOCK, TOWER_TANK } from './factory.ts';
+import type { Fac, Diag } from './factory.ts';
 export { LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR, BREACH_TIME, BREACH_TIME_BOSS, TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY };
 /** How far from the end of its road an enemy stops to attack the core (plus 0.6 of its radius). */
 export const CORE_STAND = 1.6;
@@ -53,6 +55,8 @@ export interface Tower {
   /** Supply from the factory: ammunition items waiting, shots left of the item in use, petrol in the tank, power satisfaction 0..1,
    *  and whether it ran dry last step (it then does nothing until it is supplied again). spentMat: materials paid into it. */
   stock: number; ammo: number; tank: number; pwr: number; dry: boolean; spentMat: number;
+  /** Seconds of the wave it has held no ammunition (not saved: a new wave starts it again). */
+  starve: number;
 }
 /** True while a tower does nothing: rebooting, jammed by mites, stunned by the Titan, or out of supply. */
 export const towerOff = (t: Tower) => t.down > 0 || t.jam > 0 || t.stun > 0 || t.dry;
@@ -166,6 +170,8 @@ export interface SimOpts {
   free: boolean;
 }
 
+/** Factory buildings that give back all they cost when taken down. */
+const FULL_REFUND: ReadonlySet<FacType> = new Set<FacType>(['belt', 'splitter', 'tunnel', 'pipe', 'ptunnel', 'pole']);
 /** The levels whose card offer brings a blueprint (as long as one is left). */
 const BP_LEVELS = [2, 4, 6, 8, 10, 13, 16, 19, 22, 25, 28];
 const xpNeed = (lvl: number) => Math.round(12 + lvl * 7 + lvl * lvl * 0.55);
@@ -175,6 +181,9 @@ const W3 = { x: 0, y: 0, z: 0 };
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 /** Most shots one tower can fire in a single step (60 steps a second: up to 240 shots a second). */
 const MAX_SHOTS = 4;
+/** Seconds a tower with nothing loaded counts as waiting on a working supply line (a Missile Works takes 10 s an item, a long
+ *  line some more to fill at the start of a wave) before it counts as dry after all. */
+const WAIT_GRACE = 20;
 /** Lance Overload damage multiplier. */
 const OVERLOAD = 3.5;
 /** Firewall: Inferno heat multiplier and how much wider a hot wall burns; the burn left on whatever crosses, as a share of the pylon's damage per second; a lone pylon's ring as a share of a wall. */
@@ -211,7 +220,7 @@ function newTower(id: number, type: TowerType, cx: number, cz: number, spent: nu
   // a new tower is empty: it fires once a supply crate, a mine or a belt beside it feeds it
   return {
     id, type, cx, cz, x: cellX(cx, cz), z: cellZ(cz), lvl: 1, cd: 0.3, yaw: 0, buff: 0, spent, h: TOWER_H[type], charge: 0, spec: 0, down: 0, heat: 0, tgt: 0, aux: 0, fxT: 0, jam: 0, stun: 0,
-    stock: 0, ammo: 0, tank: 0, pwr: 0, dry: false, spentMat: 0,
+    stock: 0, ammo: 0, tank: 0, pwr: 0, dry: false, spentMat: 0, starve: 0,
   };
 }
 /** An enemy of a type with everything else at rest (spawn() and the co-op replica fill in the rest). */
@@ -283,8 +292,6 @@ export class Sim {
     this.factory = new Factory({
       get grid() { return self.grid; }, get mods() { return self.mods; }, get towers() { return self.towers; }, get events() { return self.events; },
       addMats: (n) => { this.mats += n; },
-      // a belt or pipe may pass under a plain stretch of road at deck level, not under the core's plinth or a ramp
-      roadOk: (cx, cz) => hexDist(cx, cz, this.map.def.core[0], this.map.def.core[1]) > 1 && this.deckLevel(cx, cz),
     }, makeDeposits(this.grid, this.map.def.id + '|' + this.map.def.name));
     this.lives = this.maxLives = Math.max(1, Math.round(this.map.def.lives * this.diff.lives));
     this.endless = this.opts.survival;
@@ -306,8 +313,10 @@ export class Sim {
       this.grid[t.cz * GW + t.cx] = 2;
       this.unlocked.add(t.t);
       const tw = newTower(this.nid++, t.t, t.cx, t.cz, 0);
-      if (TOWERS[t.t].needs.item) tw.stock = TOWER_STOCK; // the map's own towers start fully stocked
-      if (TOWERS[t.t].needs.fluid) tw.tank = TANK;
+      // the map's own towers start fully stocked
+      const n = needsOf(tw);
+      if (n.item) { tw.stock = TOWER_STOCK; tw.ammo = n.shots || ITEM_SHOTS[n.item] || 1; }
+      if (n.fluid) tw.tank = TOWER_TANK;
       this.towers.push(tw);
     }
     if (this.opts.free) for (const f of FAC_TYPES) this.facs.add(f);
@@ -336,12 +345,22 @@ export class Sim {
   }
   /** Half the thickness of a wall of fire (wider while an Inferno runs on it, and with Slag Curtain). */
   wallHalf(w: Wall) { return WALL_HALF * (1 + 0.3 * this.mods.flameMelt) * (w.hot ? INFERNO_WIDE : 1); }
-  towerDmg(t: Tower) { return TOWERS[t.type].dmg * TUNE.tdmg * LVL_DMG[t.lvl - 1] * this.mods.tDmg * this.mods.tw[t.type].dmg * (1 + t.buff); }
+  towerDmg(t: Tower) { return TOWERS[t.type].dmg * TUNE.tdmg * LVL_DMG[t.lvl - 1] * this.mods.tDmg * this.mods.tw[t.type].dmg * (1 + t.buff) * this.supplyDmg(t); }
+  /** Damage multiplier of a better ammunition (a Pulse Mk3's plasma shells, a Firewall Mk3's petrol). Not in free runs, which have no supply. */
+  supplyDmg(t: Tower) { return this.opts.free ? 1 : needsOf(t).dmg || 1; }
   towerRate(t: Tower) { return TOWERS[t.type].rate * LVL_RATE[t.lvl - 1] * this.mods.tRate * this.mods.tw[t.type].rate * (1 + t.buff * 0.6) * this.powerMul(t); }
   /** True if the tower's special can be fired right now. */
   specialReady(t: Tower) { return !!TOWERS[t.type].special && t.charge >= 1 && !towerOff(t) && t.spec <= 0; }
   /** True from the Titan's leap until it is destroyed: nothing else spawns and no wave can be called. */
   get titanBusy() { return this.titan.phase === 'landing' || this.titan.phase === 'walk'; }
+  /**
+   * True between waves: the last wave is cleared (its bonus paid), no enemies on the field but stray mites, nothing left to
+   * spawn, the Titan not landing or walking, the game not over. Time stands still for the defence then: the factory, the towers, their specials' charge and their reboots
+   * do not run (the wave timer and Sim.time do), so nothing is made while the player plans. diag() says what will be supplied.
+   */
+  get planning() { return this.cleared && !this.over && !this.queue.length && !this.titanBusy && !this.enemies.some((e) => e.type !== 'mite'); }
+  /** The factory's supply diagnosis (see Factory.diagnose): 'f' + fac id and 't' + tower id. Empty in free runs. */
+  diag(): Map<string, Diag> { return this.opts.free ? new Map() : this.factory.diagnose(); }
   /** The Titan's health when it lands: sized by the enemy health of its wave, the difficulty and the number of players. Towers only hurt it at TUNE.titanTower, their specials at full strength. */
   titanHp() {
     return TUNE.titan * waveHpMul(this.titan.wave) * Math.sqrt(this.diff.hp) * this.mapMul * (1 + 0.75 * (this.players.length - 1)) * Math.pow(TITAN_TOUGHER, this.titanN);
@@ -371,6 +390,12 @@ export class Sim {
     const c = this.upCost(t), mt = this.upMat(t);
     if (this.gold < c || this.mats < mt) return false;
     this.gold -= c; this.mats -= mt; t.spent += c; t.spentMat += mt; t.lvl++;
+    if (t.lvl === 3 && TOWER_NEEDS_L3[t.type]) {
+      // a new ammunition from level 3 on: the old one is dropped, and the building that makes the new one is unlocked with it
+      t.stock = 0; t.ammo = 0; t.tank = 0;
+      for (const f of TOWER_CHAIN_L3[t.type] || []) this.facs.add(f);
+    }
+    this.factory.dirty = true; // (what it takes off the belts can change with its level)
     this.recomputeBuffs();
     this.events.push({ k: 'build', x: t.x, z: t.z, c: TOWERS[t.type].color });
     return true;
@@ -407,16 +432,6 @@ export class Sim {
     this.wallTw = this.walls.map((w) => [this.towerById(w.a)!, this.towerById(w.b)!]);
   }
   // ---------- the factory ----------
-  /** True if every road that passes over this tile is at deck level there (no ramp, no bridge). */
-  private deckLevel(cx: number, cz: number): boolean {
-    const x = cellX(cx, cz), z = cellZ(cz);
-    for (const L of this.map.lanes) for (let i = 1; i < L.pts.length; i++) {
-      if (L.ys[i] <= 0 && L.ys[i - 1] <= 0) continue;
-      const a = L.pts[i - 1], b = L.pts[i];
-      if (segDist(x, z, a[0], a[1], b[0], b[1]) < 1.6) return false;
-    }
-    return true;
-  }
   /**
    * Supply crates: every run starts with a few crates of ammunition beside the roads, so the first towers can fire before
    * any mine runs. Each road gets a crate of iron ore (the Pulse Turret's ammunition) on a free tile beside it with room
@@ -475,7 +490,7 @@ export class Sim {
     this.events.push({ k: 'build', x: f.x, z: f.z, c: FACS[type].color, fac: 1 });
     return f;
   }
-  /** Take a factory building down. Belts, pipes and poles give back all they cost (they are moved around a lot), the rest 60%. Items in it are lost. */
+  /** Take a factory building down. Logistics (belts, splitters, tunnels, pipes, poles) give back all they cost (they are moved around a lot), the rest 60%. Items in it are lost. */
   sellFac(id: number) {
     if (this.over) return false;
     const f = this.factory.facById(id);
@@ -485,41 +500,65 @@ export class Sim {
     this.events.push({ k: 'sell', x: f.x, z: f.z, fac: 1 });
     return true;
   }
-  facSellValue(id: number) { const f = this.factory.facById(id); return !f ? 0 : f.type === 'belt' || f.type === 'pipe' || f.type === 'pole' ? f.spent : Math.round(f.spent * 0.6); }
+  facSellValue(id: number) { const f = this.factory.facById(id); return !f ? 0 : FULL_REFUND.has(f.type) ? f.spent : Math.round(f.spent * 0.6); }
+  /** Credits the next level of a factory building costs (FAC_UP_COST of its price), or 0 when it is at the top or has no levels. */
+  facUpCost(f: Fac) { return FAC_UPGRADABLE.has(f.type) && f.lvl < 3 ? Math.round(FACS[f.type].cost * FAC_UP_COST[f.lvl - 1] * this.mods.cheap) : 0; }
+  /** Upgrade a mine, pumpjack, plant or generator one level (it works FAC_LVL_SPEED faster). */
+  upgradeFac(id: number) {
+    const f = this.factory.facById(id);
+    if (!f || this.over) return false;
+    const c = this.facUpCost(f);
+    if (!c || this.gold < c) return false;
+    this.gold -= c; f.spent += c; f.lvl++;
+    this.events.push({ k: 'build', x: f.x, z: f.z, c: FACS[f.type].color, fac: 1 });
+    return true;
+  }
   rotateFac(id: number, dir: number) { this.factory.rotate(id, dir); }
 
   // ---------- tower supply ----------
   /** True if a tower has what it needs to fire right now (power, petrol, and ammunition loaded or in stock). */
   supplied(t: Tower): boolean {
     if (this.opts.free) return true;
-    const n = TOWERS[t.type].needs;
+    const n = needsOf(t);
     if (n.power && t.pwr < 0.05) return false;
     if (n.item && t.ammo <= 0 && t.stock <= 0) return false;
     if (n.fluid && t.tank < FUEL_PER_TICK) return false;
     return true;
   }
+  /**
+   * Between two items of a supply line that works (a slow Missile Works, a belt shared by a row of towers) a tower holds
+   * nothing, but it is not cut off: it fires as fast as it is fed. It must not count as dry, or a production-limited tower
+   * would flash "out of supply" with every item and its special would hardly ever charge.
+   */
+  private waiting(t: Tower): boolean {
+    const n = needsOf(t);
+    if (!n.item || t.ammo > 0 || t.stock > 0 || (n.power && t.pwr < 0.05) || (n.fluid && t.tank < FUEL_PER_TICK)) return false;
+    // the diagnosis only says the item can reach it: a tower that has had nothing for a long while (its line is jammed, or the
+    // towers before it on the belt take everything) is dry all the same
+    return t.starve < WAIT_GRACE && !!this.diag().get('t' + t.id)?.ok;
+  }
   /** Spend one shot of a tower's ammunition. False (and nothing spent) when it has none left. */
   private useAmmo(t: Tower, n = 1): boolean {
     if (this.opts.free) return true;
-    const it = TOWERS[t.type].needs.item;
+    const nd = needsOf(t), it = nd.item;
     if (!it) return true;
     if (t.ammo < n) {
       if (t.stock <= 0) return false;
-      t.stock--; t.ammo += (ITEM_SHOTS[it] || 1) * this.mods.ammo;
+      t.stock--; t.ammo += (nd.shots || ITEM_SHOTS[it] || 1) * this.mods.ammo;
     }
     t.ammo = Math.max(0, t.ammo - n);
     return true;
   }
   /** Burn crude oil for `ticks` ticks of a Firewall Pylon's fire. False when the tank is dry. */
   private useFuel(t: Tower, ticks: number): boolean {
-    if (this.opts.free || !TOWERS[t.type].needs.fluid) return true;
+    if (this.opts.free || !needsOf(t).fluid) return true;
     const need = FUEL_PER_TICK * ticks;
     if (t.tank < need) return false;
     t.tank -= need;
     return true;
   }
   /** Fire rate scale from a part-supplied power grid. */
-  private powerMul(t: Tower) { return this.opts.free || !TOWERS[t.type].needs.power ? 1 : Math.max(0.05, Math.min(1, t.pwr)); }
+  private powerMul(t: Tower) { return this.opts.free || !needsOf(t).power ? 1 : Math.max(0.05, Math.min(1, t.pwr)); }
 
   // ---------- waves ----------
   /** Generate wave w one wave ahead, so the HUD can show what is coming and where. */
@@ -594,6 +633,7 @@ export class Sim {
     if (!this.next) return;
     this.gold += this.callBonus(); // early-call bonus
     this.wave++;
+    if (!this.waveActive) for (const t of this.towers) t.starve = 0; // (the factory starts again: it gets the whole grace to deliver)
     this.waveActive = true; this.cleared = false; this.nextWaveIn = NEXT_WAVE_IN; this.waveT0 = this.time;
     const w = this.wave, mul = waveHpMul(w);
     for (const q of this.next.items) {
@@ -815,7 +855,7 @@ export class Sim {
   private cardOk(_pi: number, c: Card) {
     const stack = this.stacks[c.id] || 0;
     if (c.kind === 'blueprint') return this.bpOpen().includes(c.id.slice(3) as TowerType);
-    if (c.id === 'underpass' && this.level < 3) return false; // (not before there is a factory to connect)
+    if (c.id === 'tunnels' && this.level < 3) return false; // (not before there is a factory to connect)
     return stack < c.max && (!c.needs || this.unlocked.has(c.needs));
   }
   /**
@@ -1108,11 +1148,15 @@ export class Sim {
       w.on = !towerOff(tw[0]) && !towerOff(tw[1]); w.hot = w.on && (tw[0].spec > 0 || tw[1].spec > 0);
     }
 
-    // the factory runs, then the towers fire on what it delivered
-    this.factory.step(dt);
-    for (const t of this.towers) this.stepTower(t, dt);
+    // the factory runs, then the towers fire on what it delivered; between waves time stands still for both
+    // (the networks are still worked out, so the view and diag() see a new layout at once)
+    if (this.planning) this.factory.sync();
+    else {
+      this.factory.step(dt);
+      for (const t of this.towers) this.stepTower(t, dt);
+    }
 
-    // projectiles
+    // projectiles (the last shots of a wave still fly out)
     for (const p of this.projs) this.stepProj(p, dt);
     if (this.projs.length) this.projs = this.projs.filter((p) => p.life > 0);
     this.enemies = this.enemies.filter((e) => e.alive);
@@ -1198,7 +1242,8 @@ export class Sim {
     }
     if (t.stun > 0 || t.jam > 0) return; // stunned or jammed: idle, and the special neither runs nor charges
     // out of supply (no power, no petrol, no ammunition): idle until the factory delivers, and the special does not charge
-    const dry = !this.supplied(t);
+    t.starve = t.ammo > 0 || t.stock > 0 ? 0 : t.starve + dt;
+    const dry = !this.supplied(t) && !this.waiting(t);
     if (dry !== t.dry) {
       t.dry = dry;
       this.events.push({ k: dry ? 'dry' : 'fed', id: t.id, t: t.type, x: t.x, z: t.z });
