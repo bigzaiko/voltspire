@@ -32,7 +32,7 @@
         <div class="stat"><label>Wave</label><b id="wave">0</b><small id="wave-sub"></small></div>
         <div class="stat core"><label>Core</label><b id="lives">20</b></div>
         <div class="stat"><label>Credits</label><b id="gold">0</b></div>
-        <div class="stat" title="Building materials: Frames delivered to a Depot"><label>Materials</label><b id="mats">0</b></div>
+        <div class="stat" title="Building materials from a Frame Works: the stronger towers cost them"><label>Materials</label><b id="mats">0</b></div>
         <div class="stat wide"><label>Level <span id="level">1</span></label><div class="bar"><i id="xpbar"></i></div></div>
         <div class="stat power" title="Power drawn / available on all grids"><label>Power</label><b id="power" class="sm">0 / 0</b></div>
         <div class="stat next" id="next"><label id="next-label">Next wave</label><div id="next-row"></div></div>
@@ -51,6 +51,7 @@
         <div id="build" role="toolbar" aria-label="Build a tower"></div>
         <div id="fbuild" class="hidden" role="toolbar" aria-label="Build the factory"></div>
       </div>
+      <button id="btn-auto" class="chip" type="button" title="Start the next wave automatically after a pause" aria-pressed="false">Auto waves: off</button>
       <button id="btn-wave" class="btn small" type="button"><span id="wave-label">Call wave</span><small id="wave-timer"></small></button>
     </div>
 
@@ -76,9 +77,8 @@
       <h3 id="f-name"></h3>
       <p id="f-state"></p>
       <div id="f-stats"></div>
-      <div id="f-recipes" class="hidden"></div>
       <div id="t-btns2">
-        <button id="f-turn" class="btn small ghost hidden" type="button">Turn (R)</button>
+        <button id="f-turn" class="btn small ghost hidden" type="button">Turn belt (R)</button>
         <button id="f-sell" class="btn small ghost" type="button"></button>
       </div>
       <p id="f-desc" class="muted small"></p>
@@ -102,7 +102,17 @@
     <div id="intel"></div>
     <div id="hints"></div>
     <div id="announce"></div>
-    <div id="prep" class="hidden"><span class="kicker">Before wave 1</span><b>Build towers and a factory, then call the first wave</b><small id="prep-sub"></small></div>
+    <div id="prep" class="hidden"><span class="kicker">Before wave 1</span><b>Build first. The wave waits for your call.</b><small id="prep-sub"></small></div>
+    <!-- the guided first run: one step at a time, each ticked off by doing it -->
+    <div id="guide" class="hidden" aria-live="polite">
+      <span class="kicker" id="guide-step">Tutorial</span>
+      <b id="guide-title"></b>
+      <p id="guide-text"></p>
+      <div class="guide-btns">
+        <button id="guide-next" class="btn small hidden" type="button">Got it</button>
+        <button id="guide-skip" class="btn small ghost" type="button">Skip tutorial</button>
+      </div>
+    </div>
     <div id="tutor" class="hidden"><span class="kicker">Tip</span><b id="tutor-text"></b></div>
     <div id="toasts"></div>
     <div id="dmg"></div>
@@ -248,18 +258,19 @@
       </header>
       <div class="help-grid">
         <div class="panel"><h3>Command view</h3>
-          <p class="kbd-only">Pick a tower or a factory building from the bar (<kbd>1</kbd> to <kbd>9</kbd>, <kbd>0</kbd>; <kbd>F</kbd> switches between Towers and Factory), then click a free hex to build. <kbd>Shift</kbd> keeps building.</p>
+          <p class="kbd-only">Pick a tower or a factory building from the bar (number keys; <kbd>F</kbd> switches between Towers and Factory), then click a free hex to build. <kbd>Shift</kbd> keeps building.</p>
           <p class="kbd-only">Click something you built to upgrade (<kbd>U</kbd>) or sell (<kbd>X</kbd>) it. The tags over the spawn gates show what the next wave sends down each road.</p>
           <p class="kbd-only"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or right-drag to pan, wheel to zoom. <kbd>Q</kbd> <kbd>E</kbd> or middle-drag turns the view, <kbd>Home</kbd> resets it.</p>
-          <p class="kbd-only"><kbd>N</kbd> calls the next wave early for bonus credits. <kbd>G</kbd> switches the game speed, <kbd>P</kbd> or <kbd>Esc</kbd> pauses. <kbd>F3</kbd> shows frame diagnostics.</p>
+          <p class="kbd-only"><kbd>N</kbd> calls the next wave: waves only come when you call them, unless you switch Auto waves on. <kbd>G</kbd> switches the game speed, <kbd>P</kbd> or <kbd>Esc</kbd> pauses.</p>
           <p class="tap-only lead">Tap a building in the bar, then tap a hex. Hold and drag to move the preview first (a belt follows your finger). Tap something on the board to upgrade or sell it.</p>
-          <p class="tap-only">Drag with one finger to pan. Two fingers either pinch to zoom or twist to turn the view. The tags over the spawn gates show what the next wave sends down each road.</p>
+          <p class="tap-only">Drag with one finger to pan. Two fingers either pinch to zoom or twist to turn the view. Waves only come when you tap Call wave, unless you switch Auto waves on.</p>
+          <button class="btn small ghost" id="h-tutorial" type="button">Replay the tutorial</button>
         </div>
-        <div class="panel"><h3>The factory</h3>
-          <p>Towers do not fire for free. Pulse Turrets need ammo boxes, Firewall Pylons need petrol, Cryo Emitters, Arc Pylons and Beacons need power. The stronger towers need two things: shells, slugs, energy cells or missiles, and power.</p>
-          <p>Build Mines on iron, copper and coal deposits. A Smelter next to the ore and some coal makes plates. A Fabricator (it needs power) turns plates into the item you pick: Frames, ammo, shells, slugs, cells or missiles. Pumpjacks on oil fields and a Refinery give petrol through pipes.</p>
-          <p>Buildings hand their output to a neighbour that takes it, or to the belt at their arrow side (<span class="kbd-only"><kbd>R</kbd> turns it before you place it</span><span class="tap-only">Turn changes it</span>). A belt that only runs past is left alone. <span class="kbd-only">Drag to lay a line of belts; <kbd>R</kbd> turns the belt you are placing.</span><span class="tap-only">Hold and drag to lay belts; Turn changes their direction.</span> A belt that points into a building or a tower delivers to it.</p>
-          <p>A Generator burns coal (or petrol) for power. Power Poles carry it up to 5 tiles to the next pole, also across roads, and power everything within 2 tiles. Frames delivered to a Depot become building materials: towers and their upgrades cost them on top of credits.</p>
+        <div class="panel"><h3>Supplying towers</h3>
+          <p>A tower fires only what it is fed. It starts empty. Supply crates on the deck feed any tower built right next to them, but a crate runs out: every tower needs a supply line of its own in the end.</p>
+          <p>The Pulse Turret runs on iron ore: build a Mine on an iron deposit, right next to the turret or with a belt between them. <span class="kbd-only">Drag to lay a line of belts; <kbd>R</kbd> turns the belt you are placing.</span><span class="tap-only">Hold and drag to lay belts; Turn changes their direction.</span></p>
+          <p>Nothing needs pointing: a building hands what it makes to a neighbour that needs it, or to a belt beside it when something further down that belt needs it. Towers and buildings take what they need from a belt that points at them or runs past them, so one belt can feed a whole row of towers.</p>
+          <p>Each blueprint card unlocks a tower together with the buildings its supply needs, one step at a time: a Generator for power, a Pumpjack and pipes for oil, a Smelter for plates, then presses and plants. A tower's panel says what it is missing. The Underpass card lets belts and pipes cross under a road.</p>
         </div>
         <div class="panel"><h3>Cards, specials and the machines</h3>
           <p>Every level you pick one of three cards: tower blueprints, tower upgrades, factory upgrades or economy.</p>

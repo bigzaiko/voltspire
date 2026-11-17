@@ -1,13 +1,13 @@
 // BEATSPIRE - game controller: input, HUD, menus, saved progress, multiplayer glue.
 // The fonts, style.css, editor.css, touch.css and music.css are linked from play.html, so the page never shows unstyled.
 import * as THREE from 'three';
-import { GW, GH, TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, CARD_BY_ID, RARITY, SQUADS, worldToCell, FACS, FAC_TYPES, ITEMS, FLUIDS, ORES, RECIPES, RECIPE_BY_ID } from './game/data.ts';
+import { GW, GH, TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, CARD_BY_ID, RARITY, SQUADS, worldToCell, cellX, cellZ, FACS, FAC_TYPES, ITEMS, FLUIDS, ORES, MAKES, TOWER_SUPPLY, TOWER_CHAIN } from './game/data.ts';
 import type { TowerType, EnemyType, FacType, ItemType } from './game/data.ts';
 import { Sim, TITAN_STUN } from './game/sim.ts';
 import type { Ev, Mode, Tower } from './game/sim.ts';
-import { TOWER_STOCK, TANK, SUPPLY, POLE_REACH, OUT_CAP, turns } from './game/factory.ts';
+import { TOWER_STOCK, TANK, SUPPLY, POLE_REACH, OUT_CAP } from './game/factory.ts';
 import type { Fac } from './game/factory.ts';
-import { neighbor, lineDir } from './game/hex.ts';
+import { neighbor, lineDir, hexDist } from './game/hex.ts';
 import { Bot } from './game/bot.ts';
 import { View } from './game/render.ts';
 import { Sound, TRACKS } from './game/audio.ts';
@@ -57,13 +57,13 @@ type FxColor = 'auto' | 'sand' | 'apricot' | 'verdigris' | 'custom';
 interface Rec { wave: number; wins: number; time: number; surv: number }
 interface Store {
   v: 2;
-  settings: { vol: number; mus: number; q: 'high' | 'low' };
+  settings: { vol: number; mus: number; q: 'high' | 'low'; auto: boolean };
   fx: { impact: boolean; beat: boolean; borders: boolean; env: boolean; towers: boolean; intensity: number; color: FxColor; custom: string };
   /** filter: which layouts the map picker shows (0 all, 1 to 3 one tier) */
   setup: { survival: boolean; source: 'premade' | 'generated'; map: string; mapName: string; seed: number; tier: number; tierAuto: boolean; diff: string; filter: number };
   /** per map and difficulty, keyed "<map id>|<difficulty id>" */
   records: Record<string, Rec>;
-  tips: { node: boolean; boss: boolean; mite: boolean; titan: boolean; factory: boolean; dry: boolean };
+  tips: { node: boolean; boss: boolean; mite: boolean; titan: boolean; factory: boolean; dry: boolean; tutorial: boolean };
 }
 const REC_KEY = /^[A-Za-z0-9 _.:\-]{1,64}\|(easy|normal|hard)$/;
 const MAX_RECORDS = 300;
@@ -100,7 +100,7 @@ function readStore(raw: unknown): Store {
   const colors: FxColor[] = ['auto', 'sand', 'apricot', 'verdigris', 'custom'];
   const store: Store = {
     v: 2,
-    settings: { vol: int(s.vol, 0, 100, 70), mus: int(s.mus, 0, 100, 50), q: s.q === 'low' ? 'low' : 'high' },
+    settings: { vol: int(s.vol, 0, 100, 70), mus: int(s.mus, 0, 100, 50), q: s.q === 'low' ? 'low' : 'high', auto: bool(s.auto, false) },
     fx: {
       impact: bool(f.impact, true), beat: bool(f.beat, true), borders: bool(f.borders, true), env: bool(f.env, false), towers: bool(f.towers, false),
       intensity: int(f.intensity, 0, 100, 30), color: colors.find((c) => c === f.color) || 'auto',
@@ -113,7 +113,7 @@ function readStore(raw: unknown): Store {
       diff: diffById(old ? old.diff : u.diff).id, filter: int(u.filter, 0, 3, 0),
     },
     records: {},
-    tips: { node: bool(t.node, false), boss: bool(t.boss, false), mite: bool(t.mite, false), titan: bool(t.titan, false), factory: bool(t.factory, false), dry: bool(t.dry, false) },
+    tips: { node: bool(t.node, false), boss: bool(t.boss, false), mite: bool(t.mite, false), titan: bool(t.titan, false), factory: bool(t.factory, false), dry: bool(t.dry, false), tutorial: bool(t.tutorial, false) },
   };
   let n = 0;
   for (const [k, v] of Object.entries(o(r.records))) {
@@ -231,7 +231,6 @@ const act = {
   fac(type: FacType, cx: number, cz: number, dir: number) { return sim.buildFac(type, cx, cz, dir); },
   sellFac(id: number) { return sim.sellFac(id); },
   turnFac(id: number, dir: number) { sim.rotateFac(id, dir); },
-  recipe(id: number, r: string) { sim.setRecipe(id, r); },
 };
 
 // ---------- HUD helpers ----------
@@ -309,7 +308,7 @@ function enemyChips(box: HTMLElement, list: Group[]) {
 /** What a tower runs on, in words. */
 function needsText(t: TowerType): string {
   const n = TOWERS[t].needs, parts: string[] = [];
-  if (n.item) parts.push(ITEMS[n.item].name.toLowerCase() + 's'.repeat(n.item === 'ammo' || n.item === 'cell' ? 1 : 0));
+  if (n.item) parts.push(n.item === 'iron_ore' ? 'iron ore' : ITEMS[n.item].short + 's');
   if (n.fluid) parts.push(FLUIDS[n.fluid].name.toLowerCase());
   if (n.power) parts.push(`${n.power} power`);
   return parts.join(' and ');
@@ -319,7 +318,8 @@ function towerTip(t: TowerType) {
   tip.textContent = '';
   const stats = d.dmg > 0 ? ` Damage ${d.dmg}, ${d.rate} per second, range ${d.range}.` : d.range > 0 ? ` Range ${d.range}.` : '';
   tip.append(el('b', '', d.name), el('span', '', d.desc + stats));
-  tip.append(el('i', 'needs', `Runs on ${needsText(t)}. Costs ${sim.cost(t)} credits and ${sim.matCost(t)} materials.`));
+  tip.append(el('i', 'needs', `Runs on ${needsText(t)}. ${TOWER_SUPPLY[t]}`));
+  tip.append(el('i', '', sim.matCost(t) ? `Costs ${sim.cost(t)} credits and ${sim.matCost(t)} materials (from a Frame Works).` : `Costs ${sim.cost(t)} credits.`));
   if (d.special) tip.append(el('i', '', `Special: ${d.special.name}. ${d.special.desc}`));
   if (!sim.unlocked.has(t)) tip.append(el('i', 'lock', 'Locked. Find its blueprint card to build it.'));
   show('tip');
@@ -353,8 +353,8 @@ for (const t of FAC_TYPES) {
   const b = el('button', 'tw fac') as HTMLButtonElement;
   b.type = 'button';
   b.style.setProperty('--c', hex(d.color));
-  b.setAttribute('aria-label', `${d.name}, key ${d.key.toUpperCase()}`);
-  b.append(el('kbd', '', d.key), el('div', 'ico'), el('div', 'nm', d.name), el('div', 'cost'));
+  b.setAttribute('aria-label', d.name);
+  b.append(el('kbd', '', ''), el('div', 'ico'), el('div', 'nm', d.name), el('div', 'cost'));
   b.addEventListener('click', () => { sound.init(); pickFac(t); });
   b.addEventListener('pointermove', (e) => { if (e.pointerType !== 'touch' && (e.movementX || e.movementY)) tipHover = t; });
   b.addEventListener('pointerleave', () => { if (tipHover === t) tipHover = null; });
@@ -369,14 +369,17 @@ function setTab(tab: 'towers' | 'factory') {
 }
 $('tab-towers').addEventListener('click', () => { sound.init(); sound.play('click'); setTab('towers'); });
 $('tab-factory').addEventListener('click', () => { sound.init(); sound.play('click'); setTab('factory'); });
+/** The factory buildings on the bar right now (the unlocked ones), in bar order: the number keys pick them by place. */
+const facList = () => FAC_TYPES.filter((t) => sim.facs.has(t));
 function pickFac(t: FacType | null) {
+  if (t && !sim.facs.has(t)) { sound.play('error'); return; }
   buildFac = buildFac === t ? null : t;
   buildType = null; selected = 0; selFac = 0;
   sound.play('click');
   view.setGhost(null);
   if (!buildFac) view.setFacGhost(null);
   refreshGhost();
-  if ((buildFac === 'belt' || buildFac === 'pipe') && !bot && !store.tips.factory) { store.tips.factory = true; save(); tutor(touchUi() ? 'Hold and drag to lay a line of belts. Turn changes their direction.' : 'Drag to lay a line of belts. R turns the next one.'); }
+  if ((buildFac === 'belt' || buildFac === 'pipe') && !bot && !store.tips.factory && !guideOn()) { store.tips.factory = true; save(); tutor(touchUi() ? 'Hold and drag to lay a line of belts. Turn changes their direction.' : 'Drag to lay a line of belts. R turns the next one.'); }
 }
 function pickBuild(t: TowerType | null) {
   if (t && !sim.unlocked.has(t)) { sound.play('error'); note(TOWERS[t].name + ' is locked. Find its blueprint card first.'); return; }
@@ -512,7 +515,7 @@ function handleEvents(evs: Ev[]) {
         playAt('down', e);
         const t = typeof e.t === 'string' && Object.hasOwn(TOWERS, e.t) ? e.t as TowerType : null;
         if (t) note(`${TOWERS[t].name} is out of supply: it needs ${needsText(t)}.`);
-        if (t && !store.tips.dry) { store.tips.dry = true; save(); tutor('Towers need supply from your factory. Click one to see what it runs on.'); }
+        if (t && !store.tips.dry && !guideOn()) { store.tips.dry = true; save(); tutor('A tower fires only what it is fed. Click it to see what it runs on.'); }
         break;
       }
       case 'fed': playAt('up', e); break;
@@ -540,7 +543,17 @@ function handleEvents(evs: Ev[]) {
         break;
       case 'clear': sound.play('clear'); toast(`Wave ${e.n} cleared, +${e.g} credits`); break;
       case 'levelup': sound.play('levelup'); break;
-      case 'card': if (e.p !== me && typeof e.id === 'string' && Object.hasOwn(CARD_BY_ID, e.id)) toast('Partner took ' + CARD_BY_ID[e.id].name); break;
+      case 'card': {
+        if (typeof e.id !== 'string' || !Object.hasOwn(CARD_BY_ID, e.id)) break;
+        if (e.p !== me) { toast('Partner took ' + CARD_BY_ID[e.id].name); break; }
+        // a blueprint: say what the new tower runs on and which buildings came with it
+        const t = e.id.startsWith('bp_') ? (e.id.slice(3) as TowerType) : null;
+        if (t && Object.hasOwn(TOWERS, t) && !bot) {
+          tutor(`${TOWERS[t].name}: ${TOWER_SUPPLY[t]}`);
+          toast(`Unlocked: ${TOWERS[t].name}. Factory: ${TOWER_CHAIN[t].map((f) => FACS[f].name).join(', ')}.`);
+        }
+        break;
+      }
       case 'leak': { sound.play('leak'); coreHurt(); break; }
       case 'breach': playAt('breach', e); break;
       case 'nospec': break; // (act.special says so)
@@ -589,7 +602,8 @@ function fastForward(seconds: number) {
   for (let i = 0; i < seconds * 60 && !sim.over; i++) { bot?.step(STEP); sim.step(STEP); sim.events.length = 0; }
 }
 function resetUi() {
-  for (const id of ['cards', 'menu', 'lobby', 'help', 'settings', 'music', 'pause', 'end', 'tower', 'fpanel', 'vs', 'tip', 'setup', 'editor', 'tutor']) show(id, false);
+  for (const id of ['cards', 'menu', 'lobby', 'help', 'settings', 'music', 'pause', 'end', 'tower', 'fpanel', 'vs', 'tip', 'setup', 'editor', 'tutor', 'guide']) show(id, false);
+  guide.on = false;
   clearTimeout(endTimer); clearTimeout(tutorTimer);
   for (const id of ['prep', 'p-editor', 'e-editor']) show(id, false);
   $('toasts').textContent = ''; $('notes').textContent = '';
@@ -645,6 +659,8 @@ function startGame(m: Mode, opts: { client?: boolean; seed?: number; demo?: bool
     // the scripted demo is played by the bot, which builds no factory
     free: !!opts.demo,
   });
+  // the player calls the waves: the first one always, the later ones unless Auto waves is switched on
+  if (!opts.demo) { sim.holdFirst = true; sim.autoWaves = m !== 'solo' || settings.auto; }
   sim.replica = isClient;
   bot = opts.demo ? new Bot(sim, 0, 1.5) : null;
   view.setSim(sim, me); view.orbit = false;
@@ -661,12 +677,10 @@ function startGame(m: Mode, opts: { client?: boolean; seed?: number; demo?: bool
   if (!opts.demo) {
     announce('Defend the Heart', m === 'coop' ? 'Co-op link is up' : m === 'versus' ? 'Outlast your rival'
       : `${sim.map.def.name} / ${sim.endless ? 'Survival' : `${sim.diff.name}, ${sim.winWave} waves`}`);
-    setTimeout(() => {
-      if (sim.wave === 0 && mode === m && !ended) toast(touchUi() ? 'Build towers beside the road, and a factory to keep them supplied.' : 'Build towers beside the road (1 to 0), and a factory to keep them supplied (F switches the bar).');
+    if (m === 'solo' && !editorRun && !store.tips.tutorial) startGuide();
+    else setTimeout(() => {
+      if (sim.wave === 0 && mode === m && !ended) toast('Towers start empty. Build one next to a supply crate, or feed it from a Mine.');
     }, 1500);
-    setTimeout(() => {
-      if (sim.wave === 0 && mode === m && !ended) toast('Mines go on the coloured deposits: iron is blue-grey, copper orange, coal black, oil violet.');
-    }, 6000);
   }
 }
 /** Update the saved record of the run that just ended. Returns what to show on the end screen. */
@@ -1079,6 +1093,8 @@ click('t-sell', () => { if (selected && act.sell(selected)) selected = 0; });
 $('t-special').addEventListener('click', () => { sound.init(); if (selected) act.special(selected); });
 click('f-sell', () => { if (selFac && act.sellFac(selFac)) selFac = 0; });
 click('f-turn', () => turnSelected());
+click('btn-auto', () => { settings.auto = !settings.auto; save(); if (mode === 'solo' && !bot) sim.autoWaves = settings.auto; note(settings.auto ? 'Auto waves on: the next wave starts by itself after a pause.' : 'Auto waves off: waves start when you call them.'); });
+click('h-tutorial', () => { store.tips.tutorial = false; save(); show('help', false); if (helpFrom === 'pause') { togglePause(false); if (mode === 'solo' && !bot && !ended) startGuide(); else note('The tutorial starts with your next solo run.'); } else { show(helpFrom); note('The tutorial starts with your next solo run.'); } });
 function togglePause(on = !menuOpen()) {
   if (mode === 'attract' || ended) return;
   paused = on && mode === 'solo';
@@ -1143,7 +1159,7 @@ function resetStep(asking: boolean, text = RESET_IDLE) {
 click('s-reset', () => resetStep(true, 'Delete all records, the last run setup and the tips? Sound and effects settings stay.'));
 click('s-reset-no', () => resetStep(false));
 click('s-reset-yes', () => {
-  store.records = {}; store.tips = { node: false, boss: false, mite: false, titan: false, factory: false, dry: false }; store.setup = defaultSetup();
+  store.records = {}; store.tips = { node: false, boss: false, mite: false, titan: false, factory: false, dry: false, tutorial: false }; store.setup = defaultSetup();
   save();
   // a run in progress keeps its own choice; the defaults are loaded when it goes back to the menu
   if (mode === 'attract') loadSetup(); else setupStale = true;
@@ -1313,33 +1329,35 @@ function placeFac(cx: number, cz: number, quiet = false): Fac | null {
  */
 function paintTo(cx: number, cz: number) {
   if (!buildFac || !inBoard(cx, cz)) return;
-  const prev = paintAt.cx >= 0 ? sim.factory.facAt(paintAt.cx, paintAt.cz) : undefined;
-  // the cursor may skip tiles on a fast drag: fill in along a straight hex line where there is one, else step by step
-  let path: [number, number][] = [[cx, cz]];
-  if (paintAt.cx >= 0) {
-    const d = lineDir(paintAt.cx, paintAt.cz, cx, cz);
-    if (d >= 0) { path = []; let c: [number, number] = [paintAt.cx, paintAt.cz]; for (let i = 0; i < 40 && (c[0] !== cx || c[1] !== cz); i++) { c = neighbor(c[0], c[1], d); path.push(c); } }
+  // the cursor may skip tiles on a fast drag: walk from the last tile to this one a neighbour at a time (along the hex line
+  // where there is one, else always to the neighbour nearest the target), so every belt of the line leads into the next
+  const path: [number, number][] = [];
+  if (paintAt.cx < 0) path.push([cx, cz]);
+  else {
+    let c: [number, number] = [paintAt.cx, paintAt.cz];
+    for (let i = 0; i < 60 && (c[0] !== cx || c[1] !== cz); i++) {
+      let best = c, bd = Infinity;
+      for (let d = 0; d < 6; d++) { const n = neighbor(c[0], c[1], d), dd = hexDist(n[0], n[1], cx, cz); if (dd < bd) { bd = dd; best = n; } }
+      c = best; path.push(c);
+    }
   }
-  let last = prev;
   for (const [x, z] of path) {
-    let dir = facDir;
-    if (paintAt.cx >= 0) {
-      const d = lineDir(paintAt.cx, paintAt.cz, x, z);
-      if (d >= 0) dir = d;
+    const prev = paintAt.cx >= 0 ? sim.factory.facAt(paintAt.cx, paintAt.cz) : undefined;
+    const d = paintAt.cx >= 0 ? lineDir(paintAt.cx, paintAt.cz, x, z) : -1;
+    if (buildFac === 'belt' && d >= 0) {
+      facDir = d;
+      if (prev && prev.type === 'belt') act.turnFac(prev.id, d);
     }
-    if (buildFac === 'belt') {
-      facDir = dir;
-      if (last && last.type === 'belt') act.turnFac(last.id, dir);
-    }
-    const f = sim.factory.facAt(x, z) ?? placeFac(x, z, true);
-    paintAt.cx = x; paintAt.cz = z; paintAt.id = f ? f.id : 0;
-    last = f && (f.type === buildFac) ? f : undefined;
+    const there = sim.factory.facAt(x, z);
+    // an existing belt on the way joins the line: it is turned to carry on in the direction of the drag when the next tile comes
+    if (!there) placeFac(x, z, true);
+    paintAt.cx = x; paintAt.cz = z;
   }
 }
-/** R, or the Turn button: the building about to be placed turns (a belt's direction, a producer's output side), or the selected one does. */
+/** R, or the Turn button: the belt about to be placed turns, or the selected belt does. */
 function turnSelected() {
   const f = selFac ? sim.factory.facById(selFac) : undefined;
-  if (f && turns(f.type) && !buildFac) { act.turnFac(f.id, f.dir + 1); sound.play('click'); return; }
+  if (f && f.type === 'belt' && !buildFac) { act.turnFac(f.id, f.dir + 1); sound.play('click'); return; }
   facDir = (facDir + 1) % 6; sound.play('click'); refreshGhost();
 }
 /** A click or tap on the board: build with what is chosen, else select what is there. */
@@ -1398,7 +1416,7 @@ addEventListener('keydown', (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (k === ' ') { e.preventDefault(); if (!e.repeat && selected) act.special(selected); return; }
   if (k === 'f' && !e.repeat) { sound.play('click'); setTab(barTab === 'towers' ? 'factory' : 'towers'); return; }
-  if (barTab === 'factory') { const f = FAC_TYPES.find((x) => FACS[x].key === k); if (f) { pickFac(f); return; } }
+  if (barTab === 'factory') { const f = k >= '0' && k <= '9' && k.length === 1 ? facList()[(+k + 9) % 10] : undefined; if (f) { pickFac(f); return; } }
   else { const t = TOWER_TYPES.find((x) => TOWERS[x].key === k); if (t) { pickBuild(t); return; } }
   if (k === 'r' && !e.repeat) turnSelected();
   else if (k === 'u' && selected) act.upgrade(selected);
@@ -1509,6 +1527,100 @@ function diagFrame(dt: number) {
   $('diag').textContent = diag.text;
 }
 
+// ---------- the guided first run ----------
+// A handful of steps, each ticked off by doing it: a turret beside a crate, the first wave, a mine, a belt, a card, power.
+// Each step can point at tiles on the board. It runs on the first solo run and can be replayed from How to play.
+interface GuideStep { title: string; text: () => string; done: () => boolean; ready?: () => boolean; points?: () => number[][]; ok?: boolean }
+const guide = { on: false, i: 0, t: 0, acked: false };
+const guideOn = () => guide.on;
+const cratesLeft = () => sim.factory.facs.filter((f) => f.type === 'crate' && f.left > 0);
+const oreTiles = (ore: number, max: number) => {
+  // the deposit tiles of one kind, the ones nearest a tower first
+  const out: number[][] = [], F = sim.factory;
+  for (let i = 0; i < GW * GH; i++) if (F.ore[i] === ore && !F.at[i] && sim.grid[i] === 0) out.push([i % GW, Math.floor(i / GW)]);
+  const d = (c: number[]) => Math.min(99, ...sim.towers.map((t) => hexDist(t.cx, t.cz, c[0], c[1])));
+  return out.sort((a, b) => d(a) - d(b)).slice(0, max).map(([cx, cz]) => [cellX(cx, cz), 0.4, cellZ(cz)]);
+};
+const kb = () => !touchUi();
+const GUIDE: GuideStep[] = [
+  {
+    title: 'Build a Pulse Turret beside a crate',
+    text: () => `Towers start empty. The sand-coloured supply crates beside the road hold iron ore, the Pulse Turret's ammunition. ${kb() ? 'Pick the Pulse Turret (key 1)' : 'Tap the Pulse Turret'} and build it on a hex that touches a crate: the crate feeds it.`,
+    done: () => sim.towers.some((t) => t.type === 'pulse' && (t.stock > 0 || t.ammo > 0)),
+    points: () => cratesLeft().map((f) => [f.x, 1.2, f.z]),
+  },
+  {
+    title: 'Call the first wave',
+    text: () => `Waves only come when you call them, so there is always time to build first. ${kb() ? 'Press N or the Call first wave button.' : 'Tap Call first wave.'}`,
+    done: () => sim.wave >= 1,
+  },
+  {
+    title: 'Build a Mine',
+    text: () => `A crate runs out (click it to see what is left). Give the turret a supply of its own: ${kb() ? 'press F for the Factory bar' : 'tap Factory'}, pick the Mine and build it on an iron deposit, the blue-grey tiles with ore chunks.`,
+    done: () => sim.factory.facs.some((f) => f.type === 'mine' && f.ore === 'iron_ore'),
+    points: () => oreTiles(1, 3),
+  },
+  {
+    title: 'Lay a belt to a turret',
+    text: () => `A mine feeds a turret right next to it. For one further away, pick the Belt and ${kb() ? 'drag' : 'hold and drag'} from beside the mine to the turret. A belt feeds every turret it points at or runs past, so one line can supply a whole row.`,
+    done: () => sim.factory.delivered > 0,
+  },
+  {
+    title: 'Pick a card',
+    text: () => 'Kills give experience. Every level you choose one of three cards. A blueprint unlocks a new tower together with the factory buildings its supply needs, one step at a time.',
+    done: () => Object.keys(sim.stacks).length > 0,
+  },
+  {
+    title: 'Power',
+    text: () => `Your new tower runs on power. Build a Mine on coal (the dark tiles with black lumps) and a Generator right next to it. The Generator powers everything within 2 tiles; Power Poles carry it further, also across a road.`,
+    ready: () => sim.facs.has('generator'),
+    done: () => sim.factory.powerNets.some((n) => n.cap > 0),
+    points: () => oreTiles(3, 3),
+  },
+  {
+    title: 'That is the pattern',
+    text: () => 'Every later tower adds one more step: pipes for oil, a Smelter for plates, then presses and plants. Click any tower or building to see what it runs on and what it is waiting for. A marker over a tower shows what it has run out of.',
+    done: () => guide.acked,
+    ok: true,
+  },
+];
+function startGuide() {
+  guide.on = true; guide.i = 0; guide.t = 0; guide.acked = false;
+  delete cache.guide;
+}
+function endGuide(skipped: boolean) {
+  guide.on = false;
+  show('guide', false);
+  store.tips.tutorial = true; save();
+  if (skipped) note('Tutorial skipped. You can replay it from How to play.');
+}
+/** The tile markers of the current step (none while the guide is off or the step is waiting for its moment). */
+function guidePoints(): number[][] {
+  const st = guide.on ? GUIDE[guide.i] : undefined;
+  return st && st.points && (!st.ready || st.ready()) ? st.points() : [];
+}
+function updateGuide() {
+  if (!guide.on) return;
+  if (ended || bot || mode !== 'solo') { guide.on = false; show('guide', false); return; }
+  let st = GUIDE[guide.i];
+  // a step that is done gives way to the next (after a moment, so the tick is seen)
+  if (st.done()) {
+    guide.t += 1 / 60;
+    if (guide.t > 0.6 || st.ok) { guide.i++; guide.t = 0; if (guide.i >= GUIDE.length) { endGuide(false); return; } sound.play('levelup', 0.4); st = GUIDE[guide.i]; }
+  } else guide.t = 0;
+  const waiting = !!st.ready && !st.ready();
+  const key = guide.i + ':' + waiting + ':' + touchUi();
+  if (cache.guide === key) return;
+  cache.guide = key;
+  show('guide', !waiting);
+  setText('guide-step', `Tutorial ${guide.i + 1} / ${GUIDE.length}`);
+  setText('guide-title', st.title);
+  setText('guide-text', st.text());
+  show('guide-next', !!st.ok);
+}
+click('guide-skip', () => endGuide(true));
+click('guide-next', () => { guide.acked = true; });
+
 // ---------- frame ----------
 let nextKey = '';
 /** Power drawn and available over all grids. */
@@ -1535,11 +1647,15 @@ function updateHud() {
   if (canCall) {
     const left = Math.max(0, Math.ceil(sim.nextWaveIn)), raw = sim.callBonus();
     const bonus = Number.isFinite(raw) ? Math.max(0, Math.round(raw)) : 0;
+    // the wave waits for the call, unless Auto waves is on (then it also pays for calling early)
+    const timed = sim.autoWaves && !(sim.holdFirst && first);
     setText('wave-label', first ? 'Call first wave' : 'Call wave');
-    setText('wave-timer', bonus > 0 ? `${left}s, +${bonus} cr` : `starts in ${left}s`);
-    if (prep) setText('prep-sub', touchUi() ? `It starts by itself in ${left}s. Tap Call first wave when you are ready.` : `It starts by itself in ${left}s. Press N or the button when you are ready.`);
+    setText('wave-timer', !timed ? (touchUi() ? 'when you are ready' : 'when you are ready (N)') : bonus > 0 ? `${left}s, +${bonus} cr` : `starts in ${left}s`);
+    if (prep) setText('prep-sub', touchUi() ? 'Towers start empty: put one next to a supply crate. Tap Call first wave when you are ready.' : 'Towers start empty: put one next to a supply crate. Press N or the button when you are ready.');
   }
-  if (cache.prep !== String(prep)) { cache.prep = String(prep); show('prep', prep); }
+  if (cache.prep !== String(prep && !guideOn())) { cache.prep = String(prep && !guideOn()); show('prep', prep && !guideOn()); }
+  const ak = String(settings.auto);
+  if (cache.auto !== ak) { cache.auto = ak; const ab = $('btn-auto'); ab.textContent = settings.auto ? 'Auto waves: on' : 'Auto waves: off'; ab.setAttribute('aria-pressed', ak); }
   for (const t of TOWER_TYPES) {
     const b = buildBtns[t], locked = !sim.unlocked.has(t), cost = sim.cost(t), mt = sim.matCost(t);
     b.classList.toggle('locked', locked);
@@ -1547,6 +1663,12 @@ function updateHud() {
     b.classList.toggle('sel', buildType === t);
     const c = b.lastElementChild as HTMLElement, txt = mt ? `${cost} +${mt}m` : String(cost);
     if (c.textContent !== txt) c.textContent = txt;
+  }
+  // the factory bar holds what is unlocked so far; the number keys go by place on the bar
+  const fl = facList(), fk = fl.join();
+  if (cache.facbar !== fk) {
+    cache.facbar = fk;
+    for (const t of FAC_TYPES) { const i = fl.indexOf(t), b = facBtns[t]; b.classList.toggle('locked', i < 0); (b.firstElementChild as HTMLElement).textContent = i < 0 || i > 9 ? '' : String((i + 1) % 10); }
   }
   for (const t of FAC_TYPES) {
     const b = facBtns[t], cost = sim.facCost(t);
@@ -1570,8 +1692,9 @@ function updateHud() {
     if (!enemyChips($('next-row'), pv.wave > 0 ? sum : []).length) $('next-row').appendChild(el('span', 'none', sim.campaign && sim.wave >= sim.winWave ? 'Last wave' : 'Nothing yet'));
   }
 
-  const sf = selFac ? sim.factory.facById(selFac) : undefined, placing = !!buildFac || !!(sf && turns(sf.type));
+  const sf = selFac ? sim.factory.facById(selFac) : undefined, placing = buildFac === 'belt' || !!(sf && sf.type === 'belt');
   if (cache.placing !== String(placing)) { cache.placing = String(placing); document.body.classList.toggle('placing', placing); }
+  updateGuide();
   updateTowerPanel();
   updateFacPanel();
   updateTitan();
@@ -1672,20 +1795,8 @@ function updateTowerPanel() {
 }
 
 const FAC_STATE: Record<string, string> = {
-  ok: 'Working', idle: 'Idle', nopower: 'No power: build a Pole or Generator within 2 tiles', noinput: 'Waiting for input', nofuel: 'No fuel: it needs coal (or petrol from a pipe)', full: 'Output full: nothing takes it', nodeposit: 'Not on a deposit',
+  ok: 'Working', idle: 'Idle', nopower: 'No power: build a Pole or Generator within 2 tiles', noinput: 'Waiting for input', nofuel: 'No fuel: it needs coal', full: 'Output full: nothing beside it takes it', empty: 'Empty', nodeposit: 'Not on a deposit',
 };
-const RECIPE_BTNS: HTMLButtonElement[] = [];
-for (const r of RECIPES) {
-  const b = el('button', 'chip') as HTMLButtonElement;
-  b.type = 'button'; b.dataset.v = r.id;
-  const inp = Object.entries(r.inp).map(([k, n]) => `${n} ${ITEMS[k as ItemType].short}`).concat(r.fluid ? [`${r.fluid[1]} ${FLUIDS[r.fluid[0]].name.toLowerCase()}`] : []).join(' + ');
-  b.title = `${inp} -> ${r.n} ${ITEMS[r.out].name}, ${r.time}s`;
-  b.style.setProperty('--c', hex(ITEMS[r.out].color));
-  b.append(el('span', '', r.name), el('small', '', inp));
-  b.addEventListener('click', () => { sound.init(); sound.play('click'); if (selFac) act.recipe(selFac, r.id); });
-  RECIPE_BTNS.push(b);
-  $('f-recipes').appendChild(b);
-}
 /** Inventory line: item counts. */
 const invText = (inv: Partial<Record<ItemType, number>>) => Object.entries(inv).filter(([, n]) => n && n > 0).map(([k, n]) => `${n} ${ITEMS[k as ItemType].short}`).join(', ') || 'empty';
 function updateFacPanel() {
@@ -1697,7 +1808,7 @@ function updateFacPanel() {
   view.setSelectedCell(f.cx, f.cz, true, f.type === 'pole' || f.type === 'generator' ? SUPPLY * 2 + 1 : 0);
   const d = FACS[f.type];
   setText('f-name', d.name + (f.ore && (f.type === 'mine' || f.type === 'pump') ? ` / ${ORES[f.ore].name}` : ''));
-  setText('f-state', FAC_STATE[f.state] || f.state);
+  setText('f-state', f.type === 'crate' && f.state === 'ok' ? 'Feeding what stands next to it' : FAC_STATE[f.state] || f.state);
   $('f-state').className = f.state === 'ok' ? 'ok' : f.state === 'idle' || f.state === 'full' || f.state === 'noinput' ? 'warn' : 'bad';
   const st = $('f-stats');
   const lines: [string, string][] = [];
@@ -1707,23 +1818,29 @@ function updateFacPanel() {
     case 'pole': case 'generator': {
       const n = sim.factory.powerNet(f.net);
       if (n) lines.push(['Grid', `${Math.round(Math.min(n.cap, n.demand))} of ${Math.round(n.demand)} power drawn, ${Math.round(n.cap)} available`]);
-      if (f.type === 'generator') lines.push(['Fuel', `${invText(f.inv)}${f.tin > 0 ? `, ${Math.round(f.tin)} petrol` : ''}, ${Math.max(0, f.fuel).toFixed(0)}s burning`]);
+      if (f.type === 'generator') lines.push(['Fuel', `${invText(f.inv)}, ${Math.max(0, f.fuel).toFixed(0)}s burning`]);
       lines.push(['Reach', `wires to poles within ${POLE_REACH} tiles, powers what is within ${SUPPLY}`]);
       break;
     }
     case 'mine': lines.push(['Output', f.out.length ? `${f.out.length}/${OUT_CAP} waiting` : 'none waiting']); break;
     case 'pump': lines.push(['Crude', `${Math.round(f.tout)}/${TANK}`], ['Power', `${Math.round(f.pwr * 100)}%`]); break;
     case 'smelter': lines.push(['Input', invText(f.inv)], ['Output', f.out.length ? `${f.out.length}/${OUT_CAP} plates waiting` : 'none waiting']); break;
-    case 'fab': { const r = RECIPE_BY_ID[f.recipe]; lines.push(['Making', r ? `${r.n} ${ITEMS[r.out].name} from ${Object.entries(r.inp).map(([k, n]) => `${n} ${ITEMS[k as ItemType].short}`).join(' + ')}${r.fluid ? ` + ${r.fluid[1]} petrol` : ''}` : '-'], ['Input', invText(f.inv) + (r?.fluid ? `, ${Math.round(f.tin)} petrol` : '')], ['Power', `${Math.round(f.pwr * 100)}%`]); break; }
+    case 'works': case 'press': case 'cells': case 'missiles': {
+      const r = MAKES[f.type]!, need = Object.entries(r.inp).map(([k, n]) => `${n} ${ITEMS[k as ItemType].short}`).concat(r.fluid ? [`${r.fluid[1]} ${FLUIDS[r.fluid[0]].name.toLowerCase()}`] : []).join(' + ');
+      lines.push(['Makes', `${r.out ? ITEMS[r.out].name : `${r.mats} building material`} from ${need}`], ['Input', invText(f.inv) + (r.fluid ? `, ${Math.round(f.tin)} ${FLUIDS[r.fluid[0]].name.toLowerCase()}` : '')]);
+      if (r.out) lines.push(['Output', f.out.length ? `${f.out.length}/${OUT_CAP} waiting` : 'none waiting']);
+      else lines.push(['Materials', `${Math.floor(sim.mats)} in store`]);
+      lines.push(['Power', `${Math.round(f.pwr * 100)}%`]);
+      break;
+    }
+    case 'crate': lines.push(['Holds', f.hold ? `${f.left} ${ITEMS[f.hold].short}` : 'nothing']); break;
     case 'refinery': lines.push(['Crude', `${Math.round(f.tin)}/${TANK}`], ['Petrol', `${Math.round(f.tout)}/${TANK}`], ['Power', `${Math.round(f.pwr * 100)}%`]); break;
-    case 'depot': lines.push(['Materials', `${Math.floor(sim.mats)} in store`]); break;
   }
   const lk = lines.map((l) => l.join(':')).join('|');
   if (cache.fstats !== lk) { cache.fstats = lk; st.textContent = ''; for (const [k, v] of lines) st.append(k + ' ', el('b', '', v), el('br')); }
-  show('f-recipes', f.type === 'fab');
-  if (f.type === 'fab') for (const b of RECIPE_BTNS) b.classList.toggle('on', b.dataset.v === f.recipe);
-  show('f-turn', turns(f.type));
-  setText('f-sell', `Remove${touchUi() ? '' : ' (X)'} +${sim.facSellValue(f.id)}`);
+  show('f-turn', f.type === 'belt');
+  setText('f-sell', `Remove${touchUi() ? '' : ' (X)'}${sim.facSellValue(f.id) ? ` +${sim.facSellValue(f.id)}` : ''}`);
+  $<HTMLButtonElement>('f-sell').disabled = f.type === 'crate' && f.left > 0;
   setText('f-desc', d.desc);
 }
 
@@ -1734,6 +1851,7 @@ const MARK_ICON: Record<string, string> = {
   ammo: 'M3 6h3v8H3zM7 4h3v10H7zM11 6h3v8h-3zM3.5 3.5L4.5 2 5.5 3.5zM7.5 1.5L8.5 0 9.5 1.5zM11.5 3.5l1-1.5 1 1.5z',
   power: 'M9.6 0.6L3 9h3.7l-1.2 6.4L12.8 7H8.9z',
   petrol: 'M8 1C8 1 3 7 3 10a5 5 0 0 0 10 0C13 7 8 1 8 1z',
+  here: 'M8 14L2 5h4V1h4v4h4z',
 };
 const marks: { el: HTMLElement; kind: string }[] = [];
 function mark(n: number, kind: string, x: number, y: number) {
@@ -1743,7 +1861,7 @@ function mark(n: number, kind: string, x: number, y: number) {
   m.el.style.transform = `translate(${x.toFixed(0)}px, ${y.toFixed(0)}px)`;
   m.el.style.display = 'block';
 }
-/** What a dry tower is missing first: power, petrol or ammunition. */
+/** What a dry tower is missing first: power, oil or ammunition. */
 function missing(t: Tower): string {
   const n = TOWERS[t.type].needs;
   if (n.power && t.pwr < 0.05) return 'power';
@@ -1753,6 +1871,8 @@ function missing(t: Tower): string {
 function updateMarks() {
   let n = 0;
   if (!ended) {
+    // the tutorial points at what its step is about
+    for (const g of guidePoints()) { const [x, y, ok] = view.project(g[0], g[1], g[2]); if (ok && n < 60) mark(n++, 'here', x, y - 18); }
     // Upgrade chevrons: not before the first wave. The starting credits are for towers, not for the one upgrade they happen to cover.
     const ups = sim.wave > 0;
     for (const t of sim.towers) {

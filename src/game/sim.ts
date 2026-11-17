@@ -5,16 +5,16 @@ import {
   LVL_DMG, LVL_RANGE, LVL_RATE, upgradeCost, upgradeMat, waveHpMul, waveBudget, baseMods, TUNE,
   TWIN_BOLT, PULSE_CRIT, RAIL_CAP, LANCE_FOCUS, BREACH_TIME, BREACH_TIME_BOSS, BREACH_SHARE, coopScale,
   FIRST_WAVE_IN, NEXT_WAVE_IN, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR,
-  FACS, ITEM_SHOTS, PETROL_PER_TICK, START_MATS, START_GOLD_MUL, RECIPE_BY_ID,
+  FACS, FAC_TYPES, ITEM_SHOTS, FUEL_PER_TICK, START_MATS, START_GOLD_MUL, TOWER_TIER, TOWER_CHAIN, CRATE_STOCK,
   WHEEL_GUARD, WHEEL_CRAWL, WHEEL_BLEED, WHEEL_DRAG, WHEEL_SINK, WHEEL_REST, WHEEL_SPINUP, WHEEL_PIERCE, WAVE_POOL, gyreCount, GYRE_WAVE,
   BROOD_EVERY, BROOD_FIRST, BROOD_SIZE, BROOD_REACH, MITE_HOLD, MITE_LIFE, JAM_LINGER,
   TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY, TITAN_STRIKE, TITAN_SLOW, TITAN_WALK, TITAN_PACE, TITAN_LEAD, TITAN_GOLD, TITAN_SURVIVAL, TITAN_AGAIN, TITAN_TOUGHER, TITAN_SMASH,
 } from './data.ts';
-import type { TowerType, EnemyType, Mods, Card, FacType } from './data.ts';
+import type { TowerType, EnemyType, Mods, Card, FacType, ItemType } from './data.ts';
 import { broodCap } from './data.ts';
 import { GameMap, DEFAULT_MAP, diffById } from './map.ts';
 import type { MapDef, Difficulty, PathOut } from './map.ts';
-import { hexDist } from './hex.ts';
+import { hexDist, neighbor } from './hex.ts';
 import { Factory, makeDeposits, TOWER_STOCK, TANK } from './factory.ts';
 export { LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR, BREACH_TIME, BREACH_TIME_BOSS, TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY };
 /** How far from the end of its road an enemy stops to attack the core (plus 0.6 of its radius). */
@@ -166,6 +166,8 @@ export interface SimOpts {
   free: boolean;
 }
 
+/** The levels whose card offer brings a blueprint (as long as one is left). */
+const BP_LEVELS = [2, 4, 6, 8, 10, 13, 16, 19, 22, 25, 28];
 const xpNeed = (lvl: number) => Math.round(12 + lvl * 7 + lvl * lvl * 0.55);
 const GAPS: Record<EnemyType, number> = { grunt: 0.55, runner: 0.33, drone: 0.5, shield: 0.95, brute: 1.3, boss: 3, wheel: 8, brood: 1.7, mite: 0.1, titan: 5 };
 const tmp: PathOut = { x: 0, z: 0, dx: 0, dz: 0, y: 0 };
@@ -206,11 +208,10 @@ export function mapEase(map: GameMap): number {
 }
 
 function newTower(id: number, type: TowerType, cx: number, cz: number, spent: number): Tower {
-  const n = TOWERS[type].needs;
-  // a new tower comes with two ammunition items and half a tank of petrol, so it can fire before the factory reaches it
+  // a new tower is empty: it fires once a supply crate, a mine or a belt beside it feeds it
   return {
     id, type, cx, cz, x: cellX(cx, cz), z: cellZ(cz), lvl: 1, cd: 0.3, yaw: 0, buff: 0, spent, h: TOWER_H[type], charge: 0, spec: 0, down: 0, heat: 0, tgt: 0, aux: 0, fxT: 0, jam: 0, stun: 0,
-    stock: n.item ? 2 : 0, ammo: 0, tank: n.fluid ? TANK / 2 : 0, pwr: 0, dry: false, spentMat: 0,
+    stock: 0, ammo: 0, tank: 0, pwr: 0, dry: false, spentMat: 0,
   };
 }
 /** An enemy of a type with everything else at rest (spawn() and the co-op replica fill in the rest). */
@@ -230,7 +231,11 @@ export class Sim {
   /** building materials: Frames delivered to a Depot. Towers and upgrades cost them on top of credits. */
   mats = START_MATS;
   mods: Mods = baseMods();
-  unlocked = new Set<TowerType>(['pulse', 'cryo']);
+  unlocked = new Set<TowerType>(['pulse']);
+  /** factory buildings the player may build: a run starts with the Mine and the Belt, each blueprint adds what its tower's supply needs */
+  facs = new Set<FacType>(TOWER_CHAIN.pulse);
+  /** Waves start by themselves after a pause (off: only when the player calls them). holdFirst: the first wave always waits for the call. */
+  autoWaves = true; holdFirst = false;
   stacks: Record<string, number> = {};
   enemies: Enemy[] = []; towers: Tower[] = []; projs: Proj[] = []; zones: Zone[] = [];
   /** Walls of fire between linked Firewall Pylons (rebuilt whenever the towers change, see computeWalls). */
@@ -278,6 +283,8 @@ export class Sim {
     this.factory = new Factory({
       get grid() { return self.grid; }, get mods() { return self.mods; }, get towers() { return self.towers; }, get events() { return self.events; },
       addMats: (n) => { this.mats += n; },
+      // a belt or pipe may pass under a plain stretch of road at deck level, not under the core's plinth or a ramp
+      roadOk: (cx, cz) => hexDist(cx, cz, this.map.def.core[0], this.map.def.core[1]) > 1 && this.deckLevel(cx, cz),
     }, makeDeposits(this.grid, this.map.def.id + '|' + this.map.def.name));
     this.lives = this.maxLives = Math.max(1, Math.round(this.map.def.lives * this.diff.lives));
     this.endless = this.opts.survival;
@@ -303,6 +310,8 @@ export class Sim {
       if (TOWERS[t.t].needs.fluid) tw.tank = TANK;
       this.towers.push(tw);
     }
+    if (this.opts.free) for (const f of FAC_TYPES) this.facs.add(f);
+    else this.placeCrates();
     this.recomputeBuffs();
     for (let i = 0; i < this.opts.players; i++) this.players.push({ pending: [], kills: 0 });
     this.planWave(1);
@@ -398,10 +407,59 @@ export class Sim {
     this.wallTw = this.walls.map((w) => [this.towerById(w.a)!, this.towerById(w.b)!]);
   }
   // ---------- the factory ----------
+  /** True if every road that passes over this tile is at deck level there (no ramp, no bridge). */
+  private deckLevel(cx: number, cz: number): boolean {
+    const x = cellX(cx, cz), z = cellZ(cz);
+    for (const L of this.map.lanes) for (let i = 1; i < L.pts.length; i++) {
+      if (L.ys[i] <= 0 && L.ys[i - 1] <= 0) continue;
+      const a = L.pts[i - 1], b = L.pts[i];
+      if (segDist(x, z, a[0], a[1], b[0], b[1]) < 1.6) return false;
+    }
+    return true;
+  }
+  /**
+   * Supply crates: every run starts with a few crates of ammunition beside the roads, so the first towers can fire before
+   * any mine runs. Each road gets a crate of iron ore (the Pulse Turret's ammunition) on a free tile beside it with room
+   * for towers around it; a single road gets two. Trickier maps also bring one crate of a later tower's ammunition, and
+   * that tower (with the Generator and Pole it needs for power) is open from the start: a different opening per map.
+   */
+  private placeCrates() {
+    const F = this.factory, lanes = this.map.lanes;
+    const roadside = (cx: number, cz: number) => { for (let d = 0; d < 6; d++) { const [nx, nz] = neighbor(cx, cz, d); if (nx >= 0 && nz >= 0 && nx < GW && nz < GH && this.grid[nz * GW + nx] === 1) return true; } return false; };
+    const room = (cx: number, cz: number) => { let n = 0; for (let d = 0; d < 6; d++) { const [nx, nz] = neighbor(cx, cz, d); if (nx >= 0 && nz >= 0 && nx < GW && nz < GH && this.grid[nz * GW + nx] === 0) n++; } return n; };
+    const put = (lane: number, frac: number, it: ItemType) => {
+      const L = lanes[lane];
+      this.map.pos(lane, L.len * frac, tmp);
+      let best = -1, bd = Infinity;
+      for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) {
+        const i = cz * GW + cx;
+        if (this.grid[i] !== 0 || F.ore[i] || !roadside(cx, cz) || room(cx, cz) < 3) continue;
+        // (not right beside another crate: each one is the start of a little outpost of its own)
+        if (F.facs.some((f) => f.type === 'crate' && hexDist(f.cx, f.cz, cx, cz) < 4)) continue;
+        const d = Math.hypot(cellX(cx, cz) - tmp.x, cellZ(cz) - tmp.z);
+        if (d < bd) { bd = d; best = i; }
+      }
+      if (best >= 0) F.placeCrate(best % GW, Math.floor(best / GW), it, CRATE_STOCK[it] || 10);
+    };
+    if (lanes.length === 1) { put(0, 0.3, 'iron_ore'); put(0, 0.65, 'iron_ore'); }
+    else for (let l = 0; l < Math.min(3, lanes.length); l++) put(l, 0.5, 'iron_ore');
+    if ((this.map.def.tier || 1) >= 2) {
+      let h = 0;
+      for (const ch of this.map.def.id + this.map.def.name) h = (Math.imul(h, 31) + ch.charCodeAt(0)) >>> 0;
+      const it: ItemType = h % 2 ? 'copper' : 'shell';
+      put(lanes.length - 1, 0.78, it);
+      if (F.facs.some((f) => f.type === 'crate' && f.hold === it)) {
+        for (const t of TOWER_TYPES) if (TOWERS[t].needs.item === it) { this.unlocked.add(t); if (TOWERS[t].needs.power) { this.facs.add('generator'); this.facs.add('pole'); } }
+      }
+    }
+  }
+
+  // ---------- the factory ----------
   /** Why a factory building cannot go on a tile ('' if it can). */
   facBlock(type: FacType, cx: number, cz: number): string {
-    if (!Object.hasOwn(FACS, type)) return 'unknown';
+    if (!Object.hasOwn(FACS, type) || type === 'crate') return 'unknown';
     if (!Number.isInteger(cx) || !Number.isInteger(cz)) return 'off the grid';
+    if (!this.facs.has(type)) return 'locked';
     const why = this.factory.placeBlock(type, cx, cz);
     if (why) return why;
     return this.gold < this.facCost(type) ? 'not enough credits' : '';
@@ -417,19 +475,18 @@ export class Sim {
     this.events.push({ k: 'build', x: f.x, z: f.z, c: FACS[type].color, fac: 1 });
     return f;
   }
-  /** Take a factory building down for 60% of its price (100% for belts, pipes and poles: they are moved around a lot). Items in it are lost. */
+  /** Take a factory building down. Belts, pipes and poles give back all they cost (they are moved around a lot), the rest 60%. Items in it are lost. */
   sellFac(id: number) {
     if (this.over) return false;
     const f = this.factory.facById(id);
-    if (!f) return false;
+    if (!f || (f.type === 'crate' && f.left > 0)) return false; // a crate goes once it is empty
+    this.gold += this.facSellValue(id);
     this.factory.remove(id);
-    this.gold += f.type === 'belt' || f.type === 'pipe' || f.type === 'pole' ? f.spent : Math.round(f.spent * 0.6);
     this.events.push({ k: 'sell', x: f.x, z: f.z, fac: 1 });
     return true;
   }
   facSellValue(id: number) { const f = this.factory.facById(id); return !f ? 0 : f.type === 'belt' || f.type === 'pipe' || f.type === 'pole' ? f.spent : Math.round(f.spent * 0.6); }
-  rotateFac(id: number, dir: number) { this.factory.rotate(id, dir | 0); }
-  setRecipe(id: number, recipe: string) { if (typeof recipe === 'string' && Object.hasOwn(RECIPE_BY_ID, recipe)) this.factory.setRecipe(id, recipe); }
+  rotateFac(id: number, dir: number) { this.factory.rotate(id, dir); }
 
   // ---------- tower supply ----------
   /** True if a tower has what it needs to fire right now (power, petrol, and ammunition loaded or in stock). */
@@ -438,7 +495,7 @@ export class Sim {
     const n = TOWERS[t.type].needs;
     if (n.power && t.pwr < 0.05) return false;
     if (n.item && t.ammo <= 0 && t.stock <= 0) return false;
-    if (n.fluid && t.tank < PETROL_PER_TICK) return false;
+    if (n.fluid && t.tank < FUEL_PER_TICK) return false;
     return true;
   }
   /** Spend one shot of a tower's ammunition. False (and nothing spent) when it has none left. */
@@ -453,10 +510,10 @@ export class Sim {
     t.ammo = Math.max(0, t.ammo - n);
     return true;
   }
-  /** Burn petrol for `ticks` ticks of a Firewall Pylon's fire. False when the tank is dry. */
-  private usePetrol(t: Tower, ticks: number): boolean {
+  /** Burn crude oil for `ticks` ticks of a Firewall Pylon's fire. False when the tank is dry. */
+  private useFuel(t: Tower, ticks: number): boolean {
     if (this.opts.free || !TOWERS[t.type].needs.fluid) return true;
-    const need = PETROL_PER_TICK * ticks;
+    const need = FUEL_PER_TICK * ticks;
     if (t.tank < need) return false;
     t.tank -= need;
     return true;
@@ -520,7 +577,7 @@ export class Sim {
   }
   /** Credits paid for calling the next wave right now (two per second saved, counting at most NEXT_WAVE_IN seconds; also before the first wave). */
   callBonus(): number {
-    if (this.queue.length || this.over || this.titanBusy || this.nextWaveIn <= 0.5 || (this.campaign && this.wave >= this.winWave)) return 0;
+    if (!this.autoWaves || (this.holdFirst && this.wave === 0) || this.queue.length || this.over || this.titanBusy || this.nextWaveIn <= 0.5 || (this.campaign && this.wave >= this.winWave)) return 0;
     return Math.round(Math.min(NEXT_WAVE_IN, this.nextWaveIn) * 2);
   }
   startWave() {
@@ -757,18 +814,32 @@ export class Sim {
   // ---------- cards ----------
   private cardOk(_pi: number, c: Card) {
     const stack = this.stacks[c.id] || 0;
-    return stack < c.max && (!c.needs || this.unlocked.has(c.needs)) && !(c.kind === 'blueprint' && this.unlocked.has(c.id.slice(3) as TowerType));
+    if (c.kind === 'blueprint') return this.bpOpen().includes(c.id.slice(3) as TowerType);
+    if (c.id === 'underpass' && this.level < 3) return false; // (not before there is a factory to connect)
+    return stack < c.max && (!c.needs || this.unlocked.has(c.needs));
+  }
+  /**
+   * The blueprints on offer right now. They come tier by tier (see TOWER_TIER): only the lowest tier that still has something
+   * locked, so every new tower adds one step to what the player already runs.
+   * A tower a map opened early (its crate) still has a blueprint while its supply buildings are locked.
+   */
+  bpOpen(): TowerType[] {
+    const locked = TOWER_TYPES.filter((t) => !this.unlocked.has(t) || TOWER_CHAIN[t].some((f) => !this.facs.has(f)));
+    if (!locked.length) return [];
+    const low = Math.min(...locked.map((t) => TOWER_TIER[t])), first = locked.filter((t) => TOWER_TIER[t] === low);
+    return first;
   }
   /** Roll an offer of up to three cards. */
   rollCards(pi: number): string[] {
-    const pool = CARDS.filter((c) => this.cardOk(pi, c));
+    const all = CARDS.filter((c) => this.cardOk(pi, c));
     const out: string[] = [];
-    const bps = pool.filter((c) => c.kind === 'blueprint');
-    if (bps.length && [2, 3, 5, 7, 9, 11, 13].includes(this.level)) out.push(bps[Math.floor(this.rand() * bps.length)].id);
+    // blueprints come on set levels only, one at a time, so each new supply chain has a few waves to be built in
+    const bps = all.filter((c) => c.kind === 'blueprint'), pool = all.filter((c) => c.kind !== 'blueprint');
+    if (bps.length && BP_LEVELS.includes(this.level)) out.push(bps[Math.floor(this.rand() * bps.length)].id);
     const W = [10, TUNE.rare, TUNE.epic];
     // dedicated upgrades are only useful once that tower is on the field, so they are offered less often until it is
     const built = new Set(this.towers.map((t) => t.type));
-    const wt = (c: Card) => (c.kind === 'blueprint' ? 5 : W[c.rar] * (c.needs && !built.has(c.needs) ? 0.3 : 1));
+    const wt = (c: Card) => W[c.rar] * (c.needs && !built.has(c.needs) ? 0.3 : 1);
     while (out.length < 3) {
       const rest = pool.filter((c) => !out.includes(c.id));
       if (!rest.length) break;
@@ -791,7 +862,7 @@ export class Sim {
     if ((st[card.id] || 0) >= card.max) { this.gold += 100; return; }
     st[card.id] = (st[card.id] || 0) + 1;
     card.apply({
-      mods: this.mods, unlocked: this.unlocked,
+      mods: this.mods, unlocked: this.unlocked, facs: this.facs,
       addGold: (n) => { this.gold += n; }, addLives: (n) => { this.lives = Math.min(30, this.lives + n); }, addMats: (n) => { this.mats += n; },
     });
     this.recomputeBuffs();
@@ -950,7 +1021,8 @@ export class Sim {
         this.events.push({ k: 'clear', n: this.wave, g: Math.round(bonus) });
         if (last) { this.won = true; this.over = true; this.events.push({ k: 'win' }); return; }
       }
-      if (!last) { this.nextWaveIn -= dt; if (this.nextWaveIn <= 0) this.startWave(); }
+      // the next wave comes by itself only where that is switched on, and the first one never does where it is held for the call
+      if (!last && this.autoWaves && !(this.holdFirst && this.wave === 0)) { this.nextWaveIn -= dt; if (this.nextWaveIn <= 0) this.startWave(); }
     }
 
     // zones
@@ -1192,7 +1264,7 @@ export class Sim {
     if (t.cd > 0) return;
     if (!this.enemies.length) { t.cd = 0; return; }
     const shots = this.shots(t), fb = this.mods.flameBurn;
-    if (!this.usePetrol(t, shots)) return;
+    if (!this.useFuel(t, shots)) return;
     const dmg = this.towerDmg(t), hot = INFERNO * this.mods.specPow;
     const bD = dmg * this.towerRate(t) * BURN_SHARE * (1 + 0.4 * fb), bT = 2.5 + 1.5 * fb;
     let linked = false;

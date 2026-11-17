@@ -16,7 +16,7 @@ import { makeEnemyRig, resetEnemy, updateEnemy, makeTowerRig, updateTower, tower
 import type { EnemyRig, TowerRig, TowerState } from './anim.ts';
 
 /** Factory buildings with a model file (belts and pipes are built in facview.ts). */
-const FAC_MODELS = ['mine', 'pump', 'smelter', 'refinery', 'fab', 'depot', 'generator', 'pole'].map((t) => 'fac_' + t);
+const FAC_MODELS = ['mine', 'pump', 'smelter', 'refinery', 'press', 'works', 'cells', 'missiles', 'crate', 'generator', 'pole'].map((t) => 'fac_' + t);
 const MODEL_NAMES = [...TOWER_TYPES.map((t) => 'tower_' + t), ...ENEMY_TYPES.map((t) => 'enemy_' + t), 'core', 'prop_barrier', 'prop_lamp', 'prop_crate', ...FAC_MODELS];
 
 // Ember palette. Defenders are warm, the Static is cold.

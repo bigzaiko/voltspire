@@ -1,4 +1,4 @@
-"""BEATSPIRE factory buildings that make and keep things: the Fabricator (fab) and the Depot (depot).
+"""BEATSPIRE factory buildings that make things: the Shell Press (press) and the Frame Works (works).
 
 Conventions come from fac_common.py: one hex tile, everything within 0.92 of the axis, FRONT / OUTPUT = -Y,
 named nodes 'lamp' / 'spin' / 'work' with their origins as pivots, ~3500 tris each.
@@ -36,9 +36,16 @@ def square(n, s, t, mat='trim', **kw):
                   segs=4, phase=45), mat, sharp=30, **kw)
 
 
-# ================================================================== fabricator
-def fab():
-    m = fac_model('fab', '#d9a05b')
+def shell(n, at, s=1.0):
+    """A finished shell standing on its base: steel case, painted nose."""
+    with n.frames(T(at=at, scale=s)):
+        n.cyl(0.044, 0.13, 'trim', segs=6)
+        n.lathe([(0.044, 0.13), (0.032, 0.18), (0.0, 0.215)], 'paint', segs=6)
+
+
+# ================================================================== shell press
+def press():
+    m = fac_model('press', '#d9a05b')
     b = fac_base(m)
     G, W = 'glow_main', 'glow_work'
     XH = 0.56                 # hall half width
@@ -94,8 +101,6 @@ def fab():
     b.box((0.08, 0.012, 0.02), G, bevel=0, at=(-0.22, YB + 0.03, H0 + 0.62))
     b.tube([(0.20, YB + 0.05, H0 + 0.06), (0.20, YB + 0.05, 0.86), (0.20, YB - 0.05, ZR + 0.08)], 0.035, 'trim', segs=6)
     b.tube([(0.34, YB + 0.05, H0 + 0.06), (0.34, YB + 0.05, 0.80), (0.34, YB - 0.10, ZR + 0.08)], 0.028, 'paint', segs=6)
-    for x in (0.20, 0.34):
-        b.box((0.06, 0.06, 0.03), 'hull', bevel=0, at=(x, YB + 0.04, 0.55))
 
     # ---- FRONT (-Y): roller door portal with hazard trim, roller housing, apron
     dx, dz = 0.34, 0.80                       # door half width, door top
@@ -104,14 +109,14 @@ def fab():
         b.box((0.12, 0.10, dz - H0 + 0.05), 'hull', bevel=0.025, o='b', at=(dx + 0.06, YF - 0.03, H0))
         hazard_v(b, dx + 0.06, YF - 0.08 - 0.012, H0 + 0.06, dz - 0.02, k=4)
     b.box((2 * dx, 0.02, dz - H0), 'dark', bevel=0, o='b', at=(0, YF - 0.005, H0))
-    for i in range(7):                         # roller door slats
-        z = H0 + 0.08 + i * (dz - H0 - 0.08) / 6.6
-        b.box((2 * dx - 0.02, 0.025, 0.045), 'hull', bevel=0, at=(0, YF - 0.02, z))
+    for i in range(5):                         # roller door slats
+        z = H0 + 0.09 + i * (dz - H0 - 0.08) / 4.7
+        b.box((2 * dx - 0.02, 0.025, 0.065), 'hull', bevel=0, at=(0, YF - 0.02, z))
     b.box((2 * dx - 0.02, 0.03, 0.05), 'trim', bevel=0.01, at=(0, YF - 0.025, H0 + 0.035))        # bottom bar
     b.box((0.24, 0.012, 0.022), G, bevel=0, at=(0, YF - 0.04, H0 + 0.035))
     b.cyl(0.085, 2 * dx + 0.20, 'paint', segs=10, o='c', rot=RIGHT, at=(0, YF - 0.12, dz + 0.10), bevel=0.02)
     for sx in (-1, 1):
-        b.cyl(0.092, 0.03, 'trim', segs=10, o='c', rot=RIGHT, at=(sx * (dx + 0.10), YF - 0.12, dz + 0.10))
+        b.cyl(0.092, 0.03, 'trim', segs=6, o='c', rot=RIGHT, at=(sx * (dx + 0.10), YF - 0.12, dz + 0.10))
     hazard(b, -dx - 0.12, dx + 0.12, dz + 0.20, dz + 0.27, YF - 0.12 - 0.012)
     b.box((2 * dx + 0.24, 0.06, 0.03), 'trim', bevel=0.01, at=(0, YF - 0.10, dz + 0.285))
     # apron down to the plinth edge, with a lit lane
@@ -125,8 +130,13 @@ def fab():
     r = m.node('roof')
     r.box((2 * XH - 0.12, 0.36, 0.14), 'hull', bevel=0.03, o='b', at=(0, YF + 0.22, ZR + 0.04), taper=(0.96, 0.72),
           shift=(0, 0.04))
-    for i in range(5):
+    for i in range(3):
         r.box((0.13, 0.20, 0.025), 'trim', bevel=0, at=(-0.36 + i * 0.18, YF + 0.25, ZR + 0.185))
+    # finished shells waiting on a rack at the right of the hood
+    r.box((0.38, 0.18, 0.03), 'dark', bevel=0, at=(0.30, YF + 0.25, ZR + 0.19))
+    r.box((0.34, 0.02, 0.03), G, bevel=0, at=(0.30, YF + 0.15, ZR + 0.215))
+    for x in (0.19, 0.30, 0.41):
+        shell(r, (x, YF + 0.25, ZR + 0.20), s=1.3)
     # assembly bay: coaming around a lit floor, grating at the edges
     by0, by1, bx = -0.08, 0.44, 0.44
     byc = (by0 + by1) / 2
@@ -140,8 +150,8 @@ def fab():
         r.box((0.025, by1 - by0, 0.02), 'dark', bevel=0, at=(x, byc, ZR + 0.06))
     # services on the back strip: duct with a fan housing, two exhaust stacks
     r.cyl(0.06, 0.60, 'trim', segs=8, o='c', rot=RIGHT, at=(0.0, YB - 0.06, ZR + 0.08))
-    r.cyl(0.12, 0.10, 'hull', segs=12, at=(0.40, YB - 0.08, ZR + 0.03))
-    r.cyl(0.095, 0.012, 'dark', segs=12, at=(0.40, YB - 0.08, ZR + 0.125))
+    r.cyl(0.12, 0.10, 'hull', segs=8, at=(0.40, YB - 0.08, ZR + 0.03))
+    r.cyl(0.095, 0.012, 'dark', segs=8, at=(0.40, YB - 0.08, ZR + 0.125))
     with r.frames([T(at=(0.40, YB - 0.08, ZR + 0.135)) @ rotz(a) for a in (20, 140, 260)]):
         r.box((0.09, 0.025, 0.01), 'trim', bevel=0, at=(0.045, 0, 0))
     for x, hgt in ((-0.42, 0.40), (-0.29, 0.30)):
@@ -154,8 +164,8 @@ def fab():
 
     # ---- the robot arm on its turntable ('spin', turns about its own Z while working)
     s = m.node('spin', at=(0, byc, ZR + 0.055))
-    s.cyl(0.17, 0.05, 'trim', segs=12, bevel=0.012)
-    s.cyl(0.11, 0.14, 'paint', segs=10, r2=0.09, at=(0, 0, 0.05))
+    s.cyl(0.17, 0.05, 'trim', segs=8, bevel=0.012)
+    s.cyl(0.11, 0.14, 'paint', segs=8, r2=0.09, at=(0, 0, 0.05))
     sh = (0.0, 0.0, 0.25)                    # shoulder
     el = (-0.10, 0.0, 0.66)                  # elbow
     wr = (0.30, 0.0, 0.50)                   # wrist
@@ -172,15 +182,15 @@ def fab():
     s.cyl(0.05, 0.03, 'dark', segs=8, o='c', at=(wr[0], 0, wr[2] - 0.08))
     with s.sym():
         s.box((0.02, 0.05, 0.10), 'trim', bevel=0, at=(wr[0] + 0.03, 0, wr[2] - 0.14), rot=(0, 8, 0))
-    # the frame it is assembling, held in the gripper
-    square(s, 0.22, 0.03, 'trim', at=(wr[0], 0, wr[2] - 0.20))
-    s.box((0.05, 0.05, 0.035), G, bevel=0, at=(wr[0], 0, wr[2] - 0.20))
+    # the shell it has just pressed, held in the gripper
+    shell(s, (wr[0], 0, wr[2] - 0.34), s=1.15)
+    s.cyl(0.054, 0.02, G, segs=6, at=(wr[0], 0, wr[2] - 0.27))
     return m
 
 
-# ================================================================== depot
-def depot():
-    m = fac_model('depot', '#e3dc92')
+# ================================================================== frame works
+def works():
+    m = fac_model('works', '#e3dc92')
     b = fac_base(m)
     G = 'glow_main'
     Z1 = H0 + 0.03
@@ -309,4 +319,4 @@ def depot():
     return m
 
 
-MODELS = [fab, depot]
+MODELS = [press, works]

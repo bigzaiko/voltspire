@@ -34,6 +34,8 @@ def budget(name):
         return BUDGET[name]
     if name == 'fac_pole':
         return 1200
+    if name == 'fac_crate':
+        return 1800
     if name.startswith('fac_'):
         return 3500
     return 8000 if name.startswith('tower_') else 1500

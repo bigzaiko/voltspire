@@ -2,20 +2,20 @@
 // lines. Buildings use the Blender models (public/models/fac_<type>.glb) when they are loaded and fall back to plain shapes
 // otherwise; belts, pipes and items are built here, in the same warm palette as the towers.
 //
-// Belts: a belt tile runs from an entry edge to its output edge. The entry is the side its one feeder stands on (a belt or a
-// producer whose output points at it); with no feeder or several it runs straight from the side opposite its output. The
+// Belts: a belt tile runs from an entry edge to its output edge. The entry is the side its one feeder stands on (another
+// belt that points at it); with no feeder or several it runs straight from the side opposite its output. The
 // path between the two edge midpoints is a straight line or a circular arc tangent to both edge normals, so neighbouring
 // belts meet edge to edge with the same width and heading and a turning line reads as one curved conveyor. Items ride the
 // same path (see pathAt), and the tread texture scrolls along it at the belt speed.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { FACS, ITEMS, FLUIDS, FLUID_TYPES, ORE_TYPES, ORES, ITEM_TYPES, GW, GH, cellX, cellZ, RECIPE_BY_ID, FAC_TYPES } from './data.ts';
+import { FACS, ITEMS, FLUIDS, FLUID_TYPES, ORE_TYPES, ORES, ITEM_TYPES, GW, GH, cellX, cellZ, MAKES } from './data.ts';
 import type { FacType, ItemType } from './data.ts';
 import { FX_LAYER } from './world.ts';
 import { HEX_SIZE, neighbor } from './hex.ts';
 import type { Sim, Ev } from './sim.ts';
 import type { Fac, Factory, BeltItem } from './factory.ts';
-import { turns, BELT_SPEED } from './factory.ts';
+import { BELT_SPEED } from './factory.ts';
 
 const TAU = Math.PI * 2;
 /** World heading of each hex direction (HEX_DIRS: east, then clockwise on screen, 60 degrees apart). */
@@ -65,7 +65,7 @@ const POLE_Y = 3.1, POLE_ARM = 0.4, GEN_Y = 1.6;
 /** Working-light strength per model, against the shared glow_work tuning (large lit faces are turned down so they do not bloom out). */
 /** Seconds a Depot's glint lasts. */
 const GLINT_T = 0.7;
-const WORK_GLOW: Partial<Record<FacType, number>> = { fab: 0.45, depot: 0.7, smelter: 0.75 };
+const WORK_GLOW: Partial<Record<FacType, number>> = { press: 0.45, works: 0.7, smelter: 0.75, cells: 0.6, missiles: 0.6 };
 
 /**
  * The pumpjack's linkage in the model (Blender y forward, z up; three.js rotation.x turns the same way): the beam rocks
@@ -322,8 +322,7 @@ const merge = (parts: THREE.BufferGeometry[]) => { const ps = parts.map((g) => s
 interface ItemPart { geo: THREE.BufferGeometry; mat: THREE.MeshStandardMaterial; tint: boolean }
 type Shape = 'ore' | 'coal' | 'plate' | 'frame' | 'crate' | 'shell' | 'slug' | 'cell' | 'missile';
 const SHAPE_OF: Record<ItemType, Shape> = {
-  iron_ore: 'ore', copper_ore: 'ore', coal: 'coal', iron: 'plate', copper: 'plate', frame: 'frame',
-  ammo: 'crate', shell: 'shell', slug: 'slug', cell: 'cell', missile: 'missile',
+  iron_ore: 'ore', copper_ore: 'ore', coal: 'coal', iron: 'plate', copper: 'plate', shell: 'shell', cell: 'cell', missile: 'missile',
 };
 const SHAPES: Shape[] = ['ore', 'coal', 'plate', 'frame', 'crate', 'shell', 'slug', 'cell', 'missile'];
 /** Items are drawn a little larger than modelled so they read at play zoom over the tread (ore and coal are small chunks). */
@@ -482,7 +481,7 @@ function pipeGeo(mask: number, valve: boolean): [THREE.BufferGeometry, THREE.Buf
 // ---------- the view ----------
 interface Glow { m: THREE.MeshStandardMaterial; i0: number }
 interface FVis {
-  obj: THREE.Group; type: FacType; seen: number; dir: number; recipe: string;
+  obj: THREE.Group; type: FacType; seen: number; dir: number;
   /** built from the model file (false: from plain shapes) */
   model: boolean;
   /** parts that move: a drill head or fan (spin, about y), a pump beam (arm: rocks about x for models, z for shapes), a bobbing part */
@@ -499,8 +498,8 @@ interface FVis {
   /** a belt with several feeders: each feeder's side (an inlet stub is drawn there unless it is the straight-on back side), its
    *  id, and what it held last frame (a belt's front item, a producer's output count) to tell which one handed over a new item */
   feeds: { d: number; id: number; head: BeltItem | null; n: number }[] | null;
-  /** producers: the output arrow on the deck (hidden while a belt stands there to show the way) */
-  arrow: THREE.Object3D | null;
+  /** a belt or pipe under a road (Underpass): the hatch plate drawn in the road instead of the belt itself */
+  hatch: THREE.Object3D | null;
   /** pipes: the three meshes, the side mask they were built for, the fluid state they show (see pipeKey) */
   pipe: THREE.Mesh[]; mask: number; fluidKey: number;
 }
@@ -642,18 +641,16 @@ export class FacView {
     const key = type + ':' + dir + ':' + (this.modelOf(type) ? 'm' : 's');
     if (key !== this.ghostKey) {
       if (this.ghostVis) { this.ghost.remove(this.ghostVis.obj); for (const m of this.ghostVis.own) m.dispose(); }
-      const v = this.build(type, dir, 'ammo', true);
+      const v = this.build(type, dir, true);
       if (type === 'belt') this.shapeBelt(v, (dir + 3) % 6, 3, 3);
       if (type === 'pipe') this.shapePipe(v, 0, 0, 0);
       v.obj.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { m.material = this.ghostMat; m.castShadow = false; } });
-      // the way it will face, which R turns: a bright chevron over a belt, and the producers' output arrow kept lit
+      // the way it will run, which R turns: a bright chevron over the belt
       if (type === 'belt') {
         const holder = new THREE.Group(); holder.rotation.y = yawOf(dir);
         for (const z of [-0.45, 0.25]) { const ch = new THREE.Mesh(G_CHEV, this.ghostArrow); ch.position.set(0, Y_RAIL + 0.04, z); ch.scale.setScalar(1.05); ch.renderOrder = 5; holder.add(ch); }
         v.obj.add(holder);
       }
-      // (drawn after the see-through body and just above its plinth, or the plinth's ghost hides it)
-      if (v.arrow) v.arrow.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { m.material = this.ghostArrow; m.scale.setScalar(1.1); m.position.y = 0.36; m.renderOrder = 5; } });
       // (see-through: kept out of the AO pre-pass like the tower ghost, or it would shade the deck under it as a solid)
       v.obj.traverse((o) => o.layers.set(FX_LAYER));
       this.ghost.add(v.obj);
@@ -668,37 +665,50 @@ export class FacView {
     return m && m.children.length ? m : null;
   }
 
+  /**
+   * A belt or pipe under a road: a hatch plate let into the roadway with a grating, lit chevrons for a belt (which way it
+   * runs) or a pipe-coloured stripe, flush with the surface so the machines walk over it.
+   */
+  private addHatch(v: FVis, fc: Fac) {
+    const h = new THREE.Group();
+    const plate = new THREE.Mesh(geo('hatch', () => new THREE.CircleGeometry(HEX_SIZE * 0.62, 6, Math.PI / 6).rotateX(-Math.PI / 2)), mat(0x1d1a17, 'dark'));
+    plate.position.y = 0.045; plate.receiveShadow = true; h.add(plate);
+    const rim = new THREE.Mesh(geo('hatchRim', () => new THREE.RingGeometry(HEX_SIZE * 0.6, HEX_SIZE * 0.68, 6, 1, Math.PI / 6).rotateX(-Math.PI / 2)), mat(0xf2a54a, 'glow'));
+    rim.position.y = 0.05; h.add(rim);
+    if (fc.type === 'belt') {
+      const lane = new THREE.Group(); lane.rotation.y = yawOf(fc.dir);
+      for (const z of [-0.3, 0.2]) { const ch = new THREE.Mesh(G_CHEV, mat(0xe3dc92, 'glow')); ch.position.set(0, 0.055, z); ch.scale.setScalar(0.8); lane.add(ch); }
+      h.add(lane);
+    } else {
+      const bar = new THREE.Mesh(geo('hatchBar', () => new THREE.BoxGeometry(0.5, 0.02, 0.14)), mat(0x6f7b82, 'dark')); bar.position.y = 0.055; h.add(bar);
+    }
+    for (const o of v.pipe) o.visible = false;
+    v.obj.add(h); v.hatch = h;
+  }
   private drop(v: FVis) {
     this.group.remove(v.obj);
     for (const m of v.own) m.dispose();
   }
 
   /** Build the shapes of one building. */
-  private build(type: FacType, dir: number, recipe: string, ghost = false): FVis {
+  private build(type: FacType, dir: number, ghost = false): FVis {
     const g = new THREE.Group();
     const v: FVis = {
-      obj: g, type, seen: 0, dir, recipe, model: false, spin: null, arm: null, armX: false, work: null, workY: 0, pitman: null, crank: null, ph: Math.random() * TAU, spd: 0, lamps: [], glows: [], own: [],
-      belt: null, e: -1, k: -1, caps: -1, feeds: null, arrow: null, pipe: [], mask: -1, fluidKey: -1,
+      obj: g, type, seen: 0, dir, model: false, spin: null, arm: null, armX: false, work: null, workY: 0, pitman: null, crank: null, ph: Math.random() * TAU, spd: 0, lamps: [], glows: [], own: [],
+      belt: null, e: -1, k: -1, caps: -1, feeds: null, hatch: null, pipe: [], mask: -1, fluidKey: -1,
     };
     const src = type === 'belt' || type === 'pipe' ? null : this.modelOf(type);
     if (src) this.fromModel(v, src, ghost);
     else this.fromShapes(v, ghost);
-    // the output side of a producer: a sand arrow on the deck at the edge it hands its items over
-    if (turns(type) && type !== 'belt') {
-      const holder = new THREE.Group(); holder.rotation.y = yawOf(dir);
-      const ch = new THREE.Mesh(G_CHEV, mat(0xe3dc92, 'glow')); ch.position.set(0, 0.2, 0.86); ch.scale.setScalar(0.7);
-      holder.add(ch); g.add(holder); v.arrow = holder;
-    }
     return v;
   }
 
   /** A building from its model: shared geometry, its own copies of the lights that change with its state. */
   private fromModel(v: FVis, src: THREE.Object3D, ghost: boolean) {
     const m = src.clone(true);
-    if (turns(v.type)) m.rotation.y = yawOf(v.dir);
     v.obj.add(m);
     v.model = true;
-    const out = v.type === 'fab' ? RECIPE_BY_ID[v.recipe]?.out : undefined;
+    const out = MAKES[v.type]?.out;
     const mine = new Map<THREE.Material, THREE.MeshStandardMaterial>();
     m.traverse((o) => {
       const mesh = o as THREE.Mesh;
@@ -710,8 +720,8 @@ export class FacView {
         c = sm.clone(); mine.set(sm, c); v.own.push(c);
         if (sm.name === 'glow_lamp') v.lamps.push(c);
         else {
-          if (out) { c.emissive.setHex(ITEMS[out].color); c.color.setHex(ITEMS[out].color).multiplyScalar(0.25); } // the fabricator's lights show what it makes
-          // the fabricator's lit bay and window are large faces: at full strength they bloom into one blown-out block
+          if (out && v.type === 'press') { c.emissive.setHex(ITEMS[out].color); c.color.setHex(ITEMS[out].color).multiplyScalar(0.25); } // the press glows in the colour of its shells
+          // lit bays and windows are large faces: at full strength they bloom into one blown-out block
           v.glows.push({ m: c, i0: c.emissiveIntensity * (WORK_GLOW[v.type] ?? 1) });
         }
       }
@@ -726,7 +736,7 @@ export class FacView {
 
   /** A building from plain shapes (no model file). Geometry is cached, so nothing here needs freeing but the lights. */
   private fromShapes(v: FVis, ghost: boolean) {
-    const { type, dir, recipe, obj: g } = v;
+    const { type, obj: g } = v;
     const c = FACS[type].color;
     const box = (w: number, h: number, d: number, m: THREE.Material, x = 0, y = 0, z = 0, parent: THREE.Object3D = g) => {
       const o = new THREE.Mesh(geo(`b${w},${h},${d}`, () => new THREE.BoxGeometry(w, h, d)), m); o.position.set(x, y, z); o.castShadow = true; o.receiveShadow = true; parent.add(o); return o;
@@ -789,17 +799,16 @@ export class FacView {
         lamp(1.2, -0.45, 0.45);
         break;
       }
-      case 'fab': {
+      case 'press': case 'cells': case 'missiles': {
+        // a plain workshop block with a turning gear and a light in the colour of what it makes
         base();
         box(1.3, 0.8, 1.3, mat(c), 0, 0.58, 0);
         box(1.0, 0.3, 1.0, mat(HULL, 'dark'), 0, 1.13, 0);
         const gear = new THREE.Group(); gear.position.set(0, 1.4, 0); g.add(gear); v.spin = gear;
         const t = new THREE.Mesh(geo('fabGear', () => new THREE.TorusGeometry(0.34, 0.08, 6, 12)), mat(TRIM, 'dark')); t.rotation.x = Math.PI / 2; gear.add(t);
         for (let i = 0; i < 6; i++) { const b = box(0.12, 0.1, 0.18, mat(TRIM, 'dark'), Math.cos((i * TAU) / 6) * 0.44, 0, Math.sin((i * TAU) / 6) * 0.44, gear); b.rotation.y = -(i * TAU) / 6; }
-        const out = RECIPE_BY_ID[recipe]?.out;
-        const light = box(0.5, 0.12, 0.06, glow(0x222222, out ? ITEMS[out].color : c, 1.6), 0, 0.75, 0.66);
-        // the face with the light looks to the output side
-        const face = new THREE.Group(); face.rotation.y = yawOf(dir); g.remove(light); face.add(light); g.add(face);
+        const out = MAKES[type]?.out;
+        box(0.5, 0.12, 0.06, glow(0x222222, out ? ITEMS[out].color : c, 1.6), 0, 0.75, 0.66);
         lamp(1.25, 0.5, 0.5);
         break;
       }
@@ -825,12 +834,19 @@ export class FacView {
         lamp(1.35, -0.45, 0.45);
         break;
       }
-      case 'depot': {
+      case 'works': {
         base(0.12);
         box(1.5, 0.12, 1.3, mat(TRIM, 'dark'), 0, 0.18, 0);
         for (let i = 0; i < 4; i++) box(0.55, 0.42, 0.5, mat(0xe3dc92), (i % 2 - 0.5) * 0.62, 0.45, (Math.floor(i / 2) - 0.5) * 0.58);
         box(0.55, 0.42, 0.5, mat(0xc9b870), 0.1, 0.87, 0);
         lamp(1.2, 0.55, 0.5);
+        break;
+      }
+      case 'crate': {
+        box(1.1, 0.7, 1.1, mat(0x6b6a45), 0, 0.37, 0);
+        box(1.16, 0.08, 1.16, mat(TRIM, 'dark'), 0, 0.74, 0);
+        box(1.14, 0.1, 0.2, mat(0xe3dc92, 'glow'), 0, 0.4, 0.47);
+        lamp(0.95, 0.4, 0.4);
         break;
       }
     }
@@ -873,11 +889,7 @@ export class FacView {
   }
 
   /** A number that changes when any building comes, goes or turns (the belt shapes depend on their neighbours). */
-  private layoutKey(F: Factory) {
-    let h = F.facs.length | 0;
-    for (const f of F.facs) h = Math.imul(h ^ (f.id * 977 + f.dir * 131 + f.cx * 7919 + f.cz * 104729 + FAC_TYPES.indexOf(f.type)), 16777619);
-    return h;
-  }
+  private layoutKey(F: Factory) { return F.rev * 4096 + F.facs.length; }
   /** Work out each belt's entry side and shape from what feeds it, and where its line starts and stops. */
   private layoutBelts(F: Factory) {
     const pointsAt = (q: Fac, b: Fac) => { const [x, z] = neighbor(q.cx, q.cz, q.dir); return x === b.cx && z === b.cz; };
@@ -888,7 +900,7 @@ export class FacView {
       for (let d = 0; d < 6; d++) {
         if (d === b.dir) continue;
         const [nx, nz] = neighbor(b.cx, b.cz, d), q = F.facAt(nx, nz);
-        if (!q || !turns(q.type) || !pointsAt(q, b)) continue;
+        if (!q || q.type !== 'belt' || !pointsAt(q, b)) continue;
         fs.push({ d, q });
       }
       entry.set(b.id, fs.length === 1 ? fs[0].d : -1 - fs.length);
@@ -897,10 +909,7 @@ export class FacView {
     for (const b of F.facs) {
       const v = this.vis.get(b.id);
       if (!v) continue;
-      if (b.type === 'pipe') { const m = F.pipeMask(b); if (m !== v.mask) this.shapePipe(v, m, b.cx, b.cz); continue; }
-      // a producer's arrow gives way to the belt that takes its output (not to one there that points back into it: the sim
-      // never hands output to that one, so the arrow has to keep showing where the building waits to put its items)
-      if (v.arrow) { const [nx, nz] = neighbor(b.cx, b.cz, b.dir), q = F.facAt(nx, nz); v.arrow.visible = !q || q.type !== 'belt' || pointsAt(q, b); }
+      if (b.type === 'pipe') { const m = F.pipeMask(b); if (m !== v.mask && !b.under) this.shapePipe(v, m, b.cx, b.cz); continue; }
       if (b.type !== 'belt') continue;
       const en = entry.get(b.id)!, back = (b.dir + 3) % 6, e = en >= 0 ? en : back, fs = multi.get(b.id);
       // several feeders: the belt runs straight, each side feeder gets an inlet stub, and the items it hands over ride in from it
@@ -927,7 +936,8 @@ export class FacView {
     for (const fc of F.facs) {
       if (fc.type !== 'belt') continue;
       const v = this.vis.get(fc.id);
-      if (!v || v.k < 0) continue;
+      // (a belt under a road is not drawn: its hatch plate in the road stands for it)
+      if (!v || v.k < 0 || fc.under) continue;
       const sc = v.obj.scale.x, back = (fc.dir + 3) % 6;
       this.putBelt(beltGeo(v.k, !!(v.caps & 1), !!(v.caps & 2)), fc, v.e, sc);
       if (v.feeds) for (const f of v.feeds) if (f.d !== back) this.putBelt(stubGeo((f.d - fc.dir + 6) % 6), fc, f.d, sc);
@@ -969,13 +979,14 @@ export class FacView {
     let added = false;
     for (const fc of F.facs) {
       let v = this.vis.get(fc.id);
-      // a producer turned, a fabricator given a new recipe, or a model that has loaded since: built again
-      if (v && ((fc.type !== 'belt' && turns(fc.type) && v.dir !== fc.dir) || (fc.type === 'fab' && v.recipe !== fc.recipe) || (!v.model && fc.type !== 'belt' && fc.type !== 'pipe' && this.modelOf(fc.type)))) {
+      // a model that has loaded since: built again
+      if (v && !v.model && fc.type !== 'belt' && fc.type !== 'pipe' && this.modelOf(fc.type)) {
         this.drop(v); this.vis.delete(fc.id); v = undefined;
       }
       if (!v) {
-        v = this.build(fc.type, fc.dir, fc.recipe);
+        v = this.build(fc.type, fc.dir);
         v.obj.position.set(fc.x, 0, fc.z);
+        if (fc.under) this.addHatch(v, fc);
         this.group.add(v.obj);
         this.vis.set(fc.id, v);
         added = true;
@@ -987,7 +998,8 @@ export class FacView {
     }
     for (const [id, v] of this.vis) if (v.seen !== f) { this.drop(v); this.vis.delete(id); }
     const lk = this.layoutKey(F);
-    if (lk !== this.layout || added || F.pipeNets !== this.nets) { this.layout = lk; this.nets = F.pipeNets; this.layoutBelts(F); this.coverRocks(F); }
+    // (any change redraws the belt batches: a belt that was removed changes no other belt's shape, but its instance has to go)
+    if (lk !== this.layout || added || F.pipeNets !== this.nets) { this.layout = lk; this.nets = F.pipeNets; this.layoutBelts(F); this.coverRocks(F); this.beltDirty = true; }
     this.syncBelts(F, !!reveal);
     this.flowT.value = time;
     // the tread runs with the sim clock at the belt speed (it stops when the game pauses)
@@ -1017,7 +1029,7 @@ export class FacView {
     const N = this.itemN, pt = this.pt, M = this.M;
     for (const s of SHAPES) N[s] = 0;
     for (const fc of F.facs) {
-      if (fc.type !== 'belt' || !fc.items.length) continue;
+      if (fc.type !== 'belt' || !fc.items.length || fc.under) continue;
       const v = this.vis.get(fc.id);
       if (!v || v.k < 0) continue;
       const P = PATHS[v.k], c = DX[v.e], s = DZ[v.e], fd = v.feeds;
@@ -1103,14 +1115,14 @@ export class FacView {
   private animate(fc: Fac, v: FVis, dt: number, time: number) {
     const sim = this.sim!, on = fc.state === 'ok';
     if (v.lamps.length) {
-      const c = fc.state === 'ok' ? LAMP.ok : fc.state === 'nopower' || fc.state === 'nofuel' || fc.state === 'nodeposit' ? LAMP.bad : LAMP.warn;
+      const c = fc.state === 'ok' ? LAMP.ok : fc.state === 'nopower' || fc.state === 'nofuel' || fc.state === 'nodeposit' || fc.state === 'empty' ? LAMP.bad : LAMP.warn;
       const i = fc.state === 'ok' ? 1.8 : 1.2 + 0.8 * Math.sin(time * 6 + fc.id);
       for (const m of v.lamps) { m.emissive.setHex(c); m.color.setHex(c).multiplyScalar(0.25); m.emissiveIntensity = i; }
     }
     // working lights: lit (and flickering for the hot ones) while the building works, nearly dark while it idles
     if (v.glows.length) {
       const k = !on ? 0.1 : fc.type === 'smelter' ? 1 + 0.3 * Math.sin(time * 13 + fc.id) : fc.type === 'generator' ? 1 + 0.3 * Math.sin(time * 11 + fc.id)
-        : fc.type === 'fab' ? 1 + 0.25 * Math.sin(time * 8) : fc.type === 'refinery' ? 1 + 0.25 * Math.sin(time * 5) : 1;
+        : fc.type === 'press' || fc.type === 'cells' || fc.type === 'missiles' ? 1 + 0.25 * Math.sin(time * 8 + fc.id) : fc.type === 'refinery' ? 1 + 0.25 * Math.sin(time * 5) : 1;
       for (const g of v.glows) g.m.emissiveIntensity = g.i0 * k;
     }
     // machines spin up over about a second and run down when they stop, instead of snapping
@@ -1119,7 +1131,9 @@ export class FacView {
     switch (fc.type) {
       case 'mine': if (v.spin) v.spin.rotation.y += dt * 9 * v.spd; break;
       // the robot arm swings between the bay and the door, it does not whirl round
-      case 'fab': if (v.spin) { v.ph += dt * 1.7 * v.spd; v.spin.rotation.y = 1.15 * Math.sin(v.ph); } break;
+      case 'press': if (v.spin) { v.ph += dt * 1.7 * v.spd; v.spin.rotation.y = 1.15 * Math.sin(v.ph); } break;
+      case 'cells': if (v.spin) v.spin.rotation.y += dt * 6 * v.spd; break; // the vat's agitator
+      case 'missiles': if (v.spin) v.spin.rotation.y += dt * 0.5 * v.spd; break; // the turntable with the missiles on it: slowly
       case 'generator': if (v.spin) v.spin.rotation.y += dt * (0.5 + 13.5 * v.spd); break;
       case 'refinery': if (v.spin) v.spin.rotation.y += dt * (0.3 + 7.7 * v.spd); break;
       case 'pump': {

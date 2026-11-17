@@ -1,13 +1,13 @@
 // Quick headless checks: node tools/smoke.ts
 // Covers maps, co-op replication, towers and their specials, the enemies (Gyre, Broodcarrier, Titan), the factory
-// (deposits, mines, smelters, fabricators, belts, pipes, power, depots, tower supply) and bot runs with free towers.
+// (deposits, supply crates, mines, belts, smelters, plants, pipes, power, tower supply, unlocks, waves on call) and bot runs with free towers.
 import { Sim, nodePos, towerOff, TITAN_PHASES, computeWalls, paceOf, NODE_R, DECK_GAP, MUST_EVENTS, SNAP_EVENTS_MAX, CORE_STAND } from '../src/game/sim.ts';
 import type { Ev, Enemy, Tower } from '../src/game/sim.ts';
 import {
   ENEMIES, ENEMY_SCALE, ENEMY_TYPES, WAVE_POOL, gyreCount, broodCap, GYRE_FIRST, GYRE_PAIR, BROOD_EVERY, BROOD_SIZE, BROOD_REACH, MITE_HOLD, JAM_LINGER,
   TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY, TITAN_STRIKE, TITAN_SLOW, TITAN_GOLD, TITAN_SURVIVAL, TITAN_AGAIN, TITAN_TOUGHER, TITAN_SMASH, TITAN_LEAD, WHEEL_GUARD, WHEEL_CRAWL, WHEEL_BLEED, WHEEL_DRAG, WHEEL_SINK, WHEEL_REST, WHEEL_SPINUP, WHEEL_PIERCE, TOWERS, TOWER_TYPES, CARDS, CARD_BY_ID, GW, GH, TWIN_BOLT, TUNE, COOP_HP, coopScale,
   BREACH_TIME, BREACH_TIME_BOSS, BREACH_SHARE, FIRST_WAVE_IN, NEXT_WAVE_IN, LINK_RANGE, WALL_HALF, FIRE_RING,
-  ORE_TYPES, FACS, FAC_TYPES, RECIPES, FRAME_MATS, START_MATS, START_GOLD_MUL, ITEM_SHOTS, upgradeMat,
+  ORE_TYPES, FACS, FAC_TYPES, MAKES, TOWER_CHAIN, TOWER_TIER, CRATE_STOCK, START_MATS, START_GOLD_MUL, ITEM_SHOTS, upgradeMat,
 } from '../src/game/data.ts';
 import type { FacType, OreType } from '../src/game/data.ts';
 import { waveHpMul } from '../src/game/data.ts';
@@ -16,7 +16,7 @@ import type { MapDef } from '../src/game/map.ts';
 import { Bot } from '../src/game/bot.ts';
 import { MAPS } from '../src/game/maps.ts';
 import { sanitizeMap, validateMap, encodeMap, decodeMap } from '../src/game/map.ts';
-import { makeDeposits, MINE_TIME, OUT_CAP, TOWER_STOCK, TANK, SUPPLY } from '../src/game/factory.ts';
+import { makeDeposits, MINE_TIME, OUT_CAP, TOWER_STOCK, TANK, SUPPLY, COAL_SMELTS, CRATE_TIME } from '../src/game/factory.ts';
 import type { Fac } from '../src/game/factory.ts';
 /** Switchback with its first diagonal raised to level 2. */
 const hill: MapDef = { ...MAPS[0], id: 'hill', towers: [], lanes: [MAPS[0].lanes[0].map((p, i) => (i === 1 || i === 2 ? [p[0], p[1], 2] : p))] };
@@ -160,7 +160,10 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
   // cards: the pool is sane and blueprints are offered at the early levels
   ok(new Set(CARDS.map((c) => c.id)).size === CARDS.length && CARDS.every((c) => !c.needs || Object.hasOwn(TOWERS, c.needs)), 'card ids unique');
   const c = new Sim({ seed: 4, map: bare });
-  for (const lvl of [2, 3, 5, 7, 9, 11, 13]) { c.level = lvl; ok(c.rollCards(0).some((id) => id.startsWith('bp_')), 'blueprint offered at level ' + lvl); }
+  // (blueprints come on set levels only, one at a time: the first at level 2, then every second or third level)
+  const bpAt: number[] = [];
+  for (let lvl = 1; lvl <= 28; lvl++) { c.level = lvl; const n = c.rollCards(0).filter((id) => id.startsWith('bp_')).length; ok(n <= 1, 'at most one blueprint in an offer at level ' + lvl); if (n) bpAt.push(lvl); }
+  ok(bpAt[0] === 2 && bpAt.length >= 8 && bpAt.length <= 14 && bpAt.every((l, i) => i === 0 || l - bpAt[i - 1] >= 2), 'blueprints are offered at the early levels, never two levels in a row: ' + bpAt.join(','));
   ok(new Sim({ diff: 'easy' }).winWave === 20 && new Sim({ diff: 'normal' }).winWave === 25 && new Sim({ diff: 'hard' }).winWave === 30, 'waves per difficulty');
 }
 
@@ -901,15 +904,22 @@ const sv = new Sim({ pauseOnCards: false, seed: 9, survival: true, diff: 'easy',
 for (let i = 0; i < 60 * 1500 && !sv.over; i++) { b3.step(1 / 60); sv.step(1 / 60); sv.events.length = 0; }
 ok(!sv.won, 'survival never "wins"'); console.log('survival reached wave', sv.wave);
 
-// ---------- the factory: deposits, mines, smelters, fabricators, belts, pipes, power, depots, tower supply ----------
+// ---------- the factory: deposits, supply crates, mines, belts, smelters, plants, pipes, power, tower supply, unlocks, waves on call ----------
 {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const priv = (s: Sim) => s as any;
   const T = (o: OreType) => ORE_TYPES.indexOf(o) + 1;
   const at = (cx: number, cz: number) => cz * GW + cx;
   const a2s = (a: ArrayLike<number>) => Array.prototype.join.call(a, '');
-  /** A run with the factory switched on (not free), no waves coming, and plenty of credits. */
-  const fac = (o: Partial<ConstructorParameters<typeof Sim>[0]> = {}) => { const s = new Sim({ seed: 31, map: bare, pauseOnCards: false, ...o }); s.gold = 1e5; s.nextWaveIn = 1e9; return s; };
+  /**
+   * A run with the factory switched on (not free), no waves coming, and plenty of credits. Every tower and building is unlocked and
+   * the map's supply crates are cleared away, so each test lays out exactly what it checks (`raw`: unlocks and crates as a run starts with them).
+   */
+  const fac = (o: Partial<ConstructorParameters<typeof Sim>[0]> = {}, raw = false) => {
+    const s = new Sim({ seed: 31, map: bare, pauseOnCards: false, ...o }); s.gold = 1e5; s.nextWaveIn = 1e9;
+    if (!raw) { for (const f of s.factory.facs.slice()) s.factory.remove(f.id); for (const t of TOWER_TYPES) s.unlocked.add(t); for (const f of FAC_TYPES) s.facs.add(f); }
+    return s;
+  };
   const step = (s: Sim, sec: number, evs?: Ev[]) => { for (let i = 0; i < Math.round(sec * 60); i++) { s.step(1 / 60); const e = s.events.splice(0); if (evs) evs.push(...e); s.players.forEach((p) => { p.pending.length = 0; }); } };
   /** The centre of a patch of free deck of radius r, cleared of deposits (the tests lay their own). */
   const open = (s: Sim, r: number, skip = 0): [number, number] => {
@@ -922,6 +932,9 @@ ok(!sv.won, 'survival never "wins"'); console.log('survival reached wave', sv.wa
     }
     throw new Error('no free patch of radius ' + r);
   };
+  /** The tile n steps from c in direction d. */
+  const go = (c: [number, number], d: number, n = 1): [number, number] => { let p = c; for (let i = 0; i < n; i++) p = neighbor(p[0], p[1], d); return p; };
+  const lay = (s: Sim, c: [number, number], o: OreType) => { s.factory.ore[at(c[0], c[1])] = T(o); };
   /** A stationary enemy that does not die. */
   const foe = (s: Sim, dist: number) => { priv(s).spawn('grunt', 1e6, 0); const e: Enemy = s.enemies[s.enemies.length - 1]; e.speed = 0; e.dist = dist; e.off = 0; priv(s).place(e); return e; };
   /** A free tile within r of a cell, not one of `not`. */
@@ -930,151 +943,431 @@ ok(!sv.won, 'survival never "wins"'); console.log('survival reached wave', sv.wa
     throw new Error('no free tile near ' + cx + ',' + cz);
   };
   const shotsOf = (evs: Ev[], id: number) => evs.filter((e) => e.k === 'shot' && e.id === id).length;
+  const crates = (s: Sim) => s.factory.facs.filter((f) => f.type === 'crate');
+  const roadside = (g: ArrayLike<number>, cx: number, cz: number) => [0, 1, 2, 3, 4, 5].some((d) => { const [x, z] = neighbor(cx, cz, d); return inBoard(x, z) && g[at(x, z)] === 1; });
 
   {
-    // deposits: every pre-made map has iron, copper, coal and oil, on free deck only, the same for any seed
+    // deposits: every pre-made map has iron, copper, coal and oil, on free deck only, the same for any seed, and iron close to a road
     for (const m of MAPS) {
       const s = new Sim({ seed: 1, map: m }), ore = s.factory.ore, kinds = new Set<number>();
-      let bad = 0;
-      for (let i = 0; i < GW * GH; i++) if (ore[i]) { kinds.add(ore[i]); if (s.map.grid[i] !== 0 || ore[i] > ORE_TYPES.length) bad++; }
+      let bad = 0, near = 0;
+      for (let i = 0; i < GW * GH; i++) if (ore[i]) {
+        kinds.add(ore[i]); if (s.map.grid[i] !== 0 || ore[i] > ORE_TYPES.length) bad++;
+        if (ore[i] === T('iron_ore') && disc(i % GW, Math.floor(i / GW), 2).some(([x, z]) => inBoard(x, z) && s.map.grid[at(x, z)] === 1)) near++;
+      }
       ok(kinds.size === ORE_TYPES.length && !bad, `${m.id}: deposits of every kind, on free deck (${[...kinds].sort().map((k) => ORE_TYPES[k - 1]).join(', ')}${bad ? `, ${bad} on roads or scenery` : ''})`);
-      const again = new Sim({ seed: 999, map: m }).factory.ore;
-      ok(again.every((v, i) => v === ore[i]), `${m.id}: deposits do not depend on the seed`);
+      ok(near > 0, `${m.id}: some iron lies within 2 tiles of a road (${near} tiles)`);
+      const again = new Sim({ seed: 999, map: m }).factory.ore, free = new Sim({ seed: 5, map: m, free: true }).factory.ore;
+      ok(again.every((v, i) => v === ore[i]) && free.every((v, i) => v === ore[i]), `${m.id}: deposits do not depend on the seed or on free towers`);
     }
     const g = new Sim({ seed: 1, map: bare }).map.grid;
     ok(makeDeposits(g, 'x').every((v, i, a) => v === makeDeposits(g, 'x')[i] && (v === 0 || g[i] === 0)) && a2s(makeDeposits(g, 'x')) !== a2s(makeDeposits(g, 'y')), 'makeDeposits is deterministic per key, and the key matters');
   }
   {
-    // a mine on a deposit digs ore and hands it to the smelter beside it, which needs coal (from a coal mine) to melt it
-    const s = fac(), [cx, cz] = open(s, 2);
-    const S = neighbor(cx, cz, 0), M2 = neighbor(S[0], S[1], 0);
-    s.factory.ore[at(cx, cz)] = T('iron_ore'); s.factory.ore[at(M2[0], M2[1])] = T('coal');
-    ok(s.facBlock('mine', S[0], S[1]) === 'needs an ore or coal deposit' && !s.buildFac('mine', S[0], S[1]), 'a mine needs a deposit');
-    ok(s.facBlock('pump', cx, cz) === 'needs an oil field' && s.facBlock('mine', cx, cz) === '', 'a pumpjack needs an oil field, a mine goes on ore');
-    const mine = s.buildFac('mine', cx, cz, 3)!;
-    ok(!!mine && mine.ore === 'iron_ore' && s.grid[at(cx, cz)] === 2 && s.factory.facAt(cx, cz) === mine, 'the mine stands on its deposit');
-    step(s, MINE_TIME * 3 + 0.1);
-    ok(mine.out.length === 3 && mine.out.every((it) => it === 'iron_ore') && mine.state === 'ok', `a lone mine digs one ore every ${MINE_TIME} s and keeps it (${mine.out.length})`);
-    step(s, MINE_TIME * 4);
-    ok(mine.out.length === OUT_CAP && mine.state === 'full', 'with nowhere to put it, it fills up and stops');
-    const sm = s.buildFac('smelter', S[0], S[1], 0)!;
-    step(s, 2);
-    ok(!!sm && (sm.inv.iron_ore || 0) > 0 && mine.out.length < OUT_CAP && sm.state === 'nofuel' && !sm.out.length, 'the mine hands its ore to the smelter beside it, which has no coal yet');
-    const coal = s.buildFac('mine', M2[0], M2[1], 0)!;
-    step(s, 14);
-    ok(!!coal && coal.ore === 'coal' && sm.out.length >= 4 && sm.out.every((it) => it === 'iron'), `with coal from a coal mine the smelter melts iron plates (${sm.out.length}: ${sm.out.join(',')})`);
-  }
-  {
-    // a fabricator with power makes ammunition, puts it on the belt at its arrow, and the belt delivers it into a Pulse Turret
-    const s = fac(), [cx, cz] = open(s, 3);
-    const B = neighbor(cx, cz, 0), Tc = neighbor(B[0], B[1], 0), G = neighbor(cx, cz, 3);
-    const fab = s.buildFac('fab', cx, cz, 0)!, belt = s.buildFac('belt', B[0], B[1], 0)!, gen = s.buildFac('generator', G[0], G[1], 0)!;
-    const tw = s.build('pulse', Tc[0], Tc[1])!, stock0 = tw.stock;
-    ok(!!fab && !!belt && !!gen && !!tw && fab.recipe === 'ammo' && hexDist(cx, cz, tw.cx, tw.cz) === 2, 'fabricator, belt, generator and turret are down (the fabricator starts on ammo, two tiles from the turret)');
-    fab.inv.iron = 4; fab.inv.copper = 4;
+    // supply crates: every run that needs a factory starts with iron ore beside its roads; trickier maps bring a later tower's ammunition too
+    let stocked = 0;
+    for (const m of MAPS) {
+      const s = new Sim({ seed: 1, map: m }), cr = crates(s), iron = cr.filter((f) => f.hold === 'iron_ore');
+      const sound = cr.every((f) => s.map.grid[at(f.cx, f.cz)] === 0 && s.grid[at(f.cx, f.cz)] === 2 && !s.factory.ore[at(f.cx, f.cz)] && roadside(s.map.grid, f.cx, f.cz) && s.factory.facAt(f.cx, f.cz) === f && !!f.hold && f.left === CRATE_STOCK[f.hold] && f.left > 0);
+      ok(iron.length >= 1 && sound, `${m.id}: at least one crate of iron ore, every crate on a free roadside tile off the deposits (${cr.map((f) => `${f.left} ${f.hold} at ${f.cx},${f.cz}`).join('; ')})`);
+      const sig = (q: Sim) => crates(q).map((f) => [f.cx, f.cz, f.hold, f.left].join()).join(';');
+      ok(sig(new Sim({ seed: 777, map: m })) === sig(s), `${m.id}: the crates do not depend on the seed`);
+      const f = new Sim({ seed: 1, map: m, free: true });
+      ok(!f.factory.facs.length && FAC_TYPES.every((t) => f.facs.has(t)) && !f.facs.has('crate'), `${m.id}: a free run has no crates and every building unlocked`);
+      const extra = cr.find((c) => c.hold === 'copper' || c.hold === 'shell');
+      if ((m.tier || 1) >= 2) {
+        const tw = TOWER_TYPES.find((t) => extra && TOWERS[t].needs.item === extra.hold);
+        ok(!!extra && !!tw && s.unlocked.has(tw) && s.facs.has('generator') && s.facs.has('pole') && cr.length === iron.length + 1, `${m.id} (tier ${m.tier}): one crate of copper plates or shells, and its tower, the Generator and the Pole are open (${extra ? extra.hold : 'none'}, ${[...s.unlocked].join(',')})`);
+      } else ok(!extra && s.unlocked.size === 1 + new Set(m.towers.map((t) => t.t)).size - (m.towers.some((t) => t.t === 'pulse') ? 1 : 0) && s.facs.size === 2, `${m.id} (tier 1): iron ore only, nothing unlocked beyond the start`);
+      // the map's own towers start fully stocked
+      for (const t of s.towers) { const n = TOWERS[t.type].needs; if (n.item || n.fluid) { stocked++; ok((!n.item || t.stock === TOWER_STOCK) && (!n.fluid || t.tank === TANK), `${m.id}: its own ${t.type} starts fully stocked`); } }
+    }
+    ok(stocked > 0, `the maps' own towers start fully stocked (${stocked} checked)`);
+    // a Pulse Turret built next to a crate fills up from it; that is not a delivery by the factory
+    const s = fac({}, true), cr = crates(s).find((f) => f.hold === 'iron_ore')!, spot = freeNear(s, cr.cx, cr.cz, 1), n0 = cr.left;
+    ok(s.unlocked.size === 1 && s.unlocked.has('pulse') && cr.state === 'idle', 'a run starts with the Pulse Turret only');
+    const t = s.build('pulse', spot[0], spot[1])!, evs: Ev[] = [];
+    ok(!!t && t.stock === 0 && hexDist(t.cx, t.cz, cr.cx, cr.cz) === 1, 'a turret goes up beside a crate, empty');
+    step(s, CRATE_TIME * TOWER_STOCK + 1, evs);
+    ok(t.stock === TOWER_STOCK && !t.dry && cr.left === n0 - TOWER_STOCK && cr.state === 'ok' && s.factory.delivered === 0 && evs.some((q) => q.k === 'fed' && q.id === t.id), `the crate fills it up to ${TOWER_STOCK} items (${t.stock}; ${cr.left} of ${n0} left in the crate, delivered ${s.factory.delivered})`);
+    cr.left = 2; t.stock = 0;
     step(s, 3);
-    ok(fab.state === 'nopower' && fab.pwr === 0 && !fab.out.length && !belt.items.length && tw.stock === stock0 && stock0 > 0 && stock0 < TOWER_STOCK && gen.state === 'nofuel', 'without coal in the generator the fabricator has no power and makes nothing');
-    gen.inv.coal = 4;
-    const evs: Ev[] = [];
-    let onBelt = 0;
-    for (let i = 0; i < 60 * 12; i++) { step(s, 1 / 60, evs); if (belt.items.some((q) => q.it === 'ammo')) onBelt++; }
-    ok(fab.pwr === 1 && gen.state !== 'nofuel' && onBelt > 0, 'with coal the generator powers it, and ammo rides the belt');
-    ok(tw.stock === TOWER_STOCK && !tw.dry, `the belt fills the turret up to ${TOWER_STOCK} items (${tw.stock})`);
-    // a belt turned back toward the fabricator takes nothing from it
-    s.rotateFac(belt.id, 3);
-    ok(belt.dir === 3, 'a belt can be turned');
-    const out = fab.out.length, held = belt.items.length; tw.stock = 0; fab.inv.iron = 4; fab.inv.copper = 4;
-    step(s, 4);
-    ok(tw.stock === 0 && fab.out.length >= out && belt.items.length <= held, 'a belt that points back into the fabricator takes nothing from it');
+    ok(cr.left === 0 && cr.state === 'empty' && t.stock === 2 && s.factory.delivered === 0, `a crate hands out what it holds and is then empty (${cr.left} left, state ${cr.state}, turret ${t.stock})`);
+    step(s, 3);
+    ok(cr.left === 0 && t.stock === 2, 'an empty crate gives nothing more');
+    ok(s.facBlock('crate', spot[0] + 1, spot[1]) === 'unknown' && !s.buildFac('crate', spot[0] + 1, spot[1]) && !FAC_TYPES.includes('crate'), 'a crate cannot be built');
+    // an empty crate can be cleared away (for nothing); one that still holds something stays
+    const full = crates(s).find((f) => f.left > 0)!, gc = s.gold;
+    ok(!!full && !s.sellFac(full.id) && s.factory.facById(full.id) === full && s.sellFac(cr.id) && s.gold === gc && !s.factory.facById(cr.id) && s.grid[at(cr.cx, cr.cz)] === 0, 'an empty crate can be cleared away for nothing, a crate with something in it cannot');
+    // a crate also loads a belt that leads to a turret, and no belt that does not
+    const q = fac({}, true), c2 = crates(q).find((f) => f.hold === 'iron_ore')!;
+    const d = [0, 1, 2, 3, 4, 5].find((k) => [1, 2, 3].every((n) => { const p = go([c2.cx, c2.cz], k, n); return inBoard(p[0], p[1]) && q.grid[at(p[0], p[1])] === 0; }))!;
+    const b1 = q.buildFac('belt', ...go([c2.cx, c2.cz], d), d)!, b2 = q.buildFac('belt', ...go([c2.cx, c2.cz], d, 2), d)!;
+    step(q, 3);
+    ok(!!b1 && !!b2 && !b1.items.length && !b2.items.length && c2.left === CRATE_STOCK.iron_ore, 'a crate puts nothing on a belt that leads to no turret');
+    const t2 = q.build('pulse', ...go([c2.cx, c2.cz], d, 3))!;
+    step(q, 8);
+    ok(!!t2 && t2.stock === TOWER_STOCK && c2.left < CRATE_STOCK.iron_ore!, `with a turret at the end of the belt the crate feeds it (${t2.stock})`);
   }
   {
-    // supply: a Pulse Turret fires the ammunition it came with, then goes dry and stops; fed again by a fabricator beside it, it fires again
-    const s = fac(), t = s.build('pulse', 3, 5)!, e = foe(s, 10), evs: Ev[] = [], stock0 = t.stock, per = (ITEM_SHOTS.ammo || 0) * s.mods.ammo;
-    ok(!!t && stock0 >= 1 && t.ammo === 0 && !t.dry && Math.hypot(e.x - t.x, e.z - t.z) < s.range(t), `a new turret comes with ammunition loaded (${stock0} items)`);
-    step(s, (stock0 * per) / s.towerRate(t) + 3, evs);
+    // supply: a new Pulse Turret is empty and dry; with ore in stock it fires 15 shots an item and runs dry again; a mine right beside it feeds it
+    const s = fac(), t = s.build('pulse', 3, 5)!, e = foe(s, 10), evs: Ev[] = [], per = (ITEM_SHOTS.iron_ore || 0) * s.mods.ammo;
+    ok(!!t && t.stock === 0 && t.ammo === 0 && t.tank === 0 && t.pwr === 0 && !t.dry && Math.hypot(e.x - t.x, e.z - t.z) < s.range(t), 'a new turret is empty: no ammunition, nothing in the tank');
+    step(s, 3, evs);
+    ok(t.dry && towerOff(t) && !s.supplied(t) && shotsOf(evs, t.id) === 0 && evs.some((q) => q.k === 'dry' && q.id === t.id), 'so it is dry from the first step and fires nothing at the enemy in range');
+    t.stock = 2; evs.length = 0;
+    step(s, (2 * per) / s.towerRate(t) + 3, evs);
     const fired = shotsOf(evs, t.id);
-    ok(fired === stock0 * per && t.dry && towerOff(t) && t.stock === 0 && evs.some((q) => q.k === 'dry' && q.id === t.id), `it fires its ${stock0} x ${per} shots and runs dry (${fired} shots, dry event)`);
+    ok(per === 15 && fired === 2 * per && t.dry && t.stock === 0 && evs.some((q) => q.k === 'fed' && q.id === t.id) && evs.some((q) => q.k === 'dry' && q.id === t.id), `with 2 iron ore it fires 2 x ${per} shots and runs dry again (${fired} shots, fed and dry events)`);
     const charge = t.charge; evs.length = 0;
     step(s, 3, evs);
     ok(shotsOf(evs, t.id) === 0 && t.charge === charge, 'a dry tower neither fires nor charges');
     t.charge = 1;
     ok(!s.specialReady(t) && !s.triggerSpecial(t.id, 0) && t.charge === 1, 'and its special cannot be fired');
     t.charge = charge;
-    const F = freeNear(s, t.cx, t.cz, 1), G = freeNear(s, F[0], F[1], 2, [[t.cx, t.cz]]);
-    const fab = s.buildFac('fab', F[0], F[1], 0)!, gen = s.buildFac('generator', G[0], G[1], 0)!;
-    gen.inv.coal = 4; fab.inv.iron = 4; fab.inv.copper = 4;
-    evs.length = 0; step(s, 6, evs);
-    ok(!!fab && !t.dry && evs.some((q) => q.k === 'fed' && q.id === t.id) && shotsOf(evs, t.id) > 3, `a fabricator next to it hands it ammo straight away and it fires again (${shotsOf(evs, t.id)} shots, fed event)`);
+    const F = freeNear(s, t.cx, t.cz, 1);
+    ok(s.facBlock('mine', F[0], F[1]) === 'needs an iron, copper or coal deposit' && !s.buildFac('mine', F[0], F[1]), 'a mine needs a deposit');
+    lay(s, F, 'iron_ore');
+    ok(s.facBlock('pump', F[0], F[1]) === 'needs an oil field' && s.facBlock('mine', F[0], F[1]) === '', 'a pumpjack needs an oil field, a mine goes on ore');
+    const mine = s.buildFac('mine', F[0], F[1])!;
+    ok(!!mine && mine.ore === 'iron_ore' && s.grid[at(F[0], F[1])] === 2 && s.factory.facAt(F[0], F[1]) === mine && !mine.under, 'the mine stands on its deposit');
+    evs.length = 0; step(s, 8, evs);
+    ok(!t.dry && evs.some((q) => q.k === 'fed' && q.id === t.id) && shotsOf(evs, t.id) > 3 && s.factory.delivered >= 2 && mine.state === 'ok', `a mine right next to the turret hands it ore and it fires again (${shotsOf(evs, t.id)} shots, ${s.factory.delivered} delivered)`);
+    // with nothing to shoot at the turret fills up, then the mine does
+    s.enemies.length = 0; t.stock = 0; t.ammo = 0; mine.out.length = 0; mine.prog = 0;
+    const d0 = s.factory.delivered;
+    step(s, MINE_TIME * TOWER_STOCK + 0.5);
+    ok(t.stock === TOWER_STOCK && s.factory.delivered === d0 + TOWER_STOCK, `the mine digs one ore every ${MINE_TIME} s and fills the turret up to ${TOWER_STOCK} (${t.stock})`);
+    step(s, MINE_TIME * (OUT_CAP + 1));
+    ok(mine.out.length === OUT_CAP && mine.out.every((it) => it === 'iron_ore') && mine.state === 'full' && t.stock === TOWER_STOCK, 'with nowhere to put more, the mine fills up and stops');
     // a tower that runs on power: dry without a grid, working once a generator is in reach
-    const far = (() => { for (let i = 0; i < GW * GH; i++) { const x = i % GW, z = Math.floor(i / GW); if (s.grid[i] === 0 && hexDist(x, z, G[0], G[1]) > SUPPLY + 3 && disc(x, z, SUPPLY).filter(([u, v]) => inBoard(u, v) && s.grid[at(u, v)] === 0).length > 3) return [x, z] as [number, number]; } return [0, 0] as [number, number]; })();
+    const far = (() => { for (let i = 0; i < GW * GH; i++) { const x = i % GW, z = Math.floor(i / GW); if (s.grid[i] === 0 && hexDist(x, z, F[0], F[1]) > SUPPLY + 3 && disc(x, z, SUPPLY).filter(([u, v]) => inBoard(u, v) && s.grid[at(u, v)] === 0).length > 3) return [x, z] as [number, number]; } return [0, 0] as [number, number]; })();
     const cryo = s.build('cryo', far[0], far[1])!;
     step(s, 0.1);
     ok(!!cryo && cryo.dry && cryo.pwr === 0, 'a Cryo Emitter without power is dry from the start');
     const G2 = freeNear(s, cryo.cx, cryo.cz, SUPPLY);
-    const gen2 = s.buildFac('generator', G2[0], G2[1], 0)!; gen2.inv.coal = 2;
+    const gen2 = s.buildFac('generator', G2[0], G2[1], 0)!;
     step(s, 0.5);
-    ok(!!gen2 && !cryo.dry && cryo.pwr > 0.99, `a generator within ${SUPPLY} tiles powers it`);
+    ok(!!gen2 && cryo.dry && gen2.state === 'nofuel', 'a generator without coal powers nothing');
+    gen2.inv.coal = 2;
+    step(s, 0.5);
+    ok(!cryo.dry && cryo.pwr > 0.99 && gen2.state === 'ok' && s.factory.powerAt(cryo.cx, cryo.cz) === gen2.net, `a generator with coal within ${SUPPLY} tiles powers it`);
     s.sellFac(gen2.id);
     step(s, 0.5);
     ok(cryo.dry && cryo.pwr === 0, 'and it goes dry again when the generator is sold');
   }
   {
-    // a pumpjack on oil and a powered refinery fill a pipe network with petrol, which reaches a Firewall Pylon's tank
-    const s = fac(), [cx, cz] = open(s, 3);
-    s.unlocked.add('flame');
-    const Pm = neighbor(cx, cz, 3), G = neighbor(cx, cz, 4), P1 = neighbor(cx, cz, 0), P2 = neighbor(P1[0], P1[1], 0), Fl = neighbor(P2[0], P2[1], 0);
-    s.factory.ore[at(Pm[0], Pm[1])] = T('oil');
-    ok(s.facBlock('mine', Pm[0], Pm[1]) !== '' && s.facBlock('pump', Pm[0], Pm[1]) === '', 'oil takes a pumpjack, not a mine');
-    const ref = s.buildFac('refinery', cx, cz, 0)!, pump = s.buildFac('pump', Pm[0], Pm[1], 0)!, gen = s.buildFac('generator', G[0], G[1], 0)!;
-    const p1 = s.buildFac('pipe', P1[0], P1[1], 0)!, p2 = s.buildFac('pipe', P2[0], P2[1], 0)!, pylon = s.build('flame', Fl[0], Fl[1])!;
-    ok(!!ref && !!pump && !!gen && !!p1 && !!p2 && !!pylon, 'refinery, pumpjack, generator, two pipes and a pylon are down');
-    pylon.tank = 0;
+    // one belt line from a mine feeds the turret at its end and the turrets it only runs past
+    const s = fac(), c = open(s, 3), M = go(c, 3, 2), E = go(c, 0, 2), P1 = go(c, 1), P2 = go(go(c, 0), 5);
+    lay(s, M, 'iron_ore');
+    const mine = s.buildFac('mine', M[0], M[1])!, belts = [go(c, 3), c, go(c, 0)].map((p) => s.buildFac('belt', p[0], p[1], 0)!);
+    step(s, 5);
+    ok(!!mine && belts.every((b) => !!b && b.dir === 0 && !b.items.length) && mine.out.length >= 3, 'a mine puts nothing on a belt that leads to nothing that wants its ore');
+    const end = s.build('pulse', E[0], E[1])!, past1 = s.build('pulse', P1[0], P1[1])!, past2 = s.build('pulse', P2[0], P2[1])!;
+    ok(!!end && !!past1 && !!past2 && [end, past1, past2].every((t) => hexDist(t.cx, t.cz, M[0], M[1]) > 1) && hexDist(past1.cx, past1.cz, c[0], c[1]) === 1 && hexDist(past2.cx, past2.cz, belts[2].cx, belts[2].cz) === 1, 'three turrets: one at the end of the line, two beside it, none next to the mine');
+    let onBelt = 0;
+    for (let i = 0; i < 60 * 30; i++) { step(s, 1 / 60); if (belts.some((b) => b.items.some((q) => q.it === 'iron_ore'))) onBelt++; }
+    ok(onBelt > 0 && end.stock === TOWER_STOCK && !end.dry, `ore rides the belt into the turret it points at (${end.stock})`);
+    ok(past1.stock === TOWER_STOCK && past2.stock === TOWER_STOCK && !past1.dry && !past2.dry, `and the turrets the belt only runs past take theirs from it (${past1.stock}, ${past2.stock})`);
+    ok(s.factory.delivered === 3 * TOWER_STOCK, `all of it counts as delivered (${s.factory.delivered})`);
+    step(s, 40);
+    ok(mine.state === 'full' && belts.every((b) => b.items.length >= 2 && b.items.every((q) => q.it === 'iron_ore' && q.p >= 0 && q.p <= 1)) && s.factory.delivered === 3 * TOWER_STOCK, `with every turret full the ore waits on the belt and nothing is thrown away (${belts.map((b) => b.items.length).join('+')} on the belts)`);
+    // a belt turned back toward the mine leads nowhere: the mine loads nothing
+    s.rotateFac(belts[0].id, 3);
+    ok(belts[0].dir === 3, 'a belt can be turned');
+    for (const b of belts) b.items.length = 0;
+    for (const t of [end, past1, past2]) t.stock = 0;
+    step(s, 6);
+    ok(belts.every((b) => !b.items.length) && end.stock + past1.stock + past2.stock === 0 && mine.state === 'full', 'a belt that points back at the mine takes nothing from it');
+    s.rotateFac(belts[0].id, 0);
+    step(s, 12);
+    ok(end.stock > 0 && past1.stock > 0 && past2.stock > 0, 'turned forward again, the line runs again');
+  }
+  {
+    // a coal mine beside a belt that leads to nothing that burns coal loads nothing; a generator beside the belt changes that
+    const s = fac(), c = open(s, 3), M = go(c, 3), B2 = go(c, 0), E = go(c, 0, 2), G = go(B2, 1);
+    lay(s, M, 'coal');
+    const mine = s.buildFac('mine', M[0], M[1])!, b1 = s.buildFac('belt', c[0], c[1], 0)!, b2 = s.buildFac('belt', B2[0], B2[1], 0)!, tw = s.build('pulse', E[0], E[1])!;
+    step(s, 12);
+    ok(!!mine && mine.ore === 'coal' && !!tw && !b1.items.length && !b2.items.length && mine.state === 'full' && tw.stock === 0, 'coal is not loaded onto a belt that only leads to a Pulse Turret');
+    const gen = s.buildFac('generator', G[0], G[1])!;
+    ok(!!gen && hexDist(G[0], G[1], M[0], M[1]) > 1 && hexDist(G[0], G[1], B2[0], B2[1]) === 1, 'a generator beside the second belt, not next to the mine');
+    let coal = 0;
+    for (let i = 0; i < 60 * 20; i++) { step(s, 1 / 60); if (b1.items.some((q) => q.it === 'coal')) coal++; }
+    ok(coal > 0 && (gen.inv.coal || 0) === 4 && gen.fuel > 0 && gen.state === 'idle' && tw.stock === 0 && b2.items.every((q) => q.it === 'coal'), `now the coal rides the belt and the generator takes it as it passes (${gen.inv.coal} coal in the generator)`);
+  }
+  {
+    // a smelter needs coal as fuel (one for COAL_SMELTS plates) and melts iron ore and copper ore into plates
+    const s = fac(), c = open(s, 2), S = go(c, 0), M2 = go(S, 0), M3 = go(S, 1);
+    lay(s, c, 'iron_ore'); lay(s, M2, 'coal'); lay(s, M3, 'copper_ore');
+    const mine = s.buildFac('mine', c[0], c[1])!, sm = s.buildFac('smelter', S[0], S[1])!;
+    step(s, 5);
+    ok(!!mine && !!sm && (sm.inv.iron_ore || 0) > 0 && mine.out.length < OUT_CAP && sm.state === 'nofuel' && !sm.out.length, 'the mine hands its ore to the smelter beside it, which has no coal yet');
+    const coal = s.buildFac('mine', M2[0], M2[1])!;
+    step(s, 14);
+    ok(!!coal && coal.ore === 'coal' && sm.out.length >= 4 && sm.out.every((it) => it === 'iron'), `with coal from a coal mine the smelter melts iron plates (${sm.out.length}: ${sm.out.join(',')})`);
+    step(s, 20);
+    ok(sm.out.length === OUT_CAP && sm.state === 'full', 'with nowhere to put the plates it fills up and stops');
+    // copper ore becomes copper plates the same way (the iron mine makes way for a copper mine)
+    s.sellFac(mine.id); sm.out.length = 0;
+    const cu = s.buildFac('mine', M3[0], M3[1])!, made: Record<string, number> = {};
+    for (let i = 0; i < 60; i++) { step(s, 1); for (const it of sm.out.splice(0)) made[it] = (made[it] || 0) + 1; }
+    ok(!!cu && cu.ore === 'copper_ore' && made.iron > 0 && made.iron <= 7 && made.copper > 10 && Object.keys(made).length === 2, `fed copper ore it melts the iron ore it still holds, then copper plates (${JSON.stringify(made)})`);
+    // the fuel: one coal is good for COAL_SMELTS plates
+    const q = fac(), qc = open(q, 1), one = q.buildFac('smelter', qc[0], qc[1])!;
+    one.inv.iron_ore = 6; one.inv.coal = 1;
+    step(q, 20);
+    ok(COAL_SMELTS === 4 && one.out.length === COAL_SMELTS && one.inv.iron_ore === 6 - COAL_SMELTS && one.state === 'nofuel' && !FACS.smelter.power, `one coal melts ${COAL_SMELTS} plates, then the smelter is out of fuel (${one.out.length} plates, state ${one.state})`);
+    // copper plates are the Railgun's ammunition: a smelter next to it hands them over
+    const R = go(qc, 0), rail = (q.mats = 20, q.build('rail', R[0], R[1])!);
+    one.out.length = 0; one.inv.iron_ore = 0; one.inv.copper_ore = 4; one.inv.coal = 1;
+    step(q, 12);
+    ok(!!rail && rail.stock === TOWER_STOCK && q.factory.delivered === TOWER_STOCK && TOWERS.rail.needs.item === 'copper' && rail.dry, `a smelter beside a Railgun fills it with copper plates (${rail.stock}); without power it is still dry`);
+  }
+  {
+    // Frame Works: two iron plates become one building material, with power only
+    const s = fac(), c = open(s, 2), G = go(c, 3);
+    const works = s.buildFac('works', c[0], c[1])!, gen = s.buildFac('generator', G[0], G[1])!, mk = MAKES.works!;
+    works.inv.iron = 6;
+    const m0 = s.mats, evs: Ev[] = [];
+    step(s, 6, evs);
+    ok(!!works && !!gen && works.state === 'nopower' && works.pwr === 0 && gen.state === 'nofuel' && s.mats === m0 && !evs.some((q) => q.k === 'mats'), 'without power a Frame Works makes nothing');
+    gen.inv.coal = 4;
+    step(s, 12, evs);
+    const n = evs.filter((q) => q.k === 'mats').length;
+    ok(mk.mats === 1 && mk.inp.iron === 2 && !mk.out && n === 3 && s.mats === m0 + n * mk.mats && !works.out.length && !works.inv.iron && works.state === 'noinput' && evs.filter((q) => q.k === 'mats').every((q) => q.n === mk.mats && q.x === works.x && q.z === works.z),
+      `with power 6 iron plates become ${n} building materials (${m0} to ${s.mats}), straight into the stock: no Frame item, no Depot`);
+    // the whole chain: iron mine and coal mine into a smelter, its plates into the works beside it
+    const q = fac(), S = open(q, 2), Mi = go(S, 3), W = go(S, 0), Mc = go(S, 1), Gq = go(Mc, 1);
+    lay(q, Mi, 'iron_ore'); lay(q, Mc, 'coal');
+    q.buildFac('mine', Mi[0], Mi[1]); q.buildFac('mine', Mc[0], Mc[1]); q.buildFac('smelter', S[0], S[1]);
+    const w2 = q.buildFac('works', W[0], W[1])!, g2 = q.buildFac('generator', Gq[0], Gq[1])!, q0 = q.mats;
+    step(q, 90);
+    ok(!!w2 && !!g2 && hexDist(Gq[0], Gq[1], W[0], W[1]) <= SUPPLY && q.mats >= q0 + 5 && w2.pwr === 1 && g2.fuel > 0, `mines, smelter, generator and Frame Works in a row raise the materials by themselves (${q0} to ${q.mats} in 90 s)`);
+  }
+  {
+    // Shell Press: an iron plate and a coal make a shell, which a belt carries to the Plasma Mortar
+    const s = fac(), c = open(s, 3), B = go(c, 0), Mo = go(c, 0, 2), G = go(B, 1);
+    const press = s.buildFac('press', c[0], c[1])!, belt = s.buildFac('belt', B[0], B[1], 0)!, gen = s.buildFac('generator', G[0], G[1])!, mortar = s.build('mortar', Mo[0], Mo[1])!;
+    ok(!!press && !!belt && !!gen && !!mortar && mortar.stock === 0 && s.mats === START_MATS - TOWERS.mortar.mat, 'press, belt, generator and an empty mortar are down');
+    press.inv.iron = 4; press.inv.coal = 4;
+    step(s, 4);
+    ok(press.state === 'nopower' && !press.out.length && !belt.items.length && mortar.stock === 0 && mortar.dry, 'without power the press makes nothing and the mortar stays dry');
+    gen.inv.coal = 4;
+    let onBelt = 0;
+    for (let i = 0; i < 60 * 20; i++) { step(s, 1 / 60); if (belt.items.some((q) => q.it === 'shell')) onBelt++; }
+    ok(press.pwr === 1 && onBelt > 0 && mortar.stock === TOWER_STOCK && !mortar.dry && mortar.pwr === 1 && s.factory.delivered === TOWER_STOCK && !press.inv.iron && !press.inv.coal && TOWERS.mortar.needs.item === 'shell',
+      `with power 4 plates and 4 coal become 4 shells, and the belt takes them to the mortar (${mortar.stock})`);
+  }
+  {
+    // a pumpjack on oil fills a pipe network with crude, which reaches a Firewall Pylon's tank; nothing flows without power
+    const s = fac(), c = open(s, 3), G = go(c, 3), P1 = go(c, 0), P2 = go(c, 0, 2), Fl = go(c, 0, 3);
+    lay(s, c, 'oil');
+    ok(s.facBlock('mine', c[0], c[1]) !== '' && s.facBlock('pump', c[0], c[1]) === '', 'oil takes a pumpjack, not a mine');
+    const pump = s.buildFac('pump', c[0], c[1])!, gen = s.buildFac('generator', G[0], G[1])!;
+    const p1 = s.buildFac('pipe', P1[0], P1[1])!, p2 = s.buildFac('pipe', P2[0], P2[1])!, pylon = s.build('flame', Fl[0], Fl[1])!;
+    ok(!!pump && !!gen && !!p1 && !!p2 && !!pylon && pylon.tank === 0 && TOWERS.flame.needs.fluid === 'crude' && !TOWERS.flame.needs.power, 'pumpjack, generator, two pipes and a pylon with an empty tank are down');
     step(s, 3);
-    ok(pump.state === 'nopower' && ref.tout === 0 && pylon.tank === 0, 'nothing flows without power');
+    ok(pump.state === 'nopower' && pump.tout === 0 && pylon.tank === 0 && pylon.dry && s.factory.pipeFluid(p1).fill === 0, 'nothing flows without power, and the pylon is dry');
     gen.inv.coal = 4;
     step(s, 20);
     const fl = s.factory.pipeFluid(p1);
-    ok(pump.state !== 'nopower' && ref.pwr > 0 && fl.fluid === 'petrol' && p1.net === p2.net && p1.net >= 0, `the pumpjack feeds the refinery and its petrol fills the pipes (${fl.fluid}, ${(100 * fl.fill).toFixed(0)}% full)`);
-    ok(pylon.tank > TANK / 2 && pylon.tank <= TANK && !pylon.dry, `the petrol reaches the pylon's tank (${pylon.tank.toFixed(1)} of ${TANK})`);
-    // a dry pylon burns nothing; with petrol it burns again
+    ok(pump.pwr === 1 && fl.fluid === 'crude' && p1.net === p2.net && p1.net >= 0 && p1.state === 'ok' && (s.factory.pipeMask(p2) & 1) === 1, `with power the pumpjack fills the pipes with crude oil (${fl.fluid}, ${(100 * fl.fill).toFixed(0)}% full)`);
+    ok(pylon.tank > TANK / 2 && pylon.tank <= TANK && !pylon.dry, `the crude reaches the pylon's tank (${pylon.tank.toFixed(1)} of ${TANK})`);
+    step(s, 10);
+    ok(pump.state === 'full' && pump.tout === TANK && pylon.tank === TANK, 'with everything full the pumpjack stops');
+    // a dry pylon burns nothing
     const e = foe(s, s.map.nearest(0, pylon.x, pylon.z));
     if (Math.hypot(e.x - pylon.x, e.z - pylon.z) <= FIRE_RING + e.r) { s.sellFac(p2.id); pylon.tank = 0; const hp = e.hp; step(s, 2); ok(pylon.dry && e.hp === hp, 'a pylon with an empty tank burns nothing'); }
+    // a pumpjack right next to a pylon needs no pipe
+    const q = fac(), qc = open(q, 2), qg = go(qc, 3), qf = go(qc, 0);
+    lay(q, qc, 'oil');
+    const qp = q.buildFac('pump', qc[0], qc[1])!, qgen = q.buildFac('generator', qg[0], qg[1])!, qt = q.build('flame', qf[0], qf[1])!;
+    qgen.inv.coal = 2; step(q, 10);
+    ok(!!qp && qt.tank === TANK && !qt.dry, 'a pumpjack right next to a pylon fills it without a pipe');
   }
   {
-    // Frames from a fabricator delivered to a Depot become building materials
-    const s = fac(), [cx, cz] = open(s, 2);
-    const D = neighbor(cx, cz, 0), G = neighbor(cx, cz, 3);
-    const fab = s.buildFac('fab', cx, cz, 0)!, depot = s.buildFac('depot', D[0], D[1], 0)!, gen = s.buildFac('generator', G[0], G[1], 0)!;
-    s.setRecipe(fab.id, 'frame');
-    ok(!!depot && fab.recipe === 'frame', 'a fabricator set to Frames, a Depot beside it');
-    fab.inv.iron = 6; gen.inv.coal = 4;
-    const m0 = s.mats, evs: Ev[] = [];
-    step(s, 10, evs);
-    const n = evs.filter((q) => q.k === 'mats').length;
-    ok(n >= 3 && s.mats === m0 + n * FRAME_MATS && evs.filter((q) => q.k === 'mats').every((q) => q.n === FRAME_MATS && q.x === depot.x), `${n} Frames reached the Depot and raised the materials from ${m0} to ${s.mats}`);
+    // the long chain: pumpjack, refinery (crude to petrol), a pipe to the Missile Works, missiles into the battery beside it
+    const s = fac(), c = open(s, 3), Pm = go(c, 3), P = go(c, 0), W = go(c, 0, 2), Tw = go(c, 0, 3), G = go(c, 1), Po = go(W, 1);
+    lay(s, Pm, 'oil'); s.mats = 20;
+    const pump = s.buildFac('pump', Pm[0], Pm[1])!, ref = s.buildFac('refinery', c[0], c[1])!, pipe = s.buildFac('pipe', P[0], P[1])!, mw = s.buildFac('missiles', W[0], W[1])!;
+    const gen = s.buildFac('generator', G[0], G[1])!, pole = s.buildFac('pole', Po[0], Po[1])!, bat = s.build('missile', Tw[0], Tw[1])!;
+    ok(!!pump && !!ref && !!pipe && !!mw && !!gen && !!pole && !!bat && bat.stock === 0, 'pumpjack, refinery, pipe, Missile Works, generator, pole and battery are down');
+    mw.inv.iron = 4; mw.inv.copper = 4;
+    step(s, 5);
+    ok(pump.state === 'nopower' && ref.tin === 0 && ref.tout === 0 && mw.tin === 0 && !mw.out.length && bat.stock === 0 && bat.dry && pole.state === 'nopower', 'without power nothing is pumped, cracked or built');
+    gen.inv.coal = 4;
+    step(s, 3);
+    ok(s.factory.wires.length === 1 && pole.state === 'ok' && pole.net === gen.net && bat.pwr > 0 && pump.pwr > 0 && ref.pwr > 0, 'the pole carries the generator\'s power on to the battery');
+    step(s, 40);
+    const fl = s.factory.pipeFluid(pipe);
+    ok(fl.fluid === 'petrol' && s.factory.fluidIn(mw) === 'petrol' && s.factory.fluidIn(ref) === 'crude', `the refinery takes crude straight from the pumpjack beside it and fills the pipe with petrol (${fl.fluid}, ${(100 * fl.fill).toFixed(0)}% full)`);
+    ok(bat.stock === TOWER_STOCK && !bat.dry && s.factory.delivered === TOWER_STOCK && !mw.inv.iron && !mw.inv.copper && TOWERS.missile.needs.item === 'missile', `the Missile Works turns 4 iron, 4 copper and petrol into 4 missile packs for the battery (${bat.stock})`);
+    // Cell Plant: a copper plate and crude oil make a cell for the Lance Emitter
+    const q = fac(), qc = open(q, 2), qp = go(qc, 3), qt = go(qc, 0), qg = go(qc, 1);
+    lay(q, qp, 'oil'); q.mats = 20;
+    const pj = q.buildFac('pump', qp[0], qp[1])!, cells = q.buildFac('cells', qc[0], qc[1])!, g2 = q.buildFac('generator', qg[0], qg[1])!, lance = q.build('lance', qt[0], qt[1])!;
+    cells.inv.copper = 4;
+    step(q, 4);
+    ok(!!pj && !!cells && !!g2 && !!lance && cells.tin === 0 && !cells.out.length && lance.stock === 0 && lance.dry && cells.state === 'noinput', 'a Cell Plant without crude oil makes nothing');
+    g2.inv.coal = 4;
+    step(q, 25);
+    ok(lance.stock === TOWER_STOCK && !lance.dry && q.factory.delivered === TOWER_STOCK && !cells.inv.copper && q.factory.fluidIn(cells) === 'crude' && TOWERS.lance.needs.item === 'cell' && TOWERS.gravity.needs.item === 'cell', `with power and a pumpjack beside it, 4 copper plates become 4 cells for the lance (${lance.stock})`);
+  }
+  {
+    // no deadlock: a line that ends at a smelter full of coal but out of ore, with coal at its head, tips the coal off so the ore behind gets through
+    const s = fac(), c = open(s, 2), B2 = go(c, 3), B1 = go(c, 3, 2);
+    const sm = s.buildFac('smelter', c[0], c[1])!, b1 = s.buildFac('belt', B1[0], B1[1], 0)!, b2 = s.buildFac('belt', B2[0], B2[1], 0)!;
+    sm.inv.coal = 4;
+    for (const p of [1, 0.5, 0]) { b2.items.push({ it: 'coal', p }); b1.items.push({ it: 'iron_ore', p }); }
+    step(s, 0.05);
+    ok(sm.state === 'noinput' && sm.inv.coal === 4, 'a smelter with all the coal it holds and no ore, three coal at the end of its line and the ore behind them');
+    step(s, 12);
+    ok(sm.out.length === 3 && sm.out.every((it) => it === 'iron') && !b1.items.length && !b2.items.some((q) => q.it === 'iron_ore'), `the line does not lock up: the coal in the way is tipped off and the ore is melted (${sm.out.length} plates, ${b2.items.length} items left on the last belt)`);
+    // (only a starved building tips: where the smelter is merely full, the coal waits)
+    const q = fac(), qc = open(q, 2), Q2 = go(qc, 3);
+    const full = q.buildFac('smelter', qc[0], qc[1])!, qb = q.buildFac('belt', Q2[0], Q2[1], 0)!;
+    full.inv.coal = 4; full.inv.iron_ore = 6; for (let i = 0; i < OUT_CAP; i++) full.out.push('iron');
+    for (const p of [1, 0.5, 0]) qb.items.push({ it: 'coal', p });
+    step(q, 6);
+    ok(full.state === 'full' && qb.items.length === 3 && qb.items[0].p === 1, 'at a smelter that is full, not starved, the coal waits on the belt');
+  }
+  {
+    // unlocks: a run starts with the Pulse Turret, the Mine and the Belt; blueprints bring a tower with its supply chain, tier by tier
+    const s = fac({}, true), [cx, cz] = open(s, 1), g0 = s.gold;
+    ok([...s.unlocked].join() === 'pulse' && [...s.facs].sort().join() === 'belt,mine' && TOWER_CHAIN.pulse.join() === 'mine,belt', 'a run starts with the Pulse Turret, the Mine and the Belt');
+    for (const t of FAC_TYPES) if (t !== 'mine' && t !== 'belt') ok(s.facBlock(t, cx, cz) === 'locked' && !s.buildFac(t, cx, cz), `${t} is locked at the start`);
+    ok(s.gold === g0 && !s.factory.facAt(cx, cz) && s.facBlock('belt', cx, cz) === '' && !s.canBuild('rail', cx, cz), 'a locked building costs nothing and places nothing');
+    ok(s.bpOpen().join() === TOWER_TYPES.filter((t) => TOWER_TIER[t] === 1).join(), 'the first blueprints on offer are the tier 1 towers: ' + s.bpOpen().join(', '));
+    s.players[0].pending = [['bp_rail']]; s.pickCard(0, 0);
+    ok(s.unlocked.has('rail') && TOWER_CHAIN.rail.every((f) => s.facs.has(f)) && s.facs.size === 2 + TOWER_CHAIN.rail.length && s.facBlock('smelter', cx, cz) === '' && s.facBlock('press', cx, cz) === 'locked' && !!s.buildFac('smelter', cx, cz),
+      `the Railgun blueprint unlocks the tower and ${TOWER_CHAIN.rail.join(', ')}`);
+    for (const t of TOWER_TYPES) ok(TOWER_CHAIN[t].every((f) => FAC_TYPES.includes(f)) && (!TOWERS[t].needs.power || (TOWER_CHAIN[t].includes('generator') && TOWER_CHAIN[t].includes('pole'))) && (TOWERS[t].mat === 0 || TOWER_CHAIN[t].includes('works')), `${t}: its chain covers power and materials`);
+    const noCard = TOWER_TYPES.filter((t) => t !== 'pulse' && !Object.hasOwn(CARD_BY_ID, 'bp_' + t));
+    ok(!noCard.length && CARDS.filter((c) => c.kind === 'blueprint').every((c) => c.max === 1 && TOWER_TYPES.includes(c.id.slice(3) as typeof TOWER_TYPES[number])), 'every tower but the Pulse Turret has a blueprint card' + (noCard.length ? ' (none for: ' + noCard.join(', ') + ', so the blueprints stop at its tier)' : ''));
+    // walk the whole tree on every map: the offer never reaches past the tier after the lowest one still locked
+    // (not while a tower has no card: the walk cannot get past it, and the check above says so once)
+    for (const m of noCard.length ? [] : MAPS) {
+      const q = new Sim({ seed: 3, map: m }), seen = new Set<string>(), start = [...q.unlocked];
+      let n = 0, tiers = true, took = true;
+      for (; n < 30; n++) {
+        const offer = q.bpOpen();
+        if (!offer.length) break;
+        const locked = TOWER_TYPES.filter((t) => !q.unlocked.has(t) || TOWER_CHAIN[t].some((f) => !q.facs.has(f)));
+        const low = Math.min(...locked.map((t) => TOWER_TIER[t])), lowest = locked.filter((t) => TOWER_TIER[t] === low);
+        if (!offer.every((t) => locked.includes(t) && TOWER_TIER[t] <= low + 1) || !lowest.every((t) => offer.includes(t)) || (lowest.length > 1 && offer.length !== lowest.length)) tiers = false;
+        // every card rolled is one of them
+        q.level = 2; for (let i = 0; i < 40; i++) { const r = q.rollCards(0); if (!r[0].startsWith('bp_') || r.some((id) => id.startsWith('bp_') && !offer.includes(id.slice(3) as typeof offer[number]))) tiers = false; }
+        const pick = offer[n % offer.length]; seen.add(pick);
+        q.players[0].pending = [['bp_' + pick]]; q.pickCard(0, 0);
+        if (!q.unlocked.has(pick) || !TOWER_CHAIN[pick].every((f) => q.facs.has(f))) took = false;
+      }
+      ok(tiers && took && n <= TOWER_TYPES.length && TOWER_TYPES.every((t) => q.unlocked.has(t)) && FAC_TYPES.every((f) => q.facs.has(f)) && !q.facs.has('crate') && start.every((t) => t === 'pulse' || seen.has(t)),
+        `${m.id}: blueprints come tier by tier and end with everything unlocked (${n} cards; started with ${start.join(',')})`);
+      ok(!q.rollCards(0).some((id) => id.startsWith('bp_')), `${m.id}: no blueprint is offered once all are taken`);
+    }
+    // Underpass: not before level 3, and once only
+    const u = fac({}, true), has = (lvl: number) => { u.level = lvl; let n = 0; for (let i = 0; i < 1500; i++) if (u.rollCards(0).includes('underpass')) n++; return n; };
+    const l1 = has(1), l2 = has(2), l3 = has(3), l8 = has(8);
+    u.players[0].pending = [['underpass']]; u.pickCard(0, 0);
+    ok(l1 === 0 && l2 === 0 && l3 > 0 && l8 > 0 && u.mods.underpass === 1 && has(8) === 0 && CARD_BY_ID.underpass.max === 1, `the Underpass card is offered from level 3 on, once (in 1500 offers: ${l1} at level 1, ${l2} at 2, ${l3} at 3, ${l8} at 8)`);
+  }
+  {
+    // Underpass: belts and pipes may cross under a plain stretch of road; nothing else may, and not at the core or under a ramp
+    const s = fac(), core = s.map.def.core, why = 'road: belts and pipes cross it once you have the Underpass';
+    const roads: [number, number][] = []; for (let i = 0; i < GW * GH; i++) if (s.grid[i] === 1) roads.push([i % GW, Math.floor(i / GW)]);
+    const far = roads.filter(([x, z]) => hexDist(x, z, core[0], core[1]) > 1), near = roads.filter(([x, z]) => hexDist(x, z, core[0], core[1]) <= 1);
+    ok(s.mods.underpass === 0 && roads.every(([x, z]) => s.facBlock('belt', x, z) === why && s.facBlock('pipe', x, z) === why && s.facBlock('smelter', x, z) === 'road') && !s.buildFac('belt', far[0][0], far[0][1], 0), 'without the Underpass nothing goes on a road');
+    s.mods.underpass = 1;
+    ok(far.length > 20 && far.every(([x, z]) => s.facBlock('belt', x, z) === '' && s.facBlock('pipe', x, z) === ''), `with it, belts and pipes go on every road tile of a flat map away from the core (${far.length} tiles)`);
+    ok(near.length > 0 && near.every(([x, z]) => s.facBlock('belt', x, z) === 'no way under here' && s.facBlock('pipe', x, z) === 'no way under here' && !s.buildFac('belt', x, z, 0)), `but not within a tile of the core (${near.length} tiles)`);
+    ok(FAC_TYPES.every((t) => t === 'belt' || t === 'pipe' || (s.facBlock(t, far[0][0], far[0][1]) === 'road' && !s.buildFac(t, far[0][0], far[0][1]))) && !s.canBuild('pulse', far[0][0], far[0][1]), 'no other building and no tower goes on a road');
+    // a straight crossing: belt, belt under the road, turret on the far side
+    const free = (p: [number, number]) => inBoard(p[0], p[1]) && s.grid[at(p[0], p[1])] === 0;
+    let X: { r: [number, number]; d: number } | null = null;
+    for (const r of far) { for (let d = 0; d < 6 && !X; d++) if (free(go(r, d)) && free(go(r, d + 3)) && free(go(r, d + 3, 2))) X = { r, d }; if (X) break; }
+    ok(!!X, 'the map has a road one tile wide to cross');
+    if (X) {
+      const { r, d } = X, A = go(r, d + 3), B = go(r, d), g0 = s.gold;
+      const a = s.buildFac('belt', A[0], A[1], d)!, u = s.buildFac('belt', r[0], r[1], d)!, tw = s.build('pulse', B[0], B[1])!;
+      ok(!!a && !a.under && !!u && u.under && s.grid[at(r[0], r[1])] === 1 && s.factory.facAt(r[0], r[1]) === u && s.facBlock('pipe', r[0], r[1]) === 'taken', 'a belt laid on the road runs under it: the tile stays a road');
+      a.items.push({ it: 'iron_ore', p: 0 });
+      step(s, 3);
+      ok(!!tw && tw.stock === 1 && !a.items.length && !u.items.length, 'an item crosses under the road and reaches the turret on the other side');
+      const e = foe(s, s.map.nearest(0, u.x, u.z)), d0 = e.dist; e.speed = 3; step(s, 1);
+      ok(e.dist > d0 + 1, 'enemies walk over it as before');
+      const g1 = s.gold;
+      ok(s.sellFac(u.id) && s.gold === g1 + FACS.belt.cost && s.grid[at(r[0], r[1])] === 1 && !s.factory.facAt(r[0], r[1]) && g0 > g1, 'sold again, the road is still a road');
+      const p = s.buildFac('pipe', r[0], r[1])!;
+      ok(!!p && p.under && s.grid[at(r[0], r[1])] === 1, 'a pipe crosses the same way');
+    }
+    // under a ramp or a bridge there is no room
+    const h = fac({ map: hill }); h.mods.underpass = 1;
+    const hr: [number, number][] = []; for (let i = 0; i < GW * GH; i++) if (h.grid[i] === 1 && hexDist(i % GW, Math.floor(i / GW), h.map.def.core[0], h.map.def.core[1]) > 1) hr.push([i % GW, Math.floor(i / GW)]);
+    const shut = hr.filter(([x, z]) => h.facBlock('belt', x, z) === 'no way under here'), okay = hr.filter(([x, z]) => h.facBlock('belt', x, z) === '');
+    ok(shut.length > 0 && okay.length > 0 && shut.length + okay.length === hr.length && shut.every(([x, z]) => !h.buildFac('pipe', x, z)), `on a map with a raised road, nothing goes under the ramps and the raised stretch (${shut.length} of ${hr.length} road tiles shut)`);
+  }
+  {
+    // waves on call: with autoWaves off nothing comes until the player calls it; holdFirst holds only the first wave
+    const mk = () => new Sim({ seed: 8, map: bare, pauseOnCards: false });
+    const idle = (s: Sim, sec: number) => { for (let i = 0; i < sec * 20; i++) { s.step(1 / 20); s.events.length = 0; s.players[0].pending.length = 0; } };
+    const clear = (s: Sim) => { s.queue.length = 0; s.enemies.length = 0; };
+    const d = mk();
+    ok(d.autoWaves === true && d.holdFirst === false && d.callBonus() === Math.round(Math.min(NEXT_WAVE_IN, FIRST_WAVE_IN) * 2), 'by default waves come by themselves, and calling one early pays');
+    idle(d, FIRST_WAVE_IN + 1);
+    ok(d.wave === 1, `by default the first wave starts after ${FIRST_WAVE_IN} s`);
+    const m = mk(); m.autoWaves = false;
+    ok(m.callBonus() === 0, 'with waves on call there is no bonus for calling');
+    idle(m, FIRST_WAVE_IN * 4);
+    ok(m.wave === 0 && !m.enemies.length && !m.queue.length && !m.waveActive && m.callBonus() === 0, `autoWaves off: no wave after ${FIRST_WAVE_IN * 4} s of waiting`);
+    const g0 = m.gold; m.startWave();
+    ok(m.wave === 1 && m.queue.length > 0 && m.gold === g0, 'startWave() starts it, without a bonus');
+    clear(m); idle(m, NEXT_WAVE_IN * 10);
+    ok(m.wave === 1 && !m.queue.length && m.callBonus() === 0, 'and the next one waits for the call as well');
+    m.startWave();
+    ok(m.wave === 2 && m.queue.length > 0, 'which starts it');
+    const h = mk(); h.holdFirst = true;
+    idle(h, FIRST_WAVE_IN * 4);
+    ok(h.wave === 0 && !h.enemies.length && h.callBonus() === 0, 'holdFirst: the first wave never starts by itself, and calling it pays nothing');
+    const g1 = h.gold; h.startWave();
+    ok(h.wave === 1 && h.gold === g1, 'startWave() starts it');
+    clear(h); idle(h, 1);
+    ok(h.wave === 1 && h.callBonus() > 0, `after it the waves are on the timer again: calling the next one early pays ${h.callBonus()}`);
+    idle(h, NEXT_WAVE_IN + 1);
+    ok(h.wave === 2, 'and it comes by itself');
   }
   {
     // what building costs and what selling gives back: credits and materials
     const s = fac(), g0 = s.gold;
-    ok(s.mats === START_MATS && START_MATS === 8 && new Sim({ seed: 1, map: bare }).gold === Math.round(bare.gold * START_GOLD_MUL), `a run starts with ${START_MATS} materials and ${START_GOLD_MUL} times the map's credits`);
+    ok(s.mats === START_MATS && START_MATS === 4 && START_GOLD_MUL === 1.5 && new Sim({ seed: 1, map: bare }).gold === Math.round(bare.gold * START_GOLD_MUL), `a run starts with ${START_MATS} materials and ${START_GOLD_MUL} times the map's credits`);
+    ok(TOWER_TYPES.filter((t) => TOWERS[t].mat > 0).sort().join() === 'gravity,lance,missile,mortar,rail' && TOWER_TYPES.every((t) => (TOWERS[t].mat > 0) === (upgradeMat(t, 1) > 0) && (TOWERS[t].mat > 0) === (upgradeMat(t, 2) > 0)), 'only the Railgun, Mortar, Lance, Graviton Well and Missile Battery cost materials, to build and to upgrade');
     const [cx, cz] = open(s, 1), N = neighbor(cx, cz, 0);
     const belt = s.buildFac('belt', cx, cz, 2)!;
     ok(!!belt && belt.dir === 2 && s.gold === g0 - FACS.belt.cost && s.facCost('belt') === FACS.belt.cost && s.mats === START_MATS, 'a belt costs its credits and no materials');
     ok(s.facSellValue(belt.id) === FACS.belt.cost && s.sellFac(belt.id) && s.gold === g0 && !s.factory.facAt(cx, cz) && s.grid[at(cx, cz)] === 0, 'a belt sells for its full price and frees the tile');
+    for (const t of ['pipe', 'pole'] as const) { const f = s.buildFac(t, cx, cz)!; ok(s.facSellValue(f.id) === FACS[t].cost && s.sellFac(f.id) && s.gold === g0, `a ${t} sells for its full price`); }
     const sm = s.buildFac('smelter', cx, cz, 0)!;
     ok(s.facSellValue(sm.id) === Math.round(FACS.smelter.cost * 0.6) && s.sellFac(sm.id) && s.gold === g0 - FACS.smelter.cost + Math.round(FACS.smelter.cost * 0.6), 'a smelter sells for 60%');
-    ok(!s.sellFac(sm.id), 'selling twice gives nothing');
+    ok(!s.sellFac(sm.id) && s.facSellValue(sm.id) === 0, 'selling twice gives nothing');
     const g1 = s.gold, t = s.build('pulse', cx, cz)!;
-    ok(!!t && s.gold === g1 - TOWERS.pulse.cost && s.mats === START_MATS - TOWERS.pulse.mat && t.spentMat === TOWERS.pulse.mat && s.matCost('pulse') === TOWERS.pulse.mat, `a Pulse Turret costs ${TOWERS.pulse.cost} credits and ${TOWERS.pulse.mat} materials`);
+    ok(!!t && s.gold === g1 - TOWERS.pulse.cost && s.mats === START_MATS && t.spentMat === 0 && s.matCost('pulse') === 0 && TOWERS.pulse.mat === 0, `a Pulse Turret costs ${TOWERS.pulse.cost} credits and no materials`);
     ok(!s.buildFac('belt', cx, cz) && s.facBlock('belt', cx, cz) === 'taken', 'nothing is built on a tower');
-    const up = s.upMat(t);
-    ok(up === upgradeMat('pulse', 1) && s.upgrade(t.id) && s.mats === START_MATS - TOWERS.pulse.mat - up && t.spentMat === TOWERS.pulse.mat + up, 'an upgrade costs materials too');
-    const m1 = s.mats, g2 = s.gold;
-    ok(s.sell(t.id) && s.mats === m1 + Math.floor(t.spentMat * 0.6) && s.gold === g2 + Math.round(t.spent * 0.6), 'selling a tower gives back 60% of the credits and of the materials');
-    s.mats = TOWERS.rail.mat - 1; s.unlocked.add('rail'); const g3 = s.gold;
-    ok(!s.canBuild('rail', cx, cz) && !s.build('rail', cx, cz) && s.gold === g3 && s.mats === TOWERS.rail.mat - 1, 'without the materials a tower cannot be built');
+    ok(s.upMat(t) === 0 && s.upgrade(t.id) && s.mats === START_MATS && t.spentMat === 0, 'nor does its upgrade');
+    const g2 = s.gold;
+    ok(s.sell(t.id) && s.mats === START_MATS && s.gold === g2 + Math.round(t.spent * 0.6), 'selling it gives back 60% of the credits');
+    // a tower that costs materials
+    const g3 = s.gold, r = s.build('rail', cx, cz)!;
+    ok(!!r && TOWERS.rail.mat > 0 && TOWERS.rail.mat <= START_MATS && s.gold === g3 - TOWERS.rail.cost && s.mats === START_MATS - TOWERS.rail.mat && r.spentMat === TOWERS.rail.mat && s.matCost('rail') === TOWERS.rail.mat, `a Railgun costs ${TOWERS.rail.cost} credits and ${TOWERS.rail.mat} materials: the starting materials pay for the first one`);
+    const up = s.upMat(r), m1 = s.mats;
+    ok(up === upgradeMat('rail', 1) && up > m1 && !s.upgrade(r.id) && r.lvl === 1 && s.mats === m1, `its upgrade costs ${up} materials and is refused without them`);
+    s.mats = up + 1;
+    ok(s.upgrade(r.id) && r.lvl === 2 && s.mats === 1 && r.spentMat === TOWERS.rail.mat + up, 'with the materials it goes through');
+    const m2 = s.mats, g4 = s.gold;
+    ok(s.sell(r.id) && s.mats === m2 + Math.floor(r.spentMat * 0.6) && s.gold === g4 + Math.round(r.spent * 0.6), 'selling a tower gives back 60% of the credits and of the materials');
+    s.mats = TOWERS.rail.mat - 1; const g5 = s.gold;
+    ok(!s.canBuild('rail', cx, cz) && !s.build('rail', cx, cz) && s.gold === g5 && s.mats === TOWERS.rail.mat - 1, 'without the materials a tower cannot be built');
     s.gold = FACS.mine.cost - 1;
-    ok(s.facBlock('belt', N[0], N[1]) === '' && s.facBlock('fab', N[0], N[1]) === 'not enough credits' && !s.buildFac('fab', N[0], N[1]), 'without the credits a building cannot be built');
+    ok(s.facBlock('belt', N[0], N[1]) === '' && s.facBlock('smelter', N[0], N[1]) === 'not enough credits' && !s.buildFac('smelter', N[0], N[1]), 'without the credits a building cannot be built');
     s.gold = 1e5; s.mods.cheap = 0.9;
     ok(s.facCost('refinery') === Math.round(FACS.refinery.cost * 0.9), 'Nano Fabricator makes the factory cheaper too');
     s.over = true;
@@ -1085,19 +1378,20 @@ ok(!sv.won, 'survival never "wins"'); console.log('survival reached wave', sv.wa
     ok(new Sim({ free: 'yes' as unknown as boolean }).opts.free === false && new Sim({}).opts.free === false, 'only free: true switches free towers on');
   }
   {
-    // garbage input: bad types, cells off the board or between tiles, NaN directions, unknown ids and recipes
+    // garbage input: bad types, cells off the board or between tiles, NaN directions, unknown ids
     const s = fac(), [cx, cz] = open(s, 2), n0 = s.factory.facs.length, g0 = s.gold, grid0 = s.grid.slice();
-    const types = ['nuke', '__proto__', 'constructor', 'toString', 'hasOwnProperty', '', 5, null, undefined, {}, NaN, 'Belt'] as unknown as FacType[];
+    const types = ['nuke', '__proto__', 'constructor', 'toString', 'hasOwnProperty', '', 5, null, undefined, {}, NaN, 'Belt', 'crate', 'fab', 'depot'] as unknown as FacType[];
     const vals = [NaN, -1, GW, 1e9, -1e9, 0.5, 2.5, Infinity, -Infinity, '3', null] as unknown as number[];
     let threw = '';
     try {
       for (const t of types) { s.facBlock(t, cx, cz); s.buildFac(t, cx, cz, 0); }
-      for (const t of FAC_TYPES) for (const v of vals) { s.facBlock(t, v, v); s.buildFac(t, v, cz, 0); s.buildFac(t, cx, v, 0); s.buildFac(t, v, v, v); }
-      for (const v of [...vals, 0, 1e15]) { s.sellFac(v); s.rotateFac(v, v); s.setRecipe(v, 'ammo'); }
+      for (const t of [...FAC_TYPES, 'crate' as FacType]) for (const v of vals) { s.facBlock(t, v, v); s.buildFac(t, v, cz, 0); s.buildFac(t, cx, v, 0); s.buildFac(t, v, v, v); s.canBuild('pulse', v, cz); s.canBuild('pulse', cx, v); }
+      for (const v of [...vals, 0, 1e15]) { s.sellFac(v); s.rotateFac(v, v); s.facSellValue(v); }
       step(s, 0.5);
     } catch (e) { threw = String(e); }
     const moved = s.grid.reduce((a, v, i) => a + (v !== grid0[i] ? 1 : 0), 0);
-    ok(!threw && s.factory.facs.length === n0 && s.gold === g0 && !moved, `garbage in buildFac / sellFac / rotateFac / setRecipe throws nothing and places nothing (${threw || `${s.factory.facs.length - n0} placed, ${moved} tiles changed, ${g0 - s.gold} credits spent`})`);
+    ok(!threw && s.factory.facs.length === n0 && s.gold === g0 && !moved, `garbage in buildFac / sellFac / rotateFac throws nothing and places nothing (${threw || `${s.factory.facs.length - n0} placed, ${moved} tiles changed, ${g0 - s.gold} credits spent`})`);
+    ok(vals.every((v) => s.facBlock('belt', v, cz) !== '' && s.facBlock('belt', cx, v) !== '' && !s.canBuild('pulse', v, cz) && !s.canBuild('pulse', cx, v)) && s.facBlock('belt', cx, cz) === '', 'facBlock and canBuild refuse cells that are not whole tiles on the board');
     for (const v of [0.5, 2.5]) { const q = fac(), n = q.towers.length; for (let x = 0; x < GW; x++) q.build('pulse', x, v); ok(q.towers.length === n, `a tower is not built between rows (cz ${v}: ${q.towers.length - n} built)`); }
     // a belt laid with a direction that is not a number still gets one, and items still move on it
     const q = fac(), [bx, bz] = open(q, 2), belts: Fac[] = [];
@@ -1106,22 +1400,25 @@ ok(!sv.won, 'survival never "wins"'); console.log('survival reached wave', sv.wa
       for (const d of [NaN, Infinity, -Infinity, 7.5, -13] as number[]) { const B = belts.length ? neighbor(belts[belts.length - 1].cx, belts[belts.length - 1].cz, 0) : [bx, bz]; const b = q.buildFac('belt', B[0], B[1], d); if (b) { b.items.push({ it: 'iron', p: 0 }); belts.push(b); } }
       step(q, 2);
     } catch (e) { err = String(e); }
-    ok(!err && belts.every((b) => Number.isInteger(b.dir) && b.dir >= 0 && b.dir < 6), `buildFac with a NaN, infinite or fractional direction gives a belt a direction 0..5 (${err || belts.map((b) => b.dir).join(',')})`);
-    // recipes and turning: only fabricators take a recipe, only belts and output buildings turn
+    ok(!err && belts.length >= 3 && belts.every((b) => Number.isInteger(b.dir) && b.dir >= 0 && b.dir < 6) && belts.slice(0, 3).every((b) => b.dir === 0), `buildFac with a NaN, infinite or fractional direction gives a belt a direction 0..5 (${err || belts.map((b) => b.dir).join(',')})`);
+    // turning: only belts face a way
     const r = fac(), [rx, rz] = open(r, 2), G = neighbor(rx, rz, 0);
-    const fb = r.buildFac('fab', rx, rz, 1)!, gn = r.buildFac('generator', G[0], G[1], 4)!;
-    for (const id of ['__proto__', 'constructor', 'toString', '', 'nuke', null, 5, {}, undefined] as unknown as string[]) r.setRecipe(fb.id, id);
-    ok(fb.recipe === 'ammo', 'unknown recipes are refused: ' + fb.recipe);
-    r.setRecipe(gn.id, 'frame'); r.rotateFac(gn.id, 2); r.rotateFac(fb.id, 5); r.rotateFac(fb.id, NaN);
-    ok(gn.recipe === 'ammo' && gn.dir === 4 && fb.dir === 0 && RECIPES.every((rc) => { r.setRecipe(fb.id, rc.id); return fb.recipe === rc.id; }), 'a generator takes no recipe and does not turn; a fabricator turns and takes every recipe');
+    const bl = r.buildFac('belt', rx, rz, 1)!, gn = r.buildFac('generator', G[0], G[1], 4)!, rev = r.factory.rev;
+    r.rotateFac(gn.id, 2); r.rotateFac(bl.id, NaN); r.rotateFac(bl.id, Infinity);
+    ok(gn.dir === 4 && bl.dir === 1 && r.factory.rev === rev, 'a generator does not turn, and a belt ignores a direction that is not a number');
+    r.rotateFac(bl.id, 5); const a = bl.dir; r.rotateFac(bl.id, -1); const b = bl.dir; r.rotateFac(bl.id, 8.7); const c = bl.dir;
+    ok(a === 5 && b === 5 && c === 2 && r.factory.rev === rev + 2, `a belt turns to any direction, wrapped into 0..5 (${a}, ${b}, ${c})`);
   }
   {
     // the snapshot carries the materials and whether a tower is dry; hostile values are clamped
     const h = fac({ mode: 'coop', players: 2 }), c = fac({ mode: 'coop', players: 2 }); c.replica = true;
-    const t = h.build('cryo', 3, 5)!; step(h, 0.1); h.mats = 17;
+    const t = h.build('cryo', 3, 5)!, p = h.build('pulse', 5, 3) || h.build('pulse', 4, 5)!; step(h, 0.1); h.mats = 17;
     c.applySnapshot(JSON.parse(JSON.stringify(h.snapshot([]))));
-    const ct = c.towerById(t.id);
-    ok(t.dry && c.mats === 17 && !!ct && ct.dry, 'materials and a dry tower reach the guest');
+    const ct = c.towerById(t.id), cp = c.towerById(p.id);
+    ok(t.dry && p.dry && c.mats === 17 && !!ct && ct.dry && !!cp && cp.dry, 'materials and dry towers reach the guest');
+    p.stock = 1; step(h, 0.1);
+    c.applySnapshot(JSON.parse(JSON.stringify(h.snapshot([]))));
+    ok(!p.dry && !c.towerById(p.id)!.dry && c.towerById(t.id)!.dry, 'and so does a tower that has been fed');
     for (const v of [-5, 'x', NaN, null, {}]) {
       const o = JSON.parse(JSON.stringify(h.snapshot([]))); o.a[18] = v; o.t = o.t.map((row: unknown[]) => { const q = row.slice(); q[14] = v; return q; });
       c.applySnapshot(o);
@@ -1138,12 +1435,12 @@ ok(!sv.won, 'survival never "wins"'); console.log('survival reached wave', sv.wa
     };
     const a = play(), b = play();
     const sig = (q: Sim) => [q.over, q.won, q.wave, q.lives, q.kills, Math.floor(q.gold), q.level, q.towers.length, q.time.toFixed(3)].join();
-    ok(a.s.over && sig(a.s) === sig(b.s), `a free-tower bot run ends the same way every time (${a.s.won ? 'won' : 'lost'} on wave ${a.s.wave} of ${a.s.winWave}, ${a.s.lives} lives left)`);
-    // what a tower comes with when it is built: in a free run it never uses any of it
-    const fresh = new Map<string, Tower>();
-    for (const type of TOWER_TYPES) { const q = new Sim({ seed: 1, map: bare, free: true }); q.gold = 1e6; q.unlocked.add(type); fresh.set(type, q.build(type, 3, 5)!); }
-    const stocked = (t: Tower) => t.stock === fresh.get(t.type)!.stock && t.ammo === 0 && t.tank === fresh.get(t.type)!.tank;
-    ok(a.dry === 0 && a.shots > 1000 && a.s.towers.length >= 6 && a.s.towers.every((t) => !t.dry && stocked(t)) && !a.s.factory.facs.length, `its ${a.s.towers.length} towers fired ${a.shots} shots without any supply and never went dry`);
+    ok(a.s.over && sig(a.s) === sig(b.s) && a.shots === b.shots, `a free-tower bot run ends the same way every time (${a.s.won ? 'won' : 'lost'} on wave ${a.s.wave} of ${a.s.winWave}, ${a.s.lives} lives left)`);
+    // a tower built in a free run is as empty as any other, and never uses or needs a thing
+    const own = new Set(MAPS[1].towers.map((t) => t.cx + ',' + t.cz));
+    const built = a.s.towers.filter((t) => !own.has(t.cx + ',' + t.cz));
+    ok(a.dry === 0 && a.shots > 1000 && a.s.towers.length >= 6 && built.length >= 5 && a.s.towers.every((t) => !t.dry && t.ammo === 0 && a.s.supplied(t)) && built.every((t) => t.stock === 0 && t.tank === 0) && !a.s.factory.facs.length && a.s.factory.delivered === 0,
+      `its ${a.s.towers.length} towers fired ${a.shots} shots without any supply and never went dry`);
   }
 }
 console.log(fail ? `${fail} FAILED` : 'all smoke checks passed');

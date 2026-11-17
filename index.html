@@ -14,7 +14,7 @@
   <meta property="og:image" content="./media/shot-factory.jpg" />
   <meta property="og:image:width" content="1920" />
   <meta property="og:image:height" content="1080" />
-  <meta property="og:image:alt" content="A factory of mines, smelters and fabricators sending ammunition down conveyor belts to the towers along a road full of machines." />
+  <meta property="og:image:alt" content="A factory of mines, smelters and presses sending ammunition down conveyor belts to the towers along a road full of machines." />
   <meta name="twitter:card" content="summary_large_image" />
   <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
   <link rel="preload" href="./fonts/saira-stencil-one-400.woff2" as="font" type="font/woff2" crossorigin />
@@ -50,7 +50,7 @@
         <p class="eyebrow">Tower defense <i></i> Factory building <i></i> Free in your browser</p>
         <h1 class="wordmark"><span class="wm-a">BEAT</span><span class="wm-b">SPIRE</span></h1>
         <p class="tagline">Build the grid. Become the storm.</p>
-        <p class="pitch">Defend the last power core of Nyx-9 on a hex grid. Build towers beside the roads, then keep them firing: mine iron, copper, coal and oil, smelt plates, run belts, pipes and power lines, and make the ammo boxes, shells, slugs, cells, missiles and petrol your towers live on. A run lasts 20, 25 or 30 waves depending on the difficulty.</p>
+        <p class="pitch">Defend the last power core of Nyx-9 on a hex grid. Build towers beside the roads, then keep them firing. It starts with a mine and a turret; every new tower adds one more step: power lines, oil and pipes, smelters, presses and plants. Waves come when you call them. A run lasts 20, 25 or 30 waves depending on the difficulty.</p>
         <div class="cta">
           <a class="btn btn-lg" href="./play.html">Play free in your browser</a>
           <a class="btn btn-ghost btn-lg" href="#game">How it plays</a>
@@ -59,8 +59,8 @@
           <li><b>10</b><span>tower types</span></li>
           <li><b>20-30</b><span>waves per run</span></li>
           <li><b>38</b><span>maps, plus generated ones</span></li>
-          <li><b>10</b><span>factory buildings</span></li>
-          <li><b>11</b><span>items, 2 fluids, 1 power grid</span></li>
+          <li><b>12</b><span>factory buildings</span></li>
+          <li><b>8</b><span>items, 2 fluids, 1 power grid</span></li>
         </ul>
       </div>
     </section>
@@ -84,25 +84,25 @@
             <p>From above, the district is a board of hexes. Build towers on any free hex beside a road, upgrade each one twice, and sell what you no longer need. Roads can climb and cross each other on bridges. Tags over the spawn gates show what the next wave sends down each road.</p>
             <ul class="ticks">
               <li>You start with a few tower types and unlock the rest as blueprint cards</li>
-              <li>Towers cost credits from kills plus building materials from your factory</li>
-              <li>Call the next wave early for bonus credits</li>
+              <li>The stronger towers cost building materials from a Frame Works on top of credits</li>
+              <li>Waves start when you call them, so there is always time to build. Auto waves is a switch</li>
               <li>A Colossus arrives every fifth wave. Hold 20, 25 or 30 waves to win, then keep going if you like</li>
             </ul>
           </div>
         </article>
 
         <article class="beat beat-flip">
-          <figure class="beat-img"><img src="./media/shot-factory.jpg" width="1920" height="1080" loading="lazy" alt="Mines, smelters and fabricators beside the road, with ammunition boxes riding a conveyor belt to the towers." /></figure>
+          <figure class="beat-img"><img src="./media/shot-factory.jpg" width="1920" height="1080" loading="lazy" alt="Mines, smelters and presses beside the road, with ammunition riding a curved conveyor belt to the towers." /></figure>
           <div class="beat-txt">
             <span class="num num-hot" aria-hidden="true">02</span>
             <h3>The factory</h3>
-            <p>No tower fires for free. Pulse Turrets need ammo boxes, Firewall Pylons burn petrol, Cryo Emitters, Arc Pylons and Beacons draw power. The heavy towers need two things at once: shells, slugs, energy cells or missiles, and power.</p>
-            <p>Every map has deposits of iron, copper, coal and oil. Put mines on them, smelt the ore into plates, and let fabricators turn the plates into what your towers fire. Frames delivered to a Depot become the building materials that towers and upgrades cost.</p>
+            <p>A tower fires only what it is fed, and it starts empty. Supply crates on the deck feed a tower built right next to them, but a crate runs out. The Pulse Turret runs on iron ore, so the first supply line is one Mine and maybe a belt.</p>
+            <p>Each blueprint card unlocks a tower together with the buildings its supply needs, a step at a time: a Generator for the Cryo Emitter and the Arc Pylon, a Pumpjack and pipes for the Firewall Pylon, a Smelter for the Railgun's copper plates, a Shell Press for the Mortar, a Cell Plant for the Lance, a Refinery and a Missile Works for the Missile Battery.</p>
             <ul class="skills">
-              <li><kbd>Belt</kbd><span><b>Conveyor belts</b> Carry items from tile to tile. Drag to lay a line, and point the last one into a tower.</span></li>
+              <li><kbd>Belt</kbd><span><b>Conveyor belts</b> Drag to lay a line. Nothing needs pointing: buildings load a belt when something further down it needs what they make, and a belt feeds every tower it points at or runs past.</span></li>
               <li><kbd>Pipe</kbd><span><b>Pipes</b> Pumpjacks fill them with crude oil, refineries with petrol.</span></li>
-              <li><kbd>Pole</kbd><span><b>Power lines</b> Generators burn coal or petrol. Poles wire up to 5 tiles apart, also across roads, and power everything within 2 tiles.</span></li>
-              <li><kbd>Fab</kbd><span><b>Fabricators</b> Frames, ammo boxes, plasma shells, rail slugs, energy cells or missile packs: pick a recipe.</span></li>
+              <li><kbd>Pole</kbd><span><b>Power lines</b> Generators burn coal. Poles wire up to 5 tiles apart, also across roads, and power everything within 2 tiles.</span></li>
+              <li><kbd>Under</kbd><span><b>Underpass</b> A card that lets belts and pipes cross under a road.</span></li>
             </ul>
           </div>
         </article>
@@ -125,52 +125,52 @@
         <header class="head">
           <p class="kicker">Arsenal</p>
           <h2 id="h-towers">Tower roster</h2>
-          <p class="lede">Ten towers. Each upgrades through three levels, has cards of its own and charges a special you fire when it counts. The simple ones run on one supply, the strong ones on two.</p>
+          <p class="lede">Ten towers. Each upgrades through three levels, has cards of its own and charges a special you fire when it counts. The first runs on ore straight from a mine; each later one adds a step to its supply line.</p>
         </header>
         <ul class="roster">
           <li class="unit t-pulse">
             <div class="unit-img"><img src="./media/tower_pulse.jpg" width="640" height="640" loading="lazy" alt="Pulse Turret render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Ammo boxes</span><span>50 cr + 2</span></p><h3>Pulse Turret</h3><p>Rapid homing bolts. Cheap, reliable, and the backbone of every opening.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Iron ore</span><span>50 cr</span></p><h3>Pulse Turret</h3><p>Rapid homing bolts. Cheap, reliable, and the backbone of every opening.</p></div>
           </li>
           <li class="unit t-cryo">
             <div class="unit-img"><img src="./media/tower_cryo.jpg" width="640" height="640" loading="lazy" alt="Cryo Emitter render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Power</span><span>70 cr + 3</span></p><h3>Cryo Emitter</h3><p>Chills a whole group and slows it, holding the column in everyone else's range.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Power</span><span>70 cr</span></p><h3>Cryo Emitter</h3><p>Chills a whole group and slows it, holding the column in everyone else's range.</p></div>
           </li>
           <li class="unit t-arc">
             <div class="unit-img"><img src="./media/tower_arc.jpg" width="640" height="640" loading="lazy" alt="Arc Pylon render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Power</span><span>110 cr + 4</span></p><h3>Arc Pylon</h3><p>Lightning that jumps from enemy to enemy. The tighter the pack, the better it pays.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Power</span><span>110 cr</span></p><h3>Arc Pylon</h3><p>Lightning that jumps from enemy to enemy. The tighter the pack, the better it pays.</p></div>
           </li>
           <li class="unit t-mortar">
             <div class="unit-img"><img src="./media/tower_mortar.jpg" width="640" height="640" loading="lazy" alt="Plasma Mortar render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Shells + power</span><span>140 cr + 6</span></p><h3>Plasma Mortar</h3><p>Long-range area blasts over the rooftops. Cannot hit flyers or anything at its feet.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Shells + power</span><span>140 cr + 4</span></p><h3>Plasma Mortar</h3><p>Long-range area blasts over the rooftops. Cannot hit flyers or anything at its feet.</p></div>
           </li>
           <li class="unit t-rail">
             <div class="unit-img"><img src="./media/tower_rail.jpg" width="640" height="640" loading="lazy" alt="Railgun render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Slugs + power</span><span>190 cr + 8</span></p><h3>Railgun</h3><p>A slow, piercing beam with the longest reach on the grid. It picks the toughest target.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Copper plates + power</span><span>190 cr + 3</span></p><h3>Railgun</h3><p>A slow, piercing beam with the longest reach on the grid. It picks the toughest target.</p></div>
           </li>
           <li class="unit t-beacon">
             <div class="unit-img"><img src="./media/tower_beacon.jpg" width="640" height="640" loading="lazy" alt="Signal Beacon render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Power</span><span>120 cr + 4</span></p><h3>Signal Beacon</h3><p>Fires nothing. Boosts the damage and speed of every tower standing near it.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Power</span><span>120 cr</span></p><h3>Signal Beacon</h3><p>Fires nothing. Boosts the damage and speed of every tower standing near it.</p></div>
           </li>
           <li class="unit t-flame">
             <div class="unit-img"><img src="./media/tower_flame.jpg" width="640" height="640" loading="lazy" alt="Firewall Pylon render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Petrol</span><span>90 cr + 3</span></p><h3>Firewall Pylon</h3><p>Build two within four tiles of each other and a wall of fire burns between them, setting alight whatever crosses it.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Crude oil</span><span>90 cr</span></p><h3>Firewall Pylon</h3><p>Build two within four tiles of each other and a wall of fire burns between them, setting alight whatever crosses it.</p></div>
           </li>
           <li class="unit t-lance">
             <div class="unit-img"><img src="./media/tower_lance.jpg" width="640" height="640" loading="lazy" alt="Lance Emitter render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Cells + power</span><span>160 cr + 7</span></p><h3>Lance Emitter</h3><p>A continuous beam that burns hotter the longer it holds one target. Made for Brutes and Colossi.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Cells + power</span><span>160 cr + 5</span></p><h3>Lance Emitter</h3><p>A continuous beam that burns hotter the longer it holds one target. Made for Brutes and Colossi.</p></div>
           </li>
           <li class="unit t-missile">
             <div class="unit-img"><img src="./media/tower_missile.jpg" width="640" height="640" loading="lazy" alt="Missile Battery render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Missiles + power</span><span>170 cr + 8</span></p><h3>Missile Battery</h3><p>Salvos of homing missiles at up to three targets. It picks flyers first.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Missiles + power</span><span>170 cr + 6</span></p><h3>Missile Battery</h3><p>Salvos of homing missiles at up to three targets. It picks flyers first.</p></div>
           </li>
           <li class="unit t-gravity">
             <div class="unit-img"><img src="./media/tower_gravity.jpg" width="640" height="640" loading="lazy" alt="Graviton Well render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Cells + power</span><span>120 cr + 6</span></p><h3>Graviton Well</h3><p>Deals no damage. Drags machines back along the road and slows them inside its field.</p></div>
+            <div class="unit-txt"><p class="unit-tag"><span>Cells + power</span><span>120 cr + 4</span></p><h3>Graviton Well</h3><p>Deals no damage. Drags machines back along the road and slows them inside its field.</p></div>
           </li>
         </ul>
         <ul class="roster-more">
-          <li class="t-flame"><b>Firewall Pylon</b><span>Petrol</span><p>Walls of fire between linked pylons.</p></li>
+          <li class="t-flame"><b>Firewall Pylon</b><span>Crude oil</span><p>Walls of fire between linked pylons.</p></li>
           <li class="t-lance"><b>Lance Emitter</b><span>Cells + power</span><p>A continuous beam that burns hotter the longer it holds a target.</p></li>
           <li class="t-missile"><b>Missile Battery</b><span>Missiles + power</span><p>Salvos of homing missiles. Prefers flyers.</p></li>
           <li class="t-gravity"><b>Graviton Well</b><span>Cells + power</span><p>Deals no damage. Drags enemies back and slows them.</p></li>
@@ -254,10 +254,10 @@
             <dl>
               <div><dt><kbd>1</kbd>-<kbd>0</kbd></dt><dd>Pick a tower or factory building, then click a hex to build. Hold <kbd>Shift</kbd> to keep building.</dd></div>
               <div><dt><kbd>F</kbd></dt><dd>Switch the build bar between towers and the factory.</dd></div>
-              <div><dt><kbd>R</kbd></dt><dd>Turn the belt (or the output side of a mine, smelter or fabricator) you are placing or have selected. Drag to lay a line of belts or pipes.</dd></div>
+              <div><dt><kbd>R</kbd></dt><dd>Turn the belt you are placing or have selected. Drag to lay a line of belts or pipes.</dd></div>
               <div><dt><kbd>U</kbd> <kbd>X</kbd></dt><dd>Upgrade or sell the selected tower, or remove a factory building.</dd></div>
               <div><dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>Pan the camera, or drag with the right mouse button. Wheel zooms.</dd></div>
-              <div><dt><kbd>N</kbd></dt><dd>Call the next wave early.</dd></div>
+              <div><dt><kbd>N</kbd></dt><dd>Call the next wave.</dd></div>
               <div><dt><kbd>Space</kbd></dt><dd>Fire the special of the selected tower when it is charged.</dd></div>
               <div><dt><kbd>Esc</kbd> <kbd>P</kbd></dt><dd>Pause.</dd></div>
             </dl>
