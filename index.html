@@ -12,7 +12,7 @@
   <meta property="og:site_name" content="BEATSPIRE" />
   <meta property="og:url" content="https://bigzaiko.github.io/beatspire/" />
   <meta property="og:title" content="BEATSPIRE - Tower defense where your factory feeds the guns" />
-  <meta property="og:description" content="Ten towers, fifteen factory buildings, one road full of machines. Mine the ore, run the belts, wire the power and make the ammunition your towers burn. Free in your browser." />
+  <meta property="og:description" content="Ten towers, sixteen factory buildings, one road full of machines. Mine the ore, place the arms, run the belts, wire the power and make the ammunition your towers burn. Free in your browser." />
   <meta property="og:image" content="https://bigzaiko.github.io/beatspire/media/shot-factory.jpg" />
   <meta property="og:image:width" content="1920" />
   <meta property="og:image:height" content="1080" />
@@ -65,8 +65,8 @@
         <p class="cta-note">New to factory games? <a href="./play.html">Start with the Tutorial</a>: it is the second button in the menu and takes one run.</p>
         <ul class="facts" aria-label="At a glance">
           <li><b data-fact="towers">10</b><span>towers, each with a special</span></li>
-          <li><b data-fact="facs">15</b><span>factory buildings</span></li>
-          <li><b data-fact="cards">63</b><span>upgrade cards</span></li>
+          <li><b data-fact="facs">16</b><span>factory buildings</span></li>
+          <li><b data-fact="cards">75</b><span>upgrade cards</span></li>
           <li><b data-fact="waves">20-30</b><span>waves per run</span></li>
           <li><b>38</b><span>maps, plus generated ones</span></li>
         </ul>
@@ -121,9 +121,9 @@
             <span class="num num-hot" aria-hidden="true">02</span>
             <h3>Call the wave</h3>
             <p>Press <kbd>N</kbd> and everything starts at once: mines dig, belts roll, the Static comes through the gates. Tags over the gates have already told you what each road gets.</p>
-            <p>A tower starts empty and keeps one item in hand, pulling the next off its belt or pipe as it fires. One that runs dry stops and shows what it is missing. Kills and cleared waves pay credits; a machine that reaches the Heart stops to attack it, and you can still destroy it before it strikes.</p>
+            <p>A tower starts empty and keeps one item in hand; a Transfer Arm hands it the next as it fires. One that runs dry stops and shows what it is missing. Kills and cleared waves pay credits; a machine that reaches the Heart stops to attack it, and you can still destroy it before it strikes.</p>
             <ul class="ticks">
-              <li>Every tower charges a <b>special</b>. Select it and fire with <kbd>Space</kbd>; the tower reboots afterwards, so pick the moment</li>
+              <li>Every tower charges a <b>special</b>. Right-click the charged tower to fire it, selected or not (hold it or double-tap it on a touch screen); the tower reboots afterwards, so pick the moment</li>
               <li><b>Auto waves</b> is a switch for when the factory runs itself, and <kbd>G</kbd> doubles the game speed</li>
             </ul>
           </div>
@@ -134,11 +134,12 @@
           <div class="beat-txt">
             <span class="num" aria-hidden="true">03</span>
             <h3>Level up, pick one of three</h3>
-            <p>Each level deals you three cards out of <span data-fact="cards">63</span>. A <b>blueprint</b> unlocks a tower together with every building its supply needs, tier by tier, so each new tower adds one step to the factory you already run.</p>
+            <p>Each level deals you three cards out of <span data-fact="cards">75</span>. A <b>blueprint</b> unlocks a tower; <b>production cards</b> unlock the buildings that make its supply. Cards have preconditions: a Shell Press is offered only once Smelting and the Power Grid are taken, and a blueprint card says which production cards its tower still waits for. Those come up in the next offers, and the Paths view draws what unlocks what.</p>
             <ul class="ticks">
               <li><b>Tower cards</b> sharpen the towers you rely on: Twin Barrels, Chain Reaction, Armour Breaker</li>
-              <li><b>Factory cards</b> speed up mines, belts and plants, stretch every ammunition item, or unlock tunnels</li>
-              <li><b>Upgrades</b> cost credits: towers go to Mk3 (the heavy ones for building materials too), and mines, pumpjacks, plants and generators work <span data-fact="speeds">1.6 times and 2.3 times</span> as fast at Mk2 and Mk3</li>
+              <li><b>Production cards</b> open the factory step by step: Conveyor Belts (always among your first offers), Power Grid, Smelting, Shell Press, Oil Field, Tunnels (sure to come by level 7)</li>
+              <li><b>Factory cards</b> speed up mines, belts and plants or stretch every ammunition item; <b>ammunition cards</b> let a Mk3 Pulse Turret or Firewall switch to a stronger supply when you are ready for it</li>
+              <li><b>Upgrades</b> cost credits: towers go to Mk3 (the heavy ones for building materials too), and arms, mines, pumpjacks, plants and generators work <span data-fact="speeds">1.6 times and 2.3 times</span> as fast at Mk2 and Mk3</li>
             </ul>
           </div>
         </article>
@@ -157,7 +158,7 @@
           <div>
             <p class="kicker">First run</p>
             <h3 id="h-tut">The tutorial builds your first supply line with you</h3>
-            <p>One guided run on Switchback: a turret beside a crate, the first wave, a mine, a belt, two more turrets along it, your first card, an upgrade for the Colossus, and power. You can skip it, and replay it from How to play.</p>
+            <p>One guided run on Switchback: a turret beside a crate, the first wave, a mine, a Transfer Arm from the mine to the turret, two more such lines, the Conveyor Belts card, a belt between two arms, an upgrade for the Colossus, and power. Markers on the deck show the exact hexes and the way each arm has to point. You can skip it, and replay it from How to play.</p>
           </div>
           <a class="btn" href="./play.html">Open the game</a>
         </aside>
@@ -170,20 +171,20 @@
         <header class="head">
           <p class="kicker">Supply</p>
           <h2 id="h-factory">Nothing fires for free.</h2>
-          <p class="lede">Under the deck lie iron, copper, coal and oil. Everything a tower fires starts there and has to be dug, carried, powered and made on its way to the gun. It begins with one Mine beside one turret, and ends with a refinery feeding a missile works.</p>
+          <p class="lede">Under the deck lie iron, copper, coal and oil. Everything a tower fires starts there and has to be dug, carried, powered and made on its way to the gun. It begins with a Mine, a Transfer Arm and a turret in a row, and ends with a refinery feeding a missile works.</p>
         </header>
 
         <ol class="flow" aria-label="The supply line in six steps">
           <li><a href="#f-deposits"><b>Deposits</b><span>Iron, copper, coal, oil</span></a></li>
           <li><a href="#f-extract"><b>Extract</b><span>Mines and pumpjacks</span></a></li>
           <li><a href="#f-power"><b>Power</b><span>Generators and poles</span></a></li>
-          <li><a href="#f-move"><b>Move</b><span>Belts, splitters, tunnels, pipes</span></a></li>
+          <li><a href="#f-move"><b>Move</b><span>Arms, belts, tunnels, pipes</span></a></li>
           <li><a href="#f-make"><b>Make</b><span>Plates, shells, cells, missiles</span></a></li>
           <li><a href="#f-chain"><b>Feed</b><span>Ten towers, ten chains</span></a></li>
         </ol>
 
         <section class="stage" id="f-deposits" aria-labelledby="h-deposits">
-          <header class="stage-head"><span class="stage-n" aria-hidden="true">01</span><h3 id="h-deposits">Four deposits on every map</h3><p>Point at a patch to see what it is. The game lays them out by rule around the roads: iron and coal within a short belt of your first supply crate, at least one patch of copper and of oil on every map, the oil far from the core.</p></header>
+          <header class="stage-head"><span class="stage-n" aria-hidden="true">01</span><h3 id="h-deposits">Four deposits on every map</h3><p>Point at a patch to see what it is. The game lays them out by rule around the roads: by every crate of iron ore an iron deposit with room for a mine, an arm and a turret in a straight line beside the road, coal close by, at least one patch of copper and of oil on every map, the oil far from the core.</p></header>
           <ul class="facs facs-4" data-deposits><li class="nojs">The deposit cards are built by the page's script.</li></ul>
         </section>
 
@@ -199,12 +200,12 @@
         </div>
 
         <section class="stage" id="f-move" aria-labelledby="h-move">
-          <header class="stage-head"><span class="stage-n" aria-hidden="true">04</span><h3 id="h-move">Move it</h3><p>Nothing has an output side and nothing needs pointing. A building hands what it makes to a neighbour that needs it, or to a belt beside it when something further down that belt needs it, so a belt never fills with things nobody wants.</p></header>
-          <ul class="facs facs-3" data-facs="belt,splitter,tunnel,pipe,ptunnel,crate"></ul>
+          <header class="stage-head"><span class="stage-n" aria-hidden="true">04</span><h3 id="h-move">Move it</h3><p>Nothing hands anything on by itself. Every item that passes from a mine, a plant or a belt into a tower or a building, or onto a belt, is carried by a Transfer Arm: it takes from the hex behind it and delivers to the hex in front, and picks up only what its target will take. So a belt can run past anything without feeding it, and you decide what goes where. Pipes and power stay simple: a pipe feeds what it touches, a pole powers what stands near.</p></header>
+          <ul class="facs facs-3" data-facs="arm,belt,splitter,tunnel,pipe,ptunnel,crate"></ul>
         </section>
 
         <section class="stage" id="f-make" aria-labelledby="h-make">
-          <header class="stage-head"><span class="stage-n" aria-hidden="true">05</span><h3 id="h-make">Make it</h3><p>Six plants, each with one job. They arrive with the blueprint of the tower that needs them, and upgrade twice to keep up with it.</p></header>
+          <header class="stage-head"><span class="stage-n" aria-hidden="true">05</span><h3 id="h-make">Make it</h3><p>Six plants, each with one job. Each comes with a production card of its own, offered once what it builds on is there, and upgrades twice to keep up with the towers.</p></header>
           <ul class="facs facs-3" data-facs="smelter,works,press,cells,refinery,missiles"></ul>
         </section>
 
@@ -284,7 +285,7 @@
             <p>Draw up to three roads on the hex grid, raise them into ramps and bridges, place the core, wreckage and starting towers, and set credits and core integrity. Supply crates take their places beside the roads by themselves.</p>
             <ul class="ticks">
               <li><b>Resources tool</b> Paint iron, copper, coal and oil yourself, or leave them automatic and let the rules lay them out</li>
-              <li><b>It checks your map</b> The editor shows the deposits and crates a run would start with, and warns when a resource is missing or the iron lies out of belt reach of a crate</li>
+              <li><b>It checks your map</b> The editor shows the deposits and crates a run would start with, and warns when a resource is missing or a crate of iron ore has no room for a mine, an arm and a turret in a line</li>
               <li><b>Test, save, share</b> Play it in one click, keep it in your browser, hand it on as a code</li>
             </ul>
           </div>
@@ -333,7 +334,7 @@
             <dl>
               <div><dt><kbd>1</kbd>-<kbd>0</kbd></dt><dd>Pick a tower or factory building, then click a free hex to build. Hold <kbd>Shift</kbd> to keep building.</dd></div>
               <div><dt><kbd>F</kbd></dt><dd>Switch the build bar between Towers and Factory.</dd></div>
-              <div><dt><kbd>R</kbd></dt><dd>Turn the belt or tunnel you are placing or have selected. Drag to lay a line of belts or pipes.</dd></div>
+              <div><dt><kbd>R</kbd></dt><dd>Turn the Transfer Arm, belt or tunnel you are placing or have selected. Drag to lay a line of arms, belts or pipes.</dd></div>
               <div><dt><kbd>U</kbd> <kbd>X</kbd></dt><dd>Upgrade or sell what you have selected: towers, and mines, pumpjacks, plants and generators too.</dd></div>
               <div><dt><kbd>T</kbd></dt><dd>Step the selected tower through its targeting modes: first, last, strongest, weakest, fastest, slowest. <kbd>Shift</kbd>+<kbd>T</kbd> goes back; Set all in its panel gives the mode to every tower of that kind.</dd></div>
               <div><dt><kbd>V</kbd></dt><dd>Hold to see the green supply rings between waves. The hexagon button beside Auto waves keeps them on.</dd></div>
@@ -341,6 +342,7 @@
             <h3>Fight</h3>
             <dl>
               <div><dt><kbd>N</kbd></dt><dd>Call the next wave. Until then, time stands still.</dd></div>
+              <div><dt><kbd>Right-click</kbd></dt><dd>Drops what you hold for building. With nothing in hand, on a charged tower it fires the special (the tower does not have to be selected), anywhere else it drops the selection. A right-drag pans.</dd></div>
               <div><dt><kbd>Space</kbd></dt><dd>Fire the special of the selected tower when it is charged.</dd></div>
               <div><dt><kbd>G</kbd></dt><dd>Switch the game speed between 1x and 2x.</dd></div>
               <div><dt><kbd>Esc</kbd> <kbd>P</kbd></dt><dd>Pause.</dd></div>
@@ -352,7 +354,8 @@
             </dl>
             <h3>Touch and extras</h3>
             <dl>
-              <div><dt><kbd>Tap</kbd></dt><dd>Tap a building in the bar, then a hex. Hold and drag to move the preview first; a belt follows your finger, and Turn changes its direction. Tap something on the board to upgrade or sell it.</dd></div>
+              <div><dt><kbd>Tap</kbd></dt><dd>Tap a building in the bar, then a hex. Hold and drag to move the preview first; a belt or a line of arms follows your finger, and Turn changes its direction. Tap something on the board to upgrade or sell it.</dd></div>
+              <div><dt><kbd>Hold</kbd> <kbd>Double-tap</kbd></dt><dd>On a charged tower: fire its special.</dd></div>
               <div><dt><kbd>Drag</kbd> <kbd>Pinch</kbd></dt><dd>One finger pans. Two fingers pinch to zoom or twist to turn the view.</dd></div>
               <div><dt><kbd>Music</kbd></dt><dd>Seven built-in tracks play as a playlist. Add YouTube or Spotify links of your own and the score goes quiet while they play.</dd></div>
               <div><dt><kbd>Effects</kbd></dt><dd>Impact and beat pulses can be switched off, dimmed, recoloured or limited to tile borders, environment or towers.</dd></div>

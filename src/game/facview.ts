@@ -8,20 +8,26 @@
 // belts meet edge to edge with the same width and heading and a turning line reads as one curved conveyor. Items ride the
 // same path (see pathAt), and the tread texture scrolls along it at the belt speed.
 //
-// Pipes are glass with the fluid visible inside (its level follows the network's fill, light pulses run along it). Splitters
-// and tunnels are built here too. The supply connectors come from Factory.links(): a scanner arch over a belt where a tower
-// or building draws from it (it flashes on every take), a glass branch from a pipe into its consumer, a drop cable from a
-// pole to what it powers. Between waves the factory stands still, so nothing moves here either; the status lamps then show
-// the supply diagnosis (Sim.diag). What a pole or tunnel would connect to is drawn by the cues (cues.ts), from the selection kept here.
+// Pipes are glass with the fluid visible inside: it fills the tube to its network's level, flows the way the network runs
+// (from the pump to what draws from it) and looks like what it is, black viscous crude or thin amber petrol (see fluidMat and
+// FacView.syncPipes). Splitters and tunnels are built here too.
+//
+// Transfer Arms are the connectors of the factory: every hand-off of an item goes through one (see factory.ts). All arms
+// are drawn from the parts of one model, instanced, and posed here from Fac.prog and Fac.hand (see ArmRig and syncArms):
+// reach back, grip, swing through the tile, put down, return. The other connectors come from Factory.links(): a hatch on
+// the tower or building an arm serves (it lights up on every put), the chute from a supply crate to the tower beside it, a
+// glass branch from a pipe into its consumer, a drop cable from a pole to what it powers. Between waves the factory stands
+// still, so nothing moves here either; the status lamps then show the supply diagnosis (Sim.diag). What a pole, tunnel or
+// arm would connect to is drawn by the cues (cues.ts), from the selection kept here.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { FACS, ITEMS, FLUIDS, FLUID_TYPES, ORE_TYPES, ORES, ITEM_TYPES, GW, GH, cellX, cellZ, MAKES } from './data.ts';
-import type { FacType, ItemType } from './data.ts';
+import type { FacType, ItemType, FluidType } from './data.ts';
 import { FX_LAYER } from './world.ts';
-import { HEX_SIZE, neighbor, hexDist, lineDir, inBoard, worldToCell } from './hex.ts';
+import { HEX_SIZE, ROW_H, neighbor, hexDist, lineDir, inBoard, worldToCell } from './hex.ts';
 import type { Sim, Ev } from './sim.ts';
 import type { Fac, Factory, BeltItem, Diag } from './factory.ts';
-import { BELT_SPEED, TUNNEL_REACH, pipeLike, turns, facKey } from './factory.ts';
+import { BELT_SPEED, TUNNEL_REACH, PICK_AT, pipeLike, turns, facKey, armBack, armFront, conveyor } from './factory.ts';
 
 const TAU = Math.PI * 2;
 /** World heading of each hex direction (HEX_DIRS: east, then clockwise on screen, 60 degrees apart). */
@@ -679,8 +685,43 @@ function itemParts(): Record<Shape, ItemPart[]> {
 }
 
 // ---------- pipes ----------
-/** Pipe axis height, the glass tube's radius and the fluid core's radius inside it. */
-const PY = 0.4, PR = 0.105, KR = 0.05;
+/** Pipe axis height, the glass tube's radius and the radius of the fluid inside it (it fills the glass but for the wall). */
+const PY = 0.4, PR = 0.105, KR = 0.088;
+/** The fluid's bottom and top inside a lying pipe. */
+const HY0 = PY - KR, HY1 = PY + KR;
+/** How fast each fluid runs along the pipes (tiles a second; index: 0 none, then FLUID_TYPES): crude creeps, petrol runs. */
+const FLOW_SPEED = [0, 0.4, 1.45];
+/** The least a pipe is shown filled while its fluid is being pumped through it (a busy line is drained as fast as it is
+ *  fed: its real level would show an empty tube); its real fill shows in the rest of the tube's height. */
+const FLOW_FILL = 0.62;
+/** The pipe state texture: one texel per tile (x = 2 cx + the row's half-tile shift, y = cz), see FacView.syncPipes. */
+const PT_W = 2 * GW + 1, PT_H = GH;
+/** A stretch t0..t1 of another curve (the two halves of an elbow's fluid). */
+class SubCurve extends THREE.Curve<THREE.Vector3> {
+  constructor(private c: THREE.Curve<THREE.Vector3>, private t0: number, private t1: number) { super(); }
+  override getPoint(t: number, out = new THREE.Vector3()) { return this.c.getPoint(this.t0 + (this.t1 - this.t0) * t, out); }
+}
+/**
+ * Give a piece of fluid its flow attribute aFl = (side, r, y0, y1). side: the hex side of the pipe arm it lies in (the
+ * fluid runs toward the tile's middle in an arm that leads upstream, away from it in the others; 6: a branch into a
+ * consumer, always downstream), r: how far along that arm from the tile's middle (1 at the edge; rOf gets the vertex's x, z
+ * and its u along a tube), y0 / y1: the fluid's bottom and top there, between which its level rises with the network's fill.
+ */
+function flTag(g: THREE.BufferGeometry, side: number, y0: number, y1: number, rOf: (x: number, z: number, u: number) => number): THREE.BufferGeometry {
+  const n = g.index ? g.toNonIndexed() : g;
+  if (n !== g) g.dispose();
+  const p = n.getAttribute('position'), uv = n.getAttribute('uv'), a = new Float32Array(p.count * 4);
+  for (let i = 0; i < p.count; i++) { a[i * 4] = side; a[i * 4 + 1] = Math.max(0, rOf(p.getX(i), p.getZ(i), uv ? uv.getX(i) : 0)); a[i * 4 + 2] = y0; a[i * 4 + 3] = y1; }
+  n.setAttribute('aFl', new THREE.BufferAttribute(a, 4));
+  return n;
+}
+/** Merge tagged fluid pieces (position, normal and the flow attribute). */
+const mergeK = (parts: THREE.BufferGeometry[]) => {
+  for (const g of parts) for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal' && k !== 'aFl') g.deleteAttribute(k);
+  const m = mergeGeometries(parts)!;
+  for (const g of parts) g.dispose();
+  return m;
+};
 /** A belt-style arc (entry side a to exit side b) at pipe height, for elbows. */
 class ElbowCurve extends THREE.Curve<THREE.Vector3> {
   private P: Path; private c: number; private s: number; private pt: PathPt = { x: 0, z: 0, tx: 0, tz: 0 };
@@ -707,7 +748,13 @@ function pipeGeo(mask: number, valve: boolean, shaft = false, model = false): TH
   const sides: number[] = [];
   for (let d = 0; d < 6; d++) if (mask & (1 << d)) sides.push(d);
   const B: THREE.BufferGeometry[] = [], K: THREE.BufferGeometry[] = [], F: THREE.BufferGeometry[] = [], V: THREE.BufferGeometry[] = [];
-  const arm = (d: number, from: number, to: number) => { B.push(along(tubeZ(PR, to - from, 14), d, from, to)); K.push(along(tubeZ(KR, to - from, 10), d, from, to)); };
+  // (the fluid is an open tube per arm, each from the tile's middle outward: a piece never spans two sides, see flTag)
+  const karm = (d: number, from: number, to: number) => K.push(flTag(along(lying(new THREE.CylinderGeometry(KR, KR, to - from, 12, 1, true)), d, from, to), d, HY0, HY1, (x, z) => x * DX[d] + z * DZ[d]));
+  const arm = (d: number, from: number, to: number) => {
+    B.push(along(tubeZ(PR, to - from, 14), d, from, to));
+    if (from < 0) { karm(d, 0, to); karm((d + 3) % 6, 0, -from); } else karm(d, from, to);
+  };
+  const vessel = (g: THREE.BufferGeometry, y0: number, y1: number) => K.push(flTag(g, 0, y0, y1, () => 0));
   // steel bands hold the glass: a flange at the tile edge and a collar just inside it
   const flange = (d: number, at: number) => { F.push(along(tubeZ(PR + 0.06, 0.05, 12), d, at - 0.025, at + 0.025)); F.push(along(tubeZ(PR + 0.022, 0.06, 12), d, at - 0.1, at - 0.04)); };
   const support = (x: number, z: number, yaw: number) => {
@@ -727,7 +774,7 @@ function pipeGeo(mask: number, valve: boolean, shaft = false, model = false): TH
     // the modelled shaft (fac_ptunnel) brings the steelwork: here only the glass arms into its ports, the flanges at the tile
     // edges, and the sight glass on its cap with the fluid in it
     B.push(new THREE.CylinderGeometry(0.17, 0.17, 0.16, 16).translate(0, 0.68, 0));
-    K.push(new THREE.CylinderGeometry(0.13, 0.13, 0.15, 12).translate(0, 0.675, 0));
+    vessel(new THREE.CylinderGeometry(0.14, 0.14, 0.15, 12).translate(0, 0.675, 0), 0.6, 0.75);
     for (const d of sides) { arm(d, 0.29, 1); flange(d, 0.95); }
   } else if (shaft) {
     // the shaft: a steel collar on a dark plinth with a cap; each arm runs into its side and a glass well in the cap shows
@@ -737,7 +784,7 @@ function pipeGeo(mask: number, valve: boolean, shaft = false, model = false): TH
     F.push(new THREE.CylinderGeometry(0.33, 0.33, 0.05, 16).translate(0, 0.585, 0));
     F.push(new THREE.TorusGeometry(0.2, 0.025, 6, 18).rotateX(Math.PI / 2).translate(0, 0.62, 0));
     B.push(new THREE.CylinderGeometry(0.17, 0.17, 0.16, 16).translate(0, 0.68, 0));
-    K.push(new THREE.CylinderGeometry(0.13, 0.13, 0.15, 12).translate(0, 0.675, 0));
+    vessel(new THREE.CylinderGeometry(0.14, 0.14, 0.15, 12).translate(0, 0.675, 0), 0.6, 0.75);
     F.push(new THREE.CylinderGeometry(0.19, 0.19, 0.03, 16).translate(0, 0.77, 0));
     // a red hazard band round the collar
     V.push(new THREE.CylinderGeometry(0.315, 0.315, 0.06, 16, 1, true).translate(0, 0.45, 0));
@@ -745,7 +792,7 @@ function pipeGeo(mask: number, valve: boolean, shaft = false, model = false): TH
   } else if (n === 0) {
     // a standpipe waiting for a neighbour
     B.push(new THREE.CylinderGeometry(0.15, 0.15, 0.56, 14).translate(0, 0.3, 0));
-    K.push(new THREE.CylinderGeometry(0.11, 0.11, 0.5, 12).translate(0, 0.3, 0));
+    vessel(new THREE.CylinderGeometry(0.125, 0.125, 0.5, 12).translate(0, 0.3, 0), 0.05, 0.55);
     F.push(new THREE.CylinderGeometry(0.22, 0.24, 0.06, 14).translate(0, 0.03, 0), new THREE.CylinderGeometry(0.19, 0.19, 0.05, 14).translate(0, 0.58, 0));
     wheel(0, 0.6, 0);
   } else if (n === 2 && (sides[1] - sides[0]) === 3) {
@@ -761,7 +808,8 @@ function pipeGeo(mask: number, valve: boolean, shaft = false, model = false): TH
     if (k === 5 || k === 4) { a = sides[1]; k = 6 - k; } // run the short way round
     const curve = new ElbowCurve(a, k);
     B.push(new THREE.TubeGeometry(curve, 16, PR, 12, false));
-    K.push(new THREE.TubeGeometry(curve, 16, KR, 8, false));
+    K.push(flTag(new THREE.TubeGeometry(new SubCurve(curve, 0, 0.5), 8, KR, 10, false), a, HY0, HY1, (_x, _z, u) => 1 - u));
+    K.push(flTag(new THREE.TubeGeometry(new SubCurve(curve, 0.5, 1), 8, KR, 10, false), (a + k) % 6, HY0, HY1, (_x, _z, u) => u));
     flange(sides[0], 0.95); flange(sides[1], 0.95);
     const mid = curve.getPoint(0.5), t = curve.getTangent(0.5);
     support(mid.x, mid.z, Math.atan2(t.x, t.z));
@@ -776,42 +824,120 @@ function pipeGeo(mask: number, valve: boolean, shaft = false, model = false): TH
     } else {
       const r = 0.22, h = 0.38;
       B.push(new THREE.CylinderGeometry(r, r, h, 16).translate(0, PY, 0));
-      K.push(new THREE.CylinderGeometry(r * 0.8, r * 0.8, h * 0.9, 14).translate(0, PY, 0));
+      // (the body's fluid stands as high as the arms' do: one level through the junction)
+      vessel(new THREE.CylinderGeometry(r * 0.86, r * 0.86, 2 * KR, 14).translate(0, PY, 0), HY0, HY1);
       for (const y of [PY - h / 2, PY + h / 2]) F.push(new THREE.CylinderGeometry(r + 0.025, r + 0.025, 0.045, 16).translate(0, y, 0));
       F.push(new THREE.CylinderGeometry(r * 0.75, r + 0.06, PY - h / 2, 16).translate(0, (PY - h / 2) / 2, 0));
       wheel(0, PY + h / 2, 0);
     }
   }
-  const out = [merge(B), merge(K), F.length ? merge(F) : new THREE.BufferGeometry(), V.length ? merge(V) : new THREE.BufferGeometry()];
+  const out = [merge(B), mergeK(K), F.length ? merge(F) : new THREE.BufferGeometry(), V.length ? merge(V) : new THREE.BufferGeometry()];
   ['b', 'k', 'f', 'v'].forEach((s, i) => geos.set(key + s, out[i]));
   return out;
 }
+/** Where a pipe mesh (or a branch instance) stands, read from its matrix, and the texel of the pipe state texture for it. */
+const PIPE_TEXEL = `
+  mat4 flM = modelMatrix;
+  #ifdef USE_INSTANCING
+  flM = modelMatrix * instanceMatrix;
+  #endif
+  vec4 flT = texelFetch(uPipe, clamp(ivec2(int(floor(flM[3].x + ${GW.toFixed(1)})), int(floor(flM[3].z / ${ROW_H.toFixed(6)} + ${((GH - 1) / 2 + 0.5).toFixed(1)}))), ivec2(0), ivec2(${PT_W - 1}, ${PT_H - 1})), 0);
+`;
 /**
- * The fluid inside the glass: the fluid's colour, cut off level at `level` (world height: a part-full pipe shows a liquid
- * surface), and pulses of light that travel along the pipes (in world space, so they run on across tile joins).
- * level null: always full (the branch pipes into consumers).
+ * The fluid inside the glass. One material for every pipe, shaft and branch: what flows in a tile comes from the pipe state
+ * texture (FacView.syncPipes writes, per pipe tile: its distance from the pump along the network, which of its sides lead
+ * upstream, the level shown, the fluid, and how far the network's fluid has run), so nothing is set per pipe.
+ *
+ * The body is cut off flat at the level, with a small wave travelling down the pipe, and the inside of the far wall that
+ * shows through the cut is lit as the liquid's surface (its normal turned up), so a part-full pipe has a surface and a
+ * meniscus line and not a hollow shell. Everything that moves is a function of the flow coordinate (distance from the pump
+ * minus how far the fluid has run), so it runs the real way round every bend and junction, at the fluid's own pace, and
+ * stands still when the network does.
+ *  - crude: black-brown and opaque, slow marbled streaks, a few heavy bubbles dragged along under the surface, and the
+ *    colours of an oil film where the light grazes it;
+ *  - petrol: thin amber with the light through it (brighter where it is shallow), fine fast streaks, a string of small
+ *    bubbles, and the bright wavering line a round glass of it focuses along its lower third.
  */
-function fluidMat(color: number, level: number | null, clock: { value: number }, inst = false): THREE.MeshStandardMaterial {
-  const m = new THREE.MeshStandardMaterial({ color: inst ? 0xffffff : color, roughness: 0.18, metalness: 0.2, side: THREE.DoubleSide });
-  const L = { value: level ?? 99 };
+function fluidMat(tex: THREE.Texture): THREE.MeshStandardMaterial {
+  // (little of the sky in it: a mirror-bright tube reads as chrome, not as a liquid behind glass)
+  const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.15, metalness: 0, side: THREE.DoubleSide, envMapIntensity: 0.25 });
   m.onBeforeCompile = (sh) => {
-    sh.uniforms.uFlowT = clock; sh.uniforms.uLevel = L;
-    sh.vertexShader = 'varying vec3 vFlowW;\n' + sh.vertexShader.replace('#include <project_vertex>', '#include <project_vertex>\n\tvFlowW = (modelMatrix * ' + (inst ? 'instanceMatrix * ' : '') + 'vec4(transformed, 1.0)).xyz;');
-    sh.fragmentShader = 'uniform float uFlowT;\nuniform float uLevel;\nvarying vec3 vFlowW;\n' + sh.fragmentShader
-      .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\n\tif (vFlowW.y > uLevel) discard;')
-      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n\tfloat fw = 0.5 + 0.5 * sin(uFlowT * 3.2 - (vFlowW.x * 3.4 + vFlowW.z * 2.2));\n\ttotalEmissiveRadiance += diffuseColor.rgb * 0.18 + normalize(diffuseColor.rgb + 0.001) * (0.02 + 1.3 * pow(fw, 10.0));');
+    sh.uniforms.uPipe = { value: tex };
+    sh.vertexShader = 'attribute vec4 aFl;\nuniform sampler2D uPipe;\nvarying vec4 vFlD;\nvarying vec2 vFlY;\n' + sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
+      ${PIPE_TEXEL}
+      float flUp = aFl.x > 5.5 ? 0.0 : mod(floor(mod(flT.g, 64.0) / exp2(aFl.x)), 2.0);
+      // (flow coordinate, level, fluid, fill), and the vertex's own height with the fluid's bottom there
+      vFlD = vec4(flT.r + (0.5 - flUp) * aFl.y - flT.a, aFl.z + (aFl.w - aFl.z) * flT.b + step(0.985, flT.b) * 0.01, floor(flT.g / 64.0), flT.b);
+      vFlY = vec2(transformed.y, aFl.z);`);
+    sh.fragmentShader = 'varying vec4 vFlD;\nvarying vec2 vFlY;\n' + DEP_NOISE + 'float flH(float n) { return fract(sin(n * 127.1 + 1.3) * 43758.5453); }\n' + sh.fragmentShader
+      .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
+        if (vFlD.z < 0.5) discard;
+        float flS = vFlD.x, flCr = step(vFlD.z, 1.5), flPart = step(vFlD.w, 0.97);
+        float flRip = mix(0.0035 * sin(flS * 25.0) + 0.002 * sin(flS * 59.0 + 0.7), 0.005 * sin(flS * 9.0) + 0.003 * sin(flS * 21.0 + 1.3), flCr) * flPart;
+        float flLev = vFlD.y + flRip, flY = vFlY.x;
+        if (flY > flLev) discard;
+        float flTop = gl_FrontFacing ? 0.0 : 1.0;`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        float flM1 = dN(vec3(flS * 1.7, flY * 11.0, 2.0)), flM2 = dN(vec3(flS * 4.3 + 7.0, flY * 30.0, 5.0));
+        float flDepth = clamp((flLev - flY) / max(0.02, flLev - vFlY.y), 0.0, 1.0);
+        vec3 flCrude = mix(vec3(0.02, 0.012, 0.008), vec3(0.1, 0.058, 0.03), smoothstep(0.45, 0.8, flM1 * 0.7 + flM2 * 0.3) * 0.75);
+        vec3 flPet = mix(vec3(0.8, 0.4, 0.05), vec3(0.42, 0.13, 0.01), flDepth * 0.8);
+        diffuseColor.rgb = mix(flPet, flCrude, flCr);`)
+      .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = mix(0.3, 0.22, flCr);')
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        if (flTop > 0.5) normal = normalize((viewMatrix * vec4(0.07 * cos(flS * mix(25.0, 9.0, flCr)), 1.0, 0.0, 0.0)).xyz);`)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        {
+          float flFr = pow(1.0 - clamp(abs(dot(normal, normalize(vViewPosition))), 0.0, 1.0), 2.0);
+          float flMen = (1.0 - smoothstep(0.0, 0.014, flLev - flY)) * flPart * (1.0 - flTop);
+          if (flCr > 0.5) {
+            float c = flS * 1.3, id = floor(c), f = fract(c) - 0.5;
+            float on = step(0.4, flH(id * 3.1)), by = flLev - 0.022 - 0.03 * flH(id + 9.0), br = 0.014 + 0.013 * flH(id * 1.7 + 4.0);
+            float d = length(vec2(f / 1.3 * 2.0, flY - by));
+            float rim = (1.0 - smoothstep(0.003, 0.008, abs(d - br))) * on, core = (1.0 - smoothstep(br * 0.2, br, d)) * on;
+            vec3 film = 0.5 + 0.5 * cos(6.2831 * (vec3(0.0, 0.33, 0.67) + flFr * 1.3 + flS * 0.23 + 0.9 * flM1));
+            float patch_ = smoothstep(0.5, 0.75, dN(vec3(flS * 0.9 + 3.0, flY * 5.0, 8.0)));
+            totalEmissiveRadiance += film * patch_ * (flFr * 0.1 + flTop * 0.04 + 0.02 * smoothstep(0.55, 0.9, flM2)) + vec3(0.34, 0.23, 0.13) * rim + vec3(0.07, 0.045, 0.025) * core + vec3(0.2, 0.12, 0.06) * flMen;
+          } else {
+            float st = pow(dN(vec3(flS * 1.1, flY * 70.0, 1.0)), 3.0);
+            float c = flS * 7.0, id = floor(c), f = fract(c) - 0.5;
+            float by = mix(vFlY.y, flLev, 0.2 + 0.7 * flH(id * 2.3)), d = length(vec2(f / 7.0 * 2.0, flY - by));
+            float bub = (1.0 - smoothstep(0.003, 0.008, d)) * step(0.3, flH(id + 3.0));
+            float yc = mix(vFlY.y, flLev, 0.3) + 0.01 * sin(flS * 7.0) + 0.005 * sin(flS * 17.0 + 2.0);
+            float cau = exp(-pow((flY - yc) / 0.008, 2.0)) * (0.55 + 0.45 * sin(flS * 12.0 + 4.0 * flM1));
+            totalEmissiveRadiance += diffuseColor.rgb * (0.1 + 0.14 * (1.0 - flDepth)) + vec3(1.0, 0.7, 0.28) * (0.16 * st + 0.55 * bub + 0.5 * cau * (1.0 - flTop) + 0.3 * flMen) + vec3(1.0, 0.8, 0.45) * flTop * 0.05;
+          }
+        }`);
   };
-  m.customProgramCacheKey = () => 'fluidcore' + +inst;
+  m.customProgramCacheKey = () => 'fluid2';
   return m;
 }
-/** Glass: nearly clear face-on, brighter and more solid at grazing angles, so the tube's outline reads round the fluid. */
-function glassMat(): THREE.MeshStandardMaterial {
+/** The pipe state texture over its data (four floats per texel, see FacView.syncPipes). */
+function pipeTexture(data: Float32Array): THREE.DataTexture {
+  const t = new THREE.DataTexture(data, PT_W, PT_H, THREE.RGBAFormat, THREE.FloatType);
+  t.minFilter = t.magFilter = THREE.NearestFilter; t.generateMipmaps = false; t.needsUpdate = true;
+  return t;
+}
+/** Glass: nearly clear face-on, brighter and more solid at grazing angles, so the tube's outline reads round the fluid.
+ *  Where crude runs behind it, the film it leaves on the glass throws back oily colours. */
+function glassMat(tex: THREE.Texture): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({ color: 0xcfe6ec, roughness: 0.04, metalness: 0.05, transparent: true, opacity: 0.08, depthWrite: false });
   m.onBeforeCompile = (sh) => {
-    sh.fragmentShader = sh.fragmentShader.replace('#include <opaque_fragment>',
-      'float fres = pow(1.0 - abs(dot(normalize(normal), normalize(vViewPosition))), 2.2);\n\tdiffuseColor.a = mix(diffuseColor.a, 0.62, fres);\n\toutgoingLight += vec3(0.5, 0.66, 0.74) * fres * 0.34;\n#include <opaque_fragment>');
+    sh.uniforms.uPipe = { value: tex };
+    sh.vertexShader = 'uniform sampler2D uPipe;\nvarying vec3 vGl;\n' + sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
+      ${PIPE_TEXEL}
+      vGl = vec3(floor(flT.g / 64.0), (flM * vec4(transformed, 1.0)).xz);`);
+    sh.fragmentShader = 'varying vec3 vGl;\n' + sh.fragmentShader.replace('#include <opaque_fragment>',
+      `float fres = pow(1.0 - abs(dot(normalize(normal), normalize(vViewPosition))), 2.2);
+      // (over black crude the glass's own milky edge would turn the whole tube grey: it is thinned there, and carries the film's colours instead)
+      float glCr = step(0.5, vGl.x) * step(vGl.x, 1.5);
+      diffuseColor.a = mix(diffuseColor.a, mix(0.62, 0.16, glCr), fres);
+      outgoingLight *= 1.0 - 0.6 * glCr;
+      outgoingLight += vec3(0.5, 0.66, 0.74) * fres * mix(0.34, 0.06, glCr);
+      outgoingLight += (0.5 + 0.5 * cos(6.2831 * (vec3(0.0, 0.33, 0.67) + fres * 1.7 + 0.31 * (vGl.y + vGl.z)))) * fres * fres * 0.1 * glCr;
+      #include <opaque_fragment>`);
   };
-  m.customProgramCacheKey = () => 'glass';
+  m.customProgramCacheKey = () => 'glass2';
   return m;
 }
 
@@ -879,43 +1005,32 @@ export function tunnelMate(F: Factory, type: FacType, cx: number, cz: number, di
 }
 
 // ---------- supply connectors (see Factory.links) ----------
-/** Scanner over a belt (local frame: the belt runs along +z): half its width, its inner height and half its length. */
-const SC_W = 0.53, SC_H = 0.48, SC_D = 0.3;
-/** Height of the chute from a scanner to its taker, of a power socket on a building or tower, and how far in from the taker's centre either ends. */
+/** Height of the hatch an arm serves on a tower or building (and of a crate's chute), of a power socket, and how far in from the taker's centre either sits. */
 const ARM_Y = 0.5, SOCK_Y = 0.78, TAKER_IN = 0.66;
-/** Seconds a scanner's light flashes for a take, and an item token takes down the chute. */
-const FLASH_T = 0.45, TOKEN_T = 0.32;
-const MAX_LINKS = 512, MAX_TOKENS = 64, MAX_MARK = 96, MAX_LVL = 256;
+/** Seconds a chute's light flashes for a take, an item token takes down the chute, and the flash of a put lasts. */
+const FLASH_T = 0.45, TOKEN_T = 0.32, PUT_T = 0.34;
+const MAX_LINKS = 512, MAX_TOKENS = 64, MAX_MARK = 96, MAX_LVL = 256, MAX_PUT = 48;
 const SCAN_AMBER = new THREE.Color(0xf2a54a), SOCK_GREEN = new THREE.Color(0x9ccf6a);
-/** The scanner's body: a housing the belt runs through (an airport scanner), with a frame round both openings and strips of
- *  curtain hanging in them that the items push through. */
-const G_SCAN = () => geo('scan', () => {
-  const p: THREE.BufferGeometry[] = [
-    new THREE.BoxGeometry(SC_W * 2 + 0.08, 0.06, SC_D * 2).translate(0, SC_H + 0.03, 0),
-    new THREE.BoxGeometry(0.62, 0.09, SC_D * 2 - 0.18).translate(0, SC_H + 0.105, 0),
-  ];
-  for (const s of [-1, 1]) {
-    p.push(new THREE.BoxGeometry(0.06, SC_H, SC_D * 2).translate(s * SC_W, SC_H / 2, 0));
-    p.push(new THREE.BoxGeometry(SC_W * 2 + 0.14, 0.08, 0.07).translate(0, SC_H + 0.04, s * SC_D));
-    for (const x of [-1, 1]) p.push(new THREE.BoxGeometry(0.09, SC_H, 0.07).translate(x * (SC_W + 0.01), SC_H / 2, s * SC_D));
-    for (let i = 0; i < 6; i++) p.push(new THREE.BoxGeometry(0.15, 0.2, 0.012).translate((i - 2.5) * 0.165, SC_H - 0.1, s * (SC_D - 0.045)));
-  }
-  return merge(p);
-});
-/** The scanner's light: a strip along the top of both walls and a scan line across the roof. */
-const G_SCAN_LIGHT = () => geo('scanLight', () => merge([
-  ...[-1, 1].map((s) => new THREE.BoxGeometry(0.035, 0.035, SC_D * 2 - 0.12).translate(s * (SC_W + 0.035), SC_H - 0.05, 0)),
-  new THREE.BoxGeometry(0.5, 0.025, 0.09).translate(0, SC_H + 0.155, 0),
-]));
-/** A chute along +z from the origin, one unit long (scaled to its length), and the socket at either end of a link. */
+/** A chute along +z from the origin, one unit long (scaled to its length): a supply crate's slide into the tower beside it. */
 const G_ARM = () => geo('arm', () => merge([new THREE.BoxGeometry(0.17, 0.11, 1).translate(0, 0, 0.5), ...[-1, 1].map((s) => new THREE.BoxGeometry(0.03, 0.05, 1).translate(s * 0.085, 0.065, 0.5))]));
 const G_ARM_LIGHT = () => geo('armLight', () => new THREE.BoxGeometry(0.07, 0.02, 0.92).translate(0, 0.06, 0.5));
+/** The hatch or socket on a tower or building (facing +z): where an arm puts items in or takes them out, where a drop cable ends. */
 const G_SOCK = () => geo('sock', () => merge([new THREE.BoxGeometry(0.22, 0.22, 0.1).translate(0, 0, 0.05), new THREE.BoxGeometry(0.28, 0.05, 0.14).translate(0, -0.13, 0.04)]));
 const G_SOCK_LIGHT = () => geo('sockLight', () => new THREE.BoxGeometry(0.12, 0.06, 0.03).translate(0, 0.04, 0.11));
+/** The flash of a put: a soft ring with a bright middle, drawn additively on the spot the item landed. */
+function putTexture(): THREE.Texture {
+  const S = 64, c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d')!, gr = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  gr.addColorStop(0, 'rgba(255,255,255,0.9)'); gr.addColorStop(0.18, 'rgba(255,255,255,0.25)'); gr.addColorStop(0.62, 'rgba(255,255,255,0.05)');
+  gr.addColorStop(0.78, 'rgba(255,255,255,0.85)'); gr.addColorStop(0.9, 'rgba(255,255,255,0.2)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, S, S);
+  return new THREE.CanvasTexture(c);
+}
 /** The branch from a pipe tile's edge into the consumer beside it (along +z from the pipe tile's centre): glass, core, steel. */
 const BR_A = 0.96, BR_B = 1.36;
 const G_BRANCH = () => geo('branch', () => merge([lying(new THREE.CylinderGeometry(PR, PR, BR_B - BR_A, 14)).translate(0, PY, (BR_A + BR_B) / 2)]));
-const G_BRANCH_CORE = () => geo('branchCore', () => merge([lying(new THREE.CylinderGeometry(KR, KR, BR_B - BR_A, 10)).translate(0, PY, (BR_A + BR_B) / 2)]));
+const G_BRANCH_CORE = () => geo('branchCore', () => mergeK([flTag(lying(new THREE.CylinderGeometry(KR, KR, BR_B - BR_A, 12, 1, true)).translate(0, PY, (BR_A + BR_B) / 2), 6, HY0, HY1, (_x, z) => z)]));
 const G_BRANCH_FIT = () => geo('branchFit', () => merge([
   lying(new THREE.CylinderGeometry(PR + 0.05, PR + 0.05, 0.05, 14)).translate(0, PY, 1.02),
   lying(new THREE.CylinderGeometry(PR + 0.07, PR + 0.07, 0.07, 14)).translate(0, PY, BR_B),
@@ -929,6 +1044,48 @@ const G_BOX = () => geo('unitBox', () => new THREE.BoxGeometry(1, 1, 1));
 const G_BAND = () => geo('lvlBand', () => new THREE.CylinderGeometry(HEX_SIZE * 0.93, HEX_SIZE * 0.93, 0.055, 6, 1, true).translate(0, 0.205, 0));
 const G_PIP = () => geo('lvlPip', () => new THREE.OctahedronGeometry(0.075, 0).scale(1, 0.7, 1));
 const LVL_COLOR = [0, 0, 0xd8b06a, 0xffd27a];
+
+// ---------- Transfer Arms ----------
+// Every arm on the map is drawn from the same few parts (the model's nodes, see tools/blender/fac_arm.py: pad, turntable,
+// upper arm, forearm, wrist, finger), one instanced mesh per part and material, so a hundred arms cost the draw calls of
+// one. The chain is posed here: the hand's place round the arm's axis (turn, reach, height) follows a path from the pick
+// point to the drop point with Fac.prog, sprung so it has weight, and a two-link IK folds the arm to it with the hand
+// hanging straight down.
+/** The parts in drawing order (the finger is drawn twice per arm, the second turned half round). */
+const ARM_NODES = ['base', 'turn', 'upper', 'fore', 'wrist', 'fingerL'];
+const P_BASE = 0, P_TURN = 1, P_UPPER = 2, P_FORE = 3, P_WRIST = 4, P_FINGER = 5;
+/** The joints as modelled (read from the model's nodes when it is loaded): the turntable's seat, the shoulder above it, the
+ *  two links, and where a finger sits on the palm rail (x: with the hand closed on nothing, y: below the wrist's axis). */
+interface ArmDim { turnY: number; shY: number; L1: number; L2: number; fx: number; fy: number }
+const ARM_DIM: ArmDim = { turnY: 0.13, shY: 0.49, L1: 1.08, L2: 1.06, fx: 0.17, fy: 0.14 };
+/** How far below the wrist's axis an item's foot hangs, and how far from the hand's middle a finger closes on each shape. */
+const GRIP = 0.42;
+const GRIP_OF: Partial<Record<Shape, number>> = { cell: 0.5 };
+const GAP_OF: Record<Shape, number> = { ore: 0.22, coal: 0.21, plate: 0.19, frame: 0.19, crate: 0.2, shell: 0.115, slug: 0.135, cell: 0.14, missile: 0.09 };
+/** How far a finger opens beyond its grip, where the hand rests while time stands still (reach, height), how high it carries, how low it hangs when it has nothing to do. */
+const ARM_OPEN = 0.075, ARM_REST_R = 1.0, ARM_REST_Y = 0.58, ARM_CARRY_Y = 1.02, ARM_SLUMP_R = 0.6, ARM_SLUMP_Y = 0.22;
+/** What stands behind or in front of an arm (see FacView.armEnds). */
+const E_NONE = 0, E_BELT = 1, E_SPLIT = 2, E_TUNNEL = 3, E_ARM = 4, E_FAC = 5, E_TOWER = 6;
+const ITEM_BIT = Object.fromEntries(ITEM_TYPES.map((t, i) => [t, 1 << i])) as Record<ItemType, number>;
+/** One arm's pose and what it is doing. */
+interface ArmRig {
+  /** its slot in the instanced parts, the layout its ends were worked out for, what stands behind / in front */
+  slot: number; rev: number; src: number; dst: number; q: Fac | null;
+  /** the hand as drawn: its turn about the arm's axis (radians from the back side), reach and height, and their speeds */
+  yaw: number; r: number; y: number; vyaw: number; vr: number; vy: number; init: boolean;
+  /** fingers 0 closed .. 1 open, the jolt of a release, seconds it has had nothing to do, seconds since it picked */
+  open: number; kick: number; wait: number; since: number; had: ItemType | null;
+  /** pick and drop points (world) */
+  px: number; py: number; pz: number; dx: number; dy: number; dz: number;
+  /** the status lamp as last written (colour * 8 + step of brightness) */
+  lamp: number;
+  /** the direction the arm faced last frame (yaw is kept about it: a turn mid-swing carries the hand over, see syncArms) */
+  dir: number;
+}
+const newRig = (): ArmRig => ({ slot: -1, rev: -1, src: 0, dst: 0, q: null, yaw: 0, r: ARM_REST_R, y: ARM_REST_Y, vyaw: 0, vr: 0, vy: 0, init: false, open: 1, kick: 0, wait: 0, since: 9, had: null, px: 0, py: 0, pz: 0, dx: 0, dy: 0, dz: 0, lamp: -1, dir: -1 });
+/** The instanced parts of all arms: per part its meshes (one per material), and the lamps (coloured per arm). */
+interface ArmBatch { model: boolean; cap: number; parts: THREE.InstancedMesh[][]; lamp: THREE.InstancedMesh; dim: ArmDim; own: (THREE.BufferGeometry | THREE.Material)[] }
+const sstep = (a: number, b: number, x: number) => { const k = sat01((x - a) / (b - a)); return k * k * (3 - 2 * k); };
 
 // ---------- the view ----------
 interface Glow { m: THREE.MeshStandardMaterial; i0: number }
@@ -961,9 +1118,17 @@ interface FVis {
   /** a modelled splitter: its turntable and the kerbs that close each side (hidden where a belt joins); a modelled belt
    *  tunnel: how brightly its mouth flares (an item passing through) */
   turn: THREE.Object3D | null; gates: (THREE.Object3D | undefined)[] | null; flare: number;
-  /** pipes and pipe tunnels: the four meshes (glass, core, fittings, valve), the side mask they were built for, the fluid state they show (see animate) */
-  pipe: THREE.Mesh[]; mask: number; fluidKey: number;
+  /** pipes and pipe tunnels: the four meshes (glass, fluid, fittings, valve), the side mask they were built for, the fluid in
+   *  them (0 none, else 1 + its index in FLUID_TYPES) and the one a shaft's pit light was last coloured for, the tile's
+   *  distance from the pump along its network and which of its sides lead upstream (a bit each; see pipeFlow) */
+  pipe: THREE.Mesh[]; mask: number; fluidKey: number; glowK: number; fD: number; fMask: number;
+  /** a Transfer Arm: its pose (the arm itself is drawn instanced, see syncArms) */
+  rig: ArmRig | null;
 }
+/** A pipe network as the view reads it (factory.ts keeps the type to itself). */
+interface PNet { pipes: Fac[]; fluid: FluidType | null; amt: number; cap: number; prod: Fac[]; cons: Fac[]; towers: unknown[]; forced: FluidType | null }
+const FLUID_OF: Partial<Record<FacType, FluidType>> = { pump: 'crude', refinery: 'petrol' };
+const wrapPi = (a: number) => a - Math.round(a / TAU) * TAU;
 
 export class FacView {
   private group = new THREE.Group();
@@ -998,7 +1163,9 @@ export class FacView {
   private glint: THREE.InstancedMesh;
   private M = new THREE.Matrix4(); private Q = new THREE.Quaternion(); private S = new THREE.Vector3(); private P = new THREE.Vector3(); private C = new THREE.Color(); private E = new THREE.Euler();
   private V1 = new THREE.Vector3(); private V2 = new THREE.Vector3(); private Z = new THREE.Vector3(0, 0, 1);
-  private pt: PathPt = { x: 0, z: 0, tx: 0, tz: 0 };
+  private pt: PathPt = { x: 0, z: 0, tx: 0, tz: 0 }; private P2 = { x: 0, z: 0 }; private M2 = new THREE.Matrix4(); private M3 = new THREE.Matrix4();
+  /** the deck's height under a tower (the factory's own tiles lie at 0) */
+  private deck: (x: number, z: number) => number;
   /** belts: the tread texture, its materials, how far it has run (tiles), and the layout the belt shapes were worked out for */
   private tread: THREE.Texture;
   private beltMats: THREE.Material[];
@@ -1019,22 +1186,30 @@ export class FacView {
   /** whether the factory runs this frame (it stands still between waves: nothing moves on the belts, machines idle) */
   private live = true;
   private pipeFit = mat(0x77706a, 'dark'); private pipeValve = new THREE.MeshStandardMaterial({ color: 0x9a2f1e, roughness: 0.45, metalness: 0.4 });
-  /** pipes: the glass, the fluid core per fluid state (see coreMat), the flow clock (stops with the factory), the networks last seen */
-  private glass = glassMat(); private coreMats = new Map<number, THREE.MeshStandardMaterial>(); private flowT = { value: 0 }; private nets: unknown = null;
-  /** supply connectors: belt scanners with their light and chute, sockets, pipe branches, and the power drop cables */
-  private scan: THREE.InstancedMesh; private scanLight: THREE.InstancedMesh; private chute: THREE.InstancedMesh; private chuteLight: THREE.InstancedMesh;
+  /** pipes: the state texture every pipe's fluid is drawn from (see syncPipes), the glass and the fluid, each network's
+   *  state by its first pipe's id (the level shown, how far its fluid has run, how much it flows 0..1, its amount last frame,
+   *  its fluid), the sim seconds that passed this frame, the networks last seen */
+  private pipeData = new Float32Array(PT_W * PT_H * 4); private pipeTex = pipeTexture(this.pipeData);
+  private glass = glassMat(this.pipeTex); private fluid = fluidMat(this.pipeTex);
+  private pipeSt = new Map<number, { shown: number; phase: number; act: number; last: number; kind: number; seen: number }>(); private simDt = 0; private nets: unknown = null;
+  /** Transfer Arms: the instanced parts, what the hands hold this frame (x, y, z and heading per item), whether a hand still moves */
+  private arms: ArmBatch | null = null; private heldIt: ItemType[] = []; private heldP = new Float32Array(64 * 5); private heldN = 0; private armMoving = false;
+  /** per arm id: the hatch it takes out of and the one it puts into (socket slots), and the flashes of the last puts */
+  private armIn = new Map<number, number>(); private armOut = new Map<number, number>();
+  private putFx: THREE.InstancedMesh; private putP = new Float32Array(MAX_PUT * 4); private putC = new Int32Array(MAX_PUT); private nPut = 0;
+  /** supply connectors: the chute from a supply crate to the tower beside it, hatches and sockets, pipe branches, and the power drop cables */
+  private chute: THREE.InstancedMesh; private chuteLight: THREE.InstancedMesh;
   private sock: THREE.InstancedMesh; private sockLight: THREE.InstancedMesh;
   private branch: THREE.InstancedMesh; private branchCore: THREE.InstancedMesh; private branchFit: THREE.InstancedMesh;
   private drops: THREE.Mesh;
   private linkRef: unknown = null; private linkLayout = -1;
-  /** per belt link: its scanner's light slot, the chute's two ends (x, y, z), and how bright its flash still is */
+  /** per crate chute: its two ends (x, y, z), and how bright its flash still is */
   private nScan = 0; private chuteA = new Float32Array(MAX_LINKS * 3); private chuteB = new Float32Array(MAX_LINKS * 3); private flash = new Float32Array(MAX_LINKS);
-  /** takers ('t' + id / 'f' + id) to their belt links, to light the right scanner on a 'take' */
+  /** towers ('t' + id) to the chutes of the crates beside them, to light the right one on a 'take', and each chute's crate (x, z) */
   private takers = new Map<string, number[]>(); private scanAt = new Float32Array(MAX_LINKS * 2);
-  /** takers to their sockets (belt chute ends and power drops), each socket's flare (see flashTaker) and whether it is a power socket */
+  /** takers to their sockets (the hatches arms and chutes serve, and power drops), each socket's flare (see flashTaker) and whether it is a power socket */
   private sockOf = new Map<string, number[]>(); private sockFlash = new Float32Array(MAX_LINKS * 2); private sockPower = new Uint8Array(MAX_LINKS * 2);
-  /** per pipe branch: the pipe it hangs on and the fluid state it shows */
-  private brFrom = new Int32Array(MAX_LINKS); private brKey = new Int32Array(MAX_LINKS); private nBranch = 0;
+  private nBranch = 0;
   /** items sliding down a chute after a take: link, age, colour */
   private tokens: THREE.InstancedMesh; private tokL = new Int16Array(MAX_TOKENS); private tokT = new Float32Array(MAX_TOKENS); private tokC = new Int32Array(MAX_TOKENS); private nTok = 0;
   /** the selected building's tile (the cues draw what it connects to: a pole's reach, a tunnel's partner) */
@@ -1044,8 +1219,9 @@ export class FacView {
   /** level marks on upgraded buildings */
   private band: THREE.InstancedMesh; private pips: THREE.InstancedMesh; private lvlKey = -1;
 
-  constructor(scene: THREE.Scene, models: () => Record<string, THREE.Object3D> = () => ({})) {
-    this.models = models;
+  /** `deck`: the height of the deck at a world position (towers may stand on raised ground; the factory's tiles lie at 0). */
+  constructor(scene: THREE.Scene, models: () => Record<string, THREE.Object3D> = () => ({}), deck: (x: number, z: number) => number = () => 0) {
+    this.models = models; this.deck = deck;
     scene.add(this.group);
     // deposits: the stain decals now (they need no model), the modelled pieces when the models are there (see depModels)
     const T = (GW * GH) >> 1;
@@ -1112,20 +1288,20 @@ export class FacView {
       return o;
     };
     const steel = mat(0x6a6157, 'dark'), lit = () => new THREE.MeshBasicMaterial({ color: 0xffffff });
-    this.scan = inst(G_SCAN(), steel, MAX_LINKS, true);
-    this.scanLight = inst(G_SCAN_LIGHT(), lit(), MAX_LINKS, false, true);
     this.chute = inst(G_ARM(), steel, MAX_LINKS, true);
     this.chuteLight = inst(G_ARM_LIGHT(), lit(), MAX_LINKS, false, true);
     this.sock = inst(G_SOCK(), mat(0x37322d, 'dark'), MAX_LINKS * 2, true);
     this.sockLight = inst(G_SOCK_LIGHT(), lit(), MAX_LINKS * 2, false, true);
     this.branch = inst(G_BRANCH(), this.glass, MAX_LINKS);
-    this.branchCore = inst(G_BRANCH_CORE(), fluidMat(0xffffff, null, this.flowT, true), MAX_LINKS, false, true);
+    this.branchCore = inst(G_BRANCH_CORE(), this.fluid, MAX_LINKS);
     this.branchFit = inst(G_BRANCH_FIT(), this.pipeFit, MAX_LINKS, true);
     this.branch.layers.set(FX_LAYER);
     this.drops = new THREE.Mesh(new THREE.BufferGeometry(), wireMat);
     this.drops.frustumCulled = false; this.drops.castShadow = true;
     this.group.add(this.drops);
     this.tokens = inst(new THREE.OctahedronGeometry(0.075, 0), lit(), MAX_TOKENS, false, true);
+    this.putFx = inst(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ map: putTexture(), color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }), MAX_PUT, false, true);
+    this.putFx.layers.set(FX_LAYER); this.putFx.renderOrder = 4;
     this.band = inst(G_BAND(), new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide }), MAX_LVL, false, true);
     this.pips = inst(G_PIP(), lit(), MAX_LVL * 3, false, true);
   }
@@ -1139,7 +1315,8 @@ export class FacView {
     this.oilTiles.length = 0; this.bubbles.count = 0; this.cover.fill(0); this.depPose = true; this.hlKey = -2; this.setOreHover(0, 0, false);
     for (const b of this.beltBatches.values()) { b.n = 0; b.body.count = 0; b.light.count = 0; }
     this.beltDirty = true; this.nets = null; this.linkRef = null; this.linkLayout = -1; this.lvlKey = -1; this.nTok = 0; this.tokens.count = 0;
-    this.pvSel = null;
+    this.pvSel = null; this.nPut = 0; this.putFx.count = 0; this.heldN = 0; this.pipeSt.clear(); this.pipeData.fill(0); this.pipeTex.needsUpdate = true;
+    if (this.arms) { for (const ms of this.arms.parts) for (const m of ms) m.count = 0; this.arms.lamp.count = 0; }
     this.setGhost(null);
     if (!sim) { this.clearLinks(); this.band.count = this.pips.count = 0; return; }
     this.buildDeps(sim);
@@ -1148,12 +1325,16 @@ export class FacView {
   handle(evs: Ev[]) {
     for (const e of evs) {
       if (e.k === 'mats') this.sparks.push({ x: e.x, z: e.z, t: 0 });
-      else if (e.k === 'take') this.took(e.who, e.x, e.z, e.it);
+      else if (e.k === 'take') this.took(e.who, e.x, e.z, e.it, e.id);
+      else if (e.k === 'put') this.putDown(e.x, e.z, e.it);
+      else if (e.k === 'lost') this.putDown(e.x, e.z, e.it, true);
     }
   }
-  /** A tower or building took an item off a belt: flash the scanner over that belt (the one on that tile, else any of its
-   *  taker's) and send a token of the item's colour down its chute. */
-  private took(who: string, x: number, z: number, it: ItemType) {
+  /** An item was taken. By an arm (who: 'f' + its id): the hatch it took it out of lights up (the arm itself is posed from
+   *  its state). By a tower from the supply crate beside it: that crate's chute flashes and a token of the item's colour
+   *  slides down it. */
+  private took(who: string, x: number, z: number, it: ItemType, id: number) {
+    if (who[0] === 'f') { const k = this.armIn.get(id); if (k !== undefined) this.sockFlash[k] = 1; return; }
     const l = this.takers.get(who);
     if (!l || !l.length) return;
     let i = l[0];
@@ -1163,9 +1344,22 @@ export class FacView {
     const k = this.nTok++;
     this.tokL[k] = i; this.tokT[k] = 0; this.tokC[k] = ITEMS[it]?.color ?? 0xffffff;
   }
+  /** The arm on (x, z) put an item down: a flash in the item's colour where it landed, and the hatch it went into lights up.
+   *  `lost`: its target no longer takes the item it held (turned, sold, switched ammunition) and it let it go: a red flash, no hatch. */
+  private putDown(x: number, z: number, it: ItemType, lost = false) {
+    const [cx, cz] = worldToCell(x, z), a = this.sim?.factory.facAt(cx, cz), g = a && this.vis.get(a.id)?.rig;
+    if (!a || !g) return;
+    const k = lost ? undefined : this.armOut.get(a.id);
+    if (k !== undefined) this.sockFlash[k] = 1;
+    if (this.nPut >= MAX_PUT) return;
+    const n = this.nPut++;
+    // (on a belt the ring lies round the item; at a hatch it stands out from the wall a little, toward the arm)
+    this.putP[n * 4] = g.dx; this.putP[n * 4 + 1] = g.dy + (g.dst === E_FAC || g.dst === E_TOWER ? 0.12 : 0.03); this.putP[n * 4 + 2] = g.dz; this.putP[n * 4 + 3] = 0;
+    this.putC[n] = lost ? 0xff4636 : it === 'coal' ? 0x8a8378 : ITEMS[it]?.color ?? 0xffffff;
+  }
 
-  /** A supply route has just reached a tower or building ('t' + id / 'f' + id): its sockets flare, and (item: true) the
-   *  scanners it draws from flash as for a take. */
+  /** A supply route has just reached a tower or building ('t' + id / 'f' + id): its sockets flare (item: true the hatches
+   *  arms put into and the chutes of the crates beside it, false its power socket). */
   flashTaker(key: string, item: boolean) {
     for (const i of this.sockOf.get(key) || []) if (!!this.sockPower[i] !== item) this.sockFlash[i] = 1;
     if (item) for (const i of this.takers.get(key) || []) this.flash[i] = 1;
@@ -1192,7 +1386,8 @@ export class FacView {
       v.obj.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { m.material = this.ghostMat; m.castShadow = false; } });
       if (v.pipe.length) v.pipe[1].visible = false;
       // the way it will run, which R turns: a bright chevron over the belt
-      if (turns(type)) {
+      // (an arm's way is drawn by the cues: an arrow through its tile from what it would take to where it would put it)
+      if (turns(type) && type !== 'arm') {
         const holder = new THREE.Group(); holder.rotation.y = yawOf(dir);
         for (const z of type === 'belt' ? [-0.45, 0.25] : [-0.75, 0.75]) { const ch = new THREE.Mesh(G_CHEV, this.ghostArrow); ch.position.set(0, type === 'belt' ? Y_RAIL + 0.04 : 1.0, z); ch.scale.setScalar(1.05); ch.renderOrder = 5; holder.add(ch); }
         v.obj.add(holder);
@@ -1248,8 +1443,10 @@ export class FacView {
     const g = new THREE.Group();
     const v: FVis = {
       obj: g, type, seen: 0, dir, model: false, spin: null, arm: null, armX: false, work: null, workY: 0, pitman: null, crank: null, ph: Math.random() * TAU, spd: 0, lamps: [], lampC: -1, lampI: -1, glows: [], own: [],
-      belt: null, e: -1, k: -1, caps: -1, feeds: null, stubs: null, ex: exit, turn: null, gates: null, flare: 0, pipe: [], mask: -1, fluidKey: -1,
+      belt: null, e: -1, k: -1, caps: -1, feeds: null, stubs: null, ex: exit, turn: null, gates: null, flare: 0, pipe: [], mask: -1, fluidKey: 0, glowK: -1, fD: 0, fMask: 0, rig: null,
     };
+    // (a placed arm has no meshes of its own: syncArms draws them all instanced; only the ghost is a copy of the model)
+    if (type === 'arm' && !ghost) return v;
     const src = DRAWN_HERE.has(type) ? null : this.modelOf(type);
     if (src) this.fromModel(v, src, ghost);
     else this.fromShapes(v, ghost);
@@ -1286,6 +1483,7 @@ export class FacView {
     v.work = m.getObjectByName('work') || null;
     if (v.work) v.workY = v.work.position.y;
     switch (v.type) {
+      case 'arm': m.rotation.y = yawOf(v.dir); break; // (the ghost, in the model's rest pose: leaning over to where it will put things)
       case 'splitter': {
         v.turn = m.getObjectByName('turn') || null;
         v.gates = [0, 1, 2, 3, 4, 5].map((d) => m.getObjectByName('gate' + d));
@@ -1309,9 +1507,8 @@ export class FacView {
   /** The four meshes of a pipe or pipe tunnel: glass (no shadow: it is clear), the fluid core, steel fittings, the valve;
    *  shaped by shapePipe once the neighbours are known. */
   private pipeParts(v: FVis) {
-    const ms = [this.glass, this.coreMat(0, false), this.pipeFit, this.pipeValve];
-    for (let i = 0; i < 4; i++) { const o = new THREE.Mesh(G_HEXF, ms[i]); o.castShadow = i >= 2; o.receiveShadow = i !== 0; if (i === 0) o.layers.set(FX_LAYER); v.obj.add(o); v.pipe.push(o); }
-    v.pipe[1].visible = false;
+    const ms = [this.glass, this.fluid, this.pipeFit, this.pipeValve];
+    for (let i = 0; i < 4; i++) { const o = new THREE.Mesh(G_HEXF, ms[i]); o.castShadow = i >= 2; o.receiveShadow = i >= 2; if (i === 0) o.layers.set(FX_LAYER); v.obj.add(o); v.pipe.push(o); }
   }
 
   /** A building from plain shapes (no model file). Geometry is cached, so nothing here needs freeing but the lights. */
@@ -1332,6 +1529,13 @@ export class FacView {
     const lamp = (y: number, x = 0.42, z = 0.42) => { const m = own(new THREE.MeshStandardMaterial({ color: 0x222222, emissive: LAMP.ok, emissiveIntensity: 2 })); const o = new THREE.Mesh(G_LAMP, m); o.position.set(x, y, z); g.add(o); v.lamps.push(m); };
     const glow = (color: number, emissive: number, i0: number) => { const m = own(new THREE.MeshStandardMaterial({ color, emissive, emissiveIntensity: i0 })); v.glows.push({ m, i0 }); return m; };
     switch (type) {
+      case 'arm': {
+        // (only the ghost comes here, while the model is not loaded: a pad, a mast and a boom toward the front)
+        const h = new THREE.Group(); h.rotation.y = yawOf(v.dir); g.add(h);
+        cyl(0.78, 0.8, 0.07, mat(HULL, 'dark'), 0, 0.035, 0, 6, h); cyl(0.3, 0.33, 0.2, mat(TRIM, 'dark'), 0, 0.17, 0, 12, h);
+        box(0.17, 1.1, 0.14, mat(c), 0, 1.1, 0.1, h); box(0.13, 0.1, 0.9, mat(c), 0, 1.6, 0.5, h); box(0.5, 0.06, 0.1, mat(HULL, 'dark'), 0, 1.0, 0.95, h);
+        break;
+      }
       case 'belt': {
         // (a placed belt has no mesh of its own: syncBelts draws all of them instanced; the ghost gets one)
         if (!ghost) break;
@@ -1465,20 +1669,6 @@ export class FacView {
     v.belt.geometry = beltGeo(k, !!(caps & 1), !!(caps & 2));
     v.belt.rotation.y = (-e * Math.PI) / 3;
   }
-  /** The fluid core material for a fluid state (0 empty, else fluid index * 16 + fill in tenths), shared by all pipes showing
-   *  it; a shaft's core sits higher (in the glass well on its cap), so it has its own. */
-  private coreMat(key: number, shaft: boolean): THREE.MeshStandardMaterial {
-    const k = key * 2 + +shaft;
-    let m = this.coreMats.get(k);
-    if (m) return m;
-    // (a part-full pipe still shows a thin stream, or a trickle would not show at all)
-    const fill = Math.max(0.3, (key & 15) / 10), c = new THREE.Color(key ? FLUIDS[FLUID_TYPES[(key >> 4) - 1]].color : 0);
-    // (a dark fluid, crude, is lifted a little or it would read as an empty dark tube)
-    if (c.getHSL({ h: 0, s: 0, l: 0 }).l < 0.25) c.multiplyScalar(1.3);
-    m = fluidMat(c.getHex(), shaft ? 0.6 + 0.16 * fill : PY - KR + 2 * KR * fill, this.flowT);
-    this.coreMats.set(k, m);
-    return m;
-  }
   private shapePipe(v: FVis, mask: number, cx: number, cz: number) {
     v.mask = mask;
     const gs = pipeGeo(mask, (cx * 2 + cz * 3) % 4 === 1, v.type === 'ptunnel', v.model);
@@ -1493,26 +1683,33 @@ export class FacView {
     if (!fs) return null;
     return fs.map(({ d, q }) => {
       const was = old?.find((o) => o.id === q.id);
-      return was ? { ...was, d } : { d, id: q.id, head: headOf(F, q), n: q.out.length };
+      return was ? { ...was, d } : { d, id: q.id, head: headOf(F, q), n: q.type === 'arm' ? +!!q.hand : q.out.length };
     });
   }
   /** Work out each belt's entry side and shape from what feeds it, where its line starts and stops, and each splitter's stubs. */
   private layoutBelts(F: Factory) {
     const pointsAt = (q: Fac, b: Fac) => { const [x, z] = neighbor(q.cx, q.cz, q.dir); return x === b.cx && z === b.cz; };
-    // q hands items to b from beside it: a belt or tunnel exit pointing at it, or a splitter (that b does not point back into)
-    const feeds = (q: Fac, b: Fac) => q.type === 'belt' || (q.type === 'tunnel' && q.exit) ? pointsAt(q, b) : q.type === 'splitter' && b.type === 'belt' && !pointsAt(b, q);
+    // q hands items to b from beside it: a belt or tunnel exit pointing at it, or a splitter b leads away from (its back edge
+    // touches the splitter, as Factory.leadsFrom: a belt running past a splitter gets nothing)
+    const feeds = (q: Fac, b: Fac) => q.type === 'belt' || (q.type === 'tunnel' && q.exit) ? pointsAt(q, b) : q.type === 'splitter' && b.type === 'belt' && pointsAt({ ...b, dir: (b.dir + 3) % 6 }, q);
     const entry = new Map<number, number>(), multi = new Map<number, { d: number; q: Fac }[]>();
     for (const b of F.facs) {
       if (b.type !== 'belt' && b.type !== 'splitter') continue;
       const fs: { d: number; q: Fac }[] = [];
+      // an arm that puts items on at a belt's start (it stands right behind it): the belt then runs straight from there
+      // whatever joins it from the side (an item put on at its start has to appear at that end)
+      let armed = false;
       for (let d = 0; d < 6; d++) {
         if (b.type === 'belt' && d === b.dir) continue;
         const [nx, nz] = neighbor(b.cx, b.cz, d), q = F.facAt(nx, nz);
-        if (q && feeds(q, b)) fs.push({ d, q });
+        if (!q) continue;
+        if (q.type === 'arm') { if (pointsAt(q, b)) { if (b.type === 'splitter') fs.push({ d, q }); else if (q.dir === b.dir) armed = true; } }
+        else if (feeds(q, b)) fs.push({ d, q });
       }
+      // (a splitter's list also holds the arms that put into it: their items come in from their side, see syncItems)
       if (b.type === 'splitter') { multi.set(b.id, fs); continue; }
-      entry.set(b.id, fs.length === 1 ? fs[0].d : -1 - fs.length);
-      if (fs.length > 1) multi.set(b.id, fs);
+      entry.set(b.id, fs.length === 1 && !armed ? fs[0].d : -1 - fs.length);
+      if (fs.length > 1 || (armed && fs.length)) multi.set(b.id, fs);
     }
     for (const b of F.facs) {
       const v = this.vis.get(b.id);
@@ -1526,7 +1723,7 @@ export class FacView {
           const [nx, nz] = neighbor(b.cx, b.cz, d), q = F.facAt(nx, nz);
           if (!q) continue;
           if ((q.type === 'belt' || (q.type === 'tunnel' && q.exit)) && pointsAt(q, b)) st.push(d);
-          else if (q.type === 'belt' || (q.type === 'tunnel' && !q.exit && q.dir === d)) st.push(d + 8);
+          else if ((q.type === 'belt' || (q.type === 'tunnel' && !q.exit)) && q.dir === d) st.push(d + 8); // (leading away: as Factory.leadsFrom)
         }
         if (!v.stubs || st.join() !== v.stubs.join()) { v.stubs = st; this.beltDirty = true; }
         continue;
@@ -1775,7 +1972,7 @@ export class FacView {
       const fc = facs[n];
       let v = this.vis.get(fc.id);
       // a model that has loaded since, or a tunnel that turned or became the other end: built again
-      if (v && ((!v.model && !DRAWN_HERE.has(fc.type) && this.modelOf(fc.type)) || (fc.type === 'tunnel' && (v.ex !== fc.exit || v.dir !== fc.dir)))) {
+      if (v && ((!v.model && !DRAWN_HERE.has(fc.type) && fc.type !== 'arm' && this.modelOf(fc.type)) || (fc.type === 'tunnel' && (v.ex !== fc.exit || v.dir !== fc.dir)))) {
         this.drop(v); this.vis.delete(fc.id); v = undefined;
       }
       if (!v) {
@@ -1795,25 +1992,30 @@ export class FacView {
     if (this.vis.size > facs.length) for (const [id, v] of this.vis) if (v.seen !== f) { this.drop(v); this.vis.delete(id); }
     const lay = this.layoutKey(F);
     // (any change redraws the belt batches: a belt that was removed changes no other belt's shape, but its instance has to go)
-    if (lay !== this.layout || added || F.pipeNets !== this.nets) { this.layout = lay; this.nets = F.pipeNets; this.layoutBelts(F); this.coverDeps(F); this.beltDirty = true; this.itemsStill = false; }
+    const relaid = lay !== this.layout || added || F.pipeNets !== this.nets;
+    if (relaid) { this.layout = lay; this.nets = F.pipeNets; this.layoutBelts(F); this.coverDeps(F); this.beltDirty = true; this.itemsStill = false; }
     this.syncBelts(F, !!reveal);
-    // the tread and the fluid pulses run with the sim clock at the belt speed, and only while the factory does
+    // the tread and the fluids run with the sim clock, and only while the factory does
     const st = sim.time;
+    this.simDt = 0;
     if (this.live && this.lastT >= 0 && st > this.lastT && st - this.lastT < 5) {
-      this.run += (st - this.lastT) * BELT_SPEED * sim.mods.belt;
-      this.flowT.value += st - this.lastT;
+      this.simDt = st - this.lastT;
+      this.run += this.simDt * BELT_SPEED * sim.mods.belt;
     }
     this.lastT = st;
     this.tread.offset.y = -((this.run * BELT_REP) % 1);
-    // (while time stands still nothing on the belts moves: the items stay where the last pass put them until the layout changes)
-    if (this.live || reveal || !this.itemsStill) { this.syncItems(F); this.itemsStill = !this.live && !reveal; }
+    this.syncPipes(F, dt, relaid);
+    this.syncArms(F, dt, time, dg);
+    // (while time stands still nothing on the belts moves: the items stay where the last pass put them until the layout
+    // changes; an arm's hand may still be settling with what it holds)
+    if (this.live || reveal || !this.itemsStill || this.armMoving) { this.syncItems(F); this.itemsStill = !this.live && !reveal && !this.armMoving; }
     this.syncWires(F);
     this.syncLinks(F);
-    this.animLinks(F, dt);
+    this.animLinks(dt);
     this.syncLevels(F, (lk ^ this.layout) | 0);
     if (reveal) {
       for (const s of SHAPES) for (const p of this.itemMeshes[s]) this.revealInst(p.mesh, reveal);
-      for (const m of [this.scan, this.scanLight, this.chute, this.chuteLight, this.sock, this.sockLight, this.branch, this.branchCore, this.branchFit, this.band, this.pips]) this.revealInst(m, reveal);
+      for (const m of [this.chute, this.chuteLight, this.sock, this.sockLight, this.branch, this.branchCore, this.branchFit, this.band, this.pips]) this.revealInst(m, reveal);
     }
     // deposits: posed while they rise (and once more when the deck stands or buildings change), the oil bubbles, the hover glow
     if (reveal || this.depPose || this.depIntro) { this.poseDeps(reveal); this.depPose = false; this.depIntro = !!reveal; }
@@ -1844,15 +2046,17 @@ export class FacView {
     for (const it of items) {
       if (this.inSide.has(it)) continue;
       let side = def;
-      for (const f of fd) {
+      // (an item new in the middle of a belt was put there by an arm beside it: it lies on the belt's own path)
+      if (it.p < 0.45 || def < 0) for (const f of fd) {
         const q = F.facById(f.id);
         if (!q) continue;
-        const conv = q.type === 'belt' || q.type === 'splitter' || q.type === 'tunnel';
-        if (conv ? f.head !== null && f.head.it === it.it && headOf(F, q) !== f.head : q.out.length < f.n) { side = f.d; f.head = null; f.n = -1; break; }
+        // an arm has let go of what it held (its side + 8: the item is put on the table, it does not ride in from the edge)
+        if (q.type === 'arm') { const g = this.vis.get(q.id)?.rig; if (g && g.kick > 0.8) { side = f.d + 8; break; } continue; }
+        if (f.head !== null && f.head.it === it.it && headOf(F, q) !== f.head) { side = f.d; f.head = null; f.n = -1; break; }
       }
-      this.inSide.set(it, side);
+      this.inSide.set(it, side < 0 ? fd[0]?.d ?? 0 : side);
     }
-    for (const f of fd) { const q = F.facById(f.id); if (q) { f.head = headOf(F, q); f.n = q.out.length; } }
+    for (const f of fd) { const q = F.facById(f.id); if (q) { f.head = headOf(F, q); f.n = q.type === 'arm' ? +!!q.hand : q.out.length; } }
   }
   /** One item into its instanced meshes, at (x, y, z) heading (tx, tz). */
   private putItem(it: ItemType, x: number, y: number, z: number, tx: number, tz: number) {
@@ -1892,9 +2096,9 @@ export class FacView {
       if (!v) continue;
       if (fc.type === 'splitter') {
         // in from the side it came by to the turntable's middle, where it waits to be dealt out
-        if (v.feeds) this.trackFeeds(F, fc.items, v.feeds, v.feeds[0]?.d ?? 0);
+        if (v.feeds) this.trackFeeds(F, fc.items, v.feeds, -1);
         for (let i = 0; i < fc.items.length; i++) {
-          const it = fc.items[i], sd = this.inSide.get(it) ?? 0, r = Math.max(0, 1 - 2 * it.p) + (i > 0 ? 0.22 : 0);
+          const it = fc.items[i], raw = this.inSide.get(it) ?? 0, sd = raw & 7, r = Math.min(raw >= 8 ? 0.6 : 1, Math.max(0, 1 - 2 * it.p)) + (i > 0 ? 0.22 : 0);
           this.putItem(it.it, fc.x + DX[sd] * r, Y_SURF + 0.012, fc.z + DZ[sd] * r, -DX[sd], -DZ[sd]);
         }
         continue;
@@ -1930,6 +2134,8 @@ export class FacView {
         }
       }
     }
+    // what the arms hold, in their hands
+    for (let i = 0; i < this.heldN; i++) { const q = this.ip, o = i * 5, H = this.heldP; q[0] = H[o]; q[1] = H[o + 1]; q[2] = H[o + 2]; q[3] = H[o + 3]; q[4] = H[o + 4]; this.putIp(this.heldIt[i]); }
     for (const s of SHAPES) for (const p of this.itemMeshes[s]) {
       const was = p.mesh.count;
       p.mesh.count = N[s];
@@ -1963,16 +2169,17 @@ export class FacView {
   }
 
   private clearLinks() {
-    for (const m of [this.scan, this.scanLight, this.chute, this.chuteLight, this.sock, this.sockLight, this.branch, this.branchCore, this.branchFit]) m.count = 0;
-    this.nScan = 0; this.nBranch = 0; this.takers.clear(); this.sockOf.clear();
+    for (const m of [this.chute, this.chuteLight, this.sock, this.sockLight, this.branch, this.branchCore, this.branchFit]) m.count = 0;
+    this.nScan = 0; this.nBranch = 0; this.takers.clear(); this.sockOf.clear(); this.armIn.clear(); this.armOut.clear();
     this.nTok = 0; this.tokens.count = 0; // (a token in flight holds a link index of the old layout)
     this.drops.geometry.dispose(); this.drops.geometry = new THREE.BufferGeometry();
   }
   /**
    * The supply connectors, from Factory.links() (worked out again when the links or the belt shapes change):
-   *  - belt: a scanner arch over the belt where the taker draws from it, on the side facing the taker (near the front edge
-   *    when the taker stands at the end of the line), with a chute from it to a socket on the taker;
-   *  - pipe: a glass branch from the pipe tile's edge into the consumer, with a flange and a socket;
+   *  - arm: the arms themselves are the connectors (see syncArms); here only the hatch on the tower or building an arm
+   *    puts into, and the one on the building or crate it takes out of, each on the side facing the arm;
+   *  - crate: a chute from a supply crate down to a hatch on the tower beside it (the one hand-off without an arm);
+   *  - pipe: a glass branch from the pipe tile's edge into the consumer, with a flange;
    *  - power: a drop cable from the pole's insulator (or the generator's terminal) to a socket on the consumer.
    */
   private syncLinks(F: Factory) {
@@ -1981,53 +2188,46 @@ export class FacView {
     this.linkRef = links; this.linkLayout = this.layout;
     this.clearLinks();
     let ns = 0, nk = 0, nb = 0;
-    const pt = this.pt, M = this.M, cables: THREE.BufferGeometry[] = [];
-    const socket = (x: number, y: number, z: number, fx: number, fz: number, c: THREE.Color, to: string) => {
+    const M = this.M, cables: THREE.BufferGeometry[] = [];
+    const socket = (x: number, y: number, z: number, fx: number, fz: number, c: THREE.Color, to: string): number => {
       M.compose(this.P.set(x, y, z), this.Q.setFromAxisAngle(this.S.set(0, 1, 0), Math.atan2(fx, fz)), this.S.set(1, 1, 1));
       this.sockFlash[nk] = 0; this.sockPower[nk] = c === SOCK_GREEN ? 1 : 0;
       const sl = this.sockOf.get(to);
       if (sl) sl.push(nk); else this.sockOf.set(to, [nk]);
-      this.sock.setMatrixAt(nk, M); this.sockLight.setMatrixAt(nk, M); this.sockLight.setColorAt(nk++, c);
+      this.sock.setMatrixAt(nk, M); this.sockLight.setMatrixAt(nk, M); this.sockLight.setColorAt(nk, c);
+      return nk++;
     };
+    const plain = (key: string | undefined) => { if (!key) return false; if (key[0] === 't') return true; const q = F.facById(+key.slice(1)); return !!q && !conveyor(q.type) && q.type !== 'arm' && !pipeLike(q.type) && q.type !== 'pole'; };
     for (const l of links) {
-      if (l.kind === 'belt') {
-        const f = F.facById(l.from);
-        if (!f || ns >= MAX_LINKS) continue;
-        const v = this.vis.get(f.id), ul = Math.hypot(l.tx - f.x, l.tz - f.z) || 1, ux = (l.tx - f.x) / ul, uz = (l.tz - f.z) / ul;
-        // the scanner: over the belt's middle, heading along it
-        let px = f.x, pz = f.z, hx = ux, hz = uz;
-        if (f.type === 'belt' && v && v.k >= 0) {
-          pathAt(PATHS[v.k], 0.5, pt);
-          const c = DX[v.e], s = DZ[v.e];
-          px += pt.x * c - pt.z * s; pz += pt.x * s + pt.z * c; hx = pt.tx * c - pt.tz * s; hz = pt.tx * s + pt.tz * c;
-          if (hx * ux + hz * uz > 0.8) { px += hx * 0.42; pz += hz * 0.42; }
-        } else if (f.type === 'tunnel') { hx = DX[f.dir]; hz = DZ[f.dir]; px += hx * 0.5; pz += hz * 0.5; }
-        else { px += ux * 0.5; pz += uz * 0.5; }
-        M.compose(this.P.set(px, 0, pz), this.Q.setFromAxisAngle(this.S.set(0, 1, 0), Math.atan2(hx, hz)), this.S.set(1, 1, 1));
-        this.scan.setMatrixAt(ns, M); this.scanLight.setMatrixAt(ns, M); this.scanLight.setColorAt(ns, this.C.copy(SCAN_AMBER).multiplyScalar(0.85));
-        // the chute leaves from the scanner's wall on the taker's side (its front opening when the taker is ahead)
-        const ax = hz, az = -hx, side = ux * ax + uz * az, ahead = hx * ux + hz * uz;
-        let sx: number, sz: number;
-        if (Math.abs(side) < 0.5) { const k = Math.sign(ahead || 1) * (SC_D + 0.03); sx = px + hx * k; sz = pz + hz * k; }
-        else { const k = Math.sign(side) * (SC_W + 0.06); sx = px + ax * k; sz = pz + az * k; }
-        const dl = Math.hypot(l.tx - sx, l.tz - sz) || 1, ex = l.tx - ((l.tx - sx) / dl) * TAKER_IN, ez = l.tz - ((l.tz - sz) / dl) * TAKER_IN;
-        const A = this.V1.set(sx, SC_H - 0.12, sz), B = this.V2.set(ex, ARM_Y, ez), d = this.P.subVectors(B, A), len = d.length();
+      if (l.kind === 'arm') {
+        const a = F.facById(l.from);
+        if (!a || nk >= MAX_LINKS * 2 - 2) continue;
+        const hx = DX[a.dir], hz = DZ[a.dir];
+        if (plain(l.to) && F.acceptMask(armFront(a), a)) this.armOut.set(a.id, socket(l.tx - hx * TAKER_IN, (l.to[0] === 't' ? this.deck(l.tx, l.tz) : 0) + ARM_Y, l.tz - hz * TAKER_IN, -hx, -hz, SCAN_AMBER, l.to));
+        // (the way out of a producer: keyed apart from its takers' hatches, a route arriving at it does not light this one)
+        const src = l.src ? F.facById(+l.src.slice(1)) : undefined;
+        if (src && l.src![0] === 'f' && plain(l.src) && (src.type === 'crate' || !!MAKES[src.type]?.out || src.type === 'mine' || src.type === 'smelter')) this.armIn.set(a.id, socket(l.x + hx * TAKER_IN, ARM_Y, l.z + hz * TAKER_IN, hx, hz, SCAN_AMBER, '>' + l.src));
+      } else if (l.kind === 'crate') {
+        if (ns >= MAX_LINKS || nk >= MAX_LINKS * 2 - 1) continue;
+        const dl = Math.hypot(l.tx - l.x, l.tz - l.z) || 1, ux = (l.tx - l.x) / dl, uz = (l.tz - l.z) / dl, ty = this.deck(l.tx, l.tz) + ARM_Y;
+        const sx = l.x + ux * 0.6, sz = l.z + uz * 0.6, ex = l.tx - ux * TAKER_IN, ez = l.tz - uz * TAKER_IN;
+        const A = this.V1.set(sx, 0.58, sz), B = this.V2.set(ex, ty, ez), d = this.P.subVectors(B, A), len = d.length();
         this.Q.setFromUnitVectors(this.Z, d.multiplyScalar(1 / Math.max(1e-6, len)));
         M.compose(A, this.Q, this.S.set(1, 1, Math.max(0.01, len)));
         this.chute.setMatrixAt(ns, M); this.chuteLight.setMatrixAt(ns, M); this.chuteLight.setColorAt(ns, this.C.copy(SCAN_AMBER).multiplyScalar(0.45));
-        this.chuteA.set([sx, SC_H - 0.12, sz], ns * 3); this.chuteB.set([ex, ARM_Y, ez], ns * 3);
-        socket(ex, ARM_Y, ez, sx - ex, sz - ez, SCAN_AMBER, l.to);
-        this.scanAt[ns * 2] = f.x; this.scanAt[ns * 2 + 1] = f.z; this.flash[ns] = 0;
+        this.chuteA.set([sx, 0.58, sz], ns * 3); this.chuteB.set([ex, ty, ez], ns * 3);
+        socket(ex, ty, ez, -ux, -uz, SCAN_AMBER, l.to);
+        this.scanAt[ns * 2] = l.x; this.scanAt[ns * 2 + 1] = l.z; this.flash[ns] = 0;
         const tl = this.takers.get(l.to);
         if (tl) tl.push(ns); else this.takers.set(l.to, [ns]);
         ns++;
       } else if (l.kind === 'pipe') {
         if (nb >= MAX_LINKS) continue;
         M.compose(this.P.set(l.x, 0, l.z), this.Q.setFromAxisAngle(this.S.set(0, 1, 0), Math.atan2(l.tx - l.x, l.tz - l.z)), this.S.set(1, 1, 1));
-        this.branch.setMatrixAt(nb, M); this.branchFit.setMatrixAt(nb, M); this.branchCore.setMatrixAt(nb, this.zero);
-        this.brFrom[nb] = l.from; this.brKey[nb] = -1;
+        // (the fluid in a branch is that of the pipe tile it hangs on: the material reads it from the pipe state texture)
+        this.branch.setMatrixAt(nb, M); this.branchFit.setMatrixAt(nb, M); this.branchCore.setMatrixAt(nb, M);
         nb++;
-      } else {
+      } else if (l.kind === 'power') {
         const f = F.facById(l.from);
         if (!f || nk >= MAX_LINKS * 2) continue;
         const w = wireEnd(f, l.tx), dl = Math.hypot(w[0] - l.tx, w[2] - l.tz) || 1;
@@ -2038,35 +2238,34 @@ export class FacView {
       }
     }
     this.nScan = ns; this.nBranch = nb;
-    this.scan.count = this.scanLight.count = this.chute.count = this.chuteLight.count = ns;
+    this.chute.count = this.chuteLight.count = ns;
     this.sock.count = this.sockLight.count = nk;
     this.branch.count = this.branchCore.count = this.branchFit.count = nb;
-    for (const m of [this.scan, this.scanLight, this.chute, this.chuteLight, this.sock, this.sockLight, this.branch, this.branchCore, this.branchFit]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
+    for (const m of [this.chute, this.chuteLight, this.sock, this.sockLight, this.branch, this.branchCore, this.branchFit]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
     if (cables.length) { this.drops.geometry.dispose(); this.drops.geometry = mergeGeometries(cables)!; for (const g of cables) g.dispose(); }
   }
-  /** Scanner flashes fading, item tokens sliding down the chutes, and the fluid shown in the pipe branches. */
-  private animLinks(F: Factory, dt: number) {
+  /** Chute flashes fading, item tokens sliding down the chutes, sockets flaring, the flashes of the arms' puts. */
+  private animLinks(dt: number) {
     let lit = false;
     for (let i = 0; i < this.nScan; i++) {
       if (this.flash[i] <= 0) continue;
       const k = this.flash[i];
       this.flash[i] = Math.max(0, k - dt / FLASH_T);
-      this.scanLight.setColorAt(i, this.C.copy(SCAN_AMBER).multiplyScalar(0.85 + 4 * k * k));
       this.chuteLight.setColorAt(i, this.C.copy(SCAN_AMBER).multiplyScalar(0.45 + 3 * k * k));
       lit = true;
     }
-    if (lit) for (const m of [this.scanLight, this.chuteLight]) if (m.instanceColor) m.instanceColor.needsUpdate = true;
-    // sockets flaring as a supply route reaches them (see flashTaker)
+    if (lit && this.chuteLight.instanceColor) this.chuteLight.instanceColor.needsUpdate = true;
+    // sockets flaring: an arm put something in or took something out, or a supply route has reached them (see flashTaker)
     let slit = false;
     for (let i = 0; i < this.sock.count; i++) {
       const k = this.sockFlash[i];
       if (k <= 0) continue;
-      this.sockFlash[i] = Math.max(0, k - dt / 0.9);
+      this.sockFlash[i] = Math.max(0, k - dt / (this.sockPower[i] ? 0.9 : 0.5));
       this.sockLight.setColorAt(i, this.C.copy(this.sockPower[i] ? SOCK_GREEN : SCAN_AMBER).multiplyScalar(1 + 5 * k * k));
       slit = true;
     }
     if (slit && this.sockLight.instanceColor) this.sockLight.instanceColor.needsUpdate = true;
-    // tokens: the item's colour, a little arc from the scanner to the taker
+    // tokens: the item's colour, a little arc from the crate to the tower
     let n = this.nTok;
     for (let i = 0; i < n; i++) {
       this.tokT[i] += dt / TOKEN_T;
@@ -2080,19 +2279,318 @@ export class FacView {
       this.tokens.setMatrixAt(i, this.M); this.tokens.setColorAt(i, this.C.setHex(this.tokC[i]).multiplyScalar(1.6));
     }
     if (n || this.tokens.count) { this.tokens.count = n; this.tokens.instanceMatrix.needsUpdate = true; if (this.tokens.instanceColor) this.tokens.instanceColor.needsUpdate = true; }
-    // pipe branches: the core shows the network's fluid (none while it is empty)
-    let ch = false;
-    for (let i = 0; i < this.nBranch; i++) {
-      const p = F.facById(this.brFrom[i]), net = p ? F.pipeNets[p.net] : undefined;
-      const key = net && net.fluid && net.amt > 0.01 ? FLUID_TYPES.indexOf(net.fluid) + 1 : 0;
-      if (key === this.brKey[i]) continue;
-      this.brKey[i] = key; ch = true;
-      if (!key) { this.branchCore.setMatrixAt(i, this.zero); continue; }
-      this.branch.getMatrixAt(i, this.M);
-      this.branchCore.setMatrixAt(i, this.M); this.branchCore.setColorAt(i, this.C.setHex(FLUIDS[FLUID_TYPES[key - 1]].color));
+    // puts: a ring that opens out from the spot and is gone
+    let np = this.nPut;
+    const P = this.putP;
+    for (let i = 0; i < np; i++) {
+      P[i * 4 + 3] += dt / PUT_T;
+      if (P[i * 4 + 3] < 1) continue;
+      np--; for (let k = 0; k < 4; k++) P[i * 4 + k] = P[np * 4 + k]; this.putC[i] = this.putC[np]; i--;
     }
-    if (ch) { this.branchCore.instanceMatrix.needsUpdate = true; if (this.branchCore.instanceColor) this.branchCore.instanceColor.needsUpdate = true; }
+    this.nPut = np;
+    for (let i = 0; i < np; i++) {
+      const k = P[i * 4 + 3], f = (1 - k) * (1 - k), sc = 0.32 + 0.6 * (1 - f);
+      this.M.makeScale(sc, 1, sc).setPosition(P[i * 4], P[i * 4 + 1], P[i * 4 + 2]);
+      this.putFx.setMatrixAt(i, this.M); this.putFx.setColorAt(i, this.C.setHex(this.putC[i]).multiplyScalar(2.4 * f));
+    }
+    if (np || this.putFx.count) { this.putFx.count = np; this.putFx.instanceMatrix.needsUpdate = true; if (this.putFx.instanceColor) this.putFx.instanceColor.needsUpdate = true; }
   }
+  // ---------- pipes ----------
+  /** Which way each pipe network runs, worked out with the layout: every pipe tile's distance from the pump (or refinery)
+   *  that feeds its network, through the pipes and under the tunnels, and which of its sides lead back toward it. */
+  private pipeFlow(F: Factory, nets: PNet[]) {
+    const dist = new Map<number, number>();
+    for (const net of nets) {
+      const src = (f: Fac | undefined) => !!f && !!FLUID_OF[f.type] && net.prod.includes(f) && (!net.forced || FLUID_OF[f.type] === net.forced);
+      const q: Fac[] = [];
+      for (const p of net.pipes) for (let d = 0; d < 6 && !dist.has(p.id); d++) { const [nx, nz] = neighbor(p.cx, p.cz, d); if (src(F.facAt(nx, nz))) { dist.set(p.id, 0); q.push(p); } }
+      // no producer on the network (its pumpjack was sold while the line still holds fluid, or a refinery's input line was
+      // cut off): what is left drains toward the consumers, so the distance is counted back from them instead
+      const sink = !q.length;
+      if (sink) {
+        const tw = net.towers as { cx: number; cz: number }[];
+        for (const p of net.pipes) for (let d = 0; d < 6 && !dist.has(p.id); d++) {
+          const [nx, nz] = neighbor(p.cx, p.cz, d), o = F.facAt(nx, nz);
+          if ((o && net.cons.includes(o)) || tw.some((t) => t.cx === nx && t.cz === nz)) { dist.set(p.id, 0); q.push(p); }
+        }
+        if (!q.length && net.pipes.length) { dist.set(net.pipes[0].id, 0); q.push(net.pipes[0]); }
+      }
+      let far = 0;
+      for (let k = 0; k < q.length; k++) {
+        const p = q[k], dp = dist.get(p.id)!;
+        far = Math.max(far, dp);
+        const go = (o: Fac | undefined) => { if (o && pipeLike(o.type) && o.net === p.net && !dist.has(o.id)) { dist.set(o.id, dp + 1); q.push(o); } };
+        for (let d = 0; d < 6; d++) { const [nx, nz] = neighbor(p.cx, p.cz, d); go(F.facAt(nx, nz)); }
+        if (p.type === 'ptunnel' && p.pair) go(F.facById(p.pair));
+      }
+      if (sink) for (const p of net.pipes) if (dist.has(p.id)) dist.set(p.id, far - dist.get(p.id)!);
+      for (const p of net.pipes) {
+        const v = this.vis.get(p.id), dp = dist.get(p.id) ?? 0;
+        if (!v) continue;
+        let mask = 0;
+        for (let d = 0; d < 6; d++) {
+          const [nx, nz] = neighbor(p.cx, p.cz, d), o = F.facAt(nx, nz);
+          if (o && (pipeLike(o.type) ? o.net === p.net && (dist.get(o.id) ?? 0) < dp : src(o))) mask |= 1 << d;
+        }
+        v.fD = dp; v.fMask = mask;
+      }
+    }
+  }
+  /**
+   * The pipe state texture, every frame: per pipe tile (distance from the pump, upstream sides + 64 * fluid, the level
+   * shown, how far the network's fluid has run). A network's level follows its real fill, but never shows under FLOW_FILL
+   * while fluid is being pumped through it (a busy line is drained as fast as it is fed); it rises quickly, drains slowly,
+   * and an emptied network keeps its fluid's look until the level shown has run out. The fluid runs (the phase advances, in
+   * sim seconds) while a producer feeds the network or it is being drained, and eases to a stop with it.
+   */
+  private syncPipes(F: Factory, dt: number, relaid: boolean) {
+    const nets = F.pipeNets as unknown as PNet[];
+    if (relaid) { this.pipeData.fill(0); this.pipeFlow(F, nets); this.pipeTex.needsUpdate = true; }
+    if (!nets.length) { if (this.pipeSt.size) this.pipeSt.clear(); return; }
+    const D = this.pipeData;
+    for (let n = 0; n < nets.length; n++) {
+      const net = nets[n];
+      if (!net.pipes.length) continue;
+      const id = net.pipes[0].id, real = net.cap > 0 ? Math.min(1, net.amt / net.cap) : 0;
+      // (a line that is drained as fast as it is fed holds next to nothing, and the factory then calls it empty: what its
+      // working producer pumps into it is what it carries)
+      let st = this.pipeSt.get(id), fed = false, fl = net.fluid || net.forced;
+      // (keyed by the network's first pipe: when a new pipe comes first, or two networks merge, the state carries over from
+      // a pipe of it that had one, so a full line does not refill on screen)
+      if (!st) for (let i = 1; i < net.pipes.length; i++) {
+        const o = this.pipeSt.get(net.pipes[i].id);
+        if (o && o.seen !== this.frame) { st = o; this.pipeSt.delete(net.pipes[i].id); this.pipeSt.set(id, st); break; }
+      }
+      if (this.live) for (let i = 0; i < net.prod.length && !fed; i++) {
+        const o = FLUID_OF[net.prod[i].type];
+        if (o && net.prod[i].state === 'ok' && (!fl || o === fl)) { fed = true; fl = o; }
+      }
+      const kind = fl && (net.amt > 0.005 || fed) ? FLUID_TYPES.indexOf(fl) + 1 : 0;
+      const flowing = this.live && kind > 0 && (fed || (!!st && st.last - net.amt > 1e-4));
+      const tgt = flowing ? FLOW_FILL + (1 - FLOW_FILL) * real : real;
+      if (!st) this.pipeSt.set(id, (st = { shown: tgt, phase: 0, act: flowing ? 1 : 0, last: net.amt, kind, seen: 0 }));
+      st.shown += (tgt - st.shown) * Math.min(1, dt * (tgt > st.shown ? 2.4 : 0.8));
+      st.act += ((flowing ? 1 : 0) - st.act) * Math.min(1, dt * 2.5);
+      if (kind) st.kind = kind;
+      // (the patterns' frequencies have no common period, so any wrap shows as a jump: it comes after 16384 tiles of flow, over
+      // three hours of petrol running without a break, and a float32 phase that large is still exact to about 0.001 tile)
+      st.phase = (st.phase + this.simDt * FLOW_SPEED[st.kind] * st.act) % 16384;
+      st.last = net.amt; st.seen = this.frame;
+      const k = st.shown > 0.004 ? st.kind : 0;
+      for (let i = 0; i < net.pipes.length; i++) {
+        const p = net.pipes[i], v = this.vis.get(p.id);
+        if (!v || p.cx < 0 || p.cz < 0 || p.cx >= GW || p.cz >= GH) continue;
+        const o = (p.cz * PT_W + 2 * p.cx + (p.cz & 1)) * 4;
+        D[o] = v.fD; D[o + 1] = v.fMask + 64 * k; D[o + 2] = st.shown; D[o + 3] = st.phase;
+        v.fluidKey = k;
+      }
+    }
+    if (relaid) for (const [id, st] of this.pipeSt) if (st.seen !== this.frame) this.pipeSt.delete(id);
+    this.pipeTex.needsUpdate = true;
+  }
+
+  // ---------- Transfer Arms ----------
+  /** The instanced parts with room for n arms: from the model when it is loaded, else plain shapes on the same joints. */
+  private armParts(n: number): ArmBatch {
+    const src = this.modelOf('arm'), old = this.arms;
+    if (old && old.cap >= n && old.model === !!src) return old;
+    const cap = Math.max(32, n, old && old.model === !!src ? old.cap * 2 : 0);
+    // (InstancedMesh.dispose frees its instance buffers; the geometries and materials are shared, except `own`)
+    if (old) { for (const ms of old.parts) for (const m of ms) { this.group.remove(m); m.dispose(); } this.group.remove(old.lamp); old.lamp.dispose(); for (const o of old.own) o.dispose(); }
+    const own: (THREE.BufferGeometry | THREE.Material)[] = [], parts: THREE.InstancedMesh[][] = [], dim: ArmDim = { ...ARM_DIM };
+    const inst = (g: THREE.BufferGeometry, m: THREE.Material, k: number, shadow: boolean) => {
+      const o = new THREE.InstancedMesh(g, m, cap * k);
+      o.count = 0; o.frustumCulled = false; o.castShadow = shadow; o.receiveShadow = true; this.group.add(o);
+      return o;
+    };
+    let lampG: THREE.BufferGeometry | null = null;
+    if (src) {
+      // a node's own meshes: itself, or (several materials) the meshes right under it that are not nodes of their own
+      const NODES = new Set([...ARM_NODES, 'lamp', 'fingerR']);
+      const meshes = (o: THREE.Object3D | undefined) => !o ? [] : (o as THREE.Mesh).isMesh ? [o as THREE.Mesh] : (o.children.filter((c) => (c as THREE.Mesh).isMesh && !NODES.has(c.name)) as THREE.Mesh[]);
+      ARM_NODES.forEach((name, i) => parts.push(meshes(src.getObjectByName(name)).map((me) => inst(me.geometry, me.material as THREE.Material, i === P_FINGER ? 2 : 1, me.castShadow))));
+      const lamp = src.getObjectByName('lamp');
+      if (lamp) for (const me of meshes(lamp)) {
+        const g = me.geometry.clone().translate(lamp.position.x, lamp.position.y, lamp.position.z);
+        own.push(g);
+        if ((me.material as THREE.Material).name === 'glow_lamp') lampG = g; else parts[P_BASE].push(inst(g, me.material as THREE.Material, 1, false));
+      }
+      const t = src.getObjectByName('turn'), u = src.getObjectByName('upper'), f = src.getObjectByName('fore'), w = src.getObjectByName('wrist'), fl = src.getObjectByName('fingerL');
+      if (t && u && f && w && fl) { dim.turnY = t.position.y; dim.shY = u.position.y; dim.L1 = f.position.y; dim.L2 = w.position.y; dim.fx = fl.position.x; dim.fy = fl.position.y; }
+    } else {
+      const bx = (w: number, h: number, d: number, x: number, y: number, z: number) => new THREE.BoxGeometry(w, h, d).translate(x, y, z), c = FACS.arm.color;
+      const G: [THREE.BufferGeometry, THREE.Material][] = [
+        [geo('armF0', () => new THREE.CylinderGeometry(0.78, 0.8, 0.07, 6).rotateY(Math.PI / 6).translate(0, 0.035, 0)), mat(HULL, 'dark')],
+        [geo('armF1', () => merge([new THREE.CylinderGeometry(0.3, 0.33, 0.2, 12).translate(0, 0.1, 0), bx(0.32, 0.5, 0.2, 0, 0.3, 0)])), mat(TRIM, 'dark')],
+        [geo('armF2', () => bx(0.17, dim.L1, 0.14, 0, dim.L1 / 2, 0)), mat(c)],
+        [geo('armF3', () => bx(0.13, dim.L2, 0.1, 0, dim.L2 / 2, 0)), mat(c)],
+        [geo('armF4', () => merge([bx(0.6, 0.055, 0.11, 0, 0.115, 0), bx(0.1, 0.12, 0.1, 0, 0.05, 0)])), mat(HULL, 'dark')],
+        [geo('armF5', () => bx(0.045, 0.27, 0.1, 0, 0.15, 0)), mat(TRIM, 'dark')],
+      ];
+      G.forEach(([g, m], i) => parts.push([inst(g, m, i === P_FINGER ? 2 : 1, true)]));
+    }
+    if (!lampG) lampG = geo('armLamp', () => new THREE.SphereGeometry(0.08, 10, 6).translate(0.5, 0.63, -0.42));
+    const lm = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    own.push(lm);
+    const lamp = inst(lampG, lm, 1, false);
+    lamp.setColorAt(0, this.C.setHex(0xffffff));
+    for (const v of this.vis.values()) if (v.rig) { v.rig.slot = -1; v.rig.lamp = -1; }
+    return (this.arms = { model: !!src, cap, parts, lamp, dim, own });
+  }
+  /** What stands behind and in front of an arm, and where its hand picks and puts (worked out with the layout; over a belt
+   *  the pick point then follows the item it will take, see armTrack). */
+  private armEnds(F: Factory, a: Fac, g: ArmRig) {
+    g.rev = F.rev;
+    const hx = DX[a.dir], hz = DZ[a.dir], jb = armBack(a), jf = armFront(a), P = this.P2, K = TAKER_IN + 0.1;
+    const qb = jb >= 0 ? F.facAt(jb % GW, (jb / GW) | 0) : undefined, qf = jf >= 0 ? F.facAt(jf % GW, (jf / GW) | 0) : undefined;
+    const bx = a.x - 2 * hx, bz = a.z - 2 * hz, fx = a.x + 2 * hx, fz = a.z + 2 * hz;
+    g.q = qb || null;
+    if (!qb) { g.src = E_NONE; g.px = a.x - hx * 1.2; g.py = 0.3; g.pz = a.z - hz * 1.2; }
+    else if (qb.type === 'belt') { g.src = E_BELT; this.beltPoint(qb, 0.5, P); g.px = P.x; g.py = Y_SURF; g.pz = P.z; }
+    else if (qb.type === 'splitter') { g.src = E_SPLIT; g.px = bx + hx * 0.1; g.py = Y_SURF + 0.012; g.pz = bz + hz * 0.1; }
+    else if (qb.type === 'tunnel') { g.src = E_TUNNEL; const k = qb.exit ? 0.92 : 0; g.px = bx + DX[qb.dir] * k; g.py = Y_SURF; g.pz = bz + DZ[qb.dir] * k; }
+    else if (qb.type === 'arm') { g.src = E_ARM; g.px = a.x - hx; g.py = 0.8; g.pz = a.z - hz; }
+    else { g.src = E_FAC; g.px = bx + hx * K; g.py = ARM_Y - 0.12; g.pz = bz + hz * K; }
+    const tw = jf >= 0 && !qf ? F.towerOn(jf) : undefined;
+    if (qf && qf.type === 'belt') { g.dst = E_BELT; this.beltPoint(qf, qf.dir === a.dir ? 0.02 : 0.5, P); g.dx = P.x; g.dy = Y_SURF; g.dz = P.z; }
+    else if (qf && qf.type === 'splitter') { g.dst = E_SPLIT; g.dx = fx - hx * 0.6; g.dy = Y_SURF + 0.012; g.dz = fz - hz * 0.6; }
+    else if (qf && qf.type === 'tunnel') { g.dst = E_TUNNEL; g.dx = fx - DX[qf.dir] * 0.95; g.dy = Y_SURF; g.dz = fz - DZ[qf.dir] * 0.95; }
+    else if (qf && qf.type === 'arm') { g.dst = E_ARM; g.dx = a.x + hx; g.dy = 0.8; g.dz = a.z + hz; }
+    else if (qf || tw) { g.dst = qf ? E_FAC : E_TOWER; g.dx = fx - hx * K; g.dy = (tw ? this.deck(fx, fz) : 0) + ARM_Y - 0.12; g.dz = fz - hz * K; }
+    else { g.dst = E_NONE; g.dx = a.x + hx * 1.2; g.dy = 0.42; g.dz = a.z + hz * 1.2; }
+  }
+  /** An empty hand over a belt follows the item it will take: the frontmost one its target accepts (as Factory.pick chooses),
+   *  also while that is still coming up the tile; the middle of the tile while there is none. */
+  private armTrack(F: Factory, a: Fac, g: ArmRig) {
+    const q = g.q!, items = q.items;
+    let mask = F.acceptMask(armFront(a), a), p = 0.5;
+    if (a.only) mask &= ITEM_BIT[a.only];
+    for (let i = 0; i < items.length; i++) if (mask & ITEM_BIT[items[i].it]) { p = Math.max(0.1, items[i].p); break; }
+    this.beltPoint(q, p, this.P2);
+    g.px = this.P2.x; g.pz = this.P2.z;
+  }
+  /**
+   * Pose and draw every arm. The hand's target follows Fac.prog: with an item from the pick point (0) up over the tile and
+   * down to the drop point (0.5), empty the same way back (0.5 .. 1); the arm always turns the same way round, tucks in
+   * as it passes its own pad and lifts quickly off either end. Waiting, it hovers open over where the next item will be
+   * (over a belt it follows that item); holding something its target has no room for, it holds it over the target; with
+   * nothing to do for a few seconds it lets its head hang. While time stands still an idle arm leans over its target (the
+   * model's rest pose), so the way every arm works reads between waves. The hand is sprung toward the target (stiffer for a
+   * faster arm), a release jolts it, the fingers snap shut on a pick and open on a put.
+   */
+  private syncArms(F: Factory, dt: number, time: number, dg: Map<string, Diag> | null) {
+    const facs = F.facs;
+    let n = 0;
+    for (let i = 0; i < facs.length; i++) if (facs[i].type === 'arm') n++;
+    this.heldN = 0;
+    if (!n) { if (this.arms) { for (const ms of this.arms.parts) for (const m of ms) m.count = 0; this.arms.lamp.count = 0; } this.armMoving = false; return; }
+    const b = this.armParts(n), D = b.dim, live = this.live, M = this.M, L = this.M2, A = this.M3, S = this.S;
+    if (this.heldP.length < n * 5) this.heldP = new Float32Array(n * 10);
+    const sub = Math.max(1, Math.min(4, Math.ceil(dt * 90))), h = Math.min(dt, 0.05) / sub, shAbs = D.turnY + D.shY;
+    const put = (part: number, slot: number, m: THREE.Matrix4) => { const ms = b.parts[part]; for (let j = 0; j < ms.length; j++) ms[j].setMatrixAt(slot, m); };
+    let k = 0, moving = false, lampCh = false;
+    for (let i = 0; i < facs.length; i++) {
+      const a = facs[i];
+      if (a.type !== 'arm') continue;
+      const v = this.vis.get(a.id);
+      if (!v) continue;
+      const g = v.rig || (v.rig = newRig());
+      if (g.rev !== F.rev) this.armEnds(F, a, g);
+      if (g.slot !== k) { g.slot = k; g.lamp = -1; }
+      const hand = a.hand, prog = a.prog;
+      if (hand && !g.had) g.since = 0; else g.since += dt;
+      if (!hand && g.had) g.kick = 1;
+      g.had = hand;
+      if (g.src === E_BELT && !hand) this.armTrack(F, a, g);
+      // the hand's target, about the arm's axis: turn (from the back side), reach, height
+      const yawB = yawOf((a.dir + 3) % 6);
+      // (turned with R: the hand stays where it is in the world and swings round from there, not snapped by 60 degrees)
+      if (g.dir !== a.dir) { if (g.dir >= 0 && g.init) g.yaw = wrapPi(g.yaw + yawOf((g.dir + 3) % 6) - yawB); g.dir = a.dir; }
+      const offP = wrapPi(Math.atan2(g.px - a.x, g.pz - a.z) - yawB), offD = wrapPi(Math.atan2(g.dx - a.x, g.dz - a.z) - yawB - Math.PI);
+      const rP = Math.hypot(g.px - a.x, g.pz - a.z), rD = Math.hypot(g.dx - a.x, g.dz - a.z);
+      const idle = !hand && prog === 0;
+      let ty: number, tr: number, tyaw: number;
+      if (live && a.state !== 'ok') g.wait += dt; else if (live) g.wait = 0;
+      if (idle && !live) { tyaw = Math.PI; tr = ARM_REST_R; ty = ARM_REST_Y; }
+      else {
+        const u = hand ? Math.min(1, prog * 2) : prog > 0 ? sat01((1 - prog) * 2) : 0;
+        const su = sat01((u - 0.1) / 0.8), s = su * su * (3 - 2 * su), tuck = Math.sin(Math.PI * s), w = Math.pow(Math.sin(Math.PI * u), 0.6);
+        tyaw = offP + (Math.PI + offD - offP) * s;
+        const rl = rP + (rD - rP) * s, yl = g.py + (g.dy - g.py) * s;
+        tr = rl + (0.42 - rl) * 0.7 * tuck;
+        ty = yl + Math.max(0, (hand ? ARM_CARRY_Y : 0.86) - yl) * w;
+        if (hand && prog >= 0.5) {
+          // it cannot put it down (the target is full): it holds the item over the target
+          ty += 0.16; tr -= 0.08;
+          if (live) ty += 0.012 * Math.sin(time * 2.6 + a.id);
+        } else if (idle) {
+          const sl = a.state === 'noinput' || a.state === 'idle' ? sstep(3.4, 4.6, g.wait) : 0, bob = live ? 1 - 0.6 * sl : 0;
+          ty += g.src === E_FAC ? 0.05 : 0.13;
+          if (g.src === E_FAC || g.src === E_ARM) tr -= 0.16;
+          tr += (ARM_SLUMP_R - tr) * sl; ty += (ARM_SLUMP_Y - ty) * sl;
+          ty += 0.014 * bob * Math.sin(time * 2.1 + a.id * 1.7); tyaw += 0.018 * bob * Math.sin(time * 1.3 + a.id * 2.9);
+        }
+      }
+      ty += 0.085 * g.kick;
+      g.kick *= Math.exp(-dt * 11);
+      if (g.kick < 0.002) g.kick = 0;
+      if (!g.init) { g.init = true; g.yaw = tyaw; g.r = tr; g.y = ty; }
+      else {
+        const W = 46 + 14 * (a.lvl - 1), W2 = W * W, Z2 = 1.6 * W;
+        for (let q = 0; q < sub; q++) {
+          g.vyaw += (W2 * (tyaw - g.yaw) - Z2 * g.vyaw) * h; g.yaw += g.vyaw * h;
+          g.vr += (W2 * (tr - g.r) - Z2 * g.vr) * h; g.r += g.vr * h;
+          g.vy += (W2 * (ty - g.y) - Z2 * g.vy) * h; g.y += g.vy * h;
+        }
+        if (Math.abs(tyaw - g.yaw) + Math.abs(tr - g.r) + Math.abs(ty - g.y) > 0.003 || Math.abs(g.vyaw) + Math.abs(g.vr) + Math.abs(g.vy) > 0.02) moving = true;
+      }
+      g.open += ((hand ? 0 : 1) - g.open) * Math.min(1, dt * 28);
+      // the chain: a two-link IK in the arm's plane, elbow up, the hand hanging straight down
+      const sh = hand ? SHAPE_OF[hand] : null, gl = (sh && GRIP_OF[sh]) || GRIP;
+      const wx = Math.max(0.1, g.r), wy = g.y + gl - shAbs;
+      const d = Math.max(0.12, Math.min(D.L1 + D.L2 - 0.003, Math.hypot(wx, wy)));
+      const a1 = Math.atan2(wx, wy) - Math.acos(Math.max(-1, Math.min(1, (D.L1 * D.L1 + d * d - D.L2 * D.L2) / (2 * D.L1 * d))));
+      const a2 = Math.PI - Math.acos(Math.max(-1, Math.min(1, (D.L1 * D.L1 + D.L2 * D.L2 - d * d) / (2 * D.L1 * D.L2))));
+      const sc = v.obj.scale.x, yw = yawB + g.yaw;
+      M.makeRotationY(yawOf(a.dir));
+      if (sc !== 1) M.scale(S.setScalar(sc));
+      M.setPosition(a.x, 0, a.z);
+      put(P_BASE, k, M); b.lamp.setMatrixAt(k, M);
+      A.makeRotationY(yw);
+      if (sc !== 1) A.scale(S.setScalar(sc));
+      A.setPosition(a.x, D.turnY * sc, a.z);
+      put(P_TURN, k, A);
+      A.multiply(L.makeRotationX(a1).setPosition(0, D.shY, 0)); put(P_UPPER, k, A);
+      A.multiply(L.makeRotationX(a2).setPosition(0, D.L1, 0)); put(P_FORE, k, A);
+      A.multiply(L.makeRotationX(Math.PI - a1 - a2).setPosition(0, D.L2, 0)); put(P_WRIST, k, A);
+      const gap = (sh ? GAP_OF[sh] : 0.2) + 0.02 + ARM_OPEN * g.open;
+      M.multiplyMatrices(A, L.makeTranslation(gap, D.fy, 0)); put(P_FINGER, k * 2, M);
+      M.multiplyMatrices(A, L.makeRotationY(Math.PI).setPosition(-gap, D.fy, 0)); put(P_FINGER, k * 2 + 1, M);
+      // what it holds hangs between the fingers (for a moment after the pick it is still on its way up from where it lay)
+      if (hand) {
+        const gr = (D.L1 * Math.sin(a1) + D.L2 * Math.sin(a1 + a2)) * sc, gy = (shAbs + D.L1 * Math.cos(a1) + D.L2 * Math.cos(a1 + a2) - gl) * sc;
+        const sy = Math.sin(yw), cy = Math.cos(yw), kk = sat01(g.since / 0.06), H = this.heldP, o = this.heldN * 5;
+        H[o] = g.px + (a.x + sy * gr - g.px) * kk; H[o + 1] = g.py + (gy - g.py) * kk; H[o + 2] = g.pz + (a.z + cy * gr - g.pz) * kk; H[o + 3] = sy; H[o + 4] = cy;
+        this.heldIt[this.heldN++] = hand;
+      }
+      // the lamp: the diagnosis while time stands still; in a wave green while it works (and for a few seconds between
+      // items), amber once it has waited longer, red when it points at nothing that takes anything
+      const dd = dg && dg.get(facKey(a.id));
+      const c = dd ? (dd.ok ? LAMP.ok : LAMP.bad) : a.state === 'ok' || g.wait < 4 ? LAMP.ok : a.state === 'idle' ? LAMP.bad : LAMP.warn;
+      const step = c === LAMP.ok ? 4 : Math.round(2 + 2 * Math.sin(time * 6 + a.id)), key = c * 8 + step;
+      if (key !== g.lamp) { g.lamp = key; b.lamp.setColorAt(k, this.C.setHex(c).multiplyScalar(0.7 + 0.32 * step)); lampCh = true; }
+      k++;
+    }
+    for (let p = 0; p < b.parts.length; p++) for (const m of b.parts[p]) {
+      const cnt = p === P_FINGER ? k * 2 : k;
+      m.count = cnt;
+      m.instanceMatrix.clearUpdateRanges(); m.instanceMatrix.addUpdateRange(0, cnt * 16); m.instanceMatrix.needsUpdate = true;
+    }
+    b.lamp.count = k; b.lamp.instanceMatrix.needsUpdate = true;
+    if (lampCh && b.lamp.instanceColor) b.lamp.instanceColor.needsUpdate = true;
+    this.armMoving = moving;
+  }
+
   /** Level marks: a band round the base of each upgraded building (bright for Mk3) and a pip per level on its front corner. */
   private syncLevels(F: Factory, key: number) {
     if (key === this.lvlKey) return;
@@ -2101,9 +2599,12 @@ export class FacView {
     for (const fc of F.facs) {
       if (fc.lvl < 2 || nb >= MAX_LVL) continue;
       const c = this.C.setHex(LVL_COLOR[Math.min(3, fc.lvl)]).multiplyScalar(fc.lvl >= 3 ? 1.5 : 0.9);
-      this.M.makeTranslation(fc.x, 0, fc.z); this.band.setMatrixAt(nb, this.M); this.band.setColorAt(nb++, c);
+      // (an arm stands on a small pad: its band lies round that, its pips low in front of it)
+      const arm = fc.type === 'arm';
+      if (arm) this.M.makeScale(0.775, 0.3, 0.775).setPosition(fc.x, 0, fc.z); else this.M.makeTranslation(fc.x, 0, fc.z);
+      this.band.setMatrixAt(nb, this.M); this.band.setColorAt(nb++, c);
       for (let i = 0; i < fc.lvl; i++) {
-        this.M.makeTranslation(fc.x + (i - (fc.lvl - 1) / 2) * 0.19, 0.3, fc.z + HEX_SIZE * 0.8);
+        this.M.makeTranslation(fc.x + (i - (fc.lvl - 1) / 2) * 0.19, arm ? 0.16 : 0.3, fc.z + HEX_SIZE * (arm ? 0.66 : 0.8));
         this.pips.setMatrixAt(np, this.M); this.pips.setColorAt(np++, c);
       }
     }
@@ -2165,13 +2666,10 @@ export class FacView {
         break;
       }
       case 'pipe': case 'ptunnel': {
-        // the network's fluid and how full it is pick a shared core material (the side mask is set with the layout, see layoutBelts)
-        const net = sim.factory.pipeNets[fc.net], fill = net && net.cap > 0 ? net.amt / net.cap : 0;
-        const key = net && net.fluid && fill > 0.005 ? (FLUID_TYPES.indexOf(net.fluid) + 1) * 16 + Math.round(fill * 10) : 0;
-        if (key !== v.fluidKey && v.pipe.length) {
-          v.fluidKey = key; v.pipe[1].visible = key > 0; if (key) v.pipe[1].material = this.coreMat(key, fc.type === 'ptunnel');
-          // (a modelled shaft: the light down in its pit takes the fluid's colour)
-          for (const g of v.glows) { g.m.emissive.setHex(key ? FLUIDS[FLUID_TYPES[(key >> 4) - 1]].color : 0xf2a54a); g.m.color.copy(g.m.emissive).multiplyScalar(0.25); }
+        // (the fluid itself is drawn from the pipe state texture, see syncPipes; a modelled shaft's pit light takes its colour)
+        if (v.glows.length && v.glowK !== v.fluidKey) {
+          const key = (v.glowK = v.fluidKey);
+          for (const g of v.glows) { g.m.emissive.setHex(key ? FLUIDS[FLUID_TYPES[key - 1]].color : 0xf2a54a); g.m.color.copy(g.m.emissive).multiplyScalar(0.25); }
         }
         break;
       }
@@ -2197,7 +2695,7 @@ export const itemCss = (it: ItemType) => '#' + ITEMS[it].color.toString(16).padS
 export const ALL_ITEMS = ITEM_TYPES;
 
 /** Heights and offsets of the things a supply route runs along (see cues.ts). */
-export const ROUTE_GEOM = { POLE_Y, POLE_ARM, GEN_Y, PIPE_Y: PY + PR, RAIL_Y: Y_RAIL, ARM_Y, SOCK_Y, TAKER_IN };
+export const ROUTE_GEOM = { POLE_Y, POLE_ARM, GEN_Y, PIPE_Y: PY + PR, RAIL_Y: Y_RAIL, ARM_Y, SOCK_Y, TAKER_IN, ARM_TOP: 1.05 };
 /** The belt item shapes as one plain geometry each (position and normal only), for the holograms of what a tower or building lacks. */
 export function holoGeos(): Partial<Record<ItemType, THREE.BufferGeometry>> {
   const parts = itemParts(), out: Partial<Record<ItemType, THREE.BufferGeometry>> = {}, mats = new Set<THREE.Material>();

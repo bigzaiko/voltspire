@@ -319,6 +319,24 @@ for (const m of MAPS) {
     return D;
   };
   let samples = 0, rules = 0;
+  /** every straight arm line on a board (independent of deposits.ts): mine on iron, 1 or 2 arms on free deck, a free roadside turret tile */
+  interface ALine { m: number; arms: number[]; t: number }
+  const step1 = (i: number, d: number) => { const [x, z] = neighbor(i % GW, (i / GW) | 0, d); return inBoard(x, z) ? z * GW + x : -1; };
+  const armLinesAt = (g: Uint8Array, crate: Set<number>, ore: Uint8Array): ALine[] => {
+    const freeAt = (i: number) => i >= 0 && g[i] === 0 && !crate.has(i), out: ALine[] = [];
+    for (let t = 0; t < g.length; t++) {
+      if (!freeAt(t) || !neighbors(t % GW, (t / GW) | 0).some(([x, z]) => inBoard(x, z) && g[z * GW + x] === 1)) continue;
+      for (let d = 0; d < 6; d++) for (const n of [1, 2]) {
+        const arms: number[] = [];
+        let i = t;
+        for (let k = 0; k < n && i >= 0; k++) { i = step1(i, (d + 3) % 6); if (freeAt(i)) arms.push(i); else i = -1; }
+        const m = i >= 0 ? step1(i, (d + 3) % 6) : -1;
+        if (m >= 0 && freeAt(m) && ore[m] === oreVal('iron_ore')) out.push({ m, arms, t });
+      }
+    }
+    return out;
+  };
+  let armRules = 0, twoLines = 0;
   const pool: MapDef[] = [...MAPS];
   for (let t = 1; t <= 3; t++) for (let s = 1; s <= 80; s++) pool.push(generateMap(s * 7 + t, t));
   for (const def of pool) {
@@ -336,7 +354,17 @@ for (const m of MAPS) {
       const near = [...D].some(([j, d]) => d <= BELT_REACH && ore[j] === oreVal('iron_ore'));
       const coal = [...own.keys()].some((j) => ore[j] === oreVal('coal'));
       if (!spots.length || !near || !coal) report(`${def.id}: crate at ${c.cx},${c.cz}: ${spots.length} turret tiles, iron near ${near}, coal on its side ${coal}`);
+      // the arm opening: a straight line iron deposit > one or two Transfer Arms > free roadside turret tile, the turret
+      // within BELT_REACH steps of the crate's turret tiles (Transfer Arms hand on straight through a tile only)
+      if (!armLinesAt(g, crate, ore).some((l) => (D.get(l.t) ?? 99) <= BELT_REACH)) report(`${def.id}: crate at ${c.cx},${c.cz}: no straight mine > arm > turret line near it`);
       rules++;
+      armRules++;
+    }
+    // and somewhere on the map two arm lines that share no arm or turret tile (a 2-turret opening)
+    if (res.crates.some((c) => c.it === 'iron_ore')) {
+      const L = armLinesAt(g, crate, ore), apart = (a: ALine, b: ALine) => a.t !== b.t && !a.arms.includes(b.t) && !b.arms.includes(a.t) && !a.arms.some((x) => b.arms.includes(x));
+      if (!L.some((a, i) => L.some((b, k) => k > i && apart(a, b)))) report(`${def.id}: no two arm lines apart`);
+      twoLines++;
     }
     // deterministic: the same map, rebuilt from its data, gives the same deposits and crates
     const again = mapResources(new GameMap(JSON.parse(JSON.stringify(def))));
@@ -381,7 +409,7 @@ for (const m of MAPS) {
   // makeDeposits: deterministic per key, and the key matters
   const k1 = makeDeposits(g0, 'a', crates0, 2, m0.core).join(), k2 = makeDeposits(g0, 'a', crates0, 2, m0.core).join(), k3 = makeDeposits(g0, 'b', crates0, 2, m0.core).join();
   if (k1 !== k2 || k1 === k3) report('makeDeposits is not deterministic per key');
-  console.log(`\n=== resources ===\n  validator passed on ${resChecked} maps (${MAPS.length} pre-made, the rest generated); independent rule checks on ${samples} maps, ${rules} iron crates`);
+  console.log(`\n=== resources ===\n  validator passed on ${resChecked} maps (${MAPS.length} pre-made, the rest generated); independent rule checks on ${samples} maps, ${rules} iron crates (an arm line for each: ${armRules}; two lines apart on ${twoLines} maps)`);
 }
 
 console.log(`\n=== ${SEEDS} seeds x 3 tiers ===`);

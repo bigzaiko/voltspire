@@ -6,6 +6,7 @@ import { TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, ENEMY_SCALE, TITAN_LAND, GW,
 import type { TowerType, EnemyType, FacType } from './data.ts';
 import { HEX_SIZE, BOARD_W, BOARD_D, HEX_CORNERS } from './hex.ts';
 import { Sim, TOWER_SCALE, NODE_R, FIRE_RING, nodePos } from './sim.ts';
+import type { Proj } from './sim.ts';
 import { FacView } from './facview.ts';
 import { CueView } from './cues.ts';
 import type { CueTool } from './cues.ts';
@@ -15,11 +16,11 @@ import { Fx, IceField, makeBeam, placeBeam, boltMat, fireMat, reticleMat, orbMat
 import { buildWorld, noAO, FX_LAYER } from './world.ts';
 import { Post } from './post.ts';
 import { lightPool, glowTexture, POOL_GEO } from './tex.ts';
-import { makeEnemyRig, resetEnemy, updateEnemy, makeTowerRig, updateTower, towerShot, BOSS_REACH } from './anim.ts';
+import { makeEnemyRig, resetEnemy, updateEnemy, makeTowerRig, updateTower, towerShot, towerFace, nextMuzzle, towerMuzzle, BOSS_REACH } from './anim.ts';
 import type { EnemyRig, TowerRig, TowerState } from './anim.ts';
 
 /** Factory buildings with a model file (belts and pipes are built in facview.ts). */
-const FAC_MODELS = ['mine', 'pump', 'smelter', 'refinery', 'press', 'works', 'cells', 'missiles', 'crate', 'generator', 'pole', 'splitter', 'tunnel', 'ptunnel'].map((t) => 'fac_' + t);
+const FAC_MODELS = ['arm', 'mine', 'pump', 'smelter', 'refinery', 'press', 'works', 'cells', 'missiles', 'crate', 'generator', 'pole', 'splitter', 'tunnel', 'ptunnel'].map((t) => 'fac_' + t);
 /** the resource deposits (see facview.ts: it instances their geometry, nothing else of them is used) */
 const DEP_MODELS = ['iron', 'copper', 'coal', 'oil'].map((t) => 'dep_' + t);
 const MODEL_NAMES = [...TOWER_TYPES.map((t) => 'tower_' + t), ...ENEMY_TYPES.map((t) => 'enemy_' + t), 'core', 'prop_barrier', 'prop_lamp', 'prop_crate', ...FAC_MODELS, ...DEP_MODELS];
@@ -35,8 +36,11 @@ const V = new THREE.Vector3(), V2 = new THREE.Vector3();
 const V3 = new THREE.Vector3(), YA = new THREE.Vector3(0, 1, 0), M4 = new THREE.Matrix4(), M5 = new THREE.Matrix4(), M6 = new THREE.Matrix4();
 const C1 = new THREE.Color(), C2 = new THREE.Color(), Q1 = new THREE.Quaternion(), Q2 = new THREE.Quaternion();
 const W3 = { x: 0, y: 0, z: 0 }, PT = { x: 0, z: 0 };
+/** where the shot in hand leaves its tower and which way it points (View.muzzle fills them) */
+const MZ = new THREE.Vector3(), MD = new THREE.Vector3();
+const ARCP: number[] = [0, 0, 0, 0, 0, 0];
 const wrapA = (a: number) => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
-const ST: TowerState = { down: false, spec: false, power: 1, heat: 0 };
+const ST: TowerState = { down: false, spec: false, power: 1, heat: 0, hot: 0 };
 const TAU = Math.PI * 2;
 const sat = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const ease = (u: number) => { u = sat(u); return u * u * (3 - 2 * u); };
@@ -70,6 +74,8 @@ interface WorldApi {
 const NODE_VIEW = 0.6, ORB_R = 0.25;
 /** How long a Flash Freeze holds (the sim's e.frz starts here): the shell's cracks run by it. */
 const FREEZE = 3;
+/** Seconds the picture of an instant special is held back behind the sim for its wind-up (see specialFx). */
+const ARC_WIND = 0.3, RAIL_WIND = 0.34, CRYO_WIND = 0.2;
 /** Enemies are drawn no closer to the core's centre than this plus 0.6 of their radius: its plinth is in the way. */
 const CORE_STAND = 1.6;
 
@@ -207,8 +213,15 @@ interface TVis {
   wYaw: number; wTo: number; wHeat: number; wSeen: number; ring: THREE.Group | null; ringMats: THREE.Material[]; ringOn: number;
   /** lance beam, fed by sim events and kept alive between them */
   beam: THREE.Mesh | null; lnT: number; lnX: number; lnY: number; lnZ: number; lnY0: number; lnHeat: number; lnOver: boolean;
+  /** the heading of its last shot and the seconds the view still holds the turret on it (the sim's yaw eases toward a new target) */
+  aim: number; aimT: number;
+  /** specials: afterglow 0..1 (hot barrels, a rail that has just fired), phases of the running special already shown, the white core of an Overload beam */
+  hot: number; ph: number; beam2: THREE.Mesh | null;
 }
-interface PVis { mesh: THREE.Mesh; kind: string; seen: number; fresh: boolean; em: number }
+/** A ball of lightning left by a Thunderhead (View.syncBalls). */
+interface Ball { x: number; z: number; tx: number; tz: number; life: number; max: number; tick: number; ph: number }
+/** ox..oz: how far the round is drawn from where the sim has it (it leaves the muzzle, the sim starts it at the tower's axis); age in seconds */
+interface PVis { mesh: THREE.Mesh; kind: string; seen: number; fresh: boolean; em: number; ox: number; oy: number; oz: number; age: number }
 /** A mite: where it is drawn, how far it has swung onto its tower's wall (0 deck, 1 wall), its own phase. All mites share a few instanced meshes. */
 interface MVis { x: number; y: number; z: number; on: number; ph: number; seen: number }
 const MITES = 96, MITE_DRAW = 1.25;
@@ -226,7 +239,7 @@ interface Wreck { v: EVis; t: number; tick: number; x: number; z: number; gy: nu
 const CITY_NEAR = [[1, 0], [-1, 0], [0, -1], [-1, -1], [0, 1], [-1, 1]], CITY_NEAR_ODD = [[1, 0], [-1, 0], [1, -1], [0, -1], [1, 1], [0, 1]];
 const cityKey = (c: number, r: number) => (r + 64) * 256 + c + 64;
 interface ZVis {
-  obj: THREE.Group; kind: string; seen: number; t: number; mats: THREE.Material[]; halo: THREE.Object3D | null; c: number; tick: number; x: number; y: number; z: number; r: number; core: THREE.Object3D | null; lens: THREE.Mesh | null; life: number;
+  obj: THREE.Group; kind: string; seen: number; t: number; mats: THREE.Material[]; halo: THREE.Object3D | null; c: number; tick: number; x: number; y: number; z: number; r: number; core: THREE.Object3D | null; lens: THREE.Mesh | null; life: number; pre: boolean;
 }
 /** A wall of fire between two Firewall Pylons (sim.walls). */
 interface WallLike { a: number; b: number; ax: number; az: number; bx: number; bz: number; on: boolean; hot: boolean }
@@ -567,6 +580,16 @@ export class View {
   camera = new THREE.PerspectiveCamera(42, 1, 0.3, 1500);
   post: Post;
   fx = new Fx();
+  /** The player asked for less motion (prefers-reduced-motion, followed live): the camera shakes a fifth as hard (see
+   *  updateCamera), and the fx tone their flashes and glows down (Fx.calm). */
+  private calmQ = (() => {
+    try {
+      const q = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
+      const set = () => { this.fx.calm = !!q && q.matches; };
+      set(); q?.addEventListener?.('change', set);
+      return q;
+    } catch { return null; }
+  })();
   /** every shell of ice on the board, one draw */
   private ice = new IceField(96);
   models: Record<string, THREE.Object3D> = {};
@@ -629,6 +652,15 @@ export class View {
   private later: Later[] = [];
   /** Seconds left in which arcs are drawn as a Thunderhead and missile blasts as a Swarm. */
   private thunder = 0; private swarm = 0;
+  /** Sounds can hang on the beats of the tower specials: called with a stable name (listed at specialFx) and where it happens. */
+  fxCue: ((name: string, x: number, y: number, z: number) => void) | null = null;
+  /** seconds the picture of an instant special is still held back, and the deaths that wait for its release */
+  private hold = 0; private held: Ev[] = [];
+  /** Thunderhead: the machines its discharge runs through, gathered from the sim's arc events of that step */
+  private th = { p: new Float64Array(42), n: 0, open: false };
+  private balls: Ball[] = Array.from({ length: 10 }, () => ({ x: 0, z: 0, tx: 0, tz: 0, life: 0, max: 1, tick: 0, ph: 0 }));
+  /** Barrage: where its shells are about to fall (x, z, until) */
+  private barr = new Float32Array(48); private barrN = 0;
   /** Mites: their state by enemy id, and the instanced meshes they are drawn with (built from the model on first use). */
   private mites = new Map<number, MVis>(); private miteParts: { mesh: THREE.InstancedMesh; swing: number; pivot: THREE.Vector3 }[] = [];
   /** The Titan while it roams and leaps, and its wreck after it has died. */
@@ -709,7 +741,7 @@ export class View {
     // placement ghost: pale, lit, and it writes depth so the model keeps its form instead of stacking into a blob
     this.ghostMat = new THREE.MeshStandardMaterial({ color: 0xcfc8a4, roughness: 0.75, metalness: 0.05, transparent: true, opacity: 0.62, emissive: SAND, emissiveIntensity: 0.1, envMapIntensity: 0.4 });
     this.ghost.visible = false; this.scene.add(this.ghost);
-    this.fac = new FacView(this.scene, () => this.models);
+    this.fac = new FacView(this.scene, () => this.models, (x, z) => this.deckY(x, z));
     // (a supply route reaching its taker: a few sparks in the resource's colour at the socket height, and the deck lights up round it)
     this.cues = new CueView(this.scene, this.fac, (x, z) => this.deckY(x, z), (x, y, z, c) => { this.fx.burst(x, y + 0.6, z, 9, 2.6, c, 0.5, 0.2, -2, 1); this.pulse(x, z, 0x6fe0c8, 2.6, 0.5); });
     this.resize();
@@ -833,7 +865,7 @@ export class View {
     this.world.cityRestore?.();
     this.coreHit = this.coreZap = 9;
     this.later.length = 0;
-    this.thunder = 0; this.swarm = 0;
+    this.thunder = 0; this.swarm = 0; this.hold = 0; this.held.length = 0; this.th.n = 0; for (const b of this.balls) b.life = 0;
     this.setGhost(null); this.setSelected(null); this.setAimMark(null);
     this.fac.setSim(sim);
     this.cues.setSim(sim); this.cueTower = this.cueFac = null;
@@ -910,7 +942,7 @@ export class View {
   beat(level: number) { this.beatLevel = sat(level); this.world.setBeat?.(this.beatLevel); }
 
   setQuality(q: 'high' | 'low') {
-    this.quality = q;
+    this.quality = q; this.fx.detail = q === 'high' ? 1 : 0.5;
     this.renderer.shadowMap.enabled = q === 'high';
     this.world.sun.castShadow = q === 'high';
     this.renderer.setPixelRatio(q === 'high' ? Math.min(window.devicePixelRatio || 1, 1.5) : 1);
@@ -1073,31 +1105,19 @@ export class View {
   handle(evs: Ev[]) {
     const fx = this.fx, sim = this.sim;
     // a special's own effects (the chain of a Thunderhead, the first missiles of a Swarm) sit in the same batch ahead of its event
-    for (const e of evs) if (e.k === 'special') { if (e.t === 'arc') this.thunder = 0.2; else if (e.t === 'missile') this.swarm = 5; }
+    for (const e of evs) if (e.k === 'special') {
+      if (e.t === 'arc') { this.thunder = 0.2; this.hold = Math.max(this.hold, ARC_WIND); }
+      else if (e.t === 'missile') this.swarm = 5;
+      else if (e.t === 'rail') this.hold = Math.max(this.hold, RAIL_WIND);
+    }
     this.fac.handle(evs);
     this.cues.handle(evs);
     for (const e of evs) {
       switch (e.k) {
         case 'shot': {
-          const tv = this.tv.get(e.id), c = TOWERS[e.t as TowerType]?.color ?? 0xffffff;
-          fx.burst(e.x, e.y, e.z, 2, 3, c, 0.12, 0.24, 0);
+          // (what leaves the muzzle is drawn where it leaves it: the rounds of the projectile towers in launch(), beams and bolts with their own events)
+          const tv = this.tv.get(e.id);
           if (tv) towerShot(tv.rig, +e.d || 0);
-          const t = sim && sim.towerById(e.id);
-          if (e.t === 'missile') { fx.puff(e.x, e.y, e.z, 0.9, 0.9, 1.2); fx.burst(e.x, e.y, e.z, 5, 4, HEAT, 0.3, 0.22, 3, 1); }
-          else if (e.t === 'mortar') { fx.puff(e.x, e.y + 0.3, e.z, 0.8, 1.0, 1.4); if (t && t.spec > 0) { fx.flash(e.x, e.y + 0.4, e.z, 1.3, c, 0.14); fx.burst(e.x, e.y + 0.3, e.z, 8, 7, HEAT, 0.4, 0.24, 8, 1.4); } }
-          else if (e.t === 'pulse' && t) {
-            // muzzle: a short tongue of flame out of the barrel that fired, a spit of sparks along it
-            const sn = Math.sin(t.yaw), cs = Math.cos(t.yaw), storm = t.spec > 0;
-            fx.beam(e.x, e.y, e.z, e.x + sn * 0.85, e.y, e.z + cs * 0.85, HEAT, 0.3, 0.07);
-            fx.beam(e.x, e.y, e.z, e.x + sn * 0.5, e.y, e.z + cs * 0.5, c, 0.55, 0.05);
-            fx.spray(e.x, e.y, e.z, sn, 0, cs, 3, 9, HEAT, 0.16, 0.12, 0.22);
-            if (storm) {
-              // Bullet Storm: every shot throws a tracer and a casing, and the muzzle lights the deck under it
-              fx.beam(e.x + sn * 0.9, e.y, e.z + cs * 0.9, e.x + sn * 5.5, e.y - 0.5, e.z + cs * 5.5, c, 0.1, 0.09);
-              fx.flash(e.x + sn * 0.6, e.y, e.z + cs * 0.6, 0.6, HEAT, 0.07);
-              fx.spark(e.x - cs * 0.3, e.y, e.z + sn * 0.3, -cs * 3 + (Math.random() - 0.5), 2.5, sn * 3 + (Math.random() - 0.5), 0.5, 0.16, HEAT, 12);
-            }
-          }
           break;
         }
         case 'hit':
@@ -1106,14 +1126,16 @@ export class View {
           fx.flash(e.x, e.y, e.z, 0.42, e.c, 0.07);
           break;
         case 'cryo': {
-          const tv = this.tv.get(e.id); if (tv) towerShot(tv.rig);
+          const tv = this.tv.get(e.id), ct = sim && sim.towerById(e.id); if (tv) towerShot(tv.rig);
           const gy = this.deckY(e.tx, e.tz);
-          // a jet of cold out of the dish: a thin hard core, a cone of freezing spray that opens toward the target
-          const dx = e.tx - e.x, dy = e.ty - e.y, dz = e.tz - e.z, L = Math.hypot(dx, dy, dz) || 1, ux = dx / L, uy = dy / L, uz = dz / L;
-          fx.beam(e.x, e.y, e.z, e.tx, e.ty, e.tz, ICE, 0.1, 0.2);
+          // a jet of cold out of the emitter in the dish: a thin hard core, a cone of freezing spray that opens toward the target
+          let ox = e.x, oy = e.y, oz = e.z;
+          if (ct && tv && this.muzzle(ct, tv, e.tx, e.ty, e.tz)) { ox = MZ.x; oy = MZ.y; oz = MZ.z; fx.flash(ox, oy, oz, 0.5, ICE, 0.12); }
+          const dx = e.tx - ox, dy = e.ty - oy, dz = e.tz - oz, L = Math.hypot(dx, dy, dz) || 1, ux = dx / L, uy = dy / L, uz = dz / L;
+          fx.beam(ox, oy, oz, e.tx, e.ty, e.tz, ICE, 0.1, 0.2);
           for (let i = 0; i < 16; i++) {
             const u = Math.random() * 0.5, sp = L * (2.6 + Math.random() * 1.6), j = 1.4;
-            fx.spark(e.x + dx * u, e.y + dy * u, e.z + dz * u, ux * sp + (Math.random() - 0.5) * j, uy * sp + (Math.random() - 0.5) * j, uz * sp + (Math.random() - 0.5) * j, 0.2 + Math.random() * 0.14, 0.2 + Math.random() * 0.16, i % 3 ? ICE : FROST, 0, 0.5);
+            fx.spark(ox + dx * u, oy + dy * u, oz + dz * u, ux * sp + (Math.random() - 0.5) * j, uy * sp + (Math.random() - 0.5) * j, uz * sp + (Math.random() - 0.5) * j, 0.2 + Math.random() * 0.14, 0.2 + Math.random() * 0.16, i % 3 ? ICE : FROST, 0, 0.5);
           }
           // where it lands: the air goes white, rime spreads over the deck, splinters of ice jump out of it
           fx.ring(e.tx, gy + 0.1, e.tz, e.r, ICE, 0.45, 0.2, 0.9);
@@ -1125,7 +1147,24 @@ export class View {
         }
         case 'arc': {
           if (!Array.isArray(e.p)) break;
-          const storm = !!e.big || this.thunder > 0, n = e.p.length;
+          const n = e.p.length, th = this.th;
+          // a Thunderhead's own bolts are not drawn as they come: they are the path of its strike (thunderhead())
+          if (e.big && n >= 6) { th.n = 1; th.open = true; th.p[0] = e.p[3]; th.p[1] = e.p[4]; th.p[2] = e.p[5]; break; }
+          if (th.open && n > 3 && e.p[0] === th.p[0] && e.p[2] === th.p[2]) {
+            for (let i = 3; i + 2 < n && th.n < 14; i += 3) { th.p[th.n * 3] = e.p[i]; th.p[th.n * 3 + 1] = e.p[i + 1]; th.p[th.n * 3 + 2] = e.p[i + 2]; th.n++; }
+            th.open = false; break;
+          }
+          const storm = false;
+          // a pylon's own bolt (tower to first target) leaves the surface of its discharge sphere, on the side of the target
+          if (n === 6 && sim) {
+            const at = this.towerNear('arc', e.p[0], e.p[2], 0.01), av = at && this.tv.get(at.id);
+            if (at && av && this.muzzle(at, av)) {
+              const p = e.p as number[], dx = p[3] - MZ.x, dy = p[4] - MZ.y, dz = p[5] - MZ.z, L = Math.hypot(dx, dy, dz) || 1, r = 0.24 * av.s;
+              ARCP[0] = MZ.x + (dx / L) * r; ARCP[1] = MZ.y + (dy / L) * r; ARCP[2] = MZ.z + (dz / L) * r; ARCP[3] = p[3]; ARCP[4] = p[4]; ARCP[5] = p[5];
+              e.p = ARCP;
+              fx.burst(ARCP[0], ARCP[1], ARCP[2], 3, 3, e.c, 0.14, 0.22, 0);
+            }
+          }
           fx.arc(e.p, e.c, storm ? 0.2 : 0.07);
           if (storm && n >= 6) {
             // (the hot thread inside the bolt is a paler violet, not white: stacked over a dense pack it still reads as the Arc's colour)
@@ -1134,31 +1173,22 @@ export class View {
           }
           break;
         }
-        case 'rail': this.railFx(e); break;
+        case 'rail':
+          // (an Overcharge is seen charging first: its slug shows RAIL_WIND later, see overcharge())
+          if (e.big && this.sim) this.overcharge(e); else this.railFx(e);
+          break;
         case 'boom': {
           const gy = this.deckY(e.x, e.z);
           fx.boom(e.x, e.y, e.z, e.r, e.c, !!e.s, Math.min(gy, e.y));
+          if (e.c === TOWERS.mortar.color && this.barrageHit(e.x, e.z)) this.barrageBoom(e.x, e.y, e.z, e.r);
           if (!e.s) { this.bump(0.12, e.x, e.z); this.pulse(e.x, e.z, e.c, e.r * 2.4, 0.8); }
-          else if (this.swarm > 0 && e.c === TOWERS.missile.color) this.pulse(e.x, e.z, e.c, 3, 0.5);
+          else if (this.swarm > 0 && e.c === TOWERS.missile.color) { this.pulse(e.x, e.z, e.c, 3, 0.5); fx.flare(e.x, e.y, e.z, 2.2, HEAT, 0.22, 0.7); fx.glow(e.x, Math.min(gy, e.y), e.z, e.r * 2.4, HEAT, 0.5, 0.7); if (e.y - gy < 1.5) fx.crater(e.x, gy, e.z, e.r * 0.5, e.c, 5, 0.7); }
           break;
         }
-        case 'die': {
-          if (e.t === 'mite') { // a pop and a pinch of sparks: there can be dozens
-            fx.burst(e.x, e.y, e.z, 4, 3.5, STATIC, 0.3, 0.2, 8); fx.flash(e.x, e.y, e.z, 0.45, STATIC, 0.1);
-            if (Math.random() < 0.4) fx.puff(e.x, e.y, e.z, 0.3, 0.5, 0.5);
-            break;
-          }
-          const big = e.t === 'boss', mid = e.t === 'brute' || e.t === 'shield' || e.t === 'wheel' || e.t === 'brood', gy = this.deckY(e.x, e.z);
-          fx.burst(e.x, e.y, e.z, big ? 70 : mid ? 14 : 6, big ? 15 : 6, STATIC, big ? 1.1 : 0.45, big ? 0.5 : 0.28, 10);
-          fx.burst(e.x, e.y, e.z, big ? 40 : mid ? 8 : 4, big ? 11 : 5, HEAT, big ? 1.3 : 0.7, 0.2, 14);
-          fx.flash(e.x, e.y, e.z, big ? 5 : mid ? 1.5 : 0.9, STATIC, big ? 0.45 : 0.16);
-          fx.smoke(e.x, e.y + 0.2, e.z, big ? 12 : mid ? 3 : 1, big ? 2.6 : mid ? 1.2 : 0.8, big ? 3 : 0.6);
-          if (e.y - gy < 2 && (big || mid || Math.random() < 0.35)) fx.scorch(e.x, e.z, big ? 5 : mid ? 1.7 : 1.1, APRICOT, big ? 10 : 5, gy);
-          if (big) { fx.ring(e.x, gy + 0.15, e.z, 9, VIOLET, 0.9); fx.column(e.x, gy, e.z, FROST); this.bump(0.8, e.x, e.z, true); this.pulse(e.x, e.z, STATIC, 14, 1); }
-          // a Gyre is a mini-boss: its wheel goes with a ring and a ripple of its own
-          else if (e.t === 'wheel') { fx.ring(e.x, gy + 0.12, e.z, 4.5, STATIC, 0.6); fx.burst(e.x, e.y, e.z, 26, 9, STATIC, 0.7, 0.3, 9); this.bump(0.35, e.x, e.z); this.pulse(e.x, e.z, STATIC, 8, 0.9); }
+        case 'die':
+          // (while the picture of a special is held back for its wind-up, what it destroyed blows up with its release)
+          if (this.hold > 0 && e.t !== 'mite') this.held.push(e); else this.dieFx(e);
           break;
-        }
         case 'brood': {
           // a swarm leaves: the lids fly open, cold light and a breath of vapour off the carrier's back
           const v = this.ev.get(e.id), gy = this.deckY(e.x, e.z);
@@ -1233,6 +1263,8 @@ export class View {
           if (!v) break;
           v.lnT = 0.34; v.lnX = e.tx; v.lnY = e.ty; v.lnZ = e.tz; v.lnY0 = e.y; v.lnHeat = +e.heat || 0; v.lnOver = !!e.o;
           towerShot(v.rig);
+          const lt = sim && sim.towerById(e.id);
+          if (lt) this.muzzle(lt, v, e.tx, e.ty, e.tz);   // (faces the emitter along the beam; the beam itself is placed every frame in syncTower)
           break;
         }
         case 'gravity': {
@@ -1253,7 +1285,8 @@ export class View {
           break;
         }
         case 'down': {
-          const t = sim && sim.towerById(e.id), y = t ? t.h : 2;
+          const t = sim && sim.towerById(e.id), y = t ? t.h : 2, dv = this.tv.get(e.id);
+          if (t && dv && dv.fired < 30) this.afterFx(t, dv);
           fx.burst(e.x, y * 0.8, e.z, 12, 4, HEAT, 0.7, 0.2, 10);
           fx.smoke(e.x, y * 0.8, e.z, 3, 0.9, 0.6, 0.7);
           break;
@@ -1298,22 +1331,89 @@ export class View {
     }
   }
 
+  /**
+   * Overcharge, wind-up: the gun is already laid on its line; rings of charge close on the bore one after the other from
+   * far out, the muzzle gathers light, the rails heat. RAIL_WIND later the slug goes (railFx): a white-cored beam with
+   * shock diamonds standing in front of the muzzle and a thread of thinned air along its whole path; the rails stay
+   * glowing while the tower is already rebooting (TVis.hot).
+   */
+  private overcharge(e: Ev) {
+    const fx = this.fx, rt = this.towerNear('rail', e.x, e.z, 1.3), rv = rt && this.tv.get(rt.id);
+    this.later.push({ t: RAIL_WIND, fn: () => this.railFx(e) });
+    // (the wind-up gathers at the muzzle the slug will leave by: railFx then fires that one)
+    if (!rt || !rv || !this.muzzle(rt, rv, e.tx, rt.h * 0.7, e.tz, false)) return;
+    const x = MZ.x, y = MZ.y, z = MZ.z, dx = MD.x, dy = MD.y, dz = MD.z, c = e.c as number;
+    rv.hot = 0.01; rv.ph = 1;   // (syncTower feeds the muzzle light while it charges)
+    for (let i = 0; i < 6; i++) { const d = 0.5 + (5 - i) * 0.62; fx.hoop(x + dx * d, y + dy * d, z + dz * d, dx, dy, dz, 1.5 + (5 - i) * 0.14, 0.1, c, RAIL_WIND * 0.62, 0.06, 1.2, i * RAIL_WIND * 0.075); }
+    for (let i = 0; i < fx.n(30); i++) {
+      // sparks drawn into the bore from a cone ahead of it
+      const d = 1 + Math.random() * 3, a = Math.random() * TAU, r = 0.5 + Math.random() * 1.2, T = RAIL_WIND * (0.5 + Math.random() * 0.5);
+      const px = x + dx * d + Math.cos(a) * r * dz, py = y + Math.sin(a) * r, pz = z + dz * d - Math.cos(a) * r * dx;
+      fx.spark(px, py, pz, (x - px) / T, (y - py) / T, (z - pz) / T, T, 0.2, c, 0, 0.7);
+    }
+    fx.glow(rt.x, 0, rt.z, 5, c, RAIL_WIND + 0.2, 0.5);
+    this.cue('overcharge_ring', x, y, z);
+  }
+  /** Overcharge, release: what stands at the muzzle (the slug itself is railFx). (dx, dy, dz): from the muzzle to where the slug goes first. */
+  private overchargeMuzzle(rt: Tower, rv: TVis, x: number, y: number, z: number, dx: number, dy: number, dz: number) {
+    const fx = this.fx, c = TOWERS.rail.color, L = Math.hypot(dx, dy, dz) || 1, ux = dx / L, uy = dy / L, uz = dz / L;
+    rv.hot = 1; rv.ph = 2;
+    towerShot(rv.rig);
+    fx.flare(x, y, z, 4.5, c, 0.45, 0.9); fx.flare(x, y, z, 2.4, 0xffffff, 0.2, 0.7);
+    // shock diamonds: a row of bright knots in front of the muzzle, each smaller than the last, a ring thrown off every one
+    for (let i = 0; i < 6; i++) {
+      const d = 0.55 + i * 0.62, px = x + ux * d, py = y + uy * d, pz = z + uz * d, k = 1 - i * 0.13;
+      fx.flare(px, py, pz, 1.5 * k, 0xffe0d0, 0.35 + i * 0.04, 0.9 * k);
+      fx.hoop(px, py, pz, ux, uy, uz, 0.1, 0.75 * k, c, 0.3, 0.06, 1.2, i * 0.012);
+    }
+    // the gun kicks: fire out of the back of the breech, the deck rings under it
+    fx.spray(rt.x - ux * 1.2, y, rt.z - uz * 1.2, -ux, 0.1, -uz, fx.n(16), 9, HEAT, 0.5, 0.22, 0.4);
+    fx.puff(rt.x - ux * 1.3, y, rt.z - uz * 1.3, 1.1, 1.2, 0.7);
+    fx.wave(rt.x, 0.06, rt.z, 4.5, c, 0.4, 0.1, 0.14, 1); fx.glow(rt.x, 0, rt.z, 7, c, 0.5, 0.8);
+  }
+
   /** Rail beams: a tower's shot, and a tower's Overcharge (big). */
   private railFx(e: Ev) {
     const fx = this.fx;
     const over = !!e.big;
     const fire = () => {
-      let x = e.x, y = e.y, z = e.z;
-      const dx = e.tx - x, dy = e.ty - y, dz = e.tz - z, L = Math.hypot(dx, dy, dz) || 1;
-      fx.beam(x, y, z, e.tx, e.ty, e.tz, e.c, over ? 0.9 : e.big ? 0.3 : 0.2, over ? 0.9 : e.big ? 0.5 : 0.32);
-      fx.burst(e.tx, e.ty, e.tz, e.big ? 14 : 5, 6, HEAT, 0.45, 0.2, 10);
+      let x = e.x, y = e.y, z = e.z, tx = e.tx as number, ty = e.ty as number, tz = e.tz as number;
+      // the slug leaves between the rail tips. The sim's line runs level at body height, the muzzle sits well above it: the gun
+      // is laid on the first machine in the line, the slug goes through its body and on from there along the road
+      const rt = this.sim ? this.towerNear('rail', e.x, e.z, 1.3) : null, rv = rt && this.tv.get(rt.id);
+      if (rt && rv) {
+        const hx = tx - rt.x, hz = tz - rt.z, hl = Math.hypot(hx, hz) || 1, ux = hx / hl, uz = hz / hl;
+        let ku = Infinity, ky = ty;
+        for (const o of this.sim!.enemies) {
+          const ex = o.x - rt.x, ez = o.z - rt.z, u = ex * ux + ez * uz;
+          if (u > 1.2 && u < ku && u < hl && Math.abs(ex * uz - ez * ux) < o.r + 0.8) { ku = u; ky = o.y; }
+        }
+        if (ku === Infinity) ku = Math.min(6, hl * 0.5);   // (nothing left standing in the line: it comes down to road height a little way out)
+        const kx = rt.x + ux * ku, kz = rt.z + uz * ku;
+        if (this.muzzle(rt, rv, kx, ky, kz)) {
+          x = MZ.x; y = MZ.y; z = MZ.z;
+          // muzzle to the first body, then level
+          fx.beam(x, y, z, kx, ky, kz, e.c, over ? 0.9 : 0.2, over ? 0.9 : 0.32);
+          fx.flash(x, y, z, over ? 1.2 : 0.55, e.c, 0.12); fx.spray(x, y, z, MD.x, MD.y, MD.z, over ? 14 : 5, 9, HEAT, 0.25, 0.16, 0.3);
+          if (over) this.overchargeMuzzle(rt, rv, x, y, z, kx - x, ky - y, kz - z);
+          x = kx; y = ky; z = kz; ty = ky;
+        }
+      }
+      const dx = tx - x, dy = ty - y, dz = tz - z, L = Math.hypot(dx, dy, dz) || 1;
+      fx.beam(x, y, z, tx, ty, tz, e.c, over ? 0.9 : e.big ? 0.3 : 0.2, over ? 0.9 : e.big ? 0.5 : 0.32);
+      fx.burst(tx, ty, tz, e.big ? 14 : 5, 6, HEAT, 0.45, 0.2, 10);
       if (!e.big) return;
       this.bump(over ? 0.6 : 0.3, x, z, !!over);
       for (let i = 0; i < 12; i++) { const u = Math.random(); fx.burst(x + dx * u, y + dy * u, z + dz * u, 2, 2.5, e.c, 0.45, 0.22, 0); }
       if (over) {
         // Overcharge: a white core inside the slug, shock rings and a ripple in the deck all along its path
-        fx.beam(x, y, z, e.tx, e.ty, e.tz, C1.setHex(e.c).lerp(C2.setHex(0xffffff), 0.5).getHex(), 0.3, 1.1);
+        fx.beam(x, y, z, tx, ty, tz, C1.setHex(e.c).lerp(C2.setHex(0xffffff), 0.5).getHex(), 0.3, 1.1);
         fx.flash(x, y, z, 2.2, e.c, 0.3);
+        // the hole it leaves in the air: a thin thread that hangs long after the slug, mist drawn in along it
+        fx.bolt(x, y, z, tx, ty, tz, C1.setHex(e.c).lerp(C2.setHex(0x30284a), 0.5).getHex(), 0.16, 1.9, 0.25, 0.7);
+        fx.bolt(x, y, z, tx, ty, tz, 0xffffff, 0.035, 1.3, 0.1, 1.2);
+        for (let d = 2; d < Math.min(L, 46); d += 3.2) { const u = d / L; fx.mist(x + dx * u + (Math.random() - 0.5) * 1.6, y + dy * u + 0.4, z + dz * u + (Math.random() - 0.5) * 1.6, 1.3, 1.1, 0.3); fx.hoop(x + dx * u, y + dy * u, z + dz * u, dx / L, dy / L, dz / L, 0.25, 1.5 + 0.3 * Math.random(), e.c, 0.5, 0.06, 0.9, u * 0.12); }
+        this.cue('ult_release_rail', x, y, z);
         for (let d = 4; d < L; d += 7) {
           const u = d / L, px = x + dx * u, pz = z + dz * u, gy = this.deckY(px, pz);
           fx.ring(px, gy + 0.12, pz, 2.6, e.c, 0.5 + u * 0.3);
@@ -1325,55 +1425,456 @@ export class View {
     fire();
   }
 
-  /** A tower's special goes off: the node bursts, then each type does its own thing (the long ones carry on in sync). */
+  /** A machine is destroyed. */
+  private dieFx(e: Ev) {
+    const fx = this.fx;
+    if (e.t === 'mite') { // a pop and a pinch of sparks: there can be dozens
+      fx.burst(e.x, e.y, e.z, 4, 3.5, STATIC, 0.3, 0.2, 8); fx.flash(e.x, e.y, e.z, 0.45, STATIC, 0.1);
+      if (Math.random() < 0.4) fx.puff(e.x, e.y, e.z, 0.3, 0.5, 0.5);
+      return;
+    }
+    const big = e.t === 'boss', mid = e.t === 'brute' || e.t === 'shield' || e.t === 'wheel' || e.t === 'brood', gy = this.deckY(e.x, e.z);
+    fx.burst(e.x, e.y, e.z, big ? 70 : mid ? 14 : 6, big ? 15 : 6, STATIC, big ? 1.1 : 0.45, big ? 0.5 : 0.28, 10);
+    fx.burst(e.x, e.y, e.z, big ? 40 : mid ? 8 : 4, big ? 11 : 5, HEAT, big ? 1.3 : 0.7, 0.2, 14);
+    fx.flash(e.x, e.y, e.z, big ? 5 : mid ? 1.5 : 0.9, STATIC, big ? 0.45 : 0.16);
+    fx.smoke(e.x, e.y + 0.2, e.z, big ? 12 : mid ? 3 : 1, big ? 2.6 : mid ? 1.2 : 0.8, big ? 3 : 0.6);
+    if (e.y - gy < 2 && (big || mid || Math.random() < 0.35)) fx.scorch(e.x, e.z, big ? 5 : mid ? 1.7 : 1.1, APRICOT, big ? 10 : 5, gy);
+    if (big) { fx.ring(e.x, gy + 0.15, e.z, 9, VIOLET, 0.9); fx.column(e.x, gy, e.z, FROST); this.bump(0.8, e.x, e.z, true); this.pulse(e.x, e.z, STATIC, 14, 1); }
+    // a Gyre is a mini-boss: its wheel goes with a ring and a ripple of its own
+    else if (e.t === 'wheel') { fx.ring(e.x, gy + 0.12, e.z, 4.5, STATIC, 0.6); fx.burst(e.x, e.y, e.z, 26, 9, STATIC, 0.7, 0.3, 9); this.bump(0.35, e.x, e.z); this.pulse(e.x, e.z, STATIC, 8, 0.9); }
+  }
+
+  // ---------- tower specials ----------
+  // Every special is an event in three beats: a wind-up (what is about to happen shows on the tower), the release, and
+  // an aftermath that stays on the board for seconds. Each beat calls fxCue with a stable name so sounds can be hung on it:
+  //   ult_windup_<type>, ult_release_<type>, ult_aftermath_<type>   (type = pulse, cryo, arc, mortar, rail, beacon, flame, lance, missile, gravity)
+  //   thunder_gather, thunder_strike, thunder_restrike, thunder_ball_pop, thunder_stray   (Thunderhead)
+  //   barrage_mark, barrage_impact   swarm_launch   overcharge_ring   surge_tag   freeze_spikes   collapse_implode
+  // The sim applies an instant special (Thunderhead, Overcharge, Flash Freeze) in the step it is fired. The view holds
+  // its picture back for the wind-up (this.hold): machines it destroyed stay standing and blow up when the release shows.
+  private cue(name: string, x: number, y: number, z: number) { if (this.fxCue) this.fxCue(name, x, y, z); }
+  /** Camera shake of a special: halved on low quality. */
+  private jolt(a: number, x: number, z: number) { this.bump(a * (0.5 + 0.5 * this.fx.detail), x, z, true); }
+
+  /** A tower's special goes off: the node bursts, then each type does its own thing (the long ones carry on in syncTower). */
   private specialFx(e: Ev) {
     const fx = this.fx, sim = this.sim, t = sim && sim.towerById(e.id), v = this.tv.get(e.id);
     const type = e.t as TowerType, c = TOWERS[type]?.color ?? SAND, nc = type === 'cryo' ? ICE : c;
-    fx.flash(e.x, e.y, e.z, 1.2, nc, 0.26);
-    fx.ring(e.x, e.y, e.z, 1.8, nc, 0.4);
-    fx.burst(e.x, e.y, e.z, 18, 7, nc, 0.5, 0.26, 4);
-    if (v) { v.fired = 0; towerShot(v.rig); }
+    fx.flash(e.x, e.y, e.z, 1.0, nc, 0.22);
+    fx.burst(e.x, e.y, e.z, fx.n(14), 6, nc, 0.45, 0.24, 4);
+    fx.hoop(e.x, e.y, e.z, 0, 1, 0, 0.2, 1.5, nc, 0.35, 0.06);
+    if (v) { v.fired = 0; if (type !== 'rail') v.ph = 0; towerShot(v.rig); }   // (an Overcharge is already charging: its slug's event came first)
     if (!t || !sim) return;
+    this.cue('ult_windup_' + type, t.x, t.h, t.z);
     const R = sim.range(t);
     switch (type) {
-      case 'pulse': this.pulse(t.x, t.z, c, 5, 0.9); break;
-      case 'cryo': {
-        // Flash Freeze: a wall of frost runs out over the deck to the edge of its range. Two fronts, one behind the other,
-        // fingers of rime that shoot out ahead of them, the ground left white, cold fog where the front has passed
-        fx.ring(t.x, 0.14, t.z, R, ICE, 0.6, 0.12, 1.3); fx.ring(t.x, 0.16, t.z, R * 0.94, FROST, 0.8, 0.05, 0.5);
-        fx.flash(t.x, t.h * 0.7, t.z, 2.2, ICE, 0.22);
-        for (let i = 0; i < 18; i++) {
-          const a = (i / 18) * TAU + Math.random() * 0.25, r0 = 0.7 + Math.random() * 0.5, r1 = R * (0.55 + Math.random() * 0.45), cs = Math.cos(a), sn = Math.sin(a);
-          fx.beam(t.x + cs * r0, 0.1, t.z + sn * r0, t.x + cs * r1, 0.1, t.z + sn * r1, ICE, 0.09, 0.3 + Math.random() * 0.3);
-          // (a side branch off each finger)
-          const b = a + (Math.random() < 0.5 ? 0.5 : -0.5), rb = r1 * (0.45 + Math.random() * 0.3), lb = R * (0.12 + Math.random() * 0.14);
-          fx.beam(t.x + cs * rb, 0.1, t.z + sn * rb, t.x + cs * rb + Math.cos(b) * lb, 0.1, t.z + sn * rb + Math.sin(b) * lb, ICE, 0.06, 0.35 + Math.random() * 0.25);
+      case 'pulse': {
+        // Bullet Storm: the turret draws breath (rings close on it, the deck lights up under it), then the stream starts
+        for (let i = 0; i < 3; i++) fx.hoop(t.x, t.h * (0.45 + 0.12 * i), t.z, 0, 1, 0, 2.4 - i * 0.4, 0.5, c, 0.3, 0.05, 0.9, i * 0.05);
+        fx.glow(t.x, 0, t.z, 4.5, c, 0.6, 0.6);
+        this.pulse(t.x, t.z, c, 5, 0.9);
+        this.later.push({ t: 0.25, fn: () => this.cue('ult_release_pulse', t.x, t.h, t.z) });
+        break;
+      }
+      case 'cryo': this.flashFreeze(t, v, R); break;
+      case 'arc': this.thunderhead(t, v); break;
+      case 'mortar': {
+        // Barrage: the tube clears its throat; every shell gets a mark where it will fall (launch) and a crater where it did (barrageHit)
+        fx.smoke(t.x, t.h, t.z, 5, 1.1, 0.8, 1.6); this.pulse(t.x, t.z, c, 4, 0.7);
+        for (let i = 0; i < 3; i++) fx.hoop(t.x, t.h * 0.5, t.z, 0, 1, 0, 0.6, 2.2 + i * 0.5, c, 0.4, 0.05, 0.8, i * 0.07);
+        this.cue('ult_release_mortar', t.x, t.h, t.z);
+        break;
+      }
+      case 'rail': break;   // (Overcharge is drawn with its slug: railFx)
+      case 'beacon': this.surge(t, v, R); break;
+      case 'flame': this.inferno(t); break;
+      case 'lance': {
+        // Overload: the lens rings light one after the other toward the tip, then the beam goes white (syncTower)
+        if (v && towerMuzzle(v.rig, 0, MZ, MD)) {
+          const s = v.s;
+          for (let i = 0; i < 4; i++) fx.hoop(MZ.x - MD.x * (1.05 - i * 0.26) * s, MZ.y - MD.y * (1.05 - i * 0.26) * s, MZ.z - MD.z * (1.05 - i * 0.26) * s, MD.x, MD.y, MD.z, 0.75 - i * 0.12, 0.2, c, 0.3, 0.05, 1.3, i * 0.06);
+          fx.flare(MZ.x, MZ.y, MZ.z, 2.6, c, 0.4, 0.8);
         }
-        for (let i = 0; i < 7; i++) { const a = (i / 7) * TAU + Math.random(), r = R * (i ? 0.62 : 0); fx.frost(t.x + Math.cos(a) * r, t.z + Math.sin(a) * r, R * 0.62, 2.6 + Math.random() * 0.6, 0, 0.36); }
-        for (let i = 0; i < 12; i++) { const a = Math.random() * TAU, r = R * (0.35 + Math.random() * 0.6); fx.mist(t.x + Math.cos(a) * r, 0.3, t.z + Math.sin(a) * r, 2.2 + Math.random() * 1.4, 1.6 + Math.random() * 0.8, 0.34); }
-        for (let i = 0; i < 70; i++) { const a = Math.random() * TAU, s = (R / 0.5) * (0.5 + Math.random() * 0.6); fx.spark(t.x, 0.2 + Math.random() * 0.4, t.z, Math.cos(a) * s, Math.random() * 1.2, Math.sin(a) * s, 0.45 + Math.random() * 0.25, 0.22, i % 3 ? ICE : FROST, 1, 0.5); }
-        for (let i = 0; i < 10; i++) { const a = Math.random() * TAU, s = 2 + Math.random() * 3; fx.shard(t.x + Math.cos(a) * 0.7, t.h * 0.6, t.z + Math.sin(a) * 0.7, Math.cos(a) * s, 2.5 + Math.random() * 3, Math.sin(a) * s, 0.1 + Math.random() * 0.1, 0.7 + Math.random() * 0.4); }
-        this.pulse(t.x, t.z, ICE, R * 1.2, 1);
+        this.pulse(t.x, t.z, c, 4, 0.8);
+        this.later.push({ t: 0.25, fn: () => this.cue('ult_release_lance', t.x, t.h, t.z) });
         break;
       }
-      case 'arc': {
-        // Thunderhead: the charge comes down out of the sky into the orb, then leaves along the chain
-        const ox = (Math.random() - 0.5) * 6, oz = (Math.random() - 0.5) * 6;
-        fx.arc([t.x + ox, 34, t.z + oz, t.x + ox * 0.4, 16, t.z + oz * 0.4, t.x, t.h, t.z], c, 0.3);
-        fx.arc([t.x + ox, 34, t.z + oz, t.x + ox * 0.4, 16, t.z + oz * 0.4, t.x, t.h, t.z], C1.setHex(c).lerp(C2.setHex(0xffffff), 0.5).getHex(), 0.08);
-        fx.flash(t.x, t.h, t.z, 2.2, c, 0.26);
-        this.bump(0.4, t.x, t.z, true);
-        this.pulse(t.x, t.z, c, 6, 1);
+      case 'missile': {
+        // Swarm: the pods stand up (the rig), blast doors of smoke and sparks out of the back, then two dozen leave in a ripple (launch)
+        fx.smoke(t.x, t.h * 0.7, t.z, 6, 1.2, 1.2, 1.4); this.pulse(t.x, t.z, c, 5, 0.9);
+        fx.hoop(t.x, 0.2, t.z, 0, 1, 0, 0.5, 3.2, c, 0.5, 0.06);
+        this.cue('swarm_launch', t.x, t.h, t.z);
+        this.later.push({ t: 0.2, fn: () => this.cue('ult_release_missile', t.x, t.h, t.z) });
         break;
       }
-      case 'mortar': fx.smoke(t.x, t.h, t.z, 5, 1.1, 0.8, 1.6); this.pulse(t.x, t.z, c, 4, 0.7); break;
-      case 'rail': this.pulse(t.x, t.z, c, 4, 0.7); break;
-      case 'beacon': fx.column(t.x, t.h, t.z, c, 16); this.pulse(t.x, t.z, c, R * 1.3, 1); break;
-      case 'flame': fx.flash(t.x, t.h * 0.8, t.z, 2.4, APRICOT, 0.3); fx.burst(t.x, t.h * 0.8, t.z, 24, 7, APRICOT, 0.7, 0.3, -2, 1); this.pulse(t.x, t.z, c, 7, 1); break;
-      case 'lance': fx.star(e.x, t.h * 0.85, e.z, 1.6, C1.setHex(c).lerp(C2.setHex(0xffffff), 0.4).getHex(), 6, 0.25); this.pulse(t.x, t.z, c, 4, 0.8); break;
-      case 'missile': fx.smoke(t.x, t.h, t.z, 8, 1.2, 1.2, 2); fx.burst(t.x, t.h, t.z, 20, 8, HEAT, 0.6, 0.24, 6, 1.6); this.pulse(t.x, t.z, c, 5, 0.9); break;
-      case 'gravity': this.pulse(t.x, t.z, c, 5, 0.8); break;
+      case 'gravity': this.pulse(t.x, t.z, c, 5, 0.8); break;   // (the Collapse is drawn with its zone)
     }
+  }
+
+  /** The end of a special (the tower goes offline): what it leaves behind. */
+  private afterFx(t: Tower, v: TVis) {
+    const fx = this.fx;
+    this.cue('ult_aftermath_' + t.type, t.x, t.h, t.z);
+    if (t.type === 'pulse') {
+      // the barrels are spent: steam off every one of them
+      for (let i = 0; i < v.rig.muz.length; i++) if (v.rig.muzLvl[i] <= t.lvl && towerMuzzle(v.rig, i, MZ)) { fx.puff(MZ.x, MZ.y, MZ.z, 0.5, 1.3, 1.1); fx.puff(MZ.x, MZ.y + 0.2, MZ.z, 0.7, 1.8, 0.8); }
+    } else if (t.type === 'cryo') {
+      // the cold lets go: the spikes sink back (their own clock), splinters and a last breath of fog over the field
+      const R = this.sim!.range(t);
+      for (let i = 0; i < fx.n(14); i++) { const a = Math.random() * TAU, r = R * (0.2 + Math.random() * 0.75), x = t.x + Math.cos(a) * r, z = t.z + Math.sin(a) * r, gy = this.deckY(x, z); fx.shard(x, gy + 0.5, z, Math.cos(a) * 1.5, 2 + Math.random() * 2, Math.sin(a) * 1.5, 0.1 + Math.random() * 0.08, 0.8, gy); if (i % 3 === 0) fx.mist(x, gy + 0.3, z, 2.4, 1.6, 0.35); }
+    } else if (t.type === 'flame') {
+      // the walls drop: smoke stands where they burned
+      for (const w of this.wallsOf(t.id)) {
+        const dx = w.bx - w.ax, dz = w.bz - w.az, L = Math.hypot(dx, dz) || 1;
+        for (let u = 0.6; u < L; u += 0.9) { fx.smoke(w.ax + (dx / L) * u, 0.6, w.az + (dz / L) * u, 1, 1.3, 0.5, 1.2); if (Math.random() < 0.5) fx.scorch(w.ax + (dx / L) * u, w.az + (dz / L) * u, 1, APRICOT, 6); }
+      }
+    } else if (t.type === 'missile') {
+      fx.smoke(t.x, t.h * 0.8, t.z, 5, 1.1, 1, 1.2);
+    } else if (t.type === 'beacon') {
+      const R = this.sim!.range(t);
+      fx.hoop(t.x, 0.15, t.z, 0, 1, 0, R, 0.4, TOWERS.beacon.color, 0.7, 0.08, 0.7);
+    }
+  }
+  private wallsOf(id: number): WallLike[] {
+    const walls = (this.sim as unknown as { walls?: WallLike[] }).walls;
+    return walls ? walls.filter((w) => w.a === id || w.b === id) : [];
+  }
+
+  /**
+   * Flash Freeze. Wind-up: the dish draws the air in. Release: a front of frost races over the deck to the edge of the
+   * range, spikes of ice are driven up behind it in rings and under every machine it catches, fog rolls after it.
+   * Aftermath: rime and spikes stand for the length of the freeze, then sink (afterFx).
+   */
+  private flashFreeze(t: Tower, v: TVis | undefined, R: number) {
+    const fx = this.fx, sim = this.sim!, W = CRYO_WIND, FRONT = 0.34;
+    let ox = t.x, oy = t.h * 0.6, oz = t.z;
+    if (v && towerMuzzle(v.rig, 0, MZ, MD)) { ox = MZ.x; oy = MZ.y; oz = MZ.z; fx.hoop(ox, oy, oz, MD.x, MD.y, MD.z, 1.5, 0.15, ICE, W + 0.05, 0.06, 1.2); }
+    for (let i = 0; i < 3; i++) fx.hoop(t.x, 0.2 + i * 0.5, t.z, 0, 1, 0, 2.6 - i * 0.5, 0.5, ICE, W + 0.04, 0.05, 0.9, i * 0.03);
+    for (let i = 0; i < fx.n(26); i++) { const a = Math.random() * TAU, r = 1.5 + Math.random() * 2, y = 0.2 + Math.random() * 2; fx.spark(t.x + Math.cos(a) * r, y, t.z + Math.sin(a) * r, (-Math.cos(a) * r) / W, (oy - y) / W, (-Math.sin(a) * r) / W, W, 0.2, i % 3 ? ICE : FROST, 0, 0.5); }
+    // (the machines in range, noted now: by the release some of them are gone)
+    const hit: number[] = [];
+    for (const o of sim.enemies) if (o.alive && o.type !== 'mite' && !ENEMIES[o.type].fly && Math.hypot(o.x - t.x, o.z - t.z) <= R + o.r && hit.length < 60) hit.push(o.x, o.z, o.r);
+    this.later.push({ t: W, fn: () => {
+      this.cue('ult_release_cryo', t.x, t.h, t.z);
+      fx.flash(ox, oy, oz, 1.6, ICE, 0.2); fx.flare(ox, oy, oz, 3, ICE, 0.35, 0.8);
+      fx.frostWave(t.x, 0, t.z, R, FREEZE + 0.6, 1, FRONT);
+      fx.wave(t.x, 0.06, t.z, R, ICE, FRONT + 0.12, 0.05, 0.1, 0.8); fx.wave(t.x, 0.07, t.z, R * 0.94, FROST, FRONT + 0.3, 0.02, 0.05, 0.5);
+      fx.glow(t.x, 0, t.z, R * 1.2, ICE, 0.6, 0.25);
+      this.pulse(t.x, t.z, ICE, R * 1.2, 1); this.jolt(0.25, t.x, t.z);
+      // rings of spikes behind the front: low near the tower, taller toward the edge, all leaning away from it
+      const rings = [0.24, 0.46, 0.68, 0.9];
+      for (let k = 0; k < rings.length; k++) {
+        const n = fx.n(6 + k * 3), rr = R * rings[k];
+        for (let i = 0; i < n; i++) {
+          const a = (i / n) * TAU + k * 0.7 + (Math.random() - 0.5) * 0.3, r = rr * (0.9 + Math.random() * 0.2), x = t.x + Math.cos(a) * r, z = t.z + Math.sin(a) * r;
+          fx.spike(x, this.deckY(x, z), z, 0.45 + 0.35 * k + Math.random() * 0.5, 0.13 + Math.random() * 0.1, 0.25 + Math.random() * 0.35, Math.atan2(Math.cos(a), Math.sin(a)), FREEZE * (0.8 + Math.random() * 0.3), (r / R) * FRONT);
+        }
+      }
+      // and a crown of them round the feet of everything it caught
+      for (let i = 0; i < hit.length; i += 3) {
+        const x = hit[i], z = hit[i + 1], r = hit[i + 2], d = Math.hypot(x - t.x, z - t.z), gy = this.deckY(x, z);
+        for (let k = 0; k < 4; k++) { const a = Math.random() * TAU, rr = r * (0.8 + Math.random() * 0.5); fx.spike(x + Math.cos(a) * rr, gy, z + Math.sin(a) * rr, 0.5 + Math.random() * 0.7 + r * 0.4, 0.11 + Math.random() * 0.1, 0.35 + Math.random() * 0.3, Math.atan2(Math.cos(a), Math.sin(a)), FREEZE * (0.85 + Math.random() * 0.25), (d / R) * FRONT); }
+        fx.mist(x, gy + 0.4, z, 2 + r, 1.6, 0.4);
+      }
+      this.later.push({ t: FRONT * 0.5, fn: () => this.cue('freeze_spikes', t.x, 0, t.z) });
+      // what the front throws up: glitter along the ground, splinters off the tower
+      for (let i = 0; i < fx.n(70); i++) { const a = Math.random() * TAU, s = (R / FRONT) * (0.45 + Math.random() * 0.6); fx.spark(t.x, 0.2 + Math.random() * 0.4, t.z, Math.cos(a) * s, Math.random() * 1.2, Math.sin(a) * s, FRONT * (0.9 + Math.random() * 0.5), 0.22, i % 3 ? ICE : FROST, 1, 0.5); }
+      for (let i = 0; i < fx.n(10); i++) { const a = Math.random() * TAU, s = 2 + Math.random() * 3; fx.shard(t.x + Math.cos(a) * 0.7, t.h * 0.6, t.z + Math.sin(a) * 0.7, Math.cos(a) * s, 2.5 + Math.random() * 3, Math.sin(a) * s, 0.1 + Math.random() * 0.1, 0.7 + Math.random() * 0.4); }
+      for (let i = 0; i < fx.n(12); i++) { const a = Math.random() * TAU, r = R * (0.3 + Math.random() * 0.65); fx.mist(t.x + Math.cos(a) * r, 0.3, t.z + Math.sin(a) * r, 2.2 + Math.random() * 1.4, 1.6 + Math.random() * 0.8, 0.34); }
+    } });
+  }
+
+  /**
+   * Thunderhead. Wind-up: a storm cell turns above the pylon, the deck under it goes dark, a leader steps down out of the
+   * cloud while the sphere draws charge and streamers reach up from the machines about to be struck. Release: the return
+   * stroke slams from cloud to sphere, forks hit the deck round the pylon, and the discharge runs on from machine to
+   * machine, each earthed into the deck; a second, weaker flash follows the first (and a third, faint). Aftermath: branching
+   * burns on the deck, balls of lightning that crawl along the road and pop, stray strikes out of the cell as it thins.
+   */
+  private thunderhead(t: Tower, v: TVis | undefined) {
+    const fx = this.fx, c = TOWERS.arc.color, W = ARC_WIND, n = this.th.n, pts = Array.from(this.th.p.subarray(0, n * 3));
+    this.th.n = 0; this.th.open = false;
+    let ox = t.x, oy = t.h * 0.86, oz = t.z;
+    if (v && towerMuzzle(v.rig, 0, MZ)) { ox = MZ.x; oy = MZ.y; oz = MZ.z; }
+    const cy = oy + 7, a0 = Math.random() * TAU, sx = ox + Math.cos(a0) * 1.6, sz = oz + Math.sin(a0) * 1.6, top = cy + 0.5;
+    // wind-up
+    this.cue('thunder_gather', ox, cy, oz);
+    const cell = fx.storm(ox, cy, oz, 8, 4.2, c);
+    fx.shade(t.x, 0.02, t.z, 14, 4.2, 0.55);
+    fx.thunder(cell, 0.5);
+    // (ragged cloud round its rim, so the cell has a body when it is seen from the side)
+    for (let i = 0; i < fx.n(14); i++) { const a = (i / 14) * TAU + Math.random() * 0.4, r = 3.5 + Math.random() * 3.5; fx.puff(ox + Math.cos(a) * r, cy + Math.random() * 1.6, oz + Math.sin(a) * r, 3.2 + Math.random() * 1.6, 3.2 + Math.random(), 0.1); }
+    fx.lightning(sx, top, sz, ox, oy + 0.3, oz, c, 0.06, W * 0.8, 0, (W * 0.85) / 9, 1.3, 2.5, false);
+    for (let i = 0; i < fx.n(28); i++) { const a = Math.random() * TAU, b = Math.random() * 1.2 - 0.3, r = 1.6 + Math.random() * 1.6; fx.spark(ox + Math.cos(a) * Math.cos(b) * r, oy + Math.sin(b) * r, oz + Math.sin(a) * Math.cos(b) * r, (-Math.cos(a) * Math.cos(b) * r) / W, (-Math.sin(b) * r) / W, (-Math.sin(a) * Math.cos(b) * r) / W, W, 0.22, c, 0, 0.6); }
+    for (let i = 0; i < 4; i++) fx.hoop(t.x, 1.1 + ((oy - 1.4) * i) / 4, t.z, 0, 1, 0, 0.75, 0.5, c, 0.2, 0.05, 1, (i * W) / 5);
+    for (let i = 0; i < n; i++) { const x = pts[i * 3], y = pts[i * 3 + 1], z = pts[i * 3 + 2]; fx.lightning(x, y + 0.2, z, x + (Math.random() - 0.5) * 0.5, y + 1.3 + Math.random() * 0.6, z + (Math.random() - 0.5) * 0.5, c, 0.035, W * 0.4, W * 0.55, 0.02, 0.6, 0, false); }
+    if (v) v.hot = 1;
+    const trunk = (w: number, life: number, forks: number) => fx.lightning(sx, top, sz, ox, oy + 0.25, oz, c, w, life, 0, 0, 1.2, forks, true);
+    const hop = (i: number, w: number, life: number, forks: number) => {
+      const px = i ? pts[i * 3 - 3] : ox, py = i ? pts[i * 3 - 2] : oy, pz = i ? pts[i * 3 - 1] : oz;
+      fx.lightning(px, py, pz, pts[i * 3], pts[i * 3 + 1], pts[i * 3 + 2], c, w, life, 0, 0, 1, forks, true);
+    };
+    // release
+    this.later.push({ t: W, fn: () => {
+      this.cue('thunder_strike', ox, oy, oz); this.cue('ult_release_arc', ox, oy, oz);
+      trunk(0.55, 0.42, 1.5);
+      fx.flash(ox, oy, oz, 3, c, 0.22); fx.flare(ox, oy, oz, 6, c, 0.4, 0.8); fx.flare(sx, top, sz, 4, c, 0.3, 0.6);
+      fx.glow(t.x, 0, t.z, 15, c, 0.5, 0.5); fx.thunder(cell, 1.5);
+      fx.wave(t.x, 0.06, t.z, 5, c, 0.4, 0.1, 0.12, 0.8);
+      this.jolt(0.6, t.x, t.z); this.pulse(t.x, t.z, c, 9, 1);
+      // forks that miss: out of the cloud into the deck round the pylon
+      for (let i = 0; i < fx.n(3); i++) {
+        const a = a0 + 1.6 + i * 2.1 + Math.random() * 0.6, r = 3.2 + Math.random() * 4, gx = t.x + Math.cos(a) * r, gz = t.z + Math.sin(a) * r, gy = this.deckY(gx, gz);
+        fx.lightning(ox + Math.cos(a) * 2.2, top, oz + Math.sin(a) * 2.2, gx, gy + 0.05, gz, c, 0.17, 0.3, 0.02 + i * 0.03, 0.003, 1.3, 3, true);
+        fx.lichten(gx, gy, gz, 1.6 + Math.random() * 0.6, c, 5 + Math.random() * 2, 1, 0.05 + i * 0.03);
+        fx.glow(gx, gy, gz, 3, c, 0.45, 0.8, 0.05 + i * 0.03);
+      }
+    } });
+    // the discharge runs down the chain, a hop every few hundredths of a second
+    for (let i = 0; i < n; i++) this.later.push({ t: W + 0.02 + i * 0.022, fn: () => {
+      const x = pts[i * 3], y = pts[i * 3 + 1], z = pts[i * 3 + 2], gy = this.deckY(x, z);
+      hop(i, i ? 0.26 : 0.4, 0.36, i ? 1.2 : 2);
+      fx.lightning(x, y, z, x + (Math.random() - 0.5) * 0.9, gy + 0.05, z + (Math.random() - 0.5) * 0.9, c, 0.1, 0.26, 0.01, 0, 0.8, 0, false);   // to earth
+      fx.lichten(x, gy, z, 1.4 + Math.random() * 0.6, c, 5 + Math.random() * 2);
+      fx.flash(x, y, z, 1.1, c, 0.2); fx.flare(x, y, z, 2.6, c, 0.3, 0.9); fx.glow(x, gy, z, 3.2, c, 0.5, 0.7);
+      fx.burst(x, y, z, fx.n(8), 6, c, 0.4, 0.22, 6);
+      this.pulse(x, z, c, 4, 0.6);
+    } });
+    // the second flash, and a third
+    this.later.push({ t: W + 0.15, fn: () => {
+      this.cue('thunder_restrike', ox, oy, oz);
+      trunk(0.32, 0.24, 0);
+      for (let i = 0; i < n; i++) hop(i, 0.13, 0.2, 0);
+      fx.flash(ox, oy, oz, 2.2, c, 0.16); fx.glow(t.x, 0, t.z, 13, c, 0.35, 0.35); fx.thunder(cell, 1.1);
+      this.jolt(0.25, t.x, t.z);
+    } });
+    this.later.push({ t: W + 0.34, fn: () => { trunk(0.14, 0.16, 0); fx.thunder(cell, 0.6); fx.glow(t.x, 0, t.z, 10, c, 0.3, 0.2); } });
+    // aftermath: what is left of the charge gathers into balls that crawl along the chain
+    this.later.push({ t: W + 0.3, fn: () => {
+      let made = 0;
+      for (let i = 0; i < n && made < fx.n(5); i += 2) {
+        const b = this.balls.find((o) => o.life <= 0);
+        if (!b) break;
+        const j = Math.min(n - 1, i + 1);
+        b.x = pts[i * 3]; b.z = pts[i * 3 + 2]; b.tx = pts[j * 3] + (Math.random() - 0.5) * 2.5; b.tz = pts[j * 3 + 2] + (Math.random() - 0.5) * 2.5;
+        b.life = b.max = 1.7 + Math.random() * 1.3; b.tick = 0; b.ph = Math.random() * 6;
+        made++;
+      }
+    } });
+    // ... and strays out of the cell while it thins
+    for (let k = 0; k < fx.n(3); k++) this.later.push({ t: W + 0.9 + k * 0.75 + Math.random() * 0.3, fn: () => {
+      const a = Math.random() * TAU, r = 2 + Math.random() * 5, gx = t.x + Math.cos(a) * r, gz = t.z + Math.sin(a) * r, gy = this.deckY(gx, gz);
+      this.cue('thunder_stray', gx, gy, gz);
+      fx.lightning(ox + Math.cos(a) * 1.5, top, oz + Math.sin(a) * 1.5, gx, gy + 0.05, gz, c, 0.14, 0.22, 0, 0.004, 1.3, 2, true);
+      fx.lichten(gx, gy, gz, 1.2, c, 4); fx.glow(gx, gy, gz, 5, c, 0.3, 0.6); fx.thunder(cell, 0.8);
+      fx.burst(gx, gy + 0.2, gz, fx.n(8), 5, c, 0.4, 0.2, 6);
+    } });
+  }
+  /** Balls of lightning left by a Thunderhead: they crawl over the deck, spit into it and pop. */
+  private syncBalls(dt: number) {
+    const fx = this.fx, c = TOWERS.arc.color;
+    for (let i = 0; i < this.balls.length; i++) {
+      const b = this.balls[i];
+      if (b.life <= 0) continue;
+      b.life -= dt;
+      const dx = b.tx - b.x, dz = b.tz - b.z, d = Math.hypot(dx, dz) || 1, gy = this.deckY(b.x, b.z), y = gy + 0.55 + 0.18 * Math.sin(this.time * 7 + b.ph);
+      if (d > 0.1) { b.x += (dx / d) * 1.5 * dt; b.z += (dz / d) * 1.5 * dt; }
+      if (b.life <= 0) {
+        this.cue('thunder_ball_pop', b.x, y, b.z);
+        fx.flash(b.x, y, b.z, 1.3, c, 0.2); fx.burst(b.x, y, b.z, fx.n(12), 6, c, 0.4, 0.2, 5); fx.lichten(b.x, gy, b.z, 0.9, c, 3.5); fx.hoop(b.x, y, b.z, 0, 1, 0, 0.1, 1.1, c, 0.3, 0.05);
+        continue;
+      }
+      const f = Math.min(1, b.life / 0.4) * Math.min(1, (b.max - b.life) / 0.25);
+      fx.flare(b.x, y, b.z, 1.5 + 0.2 * Math.sin(this.time * 31 + b.ph), c, 0.1, 0.85 * f, 900 + i);
+      if ((b.tick -= dt) <= 0) {
+        b.tick = 0.06 + Math.random() * 0.08;
+        const a = Math.random() * TAU, r = 0.4 + Math.random() * 0.7;
+        fx.lightning(b.x, y, b.z, b.x + Math.cos(a) * r, gy + 0.04, b.z + Math.sin(a) * r, c, 0.04, 0.1, 0, 0, 0.7, 0, false);
+        fx.spark(b.x, y, b.z, Math.cos(a) * 2, 1.5, Math.sin(a) * 2, 0.3, 0.16, c, 6);
+      }
+    }
+  }
+
+  /**
+   * Surge. Wind-up: light climbs the mast. Release: a column goes up from its head, a wave runs out to its reach, and a
+   * link jumps to every tower it feeds, which gets rings of its own climbing its hull. While it lasts the column stands,
+   * waves keep running and the fed towers keep their rings (syncTower).
+   */
+  private surge(t: Tower, v: TVis | undefined, R: number) {
+    const fx = this.fx, sim = this.sim!, c = TOWERS.beacon.color, top = t.h * 0.92;
+    for (let i = 0; i < 5; i++) fx.hoop(t.x, 0.4 + (top - 0.4) * (i / 4), t.z, 0, 1, 0, 0.95 - i * 0.1, 0.35, c, 0.28, 0.05, 1.1, i * 0.05);
+    this.later.push({ t: 0.28, fn: () => {
+      this.cue('ult_release_beacon', t.x, top, t.z);
+      for (let k = 0; k < 4; k++) fx.bolt(t.x, top + k * 4.5, t.z, t.x, top + k * 4.5 + 4.6, t.z, c, 0.34 - k * 0.06, 0.7, k * 0.045, 1 - k * 0.15);
+      fx.flare(t.x, top, t.z, 3.6, c, 0.45, 0.8); fx.flash(t.x, top, t.z, 1.6, c, 0.22);
+      fx.wave(t.x, 0.06, t.z, R, c, 0.6, 0.04, 0.14, 1.1); fx.glow(t.x, 0, t.z, R * 1.1, c, 0.6, 0.45);
+      this.pulse(t.x, t.z, c, R * 1.3, 1);
+      fx.burst(t.x, top, t.z, fx.n(24), 7, c, 0.6, 0.26, 2, 1.2);
+      for (const o of sim.towers) {
+        const d = Math.hypot(o.x - t.x, o.z - t.z);
+        if (o === t || d > R || o.type === 'beacon') continue;
+        const dl = (d / R) * 0.3;
+        this.later.push({ t: dl, fn: () => {
+          this.cue('surge_tag', o.x, o.h, o.z);
+          fx.bolt(t.x, top, t.z, o.x, o.h * 0.75, o.z, c, 0.09, 0.4, 0, 1.2);
+          fx.flare(o.x, o.h * 0.75, o.z, 2, c, 0.35, 0.8);
+          for (let i = 0; i < 3; i++) fx.hoop(o.x, 0.25 + o.h * 0.3 * i, o.z, 0, 1, 0, 1.25 - i * 0.2, 0.85 - i * 0.15, c, 0.45, 0.06, 1.1, i * 0.07);
+          fx.glow(o.x, 0, o.z, 2.4, c, 0.5, 0.7);
+        } });
+      }
+    } });
+  }
+
+  /**
+   * Inferno. Wind-up: the fins of the pylon blow jets straight up. Release: the fire runs down each of its walls from this
+   * pylon to the other, pillar by pillar, and the wall stands up behind it (syncWalls draws it tall, white at the foot, with
+   * tongues that leap out of it). Aftermath: scorched deck and smoke where the walls stood (afterFx).
+   */
+  private inferno(t: Tower) {
+    const fx = this.fx, c = TOWERS.flame.color;
+    fx.flash(t.x, t.h * 0.8, t.z, 1.8, APRICOT, 0.25); fx.flare(t.x, t.h * 0.9, t.z, 2.6, APRICOT, 0.35, 0.7);
+    const wy = this.tv.get(t.id)?.wYaw || 0;
+    for (let i = 0; i < 4; i++) { const a = (i * Math.PI) / 2 + wy, x = t.x + Math.sin(a) * 0.72, z = t.z + Math.cos(a) * 0.72; fx.spray(x, t.h * 0.75, z, Math.sin(a) * 0.12, 1, Math.cos(a) * 0.12, fx.n(14), 13, APRICOT, 0.75, 0.3, 0.1); fx.spray(x, t.h * 0.75, z, 0, 1, 0, fx.n(5), 9, 0xffe2b0, 0.5, 0.2, 0.06); }
+    fx.glow(t.x, 0, t.z, 6, APRICOT, 0.6, 0.5);
+    this.pulse(t.x, t.z, c, 7, 1);
+    const walls = this.wallsOf(t.id);
+    for (const w of walls) {
+      const from = w.a === t.id ? 1 : -1, sx = from > 0 ? w.ax : w.bx, sz = from > 0 ? w.az : w.bz, ex = from > 0 ? w.bx : w.ax, ez = from > 0 ? w.bz : w.az;
+      const dx = ex - sx, dz = ez - sz, L = Math.hypot(dx, dz) || 1;
+      // the fire runs down the wall: a fountain of it every step of the way
+      for (let u = 0.7; u < L - 0.3; u += 0.75) {
+        const x = sx + (dx / L) * u, z = sz + (dz / L) * u;
+        this.later.push({ t: 0.1 + (u / L) * 0.32, fn: () => {
+          fx.spray(x, 0.25, z, 0, 1, 0, fx.n(12), 13, APRICOT, 0.7, 0.32, 0.14); fx.spray(x, 0.25, z, 0, 1, 0, fx.n(4), 8, 0xffe2b0, 0.45, 0.22, 0.08);
+          fx.flare(x, 1, z, 1.8, APRICOT, 0.22, 0.6); fx.glow(x, 0, z, 2.4, APRICOT, 0.5, 0.6);
+        } });
+      }
+      fx.wave((sx + ex) / 2, 0.06, (sz + ez) / 2, L * 0.5 + 2, APRICOT, 0.6, 0.1, 0.1, 0.5, 0.15);
+    }
+    if (!walls.length) for (let i = 0; i < 10; i++) { const a = (i / 10) * TAU, r = FIRE_RING * 1.4, x = t.x + Math.cos(a) * r, z = t.z + Math.sin(a) * r; this.later.push({ t: 0.1 + i * 0.02, fn: () => fx.spray(x, 0.25, z, 0, 1, 0, fx.n(9), 11, APRICOT, 0.6, 0.3, 0.14) }); }
+    this.later.push({ t: 0.14, fn: () => { this.cue('ult_release_flame', t.x, t.h, t.z); this.jolt(0.25, t.x, t.z); } });
+  }
+
+  /** Barrage: a shell of it has been fired (launch): its fall is marked on the road, a flare hangs over the mark. */
+  private barrageMark(p: Proj) {
+    const fx = this.fx, c = TOWERS.mortar.color, gy = p.ty, T = Math.max(0.3, p.T - p.t);
+    const i = this.barrN++ % 16;
+    this.barr[i * 3] = p.tx; this.barr[i * 3 + 1] = p.tz; this.barr[i * 3 + 2] = this.time + T + 0.4;
+    this.cue('barrage_mark', p.tx, gy, p.tz);
+    fx.mark(p.tx, gy, p.tz, p.aoe * 0.95, c, T + 0.05, 1.1);
+    // a flare sinks onto the mark while the shell is in the air
+    fx.spark(p.tx, gy + 4.5, p.tz, 0, -4.2 / T, 0, T, 0.75, 0xff5a3c, 0, 1);
+    fx.flare(p.tx, gy + 0.3, p.tz, 1.3, 0xff5a3c, T, 0.8);
+    fx.glow(p.tx, gy, p.tz, p.aoe * 1.2, 0xff5a3c, T, 0.3);
+  }
+  /** True if a mortar blast at (x, z) is a shell of a Barrage (then it is drawn as one: see handle 'boom'). */
+  private barrageHit(x: number, z: number): boolean {
+    for (let i = 0; i < 16; i++) if (this.barr[i * 3 + 2] > this.time && Math.abs(this.barr[i * 3] - x) < 0.01 && Math.abs(this.barr[i * 3 + 1] - z) < 0.01) { this.barr[i * 3 + 2] = 0; return true; }
+    return false;
+  }
+  /** A Barrage shell comes down: a crater, a column of dust, deck plate thrown about. */
+  private barrageBoom(x: number, y: number, z: number, r: number) {
+    const fx = this.fx, c = TOWERS.mortar.color, gy = Math.min(this.deckY(x, z), y);
+    this.cue('barrage_impact', x, gy, z);
+    fx.crater(x, gy, z, r * 0.62, c, 8, 0.9);
+    fx.wave(x, gy + 0.06, z, r * 1.5, c, 0.45, 0.1, 0.16, 1.2);
+    fx.flare(x, gy + 0.6, z, 3.4, c, 0.3, 0.9); fx.glow(x, gy, z, r * 2, c, 0.5, 0.7);
+    // the column: fire thrown straight up, dust that rises after it and hangs
+    fx.spray(x, gy + 0.2, z, 0, 1, 0, fx.n(22), 15, c, 0.7, 0.34, 0.1);
+    for (let i = 0; i < fx.n(7); i++) fx.puff(x + (Math.random() - 0.5) * r * 0.5, gy + 0.3 + i * 0.5, z + (Math.random() - 0.5) * r * 0.5, 1.1 + i * 0.15, 1.6 + Math.random() * 0.8, 1.6 + Math.random() * 1.2);
+    for (let i = 0; i < fx.n(24); i++) { const a = Math.random() * TAU, s = 1.5 + Math.random() * 3; fx.spark(x, gy + 0.2, z, Math.cos(a) * s, 6 + Math.random() * 7, Math.sin(a) * s, 0.7 + Math.random() * 0.5, 0.24, DUST, 12, 0.4); }
+    for (let i = 0; i < fx.n(7); i++) { const a = Math.random() * TAU, s = 2 + Math.random() * 4; fx.chunk(x, gy + 0.3, z, Math.cos(a) * s, 5 + Math.random() * 5, Math.sin(a) * s, 0.1 + Math.random() * 0.12, 0.5 + Math.random(), 1.3 + Math.random() * 0.6, 0x3a332c, 1, gy); }
+    this.jolt(0.22, x, z);
+  }
+
+  // ---------- shot origins ----------
+  /** The tower of a type nearest to (x, z) within `within` world units, or null. */
+  private towerNear(type: TowerType, x: number, z: number, within: number): Tower | null {
+    let best: Tower | null = null, bd = within;
+    for (const t of this.sim!.towers) { if (t.type !== type) continue; const d = Math.hypot(t.x - x, t.z - z); if (d <= bd) { bd = d; best = t; } }
+    return best;
+  }
+  /**
+   * Where tower t's next shot leaves it: the muzzle marker of its model whose turn it is (anim.ts: muzzle_<n>, by level),
+   * in the world as the rig stands, into MZ, and the way it points into MD. With a target given the turret is first turned
+   * (and nodded) onto it and held there for a moment. The muzzle's barrel recoils. False if the model has no markers.
+   * `fire` false: only where the next shot will leave (a wind-up gathers there), without moving on to the next muzzle or a recoil.
+   */
+  private muzzle(t: Tower, v: TVis, tx = NaN, ty = 0, tz = 0, fire = true): boolean {
+    if (tx === tx) {
+      const dx = tx - t.x, dz = tz - t.z, s = v.s > 0.05 ? v.s : TOWER_SCALE;
+      v.aim = Math.atan2(dx, dz); v.aimT = 0.3;
+      towerFace(v.rig, v.aim, Math.hypot(dx, dz) / s, (ty - v.obj.position.y) / s);
+    }
+    let i: number;
+    if (fire) i = nextMuzzle(v.rig, t.lvl);
+    else { const r = v.rig, n = r.muz.length; i = -1; for (let k = 0; k < n && i < 0; k++) { const j = (r.mi + k) % n; if (r.muzLvl[j] <= t.lvl) i = j; } }
+    return i >= 0 && towerMuzzle(v.rig, i, MZ, MD);
+  }
+  /**
+   * A round the sim has just fired (first frame it is seen): it is given the muzzle it leaves by (the sim starts it on the
+   * tower's axis), and the muzzle's flash, smoke and sparks are drawn there.
+   */
+  private launch(p: Proj, pv: PVis) {
+    const sim = this.sim!, fx = this.fx, bolt = p.kind === 'bolt', type: TowerType = bolt ? 'pulse' : p.kind === 'shell' ? 'mortar' : 'missile';
+    if (p.kind !== 'bolt' && p.kind !== 'shell' && p.kind !== 'missile') return;
+    // whose it is: a shell and a missile know where they started; a bolt belongs to the turret that has just fired and has it in front of its guns
+    let t: Tower | null = null, tv: TVis | undefined, bd = bolt ? 3.2 : 0.05;
+    for (const o of sim.towers) {
+      if (o.type !== type) continue;
+      const ov = this.tv.get(o.id);
+      if (!ov || (bolt && ov.rig.since > 0.25)) continue;
+      const d = bolt ? Math.hypot(p.x - o.x - Math.sin(o.yaw) * 0.8, p.z - o.z - Math.cos(o.yaw) * 0.8) : Math.hypot(p.sx - o.x, p.sz - o.z);
+      if (d < bd) { bd = d; t = o; tv = ov; }
+    }
+    if (!t || !tv) return;
+    const c = TOWERS[type].color, aimed = p.kind !== 'missile';
+    if (!this.muzzle(t, tv, aimed ? p.tx : NaN, p.ty, p.tz)) return;
+    const x = MZ.x, y = MZ.y, z = MZ.z, dx = MD.x, dy = MD.y, dz = MD.z;
+    pv.ox = x - p.x; pv.oy = y - p.y; pv.oz = z - p.z;
+    if (bolt) {
+      // a short tongue of flame out of the barrel that fired, a spit of sparks along it
+      const storm = t.spec > 0;
+      fx.beam(x, y, z, x + dx * 0.85, y + dy * 0.85, z + dz * 0.85, HEAT, 0.3, 0.07);
+      fx.beam(x, y, z, x + dx * 0.5, y + dy * 0.5, z + dz * 0.5, c, 0.55, 0.05);
+      fx.spray(x, y, z, dx, dy, dz, 3, 9, HEAT, 0.16, 0.12, 0.22);
+      if (storm) this.stormShot(t, x, y, z, dx, dy, dz, p);
+    } else if (p.kind === 'shell') {
+      // the tube coughs: smoke rolls out of its mouth, sparks follow the shell up the bore line
+      fx.puff(x + dx * 0.25, y + dy * 0.25, z + dz * 0.25, 0.8, 1.0, 1.4);
+      fx.flash(x, y, z, t.spec > 0 ? 1.2 : 0.7, c, 0.1);
+      fx.spray(x, y, z, dx, dy, dz, t.spec > 0 ? 10 : 5, 8, HEAT, 0.3, 0.2, 0.25);
+      if (p.sp) { this.barrageMark(p); fx.flare(x, y, z, 3, c, 0.2, 1); fx.hoop(x, y, z, dx, dy, dz, 0.2, 1.1, c, 0.3, 0.06); tv.hot = 1; }
+    } else {
+      // a missile leaves its tube: flame at the mouth, the blast of its motor out of the back of the launcher
+      fx.flash(x, y, z, 0.5, HEAT, 0.1); fx.puff(x, y, z, 0.6, 0.8, 0.8);
+      fx.spray(x - dx * 1.15, y - dy * 1.15, z - dz * 1.15, -dx, -dy, -dz, 5, 7, HEAT, 0.3, 0.2, 0.3);
+      fx.puff(x - dx * 1.3, y - dy * 1.3, z - dz * 1.3, 0.9, 0.9, 0.6);
+      if (p.sp) {
+        // a missile of the Swarm: a bar of flame out of the tube, a ring at its mouth, and now and then a mark on what it is after
+        fx.bolt(x, y, z, x - dx * 1.6, y - dy * 1.6, z - dz * 1.6, HEAT, 0.3, 0.16, 0, 1.2);
+        fx.hoop(x, y, z, dx, dy, dz, 0.1, 0.55, c, 0.25, 0.05);
+        fx.flare(x, y, z, 2.2, HEAT, 0.16, 1);
+        tv.hot = 1;
+        if (p.id % 3 === 0) fx.mark(p.tx, this.deckY(p.tx, p.tz), p.tz, 1.5, 0xff5a3c, 1.3, 0.9);
+      }
+    }
+  }
+  /** Bullet Storm: what every round of it adds: a tracer down the line of fire, a casing out of the side of the turret, light on the deck. */
+  private stormShot(t: Tower, x: number, y: number, z: number, dx: number, dy: number, dz: number, p: Proj) {
+    const fx = this.fx, c = TOWERS.pulse.color;
+    const tx = p.tx - x, ty = p.ty - y, tz = p.tz - z, L = Math.hypot(tx, ty, tz) || 1;
+    // (the round itself flies at 34 a second: the tracer is the streak it leaves, a little ahead of it and fading behind)
+    fx.bolt(x + dx * 0.5, y + dy * 0.5, z + dz * 0.5, x + (tx / L) * Math.min(L, 11), y + (ty / L) * Math.min(L, 11), z + (tz / L) * Math.min(L, 11), c, 0.12, 0.12, 0, 1.6);
+    // a tongue of flame and a ring of blast at the mouth of the barrel, light thrown on the deck under it
+    fx.bolt(x, y, z, x + dx * 1.3, y + dy * 1.3, z + dz * 1.3, HEAT, 0.26, 0.08, 0, 1.3);
+    fx.hoop(x + dx * 0.25, y + dy * 0.25, z + dz * 0.25, dx, dy, dz, 0.08, 0.5, HEAT, 0.14, 0.05, 1.1);
+    fx.flare(x + dx * 0.15, y + dy * 0.15, z + dz * 0.15, 1.9, HEAT, 0.08, 0.9);
+    fx.glow(x + dx * 0.6, this.deckY(x, z), z + dz * 0.6, 3, HEAT, 0.1, 0.6);
+    // brass: thrown out to the side and back, it rings on the deck
+    const sd = p.id & 1 ? 1 : -1, sx = dz * sd, sz = -dx * sd, gy = this.deckY(t.x, t.z);
+    fx.chunk(x - dx * 0.75 + sx * 0.28, y + 0.05, z - dz * 0.75 + sz * 0.28, sx * (2.2 + Math.random() * 1.6) - dx * 1.2, 2.8 + Math.random() * 2.2, sz * (2.2 + Math.random() * 1.6) - dz * 1.2, 0.085, 2.4, 1.6 + Math.random() * 0.6, 0xe0aa48, 2.4, gy);
+    if (p.id % 4 === 0) fx.puff(x, y + 0.1, z, 0.35, 0.5, 1.2);
   }
 
   // ---------- towers ----------
@@ -1426,7 +1927,7 @@ export class View {
       obj, rig, type: t.type, lvl: 0, grow: 0, s: -1, seen: 0, glows, acc, pad, buff, lv, addons: [],
       node: null, ringM: null, orbMat: null, ringMat: null, halo: null, mnode,
       power: 1, boot: 9, fired: 9, em: 0, em2: 0, tick: 0, downMax: 0, deny: 0, jam: false, stun: false, em3: 0,
-      wYaw: t.yaw || 0, wTo: NaN, wHeat: 0, wSeen: -9, ring: null, ringMats: [], ringOn: 0, beam: null, lnT: 0, lnX: 0, lnY: 0, lnZ: 0, lnY0: 0, lnHeat: 0, lnOver: false, slot: -1,
+      wYaw: t.yaw || 0, wTo: NaN, wHeat: 0, wSeen: -9, ring: null, ringMats: [], ringOn: 0, beam: null, lnT: 0, lnX: 0, lnY: 0, lnZ: 0, lnY0: 0, lnHeat: 0, lnOver: false, slot: -1, aim: 0, aimT: 0, hot: 0, ph: 0, beam2: null,
     };
     if (def.special) {
       // power node emblem at the exact spot the sim tests (nodePos): a ring that fills with the charge round a core
@@ -1463,6 +1964,7 @@ export class View {
     v.orbMat?.dispose(); v.ringMat?.dispose();
     if (v.ring) { this.dyn.remove(v.ring); for (const m of v.ringMats) m.dispose(); }
     if (v.beam) { this.dyn.remove(v.beam); (v.beam.material as THREE.Material).dispose(); }
+    if (v.beam2) { this.dyn.remove(v.beam2); (v.beam2.material as THREE.Material).dispose(); }
   }
 
   /** Show what a tower level looks like: the model's own lvl2 / lvl3 parts, or procedural plating when it has none. */
@@ -1540,6 +2042,13 @@ export class View {
     if (linked) mul *= 1.5;
     if (spec) mul *= 1.35 + 0.15 * Math.sin(this.time * 24);
     let yaw = t.yaw;
+    if (v.aimT > 0) {
+      // just fired: the turret stays on the line of that shot while the sim's own heading catches up with it
+      v.aimT -= dt;
+      let d = v.aim - yaw;
+      d -= Math.round(d / TAU) * TAU;
+      yaw += d * Math.min(1, Math.max(0, v.aimT) / 0.12);
+    }
     if (t.type === 'flame') {
       // Firewall Pylon: the head turns its emitter fins along the wall (it has four, so the nearest quarter turn will do);
       // a pylon with no partner sweeps slowly and burns a ring round itself instead
@@ -1551,7 +2060,7 @@ export class View {
       if (v.wHeat > 0 && !off) mul *= v.wHeat > 1 ? 1.9 + 0.3 * Math.sin(this.fireT * 31 + t.id) : 1.35 + 0.08 * Math.sin(this.fireT * 9 + t.id);
       this.syncFireRing(t, v, dt, !linked && !off && v.grow >= 1, spec);
     }
-    ST.down = off || jam || stun; ST.spec = spec; ST.power = mul; ST.heat = t.heat;
+    ST.down = off || jam || stun; ST.spec = spec; ST.power = mul; ST.heat = t.heat; ST.hot = v.hot;
     updateTower(v.rig, yaw, t.cd, t.type === 'beacon' ? 0 : sim.towerRate(t), dt, ST);
     for (const g of v.glows) if (g.m !== v.rig.glow) g.m.emissiveIntensity = g.i0 * mul;
     // offline: the pool on the deck turns to a slow rust warning light
@@ -1577,30 +2086,75 @@ export class View {
       while (v.em >= 1) { v.em -= 1; fx.burst(t.x + (Math.random() - 0.5) * 0.8, t.h * (0.5 + Math.random() * 0.4), t.z + (Math.random() - 0.5) * 0.8, 4, 3, HEAT, 0.5, 0.16, 10); fx.puff(t.x, t.h * 0.9, t.z, 0.5, 1.2, 0.9); }
     }
 
+    // afterglow: it builds while a special runs and dies away slowly once the tower is offline
+    if (spec && (t.type === 'pulse' || t.type === 'lance' || t.type === 'flame')) v.hot = Math.min(1, v.hot + dt / (t.type === 'pulse' ? 1.6 : 0.5));
+    else if (v.hot > 0 && !(t.type === 'rail' && v.ph === 1)) v.hot = Math.max(0, v.hot - dt * (t.type === 'rail' ? 0.22 : 0.3));
+    if (v.hot > 0) {
+      const hk = t.id * 16;
+      if (t.type === 'pulse') {
+        // every barrel that fired glows, and goes on glowing after the storm
+        for (let i = 0; i < v.rig.muz.length; i++) if (v.rig.muzLvl[i] <= t.lvl && towerMuzzle(v.rig, i, MZ, MD)) fx.flare(MZ.x - MD.x * 0.12, MZ.y, MZ.z - MD.z * 0.12, 0.75, 0xff7a2a, 0.12, 0.75 * v.hot, hk + i);
+        if (!spec && Math.random() < dt * 5 * v.hot && towerMuzzle(v.rig, 0, MZ)) fx.puff(MZ.x, MZ.y + 0.1, MZ.z, 0.4, 1.1, 0.9);
+      } else if (t.type === 'rail' && towerMuzzle(v.rig, 0, MZ, MD)) {
+        // charging: light gathers at the muzzle. Fired: the rails stay hot from breech to tip and smoke
+        if (v.ph === 1) { const u = Math.min(1, v.fired / RAIL_WIND); v.hot = Math.max(0.01, u); fx.flare(MZ.x, MZ.y, MZ.z, 1 + 4 * u * u, c, 0.1, 0.4 + 0.9 * u, hk); }
+        else {
+          const sc = v.s;
+          for (let i = 0; i < 4; i++) fx.flare(MZ.x - MD.x * (0.1 + i * 0.3) * sc, MZ.y - MD.y * (0.1 + i * 0.3) * sc, MZ.z - MD.z * (0.1 + i * 0.3) * sc, 0.9 - i * 0.1, 0xff6a2a, 0.12, 0.7 * v.hot, hk + i);
+          if (Math.random() < dt * 7 * v.hot) fx.puff(MZ.x - MD.x * Math.random() * 1.2, MZ.y + 0.1, MZ.z - MD.z * Math.random() * 1.2, 0.4, 1.3, 0.9);
+        }
+      } else if (t.type === 'arc' && towerMuzzle(v.rig, 0, MZ)) {
+        // the sphere holds a glow and spits at its claws
+        fx.flare(MZ.x, MZ.y, MZ.z, 2.6, c, 0.12, 0.8 * v.hot, hk);
+        if (Math.random() < dt * 16 * v.hot) { const a = Math.random() * TAU, r = 0.6 + Math.random() * 0.9; fx.lightning(MZ.x, MZ.y, MZ.z, MZ.x + Math.cos(a) * r, MZ.y + (Math.random() - 0.7) * 1.6, MZ.z + Math.sin(a) * r, c, 0.045, 0.1, 0, 0, 0.8, 0, false); }
+      } else if (t.type === 'mortar' && towerMuzzle(v.rig, 0, MZ)) {
+        fx.flare(MZ.x, MZ.y, MZ.z, 0.9, 0xff7a2a, 0.12, 0.6 * v.hot, hk);
+        if (!spec && Math.random() < dt * 5 * v.hot) fx.puff(MZ.x, MZ.y + 0.2, MZ.z, 0.6, 1.4, 1);
+      } else if (t.type === 'lance' && !spec && towerMuzzle(v.rig, 0, MZ)) {
+        fx.flare(MZ.x, MZ.y, MZ.z, 1.1, 0xffc0a0, 0.12, 0.7 * v.hot, hk);
+        if (Math.random() < dt * 5 * v.hot) fx.puff(MZ.x, MZ.y + 0.1, MZ.z, 0.35, 1.2, 0.8);
+      } else if (t.type === 'missile' && !spec) {
+        if (Math.random() < dt * 8 * v.hot && towerMuzzle(v.rig, (Math.random() * v.rig.muz.length) | 0, MZ)) fx.puff(MZ.x, MZ.y, MZ.z, 0.45, 1.2, 0.8);
+      }
+    }
+
     // special in progress
     if (spec) {
       const R = sim.range(t);
       v.tick -= dt;
       if (t.type === 'pulse') {
-        // Bullet Storm: the turret runs hot, heat shimmer and brass all round it
-        if (v.tick <= 0) { v.tick = 0.4; fx.puff(t.x, t.h, t.z, 0.6, 0.8, 1.4); }
-        v.em += dt * 40;
-        while (v.em >= 1) { v.em -= 1; const a = t.yaw + Math.PI / 2 * (Math.random() < 0.5 ? 1 : -1) + (Math.random() - 0.5) * 0.8; fx.spark(t.x, t.h * 0.8, t.z, Math.sin(a) * 3.5, 2.5 + Math.random() * 2, Math.cos(a) * 3.5, 0.6, 0.15, HEAT, 12); }
+        // Bullet Storm: the air over the guns shimmers with heat (every round does the rest: stormShot)
+        if (v.tick <= 0) { v.tick = 0.22; if (towerMuzzle(v.rig, 0, MZ)) { fx.puff(MZ.x, MZ.y + 0.3, MZ.z, 0.5, 0.7, 1.6); fx.mist(MZ.x, MZ.y + 0.5, MZ.z, 0.9, 0.5, 0.12); } }
       } else if (t.type === 'cryo') {
-        // frost hangs low over everything in range
-        v.em += dt * 60;
-        while (v.em >= 1) { v.em -= 1; const a = Math.random() * TAU, r = Math.sqrt(Math.random()) * R; fx.spark(t.x + Math.cos(a) * r, 0.15 + Math.random() * 0.5, t.z + Math.sin(a) * r, (Math.random() - 0.5) * 0.6, 0.5, (Math.random() - 0.5) * 0.6, 0.9, 0.2, Math.random() < 0.3 ? FROST : ICE, -0.4, 0.4); }
-        if (v.tick <= 0) { v.tick = 0.9; this.pulse(t.x, t.z, ICE, R * 1.1, 0.45); const a = Math.random() * TAU, r = Math.sqrt(Math.random()) * R; fx.mist(t.x + Math.cos(a) * r, 0.3, t.z + Math.sin(a) * r, 2.6, 1.8, 0.3); }
+        // frost hangs low over everything in range, breath of fog drifting through the spikes
+        if (v.fired > CRYO_WIND) {
+          v.em += dt * 60 * fx.detail;
+          while (v.em >= 1) { v.em -= 1; const a = Math.random() * TAU, r = Math.sqrt(Math.random()) * R; fx.spark(t.x + Math.cos(a) * r, 0.15 + Math.random() * 0.5, t.z + Math.sin(a) * r, (Math.random() - 0.5) * 0.6, 0.5, (Math.random() - 0.5) * 0.6, 0.9, 0.2, Math.random() < 0.3 ? FROST : ICE, -0.4, 0.4); }
+          if (v.tick <= 0) { v.tick = 0.45; this.pulse(t.x, t.z, ICE, R * 1.1, 0.35); for (let i = 0; i < 2; i++) { const a = Math.random() * TAU, r = Math.sqrt(Math.random()) * R; fx.mist(t.x + Math.cos(a) * r, 0.3, t.z + Math.sin(a) * r, 2.6, 1.8, 0.3); } }
+        }
       } else if (t.type === 'beacon') {
-        // Surge: waves run out to its reach, the mast throws light upward
-        if (v.tick <= 0) { v.tick = 0.7; this.pulse(t.x, t.z, c, R * 1.2, 0.5); }
-        v.em += dt * 30;
+        // Surge: the column stands, waves run out to its reach, and every tower it feeds wears rings that climb its hull
+        const top = t.h * 0.92;
+        fx.flare(t.x, top, t.z, 2.6 + 0.4 * Math.sin(this.time * 9), c, 0.12, 0.8, t.id * 16);
+        if (v.tick <= 0 && v.fired > 0.3) {
+          v.tick = 0.7; v.ph++;
+          this.pulse(t.x, t.z, c, R * 1.2, 0.5);
+          fx.wave(t.x, 0.06, t.z, R, c, 0.7, 0.04, 0.08, 0.5);
+          fx.bolt(t.x, top, t.z, t.x, top + 13, t.z, c, 0.3, 0.8, 0, 0.7);
+          fx.hoop(t.x, top, t.z, 0, 1, 0, 0.3, 1.6, c, 0.6, 0.06, 0.9);
+          for (const o of sim.towers) if (o !== t && o.type !== 'beacon' && o.down <= 0 && Math.hypot(o.x - t.x, o.z - t.z) <= R) {
+            const k = v.ph % 3;
+            fx.hoop(o.x, 0.25 + o.h * 0.28 * k, o.z, 0, 1, 0, 1.2 - k * 0.18, 0.9 - k * 0.14, c, 0.6, 0.06, 0.9);
+          }
+        }
+        v.em += dt * 30 * fx.detail;
         while (v.em >= 1) { v.em -= 1; fx.spark(t.x + (Math.random() - 0.5) * 0.4, t.h, t.z + (Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 1.5, 5 + Math.random() * 3, (Math.random() - 0.5) * 1.5, 0.7, 0.26, c, -1); }
-        // and every tower it feeds shows it
         for (const o of sim.towers) if (o.buff > 0 && o.down <= 0 && Math.random() < dt * 9 && Math.hypot(o.x - t.x, o.z - t.z) <= R) fx.spark(o.x + (Math.random() - 0.5) * 1.2, 0.2, o.z + (Math.random() - 0.5) * 1.2, 0, 3 + Math.random() * 2, 0, 0.8, 0.22, c, -1);
       } else if (t.type === 'arc' || t.type === 'rail') {
         // the discharge leaves the tower crackling
-        if (v.tick <= 0) { v.tick = 0.07; const a = Math.random() * TAU, r = 1 + Math.random() * 1.5; fx.arc([t.x, t.h * 0.9, t.z, t.x + Math.cos(a) * r, t.h * (0.3 + Math.random() * 0.6), t.z + Math.sin(a) * r], c, 0.05); }
+        if (v.tick <= 0 && (t.type === 'arc' ? v.fired > ARC_WIND : v.ph === 2)) { v.tick = 0.07; const a = Math.random() * TAU, r = 1 + Math.random() * 1.5; fx.arc([t.x, t.h * 0.9, t.z, t.x + Math.cos(a) * r, t.h * (0.3 + Math.random() * 0.6), t.z + Math.sin(a) * r], c, 0.05); }
+      } else if (t.type === 'missile') {
+        if (v.tick <= 0) { v.tick = 0.12; fx.puff(t.x + (Math.random() - 0.5) * 0.8, t.h * 0.5, t.z + (Math.random() - 0.5) * 0.8, 0.9, 1.1, 0.9); }
       }
     }
     if (t.type === 'beacon' && !off && t.buff === 0 && spec) v.buff.visible = false;
@@ -1610,19 +2164,48 @@ export class View {
       v.lnT -= dt;
       if (!v.lnOver && t.tgt) { for (const e of sim.enemies) if (e.id === t.tgt) { if (e.alive) { v.lnX = e.x; v.lnY = e.y; v.lnZ = e.z; } break; } }
       if (!v.beam) { v.beam = makeBeam(); this.dyn.add(v.beam); }
-      const h = v.lnHeat, sn = Math.sin(t.yaw), cs = Math.cos(t.yaw), ax = t.x + sn * 0.8, az = t.z + cs * 0.8;
+      const h = v.lnHeat, sn = Math.sin(t.yaw), cs = Math.cos(t.yaw);
+      // from the tip of the emitter crystal, wherever the rig has it this frame
+      const tip = towerMuzzle(v.rig, 0, MZ), ax = tip ? MZ.x : t.x + sn * 0.8, az = tip ? MZ.z : t.z + cs * 0.8;
+      if (tip) v.lnY0 = MZ.y;
       const flick = 1 + 0.08 * Math.sin(this.time * 70 + t.id);
       // cold: a thin line in the tower's colour. Hot: wider, brighter, the core burns white
       const col = C1.setHex(c).lerp(C2.setHex(0xffe2c0), h * 0.4).getHex();
-      placeBeam(v.beam, ax, v.lnY0, az, v.lnX, v.lnY, v.lnZ, v.lnOver ? 0.3 * flick : (0.045 + 0.11 * h) * flick, v.lnOver ? C1.setHex(c).lerp(C2.setHex(0xffe2c0), 0.22).getHex() : col, (v.lnOver ? 1.7 : 0.6 + 1.0 * h) * flick, v.lnOver ? 1 : 0.25 + 0.75 * h);
+      // (an Overload swells in over its first quarter second, with the lens rings of its wind-up)
+      const ow = v.lnOver ? Math.min(1, 0.25 + v.fired / 0.25) : 0;
+      placeBeam(v.beam, ax, v.lnY0, az, v.lnX, v.lnY, v.lnZ, v.lnOver ? 0.3 * ow * flick : (0.045 + 0.11 * h) * flick, v.lnOver ? C1.setHex(c).lerp(C2.setHex(0xffe2c0), 0.1).getHex() : col, (v.lnOver ? 0.85 : 0.6 + 1.0 * h) * flick, v.lnOver ? 0.5 : 0.25 + 0.75 * h);
+      if (v.lnOver) {
+        // Overload: a white-hot core inside the beam, a lens star on the emitter, and where the beam meets what it is
+        // burning through a fountain of molten metal
+        if (!v.beam2) { v.beam2 = makeBeam(); this.dyn.add(v.beam2); }
+        placeBeam(v.beam2, ax, v.lnY0, az, v.lnX, v.lnY, v.lnZ, 0.075 * ow * (2 - flick), 0xfff0dc, 1.5, 1);
+        fx.flare(ax, v.lnY0, az, 2.4 + 0.4 * Math.sin(this.time * 47), C1.setHex(c).lerp(C2.setHex(0xffffff), 0.35).getHex(), 0.12, 0.7 * ow, t.id * 16 + 1);
+        let fx0 = v.lnX, fy0 = v.lnY, fz0 = v.lnZ;
+        if (t.tgt) for (const o of sim.enemies) if (o.id === t.tgt) { if (o.alive) { fx0 = o.x; fy0 = o.y; fz0 = o.z; } break; }
+        const gy = this.deckY(fx0, fz0);
+        fx.flare(fx0, fy0, fz0, 1.8 + 0.5 * Math.sin(this.time * 61), 0xffd0a0, 0.12, 0.8, t.id * 16 + 2);
+        v.em += dt * 110 * fx.detail;
+        while (v.em >= 1) {
+          v.em -= 1;
+          const a = Math.random() * TAU, sp = 0.6 + Math.random() * 2.4;
+          fx.spark(fx0, fy0, fz0, Math.cos(a) * sp, 4 + Math.random() * 6, Math.sin(a) * sp, 0.5 + Math.random() * 0.5, 0.2, Math.random() < 0.3 ? 0xffe2b0 : HEAT, 14);
+          if (Math.random() < 0.1) fx.chunk(fx0, fy0, fz0, Math.cos(a) * sp * 1.4, 3 + Math.random() * 4, Math.sin(a) * sp * 1.4, 0.06, 1, 1, 0xff8a3a, 3, gy);   // a gob of it
+        }
+        if ((v.tick -= dt) <= 0) {
+          v.tick = 0.3;
+          fx.glow(fx0, gy, fz0, 2.6, HEAT, 0.6, 0.9); fx.scorch(fx0, fz0, 0.9, HEAT, 4, gy);
+          this.pulse(fx0, fz0, c, 5, 0.7);
+          const u = Math.random(); fx.hoop(ax + (v.lnX - ax) * u, v.lnY0 + (v.lnY - v.lnY0) * u, az + (v.lnZ - az) * u, v.lnX - ax, v.lnY - v.lnY0, v.lnZ - az, 0.15, 0.7, c, 0.35, 0.05, 0.9);
+        }
+      } else if (v.beam2) v.beam2.visible = false;
       v.em2 += dt * (v.lnOver ? 90 : 8 + 50 * h);
       while (v.em2 >= 1) {
         v.em2 -= 1;
         if (v.lnOver) { const u = Math.random(); fx.burst(ax + (v.lnX - ax) * u, v.lnY0 + (v.lnY - v.lnY0) * u, az + (v.lnZ - az) * u, 1, 3, c, 0.35, 0.24, 0); }
         fx.burst(v.lnX, v.lnY, v.lnZ, 1, 2 + 5 * h, HEAT, 0.3 + 0.2 * h, 0.14 + 0.1 * h, 9);
       }
-      if (h > 0.6 || v.lnOver) { v.tick -= dt; if (v.tick <= 0) { v.tick = v.lnOver ? 0.4 : 0.25; fx.flash(v.lnX, v.lnY, v.lnZ, v.lnOver ? 1.4 : 0.5 + 0.4 * h, col, 0.2); if (v.lnOver) this.pulse(v.lnX, v.lnZ, c, 5, 0.7); } }
-    } else if (v.beam) v.beam.visible = false;
+      if (h > 0.6 && !v.lnOver) { v.tick -= dt; if (v.tick <= 0) { v.tick = 0.25; fx.flash(v.lnX, v.lnY, v.lnZ, 0.5 + 0.4 * h, col, 0.2); } }
+    } else { if (v.beam) v.beam.visible = false; if (v.beam2) v.beam2.visible = false; }
   }
 
   /** The ring of fire a Firewall Pylon burns round itself while it has no partner to throw a wall to. */
@@ -1684,12 +2267,12 @@ export class View {
       v.obj.visible = v.on > 0.01;
       if (!v.obj.visible) continue;
       // the sheet runs from emitter head to emitter head, a little inside each pylon
-      const in0 = 0.45, L = Math.max(0.2, len - in0 * 2), h = 1.5 + 1.1 * v.heat;
+      const in0 = 0.45, L = Math.max(0.2, len - in0 * 2), h = 1.5 + 2.3 * v.heat;
       v.obj.position.set(w.ax + ux * in0, 0.02, w.az + uz * in0); v.obj.rotation.y = Math.atan2(-uz, ux);
       v.sheet.scale.set(L, h, 0.8 + 0.5 * v.heat);
       v.mat.uniforms.len.value = L; v.mat.uniforms.heat.value = v.heat; v.mat.uniforms.on.value = v.on;
       v.glow.position.x = L / 2; v.glow.scale.set(L + 2.2, 1, 3 + 1.6 * v.heat);
-      v.gmat.color.setHex(APRICOT).multiplyScalar((0.1 + 0.14 * v.heat) * v.on * (1 + 0.07 * Math.sin(this.fireT * 11 + w.a)));
+      v.gmat.color.setHex(APRICOT).multiplyScalar((0.1 + 0.18 * v.heat) * v.on * (1 + 0.07 * Math.sin(this.fireT * 11 + w.a)));
       // between waves the wall stands still, like the belts: its sheet keeps its shape (FIRE_CLOCK stops), no embers, no scorch
       if (sim.planning) continue;
       v.em += dt * L * (4 + 13 * v.heat) * v.on;
@@ -1700,6 +2283,15 @@ export class View {
           0.5 + Math.random() * 0.5, 0.12 + Math.random() * 0.1, v.heat > 0.5 && Math.random() < 0.4 ? SAND : APRICOT, -1.5, 0.6);
       }
       if (v.heat > 0.5 && Math.random() < dt * 5) { const u = in0 + Math.random() * L; fx.scorch(w.ax + ux * u, w.az + uz * u, 0.9, APRICOT, 3); if (Math.random() < 0.4) fx.puff(w.ax + ux * u, h, w.az + uz * u, 0.8, 1.1, 1.3); }
+      if (v.heat > 0.5) {
+        // an Inferno roars: tongues leap out of the top of the wall, smoke rolls off it, the deck glows along its whole length
+        if (Math.random() < dt * (2.2 * L + 3) * fx.detail) {
+          const u = in0 + Math.random() * L, x = w.ax + ux * u, z = w.az + uz * u, th = h * (0.9 + Math.random() * 0.7);
+          fx.spray(x, h * 0.55, z, 0, 1, 0, 6, 6 + th * 1.6, APRICOT, 0.55, 0.3, 0.16);
+          if (Math.random() < 0.5) fx.puff(x, th, z, 1 + Math.random() * 0.5, 1.4, 1.8);
+          if (Math.random() < 0.3) fx.glow(x, 0, z, 2.6, APRICOT, 0.5, 0.7);
+        }
+      }
     }
     for (const [id, v] of this.wv) if (v.seen !== f) { this.dropWall(v); this.wv.delete(id); }
   }
@@ -2308,12 +2900,19 @@ export class View {
     for (const m of v.mats) m.dispose();
     if (!collapse || v.kind !== 'sing' || v.t < 0) return;
     const fx = this.fx, y = v.y + 1.7;
-    fx.flash(v.x, y, v.z, 3.4, 0xffffff, 0.16); fx.flash(v.x, y, v.z, 5.5, SINGC, 0.34);
+    fx.flash(v.x, y, v.z, 2.2, 0xffffff, 0.14); fx.flash(v.x, y, v.z, 4, SINGC, 0.3);
     fx.star(v.x, y, v.z, 3.2, 0xffffff, 10, 0.22);
     fx.ring(v.x, v.y + 0.14, v.z, v.r * 1.25, SINGC, 0.5, 0.05, 1.3); fx.ring(v.x, v.y + 0.14, v.z, v.r * 0.7, 0xffffff, 0.3, 0.05);
     fx.burst(v.x, y, v.z, 40, 12, SINGC, 0.7, 0.3, 3); fx.burst(v.x, y, v.z, 16, 7, FROST, 0.5, 0.2, 1);
+    // the implosion lets go: a white point, a ring that stands up round it and one that runs over the deck, what it had swallowed thrown back out
+    fx.flare(v.x, y, v.z, 4.5, 0xffffff, 0.3, 0.8); fx.flare(v.x, y, v.z, 5, SINGC, 0.6, 0.7);
+    fx.hoop(v.x, y, v.z, 0, 0, 1, 0.2, 4.2, 0xffffff, 0.4, 0.1, 1.3); fx.hoop(v.x, y, v.z, 1, 0, 0, 0.2, 4.2, SINGC, 0.45, 0.1, 1.1);
+    fx.wave(v.x, v.y + 0.06, v.z, v.r * 1.7, SINGC, 0.55, 0.05, 0.2, 1.4); fx.glow(v.x, v.y, v.z, v.r * 2.4, SINGC, 0.6, 0.9);
+    fx.crater(v.x, v.y, v.z, v.r * 0.55, SINGC, 7);
+    for (let i = 0; i < fx.n(14); i++) { const a = Math.random() * TAU, sp = 3 + Math.random() * 6; fx.chunk(v.x, y, v.z, Math.cos(a) * sp, 2 + Math.random() * 6, Math.sin(a) * sp, 0.08 + Math.random() * 0.1, 0.6 + Math.random(), 1.2 + Math.random() * 0.6, 0x2c2a3a, 1, v.y); }
+    this.cue('ult_aftermath_gravity', v.x, y, v.z);
     this.pulse(v.x, v.z, SINGC, v.r * 2, 1);
-    this.bump(0.3, v.x, v.z, true);
+    this.jolt(0.45, v.x, v.z);
   }
 
   // ---------- per-frame sync ----------
@@ -2323,6 +2922,8 @@ export class View {
     const fx = this.fx, f = ++this.frame, k = 1 - Math.exp(-dt * 18);
     for (let i = 0; i < this.later.length; i++) { const l = this.later[i]; if ((l.t -= dt) <= 1e-6) { this.later.splice(i--, 1); l.fn(); } }
     this.thunder -= dt; this.swarm -= dt;
+    if (this.hold > 0 && (this.hold -= dt) <= 0) { for (const e of this.held) this.dieFx(e); this.held.length = 0; }
+    this.syncBalls(dt);
     this.fac.sync(dt, this.time, this.intro ? (x: number, z: number) => this.reveal(x, z) : null);
     this.cues.sync(this.time, this.intro ? (x: number, z: number) => this.reveal(x, z) : null, this.renderer.domElement.width, this.renderer.domElement.height, this.renderer.getPixelRatio());
 
@@ -2351,6 +2952,7 @@ export class View {
       this.syncEnemy(e, v, dt, k);
     }
     for (const [id, v] of this.ev) if (v.seen !== f) {
+      if (this.hold > 0) continue;   // (it stands until the special that destroyed it shows: see specialFx)
       // killed in its ice: the shell goes with it
       if (v.ice >= 0) { const d = ENEMIES[v.type], p = v.obj.position; this.fx.shatter(p.x, p.y + (v.type === 'drone' ? 0 : d.y), p.z, d.r * 1.18, v.type === 'drone' ? 0 : p.y); }
       this.poolEnemy(v); this.ev.delete(id);
@@ -2375,17 +2977,25 @@ export class View {
       if (!v) {
         const pool = this.ppool[p.kind];
         if (pool && pool.length) { v = pool.pop()!; v.mesh.visible = true; v.fresh = true; }
-        else { const mesh = new THREE.Mesh(this.projGeo[p.kind] || this.projGeo.bolt, this.projMat[p.kind] || this.projMat.bolt); mesh.frustumCulled = false; mesh.layers.set(FX_LAYER); this.dyn.add(mesh); v = { mesh, kind: p.kind, seen: 0, fresh: true, em: 0 }; }
+        else { const mesh = new THREE.Mesh(this.projGeo[p.kind] || this.projGeo.bolt, this.projMat[p.kind] || this.projMat.bolt); mesh.frustumCulled = false; mesh.layers.set(FX_LAYER); this.dyn.add(mesh); v = { mesh, kind: p.kind, seen: 0, fresh: true, em: 0, ox: 0, oy: 0, oz: 0, age: 0 }; }
         this.pv.set(p.id, v);
       }
       v.seen = f;
-      v.mesh.position.set(p.x, p.y, p.z);
-      if (p.vx || p.vy || p.vz) { V.set(p.x + p.vx, p.y + p.vy, p.z + p.vz); v.mesh.lookAt(V); }
-      if (p.kind === 'shell') fx.spark(p.x, p.y, p.z, 0, 0.5, 0, 0.4, 0.3, APRICOT);
+      if (v.fresh) { v.fresh = false; v.age = 0; v.ox = v.oy = v.oz = 0; this.launch(p, v); }
+      // the round leaves the muzzle and joins the path the sim flies it on: a bolt within a few metres, a missile as its motor
+      // takes hold, a shell over the first part of its arc
+      v.age += dt;
+      const join = p.kind === 'shell' ? (p.T > 0 ? p.t / (p.T * 0.5) : 1) : v.age / (p.kind === 'missile' ? 0.45 : 0.14);
+      const ko = join >= 1 ? 0 : (1 - join) * (1 - join) * (1 + 2 * join);
+      const px = p.x + v.ox * ko, py = p.y + v.oy * ko, pz = p.z + v.oz * ko;
+      v.mesh.position.set(px, py, pz);
+      if (p.vx || p.vy || p.vz) { V.set(px + p.vx, py + p.vy, pz + p.vz); v.mesh.lookAt(V); }
+      if (p.kind === 'shell') fx.spark(px, py, pz, 0, 0.5, 0, 0.4, 0.3, APRICOT);
       else if (p.kind === 'missile') {
         // exhaust flame and a thin smoke trail behind the motor
-        const sp = Math.hypot(p.vx, p.vy, p.vz) || 1, bx = p.x - (p.vx / sp) * 0.35, by = p.y - (p.vy / sp) * 0.35, bz = p.z - (p.vz / sp) * 0.35;
+        const sp = Math.hypot(p.vx, p.vy, p.vz) || 1, bx = px - (p.vx / sp) * 0.35, by = py - (p.vy / sp) * 0.35, bz = pz - (p.vz / sp) * 0.35;
         fx.spark(bx, by, bz, -p.vx * 0.1, -p.vy * 0.1, -p.vz * 0.1, 0.16, 0.3, HEAT);
+        if (p.sp) { fx.flare(bx, by, bz, 0.8, HEAT, 0.1, 0.7, 2000 + (p.id & 63)); fx.bolt(bx, by, bz, bx - (p.vx / sp) * 1.3, by - (p.vy / sp) * 1.3, bz - (p.vz / sp) * 1.3, HEAT, 0.1, 0.1, 0, 0.9); }   // a Swarm is a sky full of motors
         v.em += dt * 26;
         while (v.em >= 1) { v.em -= 1; fx.puff(bx + (Math.random() - 0.5) * 0.1, by, bz + (Math.random() - 0.5) * 0.1, 0.32, 0.75, 0.25); }
       }
@@ -2426,14 +3036,27 @@ export class View {
         }
         obj.position.set(z.x, zy + 0.07, z.z);
         this.dyn.add(noAO(obj));
-        v = { obj, kind: z.kind, seen: f, t: 0, mats, halo, c, tick: 0, x: z.x, y: zy, z: z.z, r: z.r, core, lens, life: z.life };
+        v = { obj, kind: z.kind, seen: f, t: 0, mats, halo, c, tick: 0, x: z.x, y: zy, z: z.z, r: z.r, core, lens, life: z.life, pre: false };
         if (z.kind === 'sing') {
           // Collapse: the well reaches out to its victim and the space round it folds in
           let src: Tower | null = null;
           for (const t of sim.towers) if (t.type === 'gravity' && t.spec > 0 && (!src || Math.hypot(t.x - z.x, t.z - z.z) < Math.hypot(src.x - z.x, src.z - z.z))) src = t;
-          if (src) { nodePos(src, W3); fx.beam(W3.x, W3.y, W3.z, z.x, zy + 1.7, z.z, c, 0.3, 0.6); fx.beam(W3.x, W3.y, W3.z, z.x, zy + 1.7, z.z, 0xffffff, 0.08, 0.7); }
+          if (src) {
+            // (from the well's own core, where the model has it)
+            const sv = this.tv.get(src.id), orb = sv && sv.rig.orb;
+            if (orb) { orb.updateWorldMatrix(true, false); V.setFromMatrixPosition(orb.matrixWorld); W3.x = V.x; W3.y = V.y; W3.z = V.z; } else nodePos(src, W3);
+            fx.bolt(W3.x, W3.y, W3.z, z.x, zy + 1.7, z.z, c, 0.34, 0.7, 0, 1); fx.bolt(W3.x, W3.y, W3.z, z.x, zy + 1.7, z.z, 0xffffff, 0.09, 0.8, 0, 1.3);
+            // rings that slide down the tether from the well to the hole it opens
+            const dx = z.x - W3.x, dy = zy + 1.7 - W3.y, dz = z.z - W3.z, L = Math.hypot(dx, dy, dz) || 1;
+            for (let i = 0; i < 6; i++) { const u = (i + 0.5) / 6; fx.hoop(W3.x + dx * u, W3.y + dy * u, W3.z + dz * u, dx / L, dy / L, dz / L, 0.75, 0.12, c, 0.3, 0.05, 1.1, u * 0.3); }
+            fx.flare(W3.x, W3.y, W3.z, 3, c, 0.5, 1);
+            this.cue('ult_release_gravity', z.x, zy + 1.7, z.z);
+          }
           fx.flash(z.x, zy + 1.7, z.z, 2.4, c, 0.35);
-          this.bump(0.3, z.x, z.z, true);
+          // the deck goes dark under it for as long as it feeds
+          fx.shade(z.x, zy + 0.02, z.z, z.r * 1.9, z.life + 0.5, 0.5);
+          fx.hoop(z.x, zy + 1.7, z.z, 0, 1, 0, z.r * 1.2, 0.5, c, 0.35, 0.08, 1.2);
+          this.jolt(0.3, z.x, z.z);
         }
         this.zv.set(z.id, v);
       }
@@ -2452,6 +3075,24 @@ export class View {
         for (let i = 0; i < 3; i++) {
           const a = Math.random() * 6.28, r = z.r * (0.45 + Math.random() * 0.55), px = z.x + Math.cos(a) * r, pz = z.z + Math.sin(a) * r, py = zy + 0.2 + Math.random() * 2.6, T = 0.4 + Math.random() * 0.2;
           fx.spark(px, py, pz, (-Math.cos(a) * r * 1.5 - Math.sin(a) * r * 0.9) / T, ((cy - py) * 1.5) / T, (-Math.sin(a) * r * 1.5 + Math.cos(a) * r * 0.9) / T, T, 0.3, Math.random() < 0.3 ? 0xffffff : v.c, 0, 0.5);
+        }
+        // the light of everything it holds is drawn off toward it in threads, and bits of deck plate go the same way
+        for (const o of sim.enemies) {
+          if (!o.alive || Math.random() > dt * 9 || Math.hypot(o.x - z.x, o.z - z.z) > z.r) continue;
+          const u = 0.45 + Math.random() * 0.35;
+          fx.bolt(o.x, o.y, o.z, o.x + (z.x - o.x) * u, o.y + (cy - o.y) * u, o.z + (z.z - o.z) * u, STATIC, 0.05, 0.16, 0, 1.2);
+        }
+        if (Math.random() < dt * 9 * fx.detail) {
+          const a = Math.random() * 6.28, r = z.r * (0.5 + Math.random() * 0.5), px = z.x + Math.cos(a) * r, pz = z.z + Math.sin(a) * r, T = 0.42;
+          // (thrown so that its arc ends in the core: up at 0.5 g T, inward at r / T, with a little spin of the disc)
+          fx.chunk(px, zy + 0.1, pz, (z.x - px) / T - Math.sin(a) * 1.2, (cy - zy) / T + 8 * T, (z.z - pz) / T + Math.cos(a) * 1.2, 0.07 + Math.random() * 0.08, 0.6 + Math.random(), T, 0x2c2a3a, 1, zy - 5);
+        }
+        // the last instant: everything closes on the point
+        if (!v.pre && z.life < 0.3) {
+          v.pre = true;
+          this.cue('collapse_implode', z.x, cy, z.z);
+          for (let i = 0; i < 3; i++) fx.hoop(z.x, zy + 0.12, z.z, 0, 1, 0, z.r * (1.25 - i * 0.3), 0.1, v.c, 0.26, 0.09, 1.3, i * 0.03);
+          fx.hoop(z.x, cy, z.z, 1, 0, 0, 2.6, 0.1, 0xffffff, 0.24, 0.06, 1.2); fx.hoop(z.x, cy, z.z, 0, 0, 1, 2.6, 0.1, 0xffffff, 0.24, 0.06, 1.2);
         }
         if (Math.random() < dt * 22) {
           const a = Math.random() * 6.28, r = z.r * (0.5 + Math.random() * 0.5), y0 = zy + 0.15 + Math.random() * 1.2;
@@ -2474,7 +3115,7 @@ export class View {
     const fov = this.orbit ? 50 : 42;
     if (Math.abs(fov - this.camera.fov) > 0.01) { this.camera.fov = fov; this.camera.updateProjectionMatrix(); }
     if (this.shake > 0.001) {
-      const a = this.shake * 0.3;
+      const a = this.shake * 0.3 * (this.fx.calm ? 0.2 : 1);
       this.camera.position.x += (Math.random() - 0.5) * a; this.camera.position.y += (Math.random() - 0.5) * a; this.camera.position.z += (Math.random() - 0.5) * a;
       this.shake *= Math.exp(-dt * 7);
     }

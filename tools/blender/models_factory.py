@@ -1,11 +1,11 @@
 """BEATSPIRE factory buildings: one module per pair of buildings (fac_extract, fac_process, fac_make,
-fac_power). Each defines MODELS, a list of builder functions named after the building (mine, pump, ...).
+fac_power, fac_extra, fac_transit, fac_arm). Each defines MODELS, a list of builder functions named after the building (mine, pump, ...).
 A module that is missing or broken is skipped with a message, so one building cannot stop the others."""
 import importlib
 import traceback
 
 FACTORY = []
-for _name in ('fac_extract', 'fac_process', 'fac_make', 'fac_power', 'fac_extra', 'fac_transit'):
+for _name in ('fac_extract', 'fac_process', 'fac_make', 'fac_power', 'fac_extra', 'fac_transit', 'fac_arm'):
     try:
         _mod = importlib.import_module(_name)
         importlib.reload(_mod)

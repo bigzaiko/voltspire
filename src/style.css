@@ -749,7 +749,7 @@ body.touch #fpanel, body.touch #tower { bottom: calc(var(--dock-h) + 90px); }
   #prep:not(.hidden) ~ #tutor { bottom: calc(var(--dock-h) + 86px); }
 }
 /* (the tutorial's pointers are drawn on the deck by the view: see cues.ts) */
-.tw.fac.locked { display: none; }
+/* (every factory building is on the bar from the start: a locked one is hatched like a locked tower, see .tw.locked) */
 #h-tutorial { margin-top: 6px; }
 
 /* ---------- the build phase and supply feedback ---------- */
@@ -998,3 +998,86 @@ body.planning #vignette { box-shadow: inset 0 0 0 2px rgba(143, 208, 255, 0.22),
   #tower #t-btns .btn { padding: 0 6px; font-size: 13px; letter-spacing: 0.04em; }
 }
 @media (max-height: 820px) and (min-height: 481px) { #t-aim-desc { min-height: 0; } }
+
+/* ---------- Transfer Arms, card paths, the ammunition switch ---------- */
+/* a card named in the HUD: its icons and its name on a small plate, toned by where the run stands with it */
+.cchip { --ic-bg: var(--soot-0); display: inline-flex; align-items: center; gap: 4px; min-height: 22px; padding: 1px 7px 1px 5px; font-family: var(--mono); font-size: 10.5px; font-weight: 500; line-height: 1.15; letter-spacing: 0.03em; color: var(--bone); background: var(--soot-0); border: 1px dashed var(--line-2); border-radius: var(--r); vertical-align: middle; }
+.cchip svg { flex: none; }
+.cchip small { font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--apricot-hi); }
+.cchip.have { color: var(--bone); border-style: solid; border-color: var(--verdigris-dim); box-shadow: inset 2px 0 0 var(--verdigris); }
+.cchip.open { color: var(--sand); border-style: solid; border-color: var(--sand-dim); }
+.cchip.locked { color: var(--muted); }
+.cchip.locked svg { opacity: 0.55; filter: saturate(0.3); }
+.rr.unlock { gap: 4px 5px; }
+.rr .more { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+#tip .rr.unlock, #rtip .rr.unlock { margin-top: 2px; }
+/* the diagnosis in its own words, under the icons */
+.diag p.why { grid-column: 1 / -1; margin: 1px 0 0; font-size: 12px; line-height: 1.3; color: var(--rust); }
+.diag p.why.warn { color: var(--sand-dim); }
+/* the arm's part of the building panel: what is behind and in front of it, and the filter */
+#f-arm { display: grid; gap: 6px; margin: 0 0 9px; }
+#f-arm p { margin: 0; }
+.arm-filter, .ammo-sw { display: flex; }
+.ammo-b { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 40px; min-height: 34px; margin-left: -1px; padding: 0 8px; font-family: var(--mono); font-size: 10.5px; font-weight: 500; letter-spacing: 0.04em; line-height: 1.15; text-align: left; color: var(--sand-dim); background: var(--soot-0); border: 1px solid var(--line-2); border-radius: 0; cursor: pointer; --ic-bg: var(--soot-0); transition: background-color 0.1s, border-color 0.1s, color 0.1s; }
+.ammo-b:first-child { margin-left: 0; border-radius: var(--r) 0 0 var(--r); }
+.ammo-b:last-child { border-radius: 0 var(--r) var(--r) 0; }
+.ammo-b:hover, .ammo-b:focus-visible { z-index: 2; color: var(--bone); background: var(--soot-3); border-color: var(--sand); }
+.ammo-b.on { z-index: 1; color: var(--bone); background: var(--soot-3); border-color: var(--sand); box-shadow: inset 0 -3px 0 var(--apricot); --ic-bg: var(--soot-3); cursor: default; }
+.ammo-b svg { opacity: 0.6; }
+.ammo-b.on svg, .ammo-b:hover svg { opacity: 1; }
+.ammo-b .ic-chip { height: auto; padding: 0; background: none; box-shadow: none; }
+.ammo-sw { margin: 4px 0 2px; }
+.ammo-sw .ammo-b { flex: 1 1 0; min-height: 32px; white-space: nowrap; }
+.arm-filter { flex-wrap: wrap; row-gap: 3px; }
+#t-next .rr { color: var(--bone); }
+#t-next p.muted { color: var(--muted); }
+/* the level-up screen: the Paths view takes the place of the three cards */
+.cards-foot { display: flex; justify-content: center; margin-top: 16px; }
+#cards-paths { gap: 10px; min-height: 34px; font-size: 14px; }
+#cards-paths kbd { font-size: 10px; }
+.paths { display: flex; flex-direction: column; align-items: center; gap: 12px; min-width: 0; }
+.paths > * { flex: none; max-width: 100%; }
+#paths { width: 100%; max-height: min(64vh, 620px); overflow-y: auto; padding: 14px 14px 16px; background: var(--soot-1); border: 1px solid var(--line); border-radius: var(--r); }
+.pscroll { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding: 2px 2px 8px; }
+.ptree { position: relative; }
+.ptree > svg { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.ptree .pl { fill: none; stroke: var(--line-2); stroke-width: 1.5; stroke-dasharray: 4 4; }
+.ptree .pl.plain { stroke: var(--sand-dim); stroke-dasharray: none; opacity: 0.7; }
+.ptree .pl.open { stroke: var(--sand); stroke-dasharray: none; }
+.ptree .pl.have { stroke: var(--verdigris); stroke-dasharray: none; }
+.pnode { --ic-bg: var(--soot-2); position: absolute; left: 0; top: 0; display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; align-content: center; column-gap: 7px; width: 168px; height: 48px; padding: 4px 8px 4px 7px; text-align: left; background: var(--soot-2); border: 1px dashed var(--line-2); border-left: 3px solid var(--soot-4); border-radius: var(--r); }
+.pnode .pi { grid-row: 1 / 3; display: flex; align-items: center; gap: 1px; }
+.pnode b { align-self: end; overflow: hidden; font-family: var(--display); font-size: 15px; font-weight: 600; line-height: 1.05; letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); }
+.pnode small { align-self: start; overflow: hidden; font-family: var(--mono); font-size: 8.5px; font-weight: 500; line-height: 1.25; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); }
+.pnode.locked svg { opacity: 0.5; filter: saturate(0.25); }
+.pnode.plain, .pnode.open { border-style: solid; border-color: var(--sand-dim); border-left-color: var(--sand); }
+.pnode.plain b, .pnode.open b { color: var(--sand); }
+.pnode.open { background: var(--soot-3); --ic-bg: var(--soot-3); box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.35); }
+.pnode.open small { color: var(--apricot-hi); }
+.pnode.have { border-style: solid; border-color: var(--verdigris-dim); border-left-color: var(--verdigris); }
+.pnode.have b { color: var(--bone); }
+.pnode.have small { color: var(--verdigris); }
+.plegend { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.paths .ph { align-self: stretch; display: flex; align-items: center; gap: 10px; margin: 4px 0 0; font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--sand-dim); }
+.paths .ph::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.ptowers { align-self: stretch; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 5px 14px; }
+.ptw { --ic-bg: var(--soot-1); display: grid; grid-template-columns: minmax(128px, auto) 1fr; align-items: center; gap: 1px 10px; padding: 4px 0; border-bottom: 1px solid var(--line); text-align: left; }
+.ptw b { display: inline-flex; align-items: center; gap: 6px; font-family: var(--display); font-size: 16px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; color: var(--muted); }
+.ptw.have b { color: var(--sand); }
+.ptw small { grid-column: 1; font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.ptw.have small { color: var(--verdigris); }
+.ptw .pc { grid-column: 2; grid-row: 1 / 3; display: flex; flex-wrap: wrap; gap: 3px 4px; }
+.panel .paths { align-items: flex-start; }
+@media (max-width: 600px), (max-height: 480px) {
+  #paths { max-height: 58vh; padding: 8px; }
+  .ptowers { grid-template-columns: 1fr; }
+  .cards-foot { margin-top: 8px; }
+  #cards-paths { min-height: 30px; font-size: 12px; }
+  #cards-paths kbd { display: none; }
+  .card .cbody .rr.unlock .cchip { font-size: 9.5px; min-height: 19px; }
+}
+/* the Factory bar holds all sixteen buildings from the start: a little narrower, so they fit a laptop screen without scrolling */
+.tw.fac { width: clamp(56px, 4.1vw, 76px); }
+.tw kbd:empty { visibility: hidden; }
+@media (max-width: 1500px) { #fbuild { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 18px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 18px), transparent); padding-right: 12px; } }
+@media (max-height: 480px) { #t-next p.muted { display: none; } #f-arm p { display: none; } }

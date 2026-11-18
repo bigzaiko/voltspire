@@ -10,8 +10,8 @@ export const TOWER_TYPES: TowerType[] = ['pulse', 'cryo', 'arc', 'mortar', 'rail
 /** A tower's special: charged over `charge` seconds, fired when the player presses Fire on the charged tower, then the tower reboots for `down` seconds. */
 export interface TowerSpecial { name: string; desc: string; charge: number; down: number }
 /**
- * What a tower has to be supplied with by the factory (see factory.ts). `item`: the ammunition it is fed on a belt (or straight
- * from a neighbouring building), `fluid`: what it draws from a pipe, `power`: units it draws from the grid while it works.
+ * What a tower has to be supplied with by the factory (see factory.ts). `item`: the ammunition a Transfer Arm hands it (or a
+ * supply crate right beside it), `fluid`: what it draws from a pipe, `power`: units it draws from the grid while it works.
  * `shots`: shots one item is worth in this tower (else ITEM_SHOTS), `dmg`: damage multiplier this supply gives (a better
  * ammunition at level 3, see TOWER_NEEDS_L3). Use needsOf() for a tower on the field: its level can change what it needs.
  */
@@ -49,7 +49,7 @@ export const TOWERS: Record<TowerType, TowerDef> = {
 };
 
 // ---------- the factory ----------
-/** Items travel on belts and between neighbouring buildings. Ores and coal come out of mines, plates out of smelters, the rest out of their own plants. */
+/** Items travel on belts and through Transfer Arms (nothing passes between neighbours by itself). Ores and coal come out of mines, plates out of smelters, the rest out of their own plants. */
 export type ItemType = 'iron_ore' | 'copper_ore' | 'coal' | 'iron' | 'copper' | 'shell' | 'cell' | 'missile';
 export const ITEM_TYPES: ItemType[] = ['iron_ore', 'copper_ore', 'coal', 'iron', 'copper', 'shell', 'cell', 'missile'];
 export const ITEMS: Record<ItemType, { name: string; color: number; short: string }> = {
@@ -80,31 +80,38 @@ export const ORES: Record<OreType, { name: string; color: number }> = {
 };
 /**
  * Shots (or for a Lance, beam ticks; for a Graviton Well, pulses) one ammunition item is worth in a tower (TowerNeeds.shots
- * overrides it per tower). Towers keep only one item waiting, so these set the flow a tower pulls off its belt at full rate:
+ * overrides it per tower). Towers keep only one item waiting, so these set the flow its Transfer Arm must bring at full rate:
  * a Pulse Turret burns an ore every 2.8 s, about what one level-1 mine digs; a Missile Battery fires one salvo per pack, so
  * it fires as fast as its Missile Works builds them (its fire rate is only a cap); Lances and Wells live on their Cell Plant.
  */
 export const ITEM_SHOTS: Partial<Record<ItemType, number>> = { iron_ore: 9, copper: 3, shell: 4, cell: 24, missile: 1 };
 /**
- * Level 3 changes what some towers run on: the Pulse Turret Mk3 fires plasma shells from a Shell Press (harder hitting), the
- * Firewall Pylon Mk3 burns petrol from a Refinery (hotter). On reaching level 3 the old ammunition is dropped.
+ * The second ammunition some towers can be switched to at Mk3 (the "ammo upgrade"): the Pulse Turret fires plasma shells from
+ * a Shell Press (harder hitting), the Firewall Pylon burns petrol from a Refinery (hotter). Reaching level 3 changes nothing
+ * by itself: the switch opens with the tower's ammo card (AMMO2_CARD), and then each Mk3 tower is switched on its own
+ * (Sim.setAmmo2, Tower.ammo2), so a player converts towers when the new supply line is ready. Switching drops the old ammunition.
  */
 export const TOWER_NEEDS_L3: Partial<Record<TowerType, TowerNeeds>> = {
   pulse: { item: 'shell', shots: 20, dmg: 1.3 },
   flame: { fluid: 'petrol', dmg: 1.35 },
 };
-/** The supply buildings a level-3 upgrade unlocks with it (so the new ammunition can always be made). */
+/** The card that opens a tower type's second ammunition (see TOWER_NEEDS_L3). */
+export const AMMO2_CARD: Partial<Record<TowerType, string>> = { pulse: 'pulse_shells', flame: 'flame_petrol' };
+/** The buildings the second ammunition needs (data for the cards and the panel; nothing unlocks with an upgrade any more). */
 export const TOWER_CHAIN_L3: Partial<Record<TowerType, FacType[]>> = {
   pulse: ['generator', 'pole', 'smelter', 'press'],
   flame: ['generator', 'pole', 'pump', 'pipe', 'refinery'],
 };
-/** The level-3 supply line in a few words (for the upgrade button and the tower panel). */
+/** The second ammunition's supply line in a few words (for the ammo card, the switch and the tower panel). */
 export const TOWER_SUPPLY_L3: Partial<Record<TowerType, string>> = {
-  pulse: 'Mk3 fires plasma shells instead of ore: iron plates and coal into a Shell Press (unlocked with the upgrade). Power for the press.',
-  flame: 'Mk3 burns petrol instead of crude: crude oil through a Refinery (unlocked with the upgrade), petrol by pipe to the pylon.',
+  pulse: 'Plasma shells instead of ore: iron plates and coal into a Shell Press, shells by Transfer Arm to the turret. Power for the press.',
+  flame: 'Petrol instead of crude: crude oil through a Refinery, petrol by pipe to the pylon.',
 };
-/** What a tower needs at its level (TOWER_NEEDS_L3 from level 3 on, else TOWERS[type].needs). */
-export const needsOf = (t: { type: TowerType; lvl: number }): TowerNeeds => (t.lvl >= 3 && TOWER_NEEDS_L3[t.type]) || TOWERS[t.type].needs;
+/**
+ * What a tower needs right now: its second ammunition (TOWER_NEEDS_L3) when it is Mk3 and switched to it (ammo2), else
+ * TOWERS[type].needs. Without `ammo2` (a preview of a tower type) it is always the first ammunition.
+ */
+export const needsOf = (t: { type: TowerType; lvl: number; ammo2?: boolean }): TowerNeeds => (t.ammo2 && t.lvl >= 3 && TOWER_NEEDS_L3[t.type]) || TOWERS[t.type].needs;
 /**
  * Targeting modes a tower can be set to (Sim.setAim). Each picks one enemy among those the tower can hit right now (in range,
  * outside its minimum range, flyers only for a tower that can reach them); exact ties go to the enemy that came first (lower id).
@@ -138,17 +145,20 @@ export const FUEL_PER_TICK = 0.5;
 
 /**
  * Factory buildings. 'crate' is the supply crate a map starts with (it cannot be built). The order of FAC_TYPES is the order
- * of the build bar: logistics first, then the buildings in the order a run unlocks them.
- * The Belt Splitter comes with the first tier-2 blueprint (see TOWER_CHAIN), Belt and Pipe Tunnels with the Tunnels card.
+ * of the build bar: logistics first, then the buildings in the order a run unlocks them. A run starts with the Transfer Arm
+ * and the Mine (START_FACS); every other building comes with its own card (see PROD_CARDS, FAC_CARD).
  */
-export type FacType = 'belt' | 'splitter' | 'tunnel' | 'mine' | 'generator' | 'pole' | 'pump' | 'pipe' | 'ptunnel' | 'smelter' | 'works' | 'press' | 'cells' | 'refinery' | 'missiles' | 'crate';
-export const FAC_TYPES: FacType[] = ['belt', 'splitter', 'tunnel', 'mine', 'generator', 'pole', 'pump', 'pipe', 'ptunnel', 'smelter', 'works', 'press', 'cells', 'refinery', 'missiles'];
+export type FacType = 'arm' | 'belt' | 'splitter' | 'tunnel' | 'mine' | 'generator' | 'pole' | 'pump' | 'pipe' | 'ptunnel' | 'smelter' | 'works' | 'press' | 'cells' | 'refinery' | 'missiles' | 'crate';
+export const FAC_TYPES: FacType[] = ['arm', 'belt', 'splitter', 'tunnel', 'mine', 'generator', 'pole', 'pump', 'pipe', 'ptunnel', 'smelter', 'works', 'press', 'cells', 'refinery', 'missiles'];
+/** The buildings a run starts with: mine > Transfer Arm > turret works from the first minute. */
+export const START_FACS: FacType[] = ['arm', 'mine'];
 export interface FacDef { name: string; cost: number; color: number; desc: string; power?: number }
 export const FACS: Record<FacType, FacDef> = {
-  belt: { name: 'Conveyor Belt', cost: 2, color: 0x8a8174, desc: 'Carries items in the direction of its arrow. Drag to lay a line; R turns it. Buildings put what they make on a belt beside them when something further down the line needs it. Towers and buildings take what they need from a belt that runs past them or points at them. A belt pointing into another one merges onto it.' },
-  splitter: { name: 'Belt Splitter', cost: 12, color: 0xb9a77c, desc: 'Takes items from every belt pointing into it and deals them out in turn to the belts leading away from it, or to a tower or building beside it that needs them.' },
+  arm: { name: 'Transfer Arm', cost: 8, color: 0xd9b25a, desc: 'Takes one item at a time from what stands behind it and puts it into what stands in front of it, straight through the tile; R turns it. It only picks what the front will take, so nothing jams in its hand. Every hand-off between buildings, towers and belts goes through an arm.' },
+  belt: { name: 'Conveyor Belt', cost: 2, color: 0x8a8174, desc: 'Carries items in the direction of its arrow. Drag to lay a line; R turns it. A belt only carries: a Transfer Arm puts items on it and another takes them off. A belt pointing into another one merges onto it.' },
+  splitter: { name: 'Belt Splitter', cost: 12, color: 0xb9a77c, desc: 'Takes items from every belt pointing into it and deals them out in turn to the belts leading away from it. A Transfer Arm can also take from it.' },
   tunnel: { name: 'Belt Tunnel', cost: 10, color: 0x7c7466, desc: 'Build two facing the same way, up to 4 tiles apart: items go in at the first and come out of the second, under whatever stands between (towers, roads, buildings). R turns it.' },
-  mine: { name: 'Mine', cost: 15, color: 0x9d8a6a, desc: 'Build it on an iron, copper or coal deposit. Digs without power. It feeds a tower or building right next to it, or a belt.' },
+  mine: { name: 'Mine', cost: 15, color: 0x9d8a6a, desc: 'Build it on an iron, copper or coal deposit. Digs without power. A Transfer Arm takes the ore out.' },
   generator: { name: 'Generator', cost: 25, color: 0x6fe0c8, desc: 'Burns coal for 10 power. It powers everything within 2 tiles and wires to Power Poles up to 5 tiles away.' },
   pole: { name: 'Power Pole', cost: 6, color: 0x9ccf6a, desc: 'Carries power from a Generator: wires reach up to 5 tiles to the next pole, also across roads. Powers everything within 2 tiles.' },
   pump: { name: 'Pumpjack', cost: 30, color: 0x7a5fa0, desc: 'Build it on an oil field. Pumps crude oil into the pipes or the building beside it. Needs power.', power: 2 },
@@ -160,7 +170,7 @@ export const FACS: Record<FacType, FacDef> = {
   cells: { name: 'Cell Plant', cost: 40, color: 0x7af0d8, desc: 'Charges a copper plate with crude oil into an energy cell for the Lance Emitter and the Graviton Well. Needs power and a pipe.', power: 2 },
   refinery: { name: 'Refinery', cost: 45, color: 0xffb02e, desc: 'Cracks crude oil into petrol for the Missile Works. Needs power.', power: 3 },
   missiles: { name: 'Missile Works', cost: 50, color: 0xc9824a, desc: 'Builds a missile pack from an iron plate, a copper plate and petrol. Needs power and a pipe from a Refinery.', power: 3 },
-  crate: { name: 'Supply Crate', cost: 0, color: 0xe3dc92, desc: 'A crate of ammunition left on the deck. It feeds a tower built right next to it, or a belt. When it is empty, the tower needs a supply line of its own.' },
+  crate: { name: 'Supply Crate', cost: 0, color: 0xe3dc92, desc: 'A crate of ammunition left on the deck. It feeds a tower built right next to it by itself; a Transfer Arm can take from it too. When it is empty, the tower needs a supply line of its own.' },
 };
 /** What a building makes from what (the Smelter and the Generator have rules of their own, see factory.ts). `mats`: it yields building materials instead of an item. `time`: seconds at level 1. */
 export interface Recipe { inp: Partial<Record<ItemType, number>>; fluid?: [FluidType, number]; out?: ItemType; mats?: number; time: number }
@@ -176,36 +186,40 @@ export const MAKES: Partial<Record<FacType, Recipe>> = {
  */
 export const FAC_LVL_SPEED = [1, 1.6, 2.3];
 export const FAC_UP_COST = [0.6, 1.1];
-export const FAC_UPGRADABLE: ReadonlySet<FacType> = new Set<FacType>(['mine', 'pump', 'smelter', 'works', 'press', 'cells', 'refinery', 'missiles', 'generator']);
+export const FAC_UPGRADABLE: ReadonlySet<FacType> = new Set<FacType>(['arm', 'mine', 'pump', 'smelter', 'works', 'press', 'cells', 'refinery', 'missiles', 'generator']);
 /**
  * The order towers come in: a run starts with tier 0, and blueprints are offered tier by tier, so each new tower adds one
  * step to what the player already runs. 0: ore straight from a mine. 1: power. 2: pipes, or a smelter. 3: a second machine. 4: the long chain.
  */
 export const TOWER_TIER: Record<TowerType, number> = { pulse: 0, cryo: 1, arc: 1, flame: 2, beacon: 2, rail: 2, mortar: 3, lance: 3, gravity: 3, missile: 4 };
-/** The factory buildings a tower's blueprint unlocks with it: everything its supply chain needs. From tier 2 on that includes the Belt Splitter. */
+/**
+ * The factory buildings a tower's supply needs (data: a blueprint unlocks only its tower; the buildings come with their
+ * own cards, see FAC_CARD, and the card offers push the missing ones while a tower waits for them). Towers that cost
+ * materials list the Frame Works too (the second one and every upgrade need materials).
+ */
 export const TOWER_CHAIN: Record<TowerType, FacType[]> = {
-  pulse: ['mine', 'belt'],
-  cryo: ['generator', 'pole'],
-  arc: ['generator', 'pole'],
-  beacon: ['generator', 'pole', 'splitter'],
-  flame: ['generator', 'pole', 'pump', 'pipe', 'splitter'],
-  rail: ['generator', 'pole', 'smelter', 'works', 'splitter'],
-  mortar: ['generator', 'pole', 'smelter', 'works', 'press', 'splitter'],
-  lance: ['generator', 'pole', 'smelter', 'works', 'pump', 'pipe', 'cells', 'splitter'],
-  gravity: ['generator', 'pole', 'smelter', 'works', 'pump', 'pipe', 'cells', 'splitter'],
-  missile: ['generator', 'pole', 'smelter', 'works', 'pump', 'pipe', 'refinery', 'missiles', 'splitter'],
+  pulse: ['mine', 'arm'],
+  cryo: ['mine', 'arm', 'generator', 'pole'],
+  arc: ['mine', 'arm', 'generator', 'pole'],
+  beacon: ['mine', 'arm', 'generator', 'pole'],
+  flame: ['mine', 'arm', 'generator', 'pole', 'pump', 'pipe'],
+  rail: ['mine', 'arm', 'generator', 'pole', 'smelter', 'works'],
+  mortar: ['mine', 'arm', 'generator', 'pole', 'smelter', 'works', 'press'],
+  lance: ['mine', 'arm', 'generator', 'pole', 'smelter', 'works', 'pump', 'pipe', 'cells'],
+  gravity: ['mine', 'arm', 'generator', 'pole', 'smelter', 'works', 'pump', 'pipe', 'cells'],
+  missile: ['mine', 'arm', 'generator', 'pole', 'smelter', 'works', 'pump', 'pipe', 'refinery', 'missiles'],
 };
 /** A tower's supply line in a few words, for its tooltip, its blueprint card and the tutorial. */
 export const TOWER_SUPPLY: Record<TowerType, string> = {
-  pulse: 'Mine on iron ore, straight into the turret or along a belt.',
-  cryo: 'Mine on coal, into a Generator. It powers what stands within 2 tiles; Power Poles carry it further.',
-  arc: 'Mine on coal, into a Generator. It powers what stands within 2 tiles; Power Poles carry it further.',
+  pulse: 'Mine on iron ore, a Transfer Arm from the mine into the turret.',
+  cryo: 'Mine on coal, an arm into a Generator. It powers what stands within 2 tiles; Power Poles carry it further.',
+  arc: 'Mine on coal, an arm into a Generator. It powers what stands within 2 tiles; Power Poles carry it further.',
   beacon: 'Power from a Generator, by pole if it stands far off.',
   flame: 'Pumpjack on an oil field (it needs power), then pipes to the pylon.',
-  rail: 'Copper ore and coal into a Smelter, the copper plates on to the Railgun. Power as well.',
-  mortar: 'Iron ore and coal into a Smelter, iron plates and coal into a Shell Press, shells to the Mortar. Power as well.',
-  lance: 'Copper plates from a Smelter and crude oil by pipe into a Cell Plant, cells to the tower. Power as well.',
-  gravity: 'Copper plates from a Smelter and crude oil by pipe into a Cell Plant, cells to the tower. Power as well.',
+  rail: 'Copper ore and coal by arms into a Smelter, the copper plates by arm on to the Railgun. Power as well.',
+  mortar: 'Iron ore and coal into a Smelter, iron plates and coal into a Shell Press, shells by arm to the Mortar. Power as well.',
+  lance: 'Copper plates from a Smelter and crude oil by pipe into a Cell Plant, cells by arm to the tower. Power as well.',
+  gravity: 'Copper plates from a Smelter and crude oil by pipe into a Cell Plant, cells by arm to the tower. Power as well.',
   missile: 'Crude oil through a Refinery, petrol by pipe with iron and copper plates into a Missile Works. Power as well.',
 };
 /** The materials a run starts with (the first tower that costs them can go up before a Frame Works runs). */
@@ -422,6 +436,14 @@ export interface CardCtx {
 }
 
 export type CardKind = 'blueprint' | 'tower' | 'factory' | 'eco';
+/**
+ * A level-up card. Preconditions (all optional, see Sim.cardOk): `requires`: card ids that must have been taken before it is
+ * offered; `excludes`: card ids that, once taken, keep it out; `minLevel` / `maxLevel`: the player levels it may be offered
+ * on; `minWave`: not before this wave; `guaranteeBy`: from this level on it is put into every offer while it can be offered
+ * and has not been taken. `needs`: a tower type that must be unlocked. `unlocks`: the factory buildings it opens (the
+ * production cards; a card whose buildings are all open already is not offered). `ammo`: the tower type whose second
+ * ammunition it opens (see AMMO2_CARD).
+ */
 export interface Card {
   id: string;
   name: string;
@@ -431,16 +453,54 @@ export interface Card {
   max: number;
   icon: string;
   needs?: TowerType;
+  requires?: string[];
+  excludes?: string[];
+  minLevel?: number;
+  maxLevel?: number;
+  minWave?: number;
+  guaranteeBy?: number;
+  unlocks?: FacType[];
+  ammo?: TowerType;
   apply(c: CardCtx): void;
 }
 
 const bp = (t: TowerType, icon: string): Card => ({
   id: 'bp_' + t, name: 'Blueprint: ' + TOWERS[t].name, desc: TOWERS[t].desc + ' Supply: ' + TOWER_SUPPLY[t],
-  rar: 1, kind: 'blueprint', max: 1, icon, apply: (c) => { c.unlocked.add(t); for (const f of TOWER_CHAIN[t]) c.facs.add(f); },
+  rar: 1, kind: 'blueprint', max: 1, icon, apply: (c) => { c.unlocked.add(t); },
 });
+/** A production card: it opens factory buildings (once). */
+const prod = (id: string, name: string, desc: string, icon: string, unlocks: FacType[], o: Partial<Card> = {}): Card => ({
+  id, name, desc, rar: 0, kind: 'factory', max: 1, icon, unlocks, apply: (c) => { for (const f of unlocks) c.facs.add(f); }, ...o,
+});
+/**
+ * The production cards, in the order a run tends to take them. Each opens its buildings; `requires` chains them so a card
+ * only comes once what it builds on is there (a Shell Press needs plates and power). Belts are guaranteed from the first
+ * level-up (until then the opening is Transfer Arm chains); Tunnels come once belts can use them (level 4) and are forced
+ * into the offers from level 7, so a player whose supply lines are cut off by roads is not stuck behind them for long
+ * (level 7 is around wave 6 to 8 on normal: after the first Colossus and before the Broodcarriers spread the towers out).
+ */
+export const PROD_CARDS: Card[] = [
+  prod('belts', 'Conveyor Belts', 'Unlocks the Conveyor Belt: Transfer Arms put items on a belt and take them off further on, so a mine can feed towers far away.', '═', ['belt'], { guaranteeBy: 2 }),
+  prod('power', 'Power Grid', 'Unlocks the Generator and the Power Pole. A Generator burns coal (brought by an arm) and powers everything within 2 tiles.', '⚡', ['generator', 'pole']),
+  prod('smelter', 'Smelting', 'Unlocks the Smelter: iron ore and copper ore into plates, one coal for every four. No power needed.', '♒', ['smelter'], { minLevel: 3 }),
+  prod('works', 'Frame Works', 'Unlocks the Frame Works: two iron plates into one building material, for the heavier towers and their upgrades.', '▦', ['works'], { requires: ['smelter', 'power'] }),
+  prod('press', 'Shell Press', 'Unlocks the Shell Press: an iron plate and a coal into a plasma shell, the Plasma Mortar\'s ammunition (and, with Plasma Rounds, the Pulse Turret Mk3\'s).', '◉', ['press'], { requires: ['smelter', 'power'] }),
+  prod('oil', 'Oil Field', 'Unlocks the Pumpjack and the Pipe: crude oil out of an oil field (with power), by pipe to what stands beside it.', '⛽', ['pump', 'pipe'], { requires: ['power'] }),
+  prod('cells', 'Cell Plant', 'Unlocks the Cell Plant: a copper plate charged with crude oil into an energy cell, for the Lance Emitter and the Graviton Well.', '▣', ['cells'], { requires: ['smelter', 'oil'] }),
+  prod('refinery', 'Refinery', 'Unlocks the Refinery: crude oil cracked into petrol, for the Missile Works (and, with Petrol Burners, the Firewall Mk3).', '⚗', ['refinery'], { requires: ['oil'] }),
+  prod('missiles', 'Missile Works', 'Unlocks the Missile Works: an iron plate, a copper plate and petrol into a missile pack.', '➹', ['missiles'], { requires: ['refinery', 'smelter'] }),
+  prod('splitter', 'Belt Splitter', 'Unlocks the Belt Splitter: it deals what belts bring into it out in turn to the belts leading away.', '⑂', ['splitter'], { requires: ['belts'], minLevel: 4 }),
+  prod('tunnels', 'Tunnels', 'Unlocks Belt Tunnels and Pipe Tunnels: they carry items and fluids up to 4 tiles under roads, towers and buildings.', '⇵', ['tunnel', 'ptunnel'], { rar: 1, requires: ['belts'], minLevel: 4, guaranteeBy: 7 }),
+];
+/** Which production card opens each factory building (the Mine and the Transfer Arm are open from the start). */
+export const FAC_CARD: Partial<Record<FacType, string>> = Object.fromEntries(PROD_CARDS.flatMap((c) => (c.unlocks || []).map((f) => [f, c.id])));
 
 export const CARDS: Card[] = [
   bp('cryo', '❄'), bp('arc', '↯'), bp('mortar', '◉'), bp('rail', '⟫'), bp('beacon', '✶'), bp('flame', '♨'), bp('lance', '╪'), bp('missile', '➹'), bp('gravity', '◍'),
+  ...PROD_CARDS,
+  // ammo upgrades: a Mk3 tower may be switched to a better ammunition (per tower, in its panel) once its plant is open
+  { id: 'pulse_shells', name: 'Plasma Rounds', desc: 'Pulse Turrets Mk3 can be switched to plasma shells from a Shell Press: 30% more damage, 20 shots a shell. Switch each turret in its panel when its shell line is ready.', rar: 1, kind: 'tower', max: 1, icon: '◉', needs: 'pulse', ammo: 'pulse', requires: ['press'], apply: () => {} },
+  { id: 'flame_petrol', name: 'Petrol Burners', desc: 'Firewall Pylons Mk3 can be switched to petrol from a Refinery: they burn 35% hotter. Switch each pylon in its panel when its petrol pipe is ready.', rar: 1, kind: 'tower', max: 1, icon: '♨', needs: 'flame', ammo: 'flame', requires: ['refinery'], apply: () => {} },
   // tower buffs
   { id: 'overclock', name: 'Overclock', desc: 'All towers fire 12% faster.', rar: 0, kind: 'tower', max: 5, icon: '»', apply: (c) => { c.mods.tRate *= 1.12; } },
   { id: 'hollow', name: 'Hot Rounds', desc: 'All towers deal 15% more damage.', rar: 0, kind: 'tower', max: 6, icon: '▲', apply: (c) => { c.mods.tDmg *= 1.15; } },
@@ -488,12 +548,11 @@ export const CARDS: Card[] = [
   { id: 'fab', name: 'Nano Fabricator', desc: 'Towers and upgrades cost 10% less.', rar: 1, kind: 'eco', max: 3, icon: '⬡', apply: (c) => { c.mods.cheap *= 0.9; } },
   // factory
   { id: 'f_drill', name: 'Diamond Drills', desc: 'Mines and pumpjacks work 25% faster.', rar: 0, kind: 'factory', max: 4, icon: '⛏', apply: (c) => { c.mods.mine *= 1.25; } },
-  { id: 'f_belt', name: 'Express Belts', desc: 'Conveyor belts, splitters and tunnels move items 40% faster.', rar: 0, kind: 'factory', max: 3, icon: '»', apply: (c) => { c.mods.belt *= 1.4; } },
-  { id: 'f_craft', name: 'Assembly Line', desc: 'Smelters, presses, plants and refineries work 20% faster.', rar: 0, kind: 'factory', max: 4, icon: '⚙', apply: (c) => { c.mods.craft *= 1.2; } },
-  { id: 'f_gen', name: 'Turbine Upgrade', desc: 'Generators give 30% more power from the same fuel.', rar: 1, kind: 'factory', max: 3, icon: '⚡', apply: (c) => { c.mods.gen *= 1.3; } },
+  { id: 'f_belt', name: 'Express Belts', desc: 'Conveyor belts, splitters and tunnels move items 40% faster.', rar: 0, kind: 'factory', max: 3, icon: '»', requires: ['belts'], apply: (c) => { c.mods.belt *= 1.4; } },
+  { id: 'f_craft', name: 'Assembly Line', desc: 'Smelters, presses, plants and refineries work 20% faster.', rar: 0, kind: 'factory', max: 4, icon: '⚙', requires: ['smelter'], apply: (c) => { c.mods.craft *= 1.2; } },
+  { id: 'f_gen', name: 'Turbine Upgrade', desc: 'Generators give 30% more power from the same fuel.', rar: 1, kind: 'factory', max: 3, icon: '⚡', requires: ['power'], apply: (c) => { c.mods.gen *= 1.3; } },
   { id: 'f_ammo', name: 'Dense Packing', desc: 'Every ammunition item lasts 30% longer.', rar: 1, kind: 'factory', max: 3, icon: '▤', apply: (c) => { c.mods.ammo *= 1.3; } },
   { id: 'f_stock', name: 'Material Cache', desc: 'Gain 6 building materials right now.', rar: 0, kind: 'factory', max: 99, icon: '▦', apply: (c) => { c.addMats(6); } },
-  { id: 'tunnels', name: 'Tunnels', desc: 'Unlocks Belt Tunnels and Pipe Tunnels: they carry items and fluids up to 4 tiles under roads, towers and buildings.', rar: 1, kind: 'factory', max: 1, icon: '⇵', apply: (c) => { c.facs.add('tunnel'); c.facs.add('ptunnel'); } },
   // economy
   { id: 'salvage', name: 'Salvage Rights', desc: 'Earn 20% more credits from kills.', rar: 0, kind: 'eco', max: 4, icon: '¤', apply: (c) => { c.mods.gold *= 1.2; } },
   { id: 'drop', name: 'Supply Drop', desc: 'Gain 160 credits right now.', rar: 0, kind: 'eco', max: 99, icon: '▣', apply: (c) => { c.addGold(160); } },

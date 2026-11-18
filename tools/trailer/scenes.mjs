@@ -2,47 +2,59 @@
 // (page.evaluate) after installHelpers() and installLayout() from lib.mjs, and builds its scene with the real game rules.
 
 /**
- * The showcase base on Switchback (the default map, seed 3): a working factory between the two chevrons of the road.
- * Iron mines feed Pulse Turrets by a curved belt with a splitter; a belt tunnel takes ore under the north road to two more
- * turrets; coal mines fuel a Generator whose poles power Cryo, Arc, a Beacon and the Pumpjack; crude runs by pipe (and a
- * pipe tunnel under the road) to two pairs of Firewall Pylons; a Smelter and a Frame Works turn ore into materials; a
- * Railgun and a Mortar stand on supply crates. `stage` (0..1) builds only that share of it, in build order (for the
- * trailer's growing factory; o.lazy keeps the rest for buildNext()). Returns a report of anything that did not go up or is not supplied.
+ * The showcase base on Switchback (the default map, seed 3): a working factory between the two chevrons of the road, built
+ * under the real rules, where every hand-off of an item goes through a Transfer Arm. An iron mine feeds the turret by the
+ * crate through two arms in a row; two more mines put their ore by arm on one belt that runs down the middle road through
+ * a splitter, with an arm off it to every Pulse Turret; a belt tunnel takes ore under the north road to a turret beyond
+ * it; coal mines feed two Generators by arm, whose poles power Cryo, Arc, a Beacon and the Pumpjacks; the splitter's other
+ * side and a coal mine feed a Smelter whose plates an arm carries to a Frame Works; crude runs by pipe (and a pipe tunnel
+ * under the road) to two pairs of Firewall Pylons; a Railgun, a Mortar and a Missile Battery stand on supply crates.
+ * `stage` (0..1) builds only that share of it, in build order (for the trailer's growing factory; o.lazy keeps the rest for
+ * buildNext()). Returns a report of anything that did not go up or is not supplied.
+ * Directions 0..5 = E, SE, SW, W, NW, NE: an arm takes from the hex opposite its direction and delivers to the hex it faces.
  */
 export function base(stage = 1, o = {}) {
   const C = window.__cap, s = C.real(o.seed ?? 3, 'switchback');
   s.lives = s.maxLives = 999;
+  // (a run starts with the Transfer Arm and the Mine only: the showcase has every production card taken)
+  for (const f of ['arm', 'belt', 'splitter', 'tunnel', 'mine', 'generator', 'pole', 'pump', 'pipe', 'ptunnel', 'smelter', 'works', 'press', 'cells', 'refinery', 'missiles']) s.facs.add(f);
   const steps = [];
   const T = (type, cx, cz, lvl = 1) => steps.push(() => C.tower(type, cx, cz, lvl));
   const F = (type, cx, cz, dir = 0, lvl = 1) => steps.push(() => C.fac(type, cx, cz, dir, lvl));
+  const A = (cx, cz, dir, lvl = 1) => steps.push(() => C.fac('arm', cx, cz, dir, lvl));
   const B = (cells, last) => steps.push(() => C.belt(cells, last));
   const P = (cells) => steps.push(() => C.pipe(cells));
   const X = (fn) => steps.push(fn);
 
-  // --- iron: three mines round one belt that runs down past the turrets of the middle road into a splitter
-  F('mine', 16, 7, 0, 2); F('mine', 17, 7, 0, 2); F('mine', 18, 8, 0, 2);
-  B([[17, 8], [16, 9]], [16, 10]);
-  F('splitter', 16, 10);
-  T('pulse', 16, 8, 2); T('pulse', 15, 9, 2);
-  B([[15, 11], [15, 12], [15, 13], [15, 14]], [15, 15]);
-  T('pulse', 16, 12, 2); T('pulse', 14, 13, 2); T('pulse', 14, 14);
-  // --- coal: two generators, and a Smelter fed ore from the splitter's other side, its plates to a Frame Works
-  F('mine', 17, 11, 0, 2); F('mine', 18, 11, 0, 2); F('mine', 18, 12, 0, 2); F('mine', 17, 12, 0, 2);
-  F('generator', 18, 13, 0, 2); F('generator', 17, 13, 0, 2);
-  B([[17, 10]], [18, 10]);
-  F('smelter', 18, 10, 0, 2);
-  F('works', 19, 10);
+  // --- iron: a mine with two arms in a row to the turret by the crate
+  F('mine', 17, 6, 0, 2); A(16, 6, 3); A(15, 6, 3); T('pulse', 14, 6, 2);
+  // --- two mines put their ore on one belt by arm; it runs down the middle road through a splitter, an arm off it to every turret
+  F('mine', 16, 7, 0, 3); F('mine', 18, 7, 0, 3);
+  A(17, 8, 1); A(18, 8, 2);
+  B([[17, 9]], [18, 10]);
+  F('splitter', 18, 10);
+  A(17, 10, 3); T('pulse', 16, 10, 2);
+  B([[17, 11], [17, 12], [16, 13], [16, 14]], 2);
+  A(16, 12, 3); T('pulse', 15, 12, 2);
+  A(15, 13, 3); T('pulse', 14, 13, 2);
+  A(15, 14, 3); T('pulse', 14, 14);
+  // --- coal: an arm into the Generator; the splitter's other side and a coal mine feed a Smelter, its plates go to a Frame Works
+  F('mine', 18, 12, 0, 2); A(17, 13, 2); F('generator', 17, 14, 0, 3);
+  A(19, 10, 0); F('smelter', 20, 10, 0, 2);
+  F('mine', 19, 12, 0, 2); A(19, 11, 5);
+  A(18, 13, 2); F('generator', 18, 14, 0, 2);
+  A(19, 9, 4); F('works', 19, 8);
   // --- power poles and the powered towers along the east road
-  F('pole', 19, 11); F('pole', 19, 9);
+  F('pole', 19, 13); F('pole', 20, 9);
   T('cryo', 20, 12, 2); T('cryo', 19, 14); T('arc', 21, 10, 2); T('beacon', 20, 8);
   X(() => { s.factory.placeCrate(19, 6, 'copper', 20); });
   T('rail', 19, 7, 2);
-  // --- a belt tunnel under the north road: ore from the mine on (17,6) to two turrets beyond it
-  F('mine', 17, 6, 0, 2);
-  F('tunnel', 17, 5, 5); F('tunnel', 18, 3, 5);
-  B([[19, 2]], 0);
-  T('pulse', 19, 3); T('pulse', 20, 2);
-  // --- oil: a pumpjack, pipes to Firewall Pylons on both sides of the west road, a pipe tunnel under it
+  // --- a belt tunnel under the north road: an arm puts ore into it, a belt and an arm beyond it feed a turret
+  F('mine', 17, 7, 0, 2); A(18, 6, 5);
+  F('tunnel', 18, 5, 5); F('tunnel', 19, 3, 5);
+  B([[20, 2]], 0);
+  A(20, 3, 1); T('pulse', 21, 4);
+  // --- oil: pumpjacks, pipes to Firewall Pylons on both sides of the west road, a pipe tunnel under it
   F('pole', 14, 10); F('pole', 10, 8); F('pole', 11, 5);
   F('pump', 10, 6, 0, 3); F('pump', 9, 5, 0, 3);
   P([[9, 7], [9, 8]]);
@@ -61,7 +73,7 @@ export function base(stage = 1, o = {}) {
   if (o.lazy) { window.__rest = steps.slice(n); return { steps: steps.length, built: n, errs }; }
   const dg = s.diag(), bad = [];
   for (const t of s.towers) { const d = dg.get('t' + t.id); if (d && !d.ok) bad.push(`${t.type}@${t.cx},${t.cz}: ${d.missing.join(', ')}`); }
-  for (const f of s.factory.facs) { const d = dg.get('f' + f.id); if (d && !d.ok) bad.push(`${f.type}@${f.cx},${f.cz}: ${d.missing.join(', ')}`); }
+  for (const f of s.factory.facs) { const d = dg.get('f' + f.id); if (d && !d.ok && f.type !== 'crate') bad.push(`${f.type}@${f.cx},${f.cz}: ${d.missing.join(', ')}`); }
   return { steps: steps.length, built: n, errs, bad };
 }
 

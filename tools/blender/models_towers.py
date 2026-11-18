@@ -63,6 +63,17 @@ def power_node(m, key):
     return z
 
 
+def muzzle(m, i, parent, at=(0, 0, 0), rot=(0, 0, 0), frame=None):
+    """Marker for the game: an empty node 'muzzle_<i>' at the mouth of a barrel / emitter, whose local -Y (the game's
+    local +Z) is the direction of fire. Parent it to the part that carries the mouth, so it rides with recoil, elevation
+    and the upgrade parts ('lvl2' / 'lvl3': the game only fires from the muzzles of parts it shows). The game cycles
+    through a tower's muzzles in the order of i. frame: an outer matrix (the frame the barrel's geometry was stamped in)."""
+    W = T(at, rot) if frame is None else frame @ T(at, rot)
+    loc, quat, _ = W.decompose()
+    e = quat.to_euler('XYZ')
+    return m.node(f'muzzle_{i}', at=tuple(loc), rot=tuple(math.degrees(a) for a in e), parent=parent)
+
+
 def cup(p, zc):
     """Three-prong cradle under a node centred at zc (in the space of p, on its axis)."""
     p.cyl(0.085, 0.05, 'trim', segs=8, bevel=0.012, at=(0, 0, zc - 0.31))
@@ -112,6 +123,7 @@ def tower_pulse():
             g.cyl(0.078, 0.09, 'hull', segs=10, bevel=0.015, at=(0, 0, 0.42))
             g.cyl(0.05, 0.02, 'glow_main', segs=10, at=(0, 0, 0.497))
             g.ring(0.082, 0.02, 0.02, 'glow_main', segs=10, at=(0, 0, 0.37))
+        muzzle(m, i + 1, g, at=(0, -0.52, 0))
     t.prism([(-0.21, 0.19), (-0.24, 0.32), (-0.20, 0.47), (0.20, 0.47), (0.24, 0.32), (0.21, 0.19)], 0.04, 'paint',
             bevel=0.012, plane='xz', at=(0, -0.385, 0))
     for i in range(3):
@@ -139,6 +151,8 @@ def tower_pulse():
         u.cyl(0.05, 0.50, 'trim', segs=8, rot=FWD, at=(0.385, -0.30, 0.30))
         u.cyl(0.07, 0.10, 'hull', segs=8, bevel=0.015, rot=FWD, at=(0.385, -0.70, 0.30))
         u.cyl(0.04, 0.02, 'glow_main', segs=8, rot=FWD, at=(0.385, -0.787, 0.30))
+    for i, x in enumerate((0.385, -0.385)):
+        muzzle(m, 3 + i, u, at=(x, -0.807, 0.30))
     # level 3: heavy cannon over the twin guns, armoured drum, second antenna
     u = m.node('lvl3', parent=t)
     u.box((0.22, 0.34, 0.15), 'hull', bevel=0.03, at=(0, -0.30, 0.715))
@@ -148,6 +162,7 @@ def tower_pulse():
         u.cyl(0.085, 0.035, 'hull', segs=10, bevel=0.008, rot=FWD, at=(0, y, 0.715))
     u.cyl(0.10, 0.12, 'hull', segs=10, bevel=0.02, rot=FWD, at=(0, -0.94, 0.715))
     u.ring(0.103, 0.02, 0.02, 'glow_main', segs=10, rot=FWD, at=(0, -1.0, 0.715))
+    muzzle(m, 5, u, at=(0, -1.06, 0.715))
     u.box((0.60, 0.05, 0.34), 'paint', bevel=0.015, at=(0, 0.715, 0.30))
     with u.sym():
         u.box((0.05, 0.30, 0.40), 'hull', bevel=0.015, at=(0.295, 0.56, 0.30))
@@ -198,6 +213,7 @@ def tower_cryo():
         d.lathe([(0.0, 0.28), (0.15, 0.30), (0.15, 0.325), (0.06, 0.36), (0.035, 0.50), (0.0, 0.53)], 'glow_main', segs=10)
         with d.frames(radial(6)):
             d.box((0.16, 0.02, 0.14), 'trim', bevel=0.005, at=(0.235, 0, 0.21), rot=(0, -42, 0))
+    muzzle(m, 1, d, at=(0, 0, 0.53), rot=(-90, 0, 0), frame=T(rot=(84, 0, 0)))      # tip of the emitter spike
     with t.sym():
         t.tube([(0.44, 0.10, 0.92), (0.50, -0.02, 0.98), (0.44, -0.22, 0.78), (0.24, -0.34, 0.52), (0.12, -0.36, 0.45)],
                0.035, 'trim', segs=7)
@@ -261,6 +277,7 @@ def tower_arc():
     o.sphere(0.22, 'glow_main', segs=16, rings=10)
     o.torus(0.34, 0.022, 'glow_main', segs=16, rsegs=5, at=(0, 0, -0.10))
     o.torus(0.31, 0.022, 'glow_main', segs=16, rsegs=5, at=(0, 0, 0.14))
+    muzzle(m, 1, t, at=(0, 0, 0.52))        # centre of the discharge sphere (radius 0.22): bolts leave its surface
     t.torus(0.335, 0.03, 'trim', segs=20, rsegs=6, at=(0, 0, 0.30))
     zn = power_node(m, 'arc') - 2.25
     with t.frames(radial(3, start=90)):
@@ -330,6 +347,7 @@ def tower_mortar():
         g.box((0.16, 0.14, 0.2), 'hull', bevel=0.03, at=(0, 0.30, -0.08))
         with g.frames(radial(6, start=30)):
             g.cyl(0.03, 0.03, 'hull', segs=6, at=(0.24, 0, -0.30), rot=(0, 40, 0))
+        muzzle(m, 1, g, at=(0, 0, 0.74), rot=(-90, 0, 0))     # the mouth of the tube, firing along the bore
     # shell rack at the rear
     for x in (-0.17, 0, 0.17):
         t.lathe([(0.0, 0.0), (0.075, 0.01), (0.075, 0.20), (0.05, 0.27)], 'paint', segs=10, at=(x, 0.44, 0.14))
@@ -406,6 +424,7 @@ def tower_rail():
             g.box((0.022, 0.07, 0.30 - (-y - 0.72) * 0.12), 'hull', bevel=0.006, at=(0.052, y, Z))
         g.box((0.05, 0.03, 0.05), 'glow_main', bevel=0.008, at=(0, y, Z))
     g.lathe([(0.0, 0.0), (0.04, 0.02), (0.02, 0.10), (0.0, 0.12)], 'glow_main', segs=8, rot=FWD, at=(0, -1.46, Z))
+    muzzle(m, 1, g, at=(0, -1.58, Z * 1.14))      # between the rail tips, on the gun axis
     # capacitor fins + cells
     with t.sym():
         for i in range(6):
@@ -651,6 +670,7 @@ def tower_lance():
             g.rod((0.27, 0, 0.34), (0.15, 0, 0.84), 0.012, 'hull', segs=5)
         g.ring(0.15, 0.015, 0.02, 'glow_main', segs=16, at=(0, 0, 0.872))
         g.lathe([(0.04, 1.0), (0.065, 1.04), (0.04, 1.16), (0.0, 1.22)], 'glow_main', segs=8)
+    muzzle(m, 1, g, at=(0, -1.22, 0))        # tip of the emitter crystal
     # level 2: a wide collecting lens at the back and focusing prongs at the tip
     u = m.node('lvl2', parent=g)
     with u.frames(T(rot=FWD)):
@@ -724,12 +744,17 @@ def tower_missile():
         g = m.node(f'barrel_{i + 1}', at=(x, 0, 0), parent=cr)      # the launchers kick back alternately
         with g.frames(T(at=(0, -0.04, 0.06), rot=TILT)):
             _launcher(g, 2)
+        # tube mouths, numbered so that the two launchers fire in turn (1, 3, 5, 7 left; 2, 4, 6, 8 right)
+        for k, (tx, tz) in enumerate(((0.105, 0.10), (-0.105, 0.10), (0.105, -0.10), (-0.105, -0.10))):
+            muzzle(m, 1 + i + 2 * k, g, at=(tx, -0.47, tz), frame=T(at=(0, -0.04, 0.06), rot=TILT))
         g.cyl(0.12, 0.05, 'trim', segs=10, bevel=0.012, o='c', rot=RIGHT, at=(-0.235 * (1 if x > 0 else -1), 0, 0))
     # level 2: a third tube row on each launcher
     u = m.node('lvl2', parent=cr)
     with u.sym():
         with u.frames(T(at=(0.40, -0.04, 0.06), rot=TILT) @ T(at=(0, 0, 0.355))):
             _launcher(u, 1)
+    for k, (bx, tx) in enumerate(((0.40, 0.105), (-0.40, 0.105), (0.40, -0.105), (-0.40, -0.105))):
+        muzzle(m, 9 + k, u, at=(tx, -0.47, 0), frame=T(at=(bx, -0.04, 0.06), rot=TILT) @ T(at=(0, 0, 0.355)))
     # level 3: search radar, reload rack at the rear, armour skirts
     u = m.node('lvl3', parent=t)
     with u.frames(T(at=(0, -0.10, 1.20), rot=(66, 0, 0), scale=0.80)):

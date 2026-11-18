@@ -51,10 +51,16 @@
 //   node                     optional power node (it shows the special's charge). The view lights it
 //                            by charge; without it the view draws its own emblem above the tower.
 //   lvl2, lvl3               optional groups shown from tower level 2 / 3 (also lvl2_<x>, lvl3_<x>).
+//   muzzle_<n>               empty markers at the mouth of every barrel / emitter (pulse 1-2, +3-4 at Mk2, +5 at Mk3; missile
+//                            1-8 tube mouths, +9-12 at Mk2; one each on cryo, arc (centre of the sphere), mortar, rail, lance).
+//                            Local +Z is the direction of fire. A marker rides with the part it is a child of (recoil, elevation);
+//                            one under lvl2 / lvl3 only counts from that level. The view takes every shot origin from these:
+//                            nextMuzzle (whose turn it is, and the kick of its barrel) and towerMuzzle (where it is in the world).
 //   weak_<n>                 enemies (brute, boss, titan): glowing parts with lights of their own.
 // ----
 //
 // API:  makeEnemyRig / resetEnemy / updateEnemy,  makeTowerRig / updateTower / towerShot,
+//       towerFace / nextMuzzle / towerMuzzle (shot origins),
 //       Rigs cache every joint once; updates allocate nothing.
 import * as THREE from 'three';
 import type { EnemyType, TowerType } from './data.ts';
@@ -690,6 +696,12 @@ export interface TowerRig {
   type: TowerType; turret: O3 | null; barrels: O3[]; rest: THREE.Vector3[]; axis: THREE.Vector3[]; kick: number[]; next: number;
   cradle: O3 | null; dish: O3 | null; orb: O3 | null; spins: O3[]; glow: THREE.MeshStandardMaterial | null; glow0: number;
   since: number; idle: number; sweep: number; t: number; elev: number; elevTo: number; ty: number; slump: number;
+  /** muzzle markers in firing order, the tower level each needs, the index of the barrel each sits on (-1: none), whose turn it is */
+  muz: O3[]; muzLvl: number[]; muzBarrel: number[]; mi: number;
+  /** rest height of the first muzzle above the turret's pivot and its reach ahead of it (model units): what the aim pitch is worked out from */
+  mh: number; mf: number;
+  /** the turret's nod toward a target below it (rad, + = down): now, and where it is going */
+  pit: number; pitTo: number;
 }
 /** What the view tells a tower rig each frame beyond the sim's aim. */
 export interface TowerState {
@@ -701,8 +713,12 @@ export interface TowerState {
   power: number;
   /** lance heat 0..1 */
   heat: number;
+  /** afterglow of a special 0..1: rails and emitters that stay hot while the tower is already offline */
+  hot?: number;
 }
-const IDLE_STATE: TowerState = { down: false, spec: false, power: 1, heat: 0 };
+const IDLE_STATE: TowerState = { down: false, spec: false, power: 1, heat: 0, hot: 0 };
+/** How far a turret may nod down at a target close below it (rad). Towers without an entry keep their head level. */
+const PITCH_MAX: Partial<Record<TowerType, number>> = { pulse: 0.3, rail: 0.2, lance: 0.13, cryo: 0.12 };
 const RECOIL: Record<TowerType, { d: number; T: number; pitch: number }> = {
   pulse: { d: 0.16, T: 0.26, pitch: 0.035 }, cryo: { d: 0.07, T: 0.5, pitch: 0.03 }, arc: { d: 0, T: 0.45, pitch: 0 },
   mortar: { d: 0.26, T: 1.1, pitch: 0.11 }, rail: { d: 0.4, T: 1.5, pitch: 0.07 }, beacon: { d: 0, T: 1, pitch: 0 },
@@ -729,8 +745,19 @@ export function makeTowerRig(root: O3, type: TowerType): TowerRig {
       if (m.material.name.startsWith('glow')) glow = m.material as THREE.MeshStandardMaterial;
     });
   }
+  // muzzle markers, in the order of their number
+  const muz: O3[] = [];
+  root.traverse((o) => { if (/^muzzle_\d+$/.test(o.name)) muz.push(o); });
+  muz.sort((a, b) => +a.name.slice(7) - +b.name.slice(7));
+  const up = (o: O3, test: (p: O3) => boolean) => { for (let p: O3 | null = o.parent; p && p !== root; p = p.parent) if (test(p)) return p; return null; };
+  const turret = find(root, 'turret'), M0 = new THREE.Vector3();
+  if (turret) turret.rotation.order = 'YXZ';   // yaw first, then the nod and the recoil about the turret's own cross axis
+  if (muz[0] && turret) { root.updateWorldMatrix(true, true); turret.worldToLocal(M0.setFromMatrixPosition(muz[0].matrixWorld)); }
   return {
-    type, turret: find(root, 'turret'), barrels, rest: barrels.map((b) => b.position.clone()),
+    muz, muzLvl: muz.map((o) => (up(o, (p) => p.name.startsWith('lvl3')) ? 3 : up(o, (p) => p.name.startsWith('lvl2')) ? 2 : 1)),
+    muzBarrel: muz.map((o) => { const b = up(o, (p) => barrels.includes(p)); return b ? barrels.indexOf(b) : -1; }), mi: 0,
+    mh: M0.y, mf: M0.z, pit: 0, pitTo: 0,
+    type, turret, barrels, rest: barrels.map((b) => b.position.clone()),
     // slide direction in the barrel's parent space: along the bore for the mortar, straight back otherwise
     axis: barrels.map((b) => (type === 'mortar' ? new THREE.Vector3(0, -1, 0).applyQuaternion(b.quaternion) : new THREE.Vector3(0, 0, -1))),
     kick: barrels.map(() => 9), next: 0, cradle: find(root, 'cradle'), dish: find(root, 'dish'), orb: find(root, 'orb'), spins,
@@ -742,9 +769,51 @@ export function makeTowerRig(root: O3, type: TowerType): TowerRig {
 /** A tower fired. dist = ground distance to the target (mortar elevation), 0 if unknown. */
 export function towerShot(r: TowerRig, dist = 0) {
   r.since = 0;
-  if (r.barrels.length) { r.kick[r.next] = 0; r.next = (r.next + 1) % r.barrels.length; }
+  // (a model with muzzle markers kicks the barrel whose muzzle fires: see nextMuzzle)
+  if (r.barrels.length && !r.muz.length) { r.kick[r.next] = 0; r.next = (r.next + 1) % r.barrels.length; }
   if (r.type === 'mortar' && dist > 0) r.elevTo = clamp((dist - 7.5) / 9, -0.5, 0.5) * 0.42;
   if (r.type === 'missile') r.elevTo = -0.42;   // pods tip up to launch
+}
+
+/**
+ * Turn the turret to face its shot NOW (the sim's yaw eases toward a new target and may still be on its way when the
+ * tower fires; the idle sweep is dropped too), and nod it toward a target that stands below the muzzle.
+ * hd = ground distance to the target, dy = the target's height above the tower's foot, both in model units (world / the tower's scale).
+ */
+export function towerFace(r: TowerRig, yaw: number, hd = 0, dy = 0) {
+  const tur = r.turret;
+  r.idle = 0;
+  if (!tur || r.type === 'beacon' || r.type === 'arc' || r.type === 'gravity' || r.type === 'flame') return;
+  const max = PITCH_MAX[r.type] || 0;
+  if (max > 0 && hd > 0) {
+    r.pitTo = clamp(Math.atan2((r.ty === r.ty ? r.ty : tur.position.y) + r.mh - dy, Math.max(0.6, hd - r.mf)), -0.08, max);
+    r.pit += (r.pitTo - r.pit) * 0.7;
+  }
+  tur.rotation.set(r.pit, yaw, 0);
+}
+/** The muzzle whose turn it is at tower level `lvl` (-1: the model has no markers). Its barrel recoils. */
+export function nextMuzzle(r: TowerRig, lvl: number): number {
+  const n = r.muz.length;
+  if (!n) return -1;
+  for (let k = 0; k < n; k++) {
+    const i = (r.mi + k) % n;
+    if (r.muzLvl[i] > lvl) continue;
+    r.mi = (i + 1) % n;
+    const b = r.muzBarrel[i];
+    if (b >= 0) r.kick[b] = 0;
+    return i;
+  }
+  return -1;
+}
+/** World position (and, if asked for, direction of fire) of muzzle i as the rig stands now. False if there is no such marker. */
+export function towerMuzzle(r: TowerRig, i: number, pos: THREE.Vector3, dir?: THREE.Vector3): boolean {
+  const m = r.muz[i];
+  if (!m) return false;
+  m.updateWorldMatrix(true, false);
+  const e = m.matrixWorld.elements;
+  pos.set(e[12], e[13], e[14]);
+  if (dir) dir.set(e[8], e[9], e[10]).normalize();
+  return true;
 }
 
 /** Recoil curve: slams back within ~35 ms, then a slow eased return. */
@@ -771,10 +840,12 @@ export function updateTower(r: TowerRig, yaw: number, cd: number, rate: number, 
     if (r.ty !== r.ty) r.ty = tur.position.y;
     // the mortar aims with its cradle, so its turret stays level
     const sag = r.cradle ? 0 : 0.3;
-    tur.rotation.set(-k * R.pitch + r.idle * 0.02 * Math.sin(r.sweep * 2.3) + sl * sag, yaw + r.idle * 0.7 * Math.sin(r.sweep), sl * 0.04);
+    // the nod toward a close target is held while the tower fires and let go a moment after its last shot
+    r.pit = damp(r.pit, r.since > 1.6 || st.down ? 0 : r.pitTo, 12, dt);
+    tur.rotation.set(r.pit * live - k * R.pitch + r.idle * 0.02 * Math.sin(r.sweep * 2.3) + sl * sag, yaw + r.idle * 0.7 * Math.sin(r.sweep), sl * 0.04);
     tur.position.y = r.ty - (r.type === 'mortar' ? 0.05 * recoil(r.since, 0.5) : 0);
   }
-  if (r.type === 'missile' && r.since > 1.6) r.elevTo = -0.1;
+  if (r.type === 'missile') { if (st.spec) r.elevTo = -0.74; else if (r.since > 1.6) r.elevTo = -0.1; }   // (a Swarm: the pods stand almost on end)
   if (r.cradle) { r.elev = damp(r.elev, r.elevTo, 4, dt); r.cradle.rotation.x = r.elev + k * R.pitch * 1.2 - r.idle * 0.06 * (1 + Math.sin(r.sweep * 1.3)) + sl * 0.5; }
   if (r.dish) { const s = 1 + 0.16 * recoil(r.since, 0.35) + 0.012 * Math.sin(r.t * 3) * live; r.dish.scale.set(s, s, 1); r.dish.position.z = (r.dish.userData.z0 ??= r.dish.position.z) - k * R.d; }
   if (r.orb) {
@@ -793,12 +864,12 @@ export function updateTower(r: TowerRig, yaw: number, cd: number, rate: number, 
   if (r.glow) {
     if (r.type === 'lance') {
       // the emitter runs from a dull glow to white-hot with the beam's heat
-      r.glow.emissiveIntensity = r.glow0 * (0.3 + 2.4 * st.heat * st.heat + (st.spec ? 1.5 + 0.5 * Math.sin(r.t * 30) : 0)) * st.power;
+      r.glow.emissiveIntensity = r.glow0 * ((0.3 + 2.4 * st.heat * st.heat + (st.spec ? 1.5 + 0.5 * Math.sin(r.t * 30) : 0)) * st.power + 2.2 * (st.hot || 0));
     } else {
       // rail: capacitors glow brighter as the next shot comes up, flash on release, then go dark
       const charge = rate > 0 ? sat(1 - cd * rate) : 0;
       const flash = recoil(r.since, 0.22);
-      r.glow.emissiveIntensity = r.glow0 * (0.22 + 1.5 * charge * charge * charge * (cd > -0.7 ? 1 : 0.35) + 3.2 * flash) * (1 + (charge > 0.8 ? 0.12 * Math.sin(r.t * 40) : 0)) * st.power;
+      r.glow.emissiveIntensity = r.glow0 * ((0.22 + 1.5 * charge * charge * charge * (cd > -0.7 ? 1 : 0.35) + 3.2 * flash) * (1 + (charge > 0.8 ? 0.12 * Math.sin(r.t * 40) : 0)) * st.power + 4 * (st.hot || 0));
     }
   }
   const spin = dt * 2.5 * live * (st.spec ? 4 : 1);

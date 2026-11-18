@@ -9,19 +9,26 @@
 //    end caps, the tutorial's "build here" target and path chevrons, the tiles a pole or generator reaches (a soft fill a
 //    scan line sweeps over), the brackets that close on what it will power, and the crackling ring of a tower that is
 //    stunned or jammed;
-//  - lines (screen-space ribbons along a polyline): the pulse that runs along the real supply route (belts upstream to
-//    the producer, pipes through the network to the pump, wires pole to pole to the generator), and the flowing dashes of
-//    the route a ghost would get (wires to be, the pipe network a pipe would join, a tunnel's hidden run), the outline of
-//    a reach. A second, faint pass draws the pulses and routes where a tower or building hides them;
+//  - lines (screen-space ribbons along a polyline): the pulse that runs along the real supply route (from the producer
+//    through the Transfer Arms and along the belts between them, pipes through the network to the pump, wires pole to
+//    pole to the generator), and the flowing dashes of the route a ghost would get (wires to be, the pipe network a pipe
+//    would join, a tunnel's hidden run, the way an arm would carry things), the outline of a reach. A second, faint pass
+//    draws the pulses and routes where a tower or building hides them;
 //  - holograms (the belt item shapes, a bolt, a drop, a mite): what is missing or what holds a tower down, floating over it.
 //
 // What a tower or building needs and what it lacks comes from Sim.diag(); the routes are walked here over the factory's
-// public layout (the same rules as Factory.carry / links, read backwards from the taker).
+// public layout (the same rules as Factory.carry / links, read backwards from the taker: items only ever move through a
+// Transfer Arm, so a route is producer > arm > (belts > arm >) taker, see preds()).
+//
+// A Transfer Arm about to be placed (or selected) shows what it would do before the click: an arrow through its tile from
+// the tile behind it to the tile in front, the item it would take floating over the source, and the target bracketed:
+// green when it accepts that, rust when it does not (what it would take instead floats over it), amber when nothing
+// stands behind the arm to take from. armWould() gives the same answer in words for the HUD.
 import * as THREE from 'three';
-import { TOWERS, FACS, ITEMS, FLUIDS, MAKES, needsOf, cellX, cellZ, GW } from './data.ts';
+import { TOWERS, FACS, ITEMS, ITEM_TYPES, FLUIDS, MAKES, needsOf, cellX, cellZ, GW } from './data.ts';
 import type { TowerType, FacType, ItemType, FluidType, TowerNeeds } from './data.ts';
 import { neighbor, hexDist, inBoard, worldToCell, disc, lineDir } from './hex.ts';
-import { SUPPLY, POLE_REACH, TUNNEL_REACH } from './factory.ts';
+import { SUPPLY, POLE_REACH, TUNNEL_REACH, armBack, armFront } from './factory.ts';
 import type { Factory, Fac, Diag } from './factory.ts';
 import { TOWER_SCALE, NODE_R } from './sim.ts';
 import type { Sim, Ev, Tower } from './sim.ts';
@@ -42,7 +49,7 @@ const ITEM_LIT: Record<ItemType, number> = { iron_ore: 0x5f97ee, copper_ore: 0xf
 const FLUID_LIT: Record<FluidType, number> = { crude: 0x9a6cf5, petrol: 0xffb02e };
 
 // ring styles (see the fragment shader)
-const S_PULSE = 0, S_OK = 1, S_MISS = 2, S_OUT = 3, S_SRC = 4, S_ARRIVE = 5, S_CAP = 6, S_HERE = 7, S_CHEV = 8, S_AREA = 9, S_LOCK = 10, S_OPEN = 11, S_SLOT = 12, S_HELD = 13, S_PCAP = 14;
+const S_PULSE = 0, S_OK = 1, S_MISS = 2, S_OUT = 3, S_SRC = 4, S_ARRIVE = 5, S_CAP = 6, S_HERE = 7, S_CHEV = 8, S_AREA = 9, S_LOCK = 10, S_OPEN = 11, S_SLOT = 12, S_HELD = 13, S_PCAP = 14, S_TURN = 15;
 // line modes (see the fragment shader)
 const L_FLOW = 1, L_EDGE = 3; // (0: a pulse, 2: a tether)
 // hologram shapes
@@ -189,6 +196,11 @@ const RING_FRAG = `
       float ph = fract(a / TAU * 6.0 + time * 0.25 + seed);
       float dot_ = smoothstep(0.0, 0.08, ph) * (1.0 - smoothstep(0.42, 0.5, ph));
       v = (ln(d - 0.62, 0.03, w) * 1.1 + glow(d - 0.62, 10.0) * 0.25) * dot_ + (1.0 - smoothstep(0.06, 0.06 + w, r)) * 0.6;
+    } else if (st > 14.5) {
+      // it can be turned: two arcs creeping round the tile, each ending in an arrowhead
+      float seg = fract((a + time * 0.55) / 3.14159);
+      v = ln(r - 1.13, 0.012, w) * smoothstep(0.0, 0.06, seg) * step(seg, 0.5) * 0.8;
+      v += (1.0 - smoothstep(0.0, w, abs(r - 1.13) - 0.085 * (1.0 - (seg - 0.5) * 9.0))) * step(0.5, seg) * step(seg, 0.61);
     } else if (st > 13.5) {
       // a pipe to be: its tile ringed, closed and calm with a node on every corner when the line runs from a source to a
       // taker (seed 0), broken, turning and searching outward when it leads nowhere yet
@@ -365,7 +377,7 @@ function holoOf(m: string): [number, number] | null {
   if (m === fluidName('petrol')) return [H_DROP, FLUID_LIT.petrol];
   if (m === 'iron or copper ore' || m === 'an ore deposit') return [H_ORE, ITEM_LIT.iron_ore];
   if (m.startsWith('coal for')) return [H_COAL, ITEM_LIT.coal];
-  if (m.startsWith('a second')) return [H_LINK, AMBER];
+  if (m.startsWith('a second') || m === 'a target' || m === 'something to take' || m === 'an arm at its end') return [H_LINK, AMBER];
   return null;
 }
 const needHolo = (n: Need): [number, number] => n.k === 'item' ? (n.it === 'ore' ? [H_ORE, ITEM_LIT.iron_ore] : [ITEM_HOLO[n.it], ITEM_LIT[n.it]]) : n.k === 'fluid' ? [H_DROP, FLUID_LIT[n.fl]] : [H_BOLT, POWER];
@@ -386,6 +398,89 @@ function makesIt(q: Fac, it: ItemType | 'ore'): ItemType | null {
 const FLUID_SRC: Record<FluidType, FacType> = { crude: 'pump', petrol: 'refinery' };
 /** A producer counts as working when it lacks nothing but (maybe) a taker: the thing asking would be one. */
 const works = (q: Fac, dg: Map<string, Diag>) => { const d = dg.get('f' + q.id); return !d || d.missing.every((m) => m.startsWith('a taker')); };
+
+const tileOf = (f: { cx: number; cz: number }) => f.cz * GW + f.cx;
+const facOn = (F: Factory, j: number) => (j >= 0 ? F.facAt(j % GW, (j / GW) | 0) : undefined);
+/** Every item a producer puts out (a smelter: both plates; what it really makes depends on what it is fed). */
+function makesAll(q: Fac): ItemType[] {
+  if (q.type === 'mine') return q.ore && q.ore !== 'oil' ? [q.ore as ItemType] : [];
+  if (q.type === 'crate') return q.left > 0 && q.hold ? [q.hold] : [];
+  if (q.type === 'smelter') return ['iron', 'copper'];
+  const o = MAKES[q.type]?.out;
+  return o ? [o] : [];
+}
+/** The Transfer Arms of a layout by the tile in front of them (where they put) and by the tile behind them (where they take). */
+interface ArmMaps { front: Map<number, Fac[]>; back: Map<number, Fac[]> }
+function armMaps(F: Factory): ArmMaps {
+  const front = new Map<number, Fac[]>(), back = new Map<number, Fac[]>();
+  const add = (m: Map<number, Fac[]>, j: number, a: Fac) => { if (j < 0) return; const l = m.get(j); if (l) l.push(a); else m.set(j, [a]); };
+  for (const a of F.facs) if (a.type === 'arm') { add(front, armFront(a), a); add(back, armBack(a), a); }
+  return { front, back };
+}
+/**
+ * What hands items to c, one step upstream (the rules of factory.ts read backwards). An arm: what stands behind it (a
+ * producer, a conveyor, or an arm that hands into it). A tunnel exit: its entrance. A belt, splitter or tunnel entrance:
+ * the arms that put onto it, and the conveyors that run into it. A producer: nothing (its own inputs are another route).
+ */
+function preds(F: Factory, c: Fac, arms: ArmMaps): Fac[] {
+  const out: Fac[] = [];
+  if (c.type === 'arm') {
+    const q = facOn(F, armBack(c));
+    if (q && (q.type === 'arm' ? armFront(q) === tileOf(c) : !(q.type === 'tunnel' && !q.exit))) out.push(q);
+    return out;
+  }
+  if (c.type === 'tunnel' && c.exit) { const e = F.facById(c.pair); if (e) out.push(e); return out; }
+  if (!conveyor(c.type)) return out;
+  for (const a of arms.front.get(tileOf(c)) || []) out.push(a);
+  for (let d = 0; d < 6; d++) {
+    const [nx, nz] = neighbor(c.cx, c.cz, d), q = F.facAt(nx, nz);
+    if (!q || !conveyor(q.type)) continue;
+    // (as Factory.passOn: nothing moves between two belts or a tunnel exit and a belt that point into each other; a splitter feeds a belt or a tunnel entrance leading away from it: its back edge touches the splitter, as Factory.leadsFrom)
+    if (q.type === 'belt' && pointsAt(q, c.cx, c.cz) && !((c.type === 'tunnel' || c.type === 'belt') && pointsAt(c, q.cx, q.cz))) out.push(q);
+    else if (q.type === 'splitter' && (c.type === 'belt' || (c.type === 'tunnel' && !c.exit)) && c.dir === (d + 3) % 6) out.push(q);
+    else if (q.type === 'tunnel' && q.exit && pointsAt(q, c.cx, c.cz) && c.type !== 'tunnel') out.push(q);
+  }
+  return out;
+}
+/** The items that can come out of what stands on a tile, for an arm standing in front of it (a producer's own, or what the producers upstream of a conveyor or arm make). */
+function offeredAt(F: Factory, j: number, arms: ArmMaps): ItemType[] {
+  const q = facOn(F, j), out = new Set<ItemType>();
+  if (!q || pipeLike(q.type) || (q.type === 'tunnel' && !q.exit)) return [];
+  const seen = new Set<number>([q.id]), queue = [q];
+  for (let k = 0; k < queue.length && k < 400; k++) {
+    const c = queue[k];
+    if (c.type !== 'arm' && !conveyor(c.type)) { for (const it of makesAll(c)) out.add(it); continue; }
+    for (const o of preds(F, c, arms)) if (!seen.has(o.id)) { seen.add(o.id); queue.push(o); }
+  }
+  return ITEM_TYPES.filter((it) => out.has(it));
+}
+/**
+ * What a Transfer Arm on tile (cx, cz) facing `dir` would do, placed or not: `offered` what the tile behind it can give,
+ * `accepts` what the tile in front takes, `take` what it would carry (both), and how that stands: 'ok', 'nosource'
+ * (nothing behind it to take from), 'notarget' (it points at an empty tile), 'refuse' (what stands in front takes no
+ * items), 'mismatch' (it takes items, but none the source gives). `why` says it in words (empty when ok).
+ */
+export interface ArmWould { state: 'ok' | 'nosource' | 'notarget' | 'refuse' | 'mismatch'; take: ItemType[]; offered: ItemType[]; accepts: ItemType[]; why: string; back: [number, number]; front: [number, number] }
+export function armWould(sim: Sim, cx: number, cz: number, dir: number): ArmWould {
+  const F = sim.factory, back = neighbor(cx, cz, (dir + 3) % 6), front = neighbor(cx, cz, dir);
+  const jb = inBoard(back[0], back[1]) ? back[1] * GW + back[0] : -1, jf = inBoard(front[0], front[1]) ? front[1] * GW + front[0] : -1;
+  // (the arm to be, as far as the factory's questions look at it)
+  const fake = { id: -1, type: 'arm', cx, cz, dir, only: null } as unknown as Fac;
+  const here = F.facAt(cx, cz), me = here && here.type === 'arm' && here.dir === dir ? here : fake;
+  const mask = jf >= 0 ? F.acceptMask(jf, me) : 0;
+  const accepts = ITEM_TYPES.filter((_, i) => mask & (1 << i)), offered = jb >= 0 ? offeredAt(F, jb, armMaps(F)).filter((it) => !me.only || it === me.only) : [];
+  const take = offered.filter((it) => accepts.includes(it));
+  const qb = facOn(F, jb), qf = facOn(F, jf), tw = jf >= 0 && !qf ? F.towerOn(jf) : undefined;
+  const srcOk = !!qb && (qb.type === 'arm' ? armFront(qb) === cz * GW + cx : qb.type === 'belt' || qb.type === 'splitter' || (qb.type === 'tunnel' && qb.exit) || makesAll(qb).length > 0 || qb.type === 'crate' || !!MAKES[qb.type]?.out || qb.type === 'mine' || qb.type === 'smelter');
+  const nameB = qb ? FACS[qb.type].name : '', nameF = qf ? FACS[qf.type].name : tw ? TOWERS[tw.type].name : '';
+  let state: ArmWould['state'] = 'ok', why = '';
+  if (!qf && !tw) { state = 'notarget'; why = 'points at an empty tile'; }
+  else if (!mask) { state = 'refuse'; why = `the ${nameF} takes no items${qf && qf.type === 'tunnel' ? ' from this side' : ''}`; }
+  else if (!srcOk) { state = 'nosource'; why = qb ? `nothing to take from the ${nameB}` : 'nothing behind it to take from'; }
+  else if (!take.length && offered.length) { state = 'mismatch'; why = `the ${nameF} does not take ${offered.map((it) => ITEMS[it].short).join(' or ')}`; }
+  else if (!take.length) { state = 'nosource'; why = `nothing reaches the ${nameB} yet`; }
+  return { state, take, offered, accepts, why, back, front };
+}
 
 /** A supply route: the polyline (x, y, z triples) from its source to the taker, the source, whether the source will deliver, and for an item the one found. */
 interface Route { pts: number[]; src: Fac | null; ok: boolean; it?: ItemType; node?: Fac }
@@ -512,6 +607,8 @@ export class CueView {
   /** towers that ran dry in this wave: the sim time each was first seen dry, and the ones dry for longer than DRY_GRACE */
   private drySince = new Map<number, number>(); private dryNow = new Set<number>();
   private C = new THREE.Color(); private P2 = { x: 0, z: 0 };
+  /** the arms of the layout by the tiles they put onto and take from (worked out again when the layout changes) */
+  private armsRev = -1; private armsMap: ArmMaps = { front: new Map(), back: new Map() };
   private segs = 0;
 
   /** `arrived`: a route's pulse has reached a tower or building at (x, y, z) (the view adds its sparks and lights the deck there). */
@@ -661,7 +758,7 @@ export class CueView {
           const ns = this.needsOfKey(key, F)!, pos = this.posOf(key, F);
           if (pos) ns.forEach((n, i) => {
             if (!(gained & (1 << i)) || pulses >= MAX_PULSES) return;
-            const r = this.route(n, pos.cx, pos.cz, F, dg, pos.fac);
+            const r = this.route(n, pos.cx, pos.cz, F, dg, pos.fac, SUPPLY, undefined, !pos.fac);
             if (!r || r.pts.length < 6) return;
             pulses++;
             const dur = this.pulse(r.pts, needColor(n, r.it), lead);
@@ -728,7 +825,12 @@ export class CueView {
     }
     // an upgrade the player can pay for: chevrons beside the tower (not before the first wave: the starting credits are for towers)
     if (this.ups && sim.wave > 0 && !sim.over) for (const t of sim.towers) if (this.canUp(sim, t)) this.icon('u' + t.id, t.x, this.deckY(t.x, t.z) + t.h * 0.8, t.z, 0.52, APRICOT, H_UP, 1.0);
-    for (const f of F.facs) if (!conveyor(f.type) && !pipeLike(f.type)) state('f' + f.id, f.x, 0, f.z, this.seatFac(f.type), f.type === 'crate', null);
+    for (const f of F.facs) {
+      if (!conveyor(f.type) && !pipeLike(f.type)) { state('f' + f.id, f.x, 0, f.z, this.seatFac(f.type), f.type === 'crate', null); continue; }
+      // a line that carries something and ends without an arm to empty it: an open cap at its end, in rust
+      const d = pipeLike(f.type) ? undefined : dg.get('f' + f.id);
+      if (d && !d.ok && d.missing.includes('an arm at its end')) this.ring('f' + f.id + ':e', S_CAP, f.x + Math.cos((f.dir * Math.PI) / 3) * 0.96, ROUTE_GEOM.RAIL_Y + 0.09, f.z + Math.sin((f.dir * Math.PI) / 3) * 0.96, 0.62, RUST, 1.05, 1);
+    }
     // 3. the ghost and the tutorial
     this.prio = true; // (the tutorial first: its marks are few, the ghost's route can be long)
     let heres = 0;
@@ -744,8 +846,9 @@ export class CueView {
     }
     if (tool) this.preview(tool, sim, F, dg);
     else {
-      // nothing is being placed: what the selected pole, generator or tunnel connects to
+      // nothing is being placed: what the selected pole, generator, tunnel or arm connects to
       const sc = this.fac.selectedCell(), sf = sc ? F.facAt(sc.cx, sc.cz) : undefined;
+      if (sf && sf.type === 'arm') this.armPreview(sf.cx, sf.cz, sf.dir, sim, F, `s${sf.id}:`, false);
       if (sf && (sf.type === 'pole' || sf.type === 'generator')) {
         const n = F.powerNet(sf.net), live = !!n && n.nodes.some((q) => q.type === 'generator' && dg.get('f' + q.id)?.ok !== false);
         this.reach(sf.type, sf.cx, sf.cz, sim, F, dg, `s${sf.id}:`, live, sf, null);
@@ -787,6 +890,7 @@ export class CueView {
     // (on a deposit the ghost's ring rides above the ore: the deck there is buried under it)
     const { cx, cz } = tool, x = cellX(cx, cz), z = cellZ(cz), y = this.deckY(x, z) + (F.oreAt(cx, cz) ? 0.5 : 0), g = `g${cx}:${cz}:`;
     const here = F.facAt(cx, cz);
+    if (tool.fac === 'arm') { this.armPreview(cx, cz, here && here.type === 'arm' ? here.dir : tool.dir, sim, F, g, true); return; }
     if (tool.fac === 'belt') { this.beltEnd(cx, cz, here && here.type === 'belt' ? here.dir : tool.dir, sim, F, g); return; }
     if (tool.fac === 'pipe') { this.pipeEnd(cx, cz, sim, F, dg, g); return; }
     if (tool.fac === 'tunnel' || tool.fac === 'ptunnel') { this.tunnelPair(tool.fac, cx, cz, tool.dir, tunnelMate(F, tool.fac, cx, cz, tool.dir), null, g); return; }
@@ -795,7 +899,7 @@ export class CueView {
     const hs: [number, number][] = [];
     let live = needs.length > 0, via: Fac | null = null;
     needs.forEach((n, i) => {
-      const r = this.route(n, cx, cz, F, dg, null, tool.fac === 'pole' ? POLE_REACH : SUPPLY, tool.fac);
+      const r = this.route(n, cx, cz, F, dg, null, tool.fac === 'pole' ? POLE_REACH : SUPPLY, tool.fac, !!tool.tower);
       if (!r || !r.ok) live = false;
       if (r && r.node) via = r.node;
       if (r && r.ok) {
@@ -812,26 +916,62 @@ export class CueView {
       this.holos(g, hs, x, y + (tool.tower ? (this.fac.modelTop('tower_' + tool.tower) * TOWER_SCALE || 3) + SEAT : this.seatFac(tool.fac!)), z);
     } else this.ring(g + 'k', S_OK, x, y + 0.075, z, 1, needs.length ? GREEN : SAND, needs.length ? 1.25 : 0.8, 0.1);
     if (tool.fac === 'pole' || tool.fac === 'generator') this.reach(tool.fac, cx, cz, sim, F, dg, g, live, null, via);
-    // what it makes: who would take it
+    // what it makes: the arms that would take it away (their backs to this tile), each with the way to its own target
     if (tool.fac) {
       const out = this.makes(tool.fac, cx, cz, F);
       if (out.length) {
-        let any = false;
-        for (let d = 0; d < 6; d++) {
-          const [nx, nz] = neighbor(cx, cz, d), q = F.facAt(nx, nz), t = this.towerAt.get(nz * GW + nx);
-          const takes = (t && out.some((it) => needsOf(t).item === it)) || (q && !conveyor(q.type) && facNeeds(q.type).some((n) => n.k === 'item' && out.some((it) => n.it === it || (n.it === 'ore' && (it === 'iron_ore' || it === 'copper_ore')))))
-            || (q && q.type === 'belt' && !pointsAt(q, cx, cz)) || (q && q.type === 'tunnel' && q.pair > 0 && !q.exit && !pointsAt(q, cx, cz));
-          if (!takes || !inBoard(nx, nz)) continue;
-          any = true;
-          const tx = cellX(nx, nz), tz = cellZ(nz), belt = !!q && conveyor(q.type), yy = belt ? ROUTE_GEOM.RAIL_Y + 0.08 : ROUTE_GEOM.ARM_Y, k = belt ? 0 : 0.3;
-          this.line(g + 'o' + d, [x + (tx - x) * 0.3, 0.62, z + (tz - z) * 0.3, x + (tx - x) * 0.5, (0.62 + yy) / 2, z + (tz - z) * 0.5, tx - (tx - x) * k, yy, tz - (tz - z) * k], GREEN, 1);
-          if (!belt) this.ring(g + 'ot' + d, S_SRC, tx, (t ? this.deckY(tx, tz) : 0) + 0.08, tz, 1, GREEN, 0.9, 0);
+        const takers = this.arms(F).back.get(cz * GW + cx) || [];
+        for (const a of takers) {
+          const hx = Math.cos((a.dir * Math.PI) / 3), hz = Math.sin((a.dir * Math.PI) / 3);
+          this.line(g + 'o' + a.id, [x + hx * 0.6, 0.62, z + hz * 0.6, a.x, 1.0, a.z, a.x + hx * 1.3, ROUTE_GEOM.ARM_Y, a.z + hz * 1.3], GREEN, 1);
+          this.ring(g + 'ot' + a.id, S_SRC, a.x, 0.08, a.z, 1, GREEN, 0.9, 0);
         }
-        if (!any && !hs.length) this.ring(g + 'o', S_OUT, x, y + 0.07, z, 1, AMBER, 0.75, 0.2);
+        if (!takers.length && !hs.length) this.ring(g + 'o', S_OUT, x, y + 0.07, z, 1, AMBER, 0.75, 0.2);
       }
     }
   }
+  /** The arms of the layout by front and back tile. */
+  private arms(F: Factory): ArmMaps {
+    if (this.armsRev !== F.rev) { this.armsRev = F.rev; this.armsMap = armMaps(F); }
+    return this.armsMap;
+  }
   /**
+   * A Transfer Arm to be (ghost) or selected: dashes flow through its tile from the tile behind it to the tile in front,
+   * with chevrons where they leave it. Behind: brackets on the source and, floating over it, the items the arm would take
+   * (what the source gives and the target accepts); amber brackets that reach and fall short when nothing stands there to
+   * take from. In front: brackets that lock green on a target that accepts; a dotted rust hex on an empty tile; a broken
+   * rust ring on something that takes no items, or takes none the source gives (then what it would take floats over it).
+   * The ghost also gets the arcs that say it can be turned.
+   */
+  private armPreview(cx: number, cz: number, dir: number, sim: Sim, F: Factory, g: string, ghost: boolean) {
+    const w = armWould(sim, cx, cz, dir), x = cellX(cx, cz), z = cellZ(cz), a = (dir * Math.PI) / 3, hx = Math.cos(a), hz = Math.sin(a);
+    const col = w.state === 'ok' ? GREEN : w.state === 'nosource' ? AMBER : RUST;
+    const bx = x - 2 * hx, bz = z - 2 * hz, fx = x + 2 * hx, fz = z + 2 * hz;
+    const qb = inBoard(w.back[0], w.back[1]) ? F.facAt(w.back[0], w.back[1]) : undefined, qf = inBoard(w.front[0], w.front[1]) ? F.facAt(w.front[0], w.front[1]) : undefined;
+    const tw = this.towerAt.get(w.front[1] * GW + w.front[0]), fy = tw ? this.deckY(fx, fz) : 0;
+    const seat = (q: Fac | undefined, t: Tower | undefined) => (t ? this.seatTower(t) : !q ? 1.2 : conveyor(q.type) ? 1.05 : this.seatFac(q.type));
+    // the way through the tile: low over the deck from the source's side to the target's, lifting over the arm's own pad
+    const k = g + dir + w.state[0] + ':';
+    this.line(k + 'w', [bx + hx * 0.75, 0.3, bz + hz * 0.75, x - hx * 0.55, 0.42, z - hz * 0.55, x, 0.5, z, x + hx * 0.55, 0.42, z + hz * 0.55, fx - hx * 0.75, 0.3, fz - hz * 0.75], col, L_FLOW);
+    this.ring(k + 'c', S_CHEV, x + hx * 1.0, 0.1, z + hz * 1.0, 0.62, col, 0, a);
+    if (ghost) this.ring(g + 'turn', S_TURN, x, 0.09, z, 1, SAND, 0.55, 0);
+    // behind: the source and what would be taken from it
+    if (w.state === 'nosource' && !w.offered.length) this.ring(k + 'b', S_OPEN, bx, 0.08, bz, 1, AMBER, 1, 0.2);
+    else {
+      this.ring(k + 'b', S_SRC, bx, 0.08, bz, 1, w.take.length ? GREEN : AMBER, 1, 0);
+      const show = (w.take.length ? w.take : w.offered).slice(0, 3);
+      this.holos(k + 'bi', show.map((it) => [ITEM_HOLO[it], ITEM_LIT[it]] as [number, number]), bx, seat(qb, undefined), bz);
+    }
+    // in front: the target
+    if (w.state === 'notarget') this.ring(k + 'f', S_SLOT, fx, this.deckY(fx, fz) + 0.08, fz, 1, RUST, 1, 0.3);
+    else if (w.state === 'ok' || w.state === 'nosource') this.ring(k + 'f', w.state === 'ok' ? S_LOCK : S_SRC, fx, fy + 0.08, fz, 1, w.state === 'ok' ? GREEN : AMBER, 1.1, 0.3);
+    else {
+      this.ring(k + 'f', S_MISS, fx, fy + 0.075, fz, 1, RUST, 1, 0.4);
+      if (w.state === 'mismatch') this.holos(k + 'fi', w.accepts.slice(0, 3).map((it) => [ITEM_HOLO[it], ITEM_LIT[it]] as [number, number]), fx, fy + seat(qf, tw), fz);
+    }
+  }
+  /**
+   * The reach of a pole or generator  /**
    * The reach of a pole or generator, to be (sel null) or selected: the tiles it powers under a soft fill one scan line
    * sweeps, their outline, and what stands in them. To be: brackets close on everything it would newly power, with the
    * drop cable it would get flowing down to it (green on a grid that carries power, amber on a dead one); what has power
@@ -997,30 +1137,22 @@ export class CueView {
     return o ? [o] : [];
   }
   /**
-   * A belt about to be laid (or the end of the line being dragged): follow it downstream to where it ends. Every tower or
-   * building beside the line that takes items gets its brackets and a connector; the end of the line gets a cap, closed and
-   * green when the line feeds something, open and amber when it leads nowhere.
+   * A belt about to be laid (or the end of the line being dragged): follow it downstream to where it ends. Every Transfer
+   * Arm that takes from the line (its back to one of its tiles) gets brackets; the end of the line gets a cap, closed and
+   * green when an arm empties the line or it runs on into a splitter, open and amber when nothing takes anything off it
+   * (a belt feeds nothing by itself).
    */
   private beltEnd(cx: number, cz: number, dir: number, sim: Sim, F: Factory, g: string) {
     let c: [number, number] = [cx, cz], d = dir, found = 0, joins = false;
-    const seen = new Set<number>();
+    const seen = new Set<number>(), backs = this.arms(F).back;
     for (let step = 0; step < 90; step++) {
       const j = c[1] * GW + c[0];
       if (seen.has(j)) break;
       seen.add(j);
-      const bx = cellX(c[0], c[1]), bz = cellZ(c[1]);
-      for (let k = 0; k < 6 && found < 6; k++) {
-        const [nx, nz] = neighbor(c[0], c[1], k);
-        if (!inBoard(nx, nz)) continue;
-        const t = this.towerAt.get(nz * GW + nx), q = F.facAt(nx, nz);
-        if (!((t && needsOf(t).item) || (q && !conveyor(q.type) && facNeeds(q.type).some((n) => n.k === 'item')))) continue;
-        const tx = cellX(nx, nz), tz = cellZ(nz), key = g + 't' + nx + ':' + nz;
-        if (this.ringBy.get(key)?.seen) continue;
+      for (const a of backs.get(j) || []) {
+        if (found >= 6) break;
         found++;
-        this.ring(key, S_SRC, tx, (t ? this.deckY(tx, tz) : 0) + 0.08, tz, 1, GREEN, 1, 0);
-        // (the taker straight ahead gets the cap instead of a connector)
-        const [ax, az] = neighbor(c[0], c[1], d);
-        if (ax !== nx || az !== nz) this.line(key, [bx, ROUTE_GEOM.RAIL_Y + 0.08, bz, tx - (tx - bx) * (ROUTE_GEOM.TAKER_IN / 2), ROUTE_GEOM.ARM_Y + 0.06, tz - (tz - bz) * (ROUTE_GEOM.TAKER_IN / 2)], GREEN, 1);
+        this.ring(g + 't' + a.id, S_SRC, a.x, 0.08, a.z, 1, GREEN, 1, 0);
       }
       const [nx, nz] = neighbor(c[0], c[1], d), q = F.facAt(nx, nz);
       if (q && q.type === 'belt' && !pointsAt(q, c[0], c[1])) { c = [nx, nz]; d = q.dir; continue; }
@@ -1038,38 +1170,31 @@ export class CueView {
    * The route that supplies a need of the thing on tile (cx, cz), read backwards from it: null when nothing leads there at
    * all. `self` is the building asking (so it is not taken for its own source), `reach` how far a power node may be.
    */
-  private route(n: Need, cx: number, cz: number, F: Factory, dg: Map<string, Diag>, self: Fac | null, reach = SUPPLY, ghost?: FacType): Route | null {
+  private route(n: Need, cx: number, cz: number, F: Factory, dg: Map<string, Diag>, self: Fac | null, reach = SUPPLY, ghost?: FacType, tower = false): Route | null {
     const tx = cellX(cx, cz), tz = cellZ(cz);
-    if (n.k === 'item') return this.itemRoute(n.it, cx, cz, tx, tz, F, dg, new Set(self ? [self.id] : []), 0);
+    if (n.k === 'item') return this.itemRoute(n.it, cx, cz, tx, tz, F, dg, new Set(self ? [self.id] : []), 0, tower);
     if (n.k === 'fluid') return this.fluidRoute(n.fl, cx, cz, tx, tz, F, dg, self);
     return this.powerRoute(cx, cz, tx, tz, F, dg, self, n.k === 'grid', reach, ghost);
   }
-  private itemRoute(it: ItemType | 'ore', cx: number, cz: number, tx: number, tz: number, F: Factory, dg: Map<string, Diag>, skip: Set<number>, depth: number): Route | null {
-    const par = new Map<number, number>(), queue: Fac[] = [];
+  /**
+   * An item's way to the thing on tile (cx, cz), read backwards: the Transfer Arms that put into that tile, what stands
+   * behind each (a producer, or a line of belts, splitters and tunnels with the arms that load it, or a chain of arms),
+   * breadth first to the nearest producer of the item that works (else one that does not yet). For a tower also the supply
+   * crate right beside it, the one thing that feeds it without an arm.
+   */
+  private itemRoute(it: ItemType | 'ore', cx: number, cz: number, tx: number, tz: number, F: Factory, dg: Map<string, Diag>, skip: Set<number>, depth: number, tower = false): Route | null {
+    const par = new Map<number, number>(), queue: Fac[] = [], arms = this.arms(F);
     let best: Fac | null = null, via = 0, fb: Fac | null = null, fbVia = 0;
     const consider = (p: Fac, v: number) => {
       if (skip.has(p.id) || !makesIt(p, it)) return;
       if (works(p, dg)) { if (!best) { best = p; via = v; } } else if (!fb) { fb = p; fbVia = v; }
     };
     const push = (q: Fac, down: number) => { if (!par.has(q.id)) { par.set(q.id, down); queue.push(q); } };
-    for (let d = 0; d < 6; d++) {
-      const [nx, nz] = neighbor(cx, cz, d), q = F.facAt(nx, nz);
-      if (!q) continue;
-      if (q.type === 'belt' || q.type === 'splitter' || (q.type === 'tunnel' && q.exit && pointsAt(q, cx, cz))) push(q, 0);
-      else if (!conveyor(q.type)) consider(q, 0);
-    }
+    if (tower) for (let d = 0; d < 6; d++) { const [nx, nz] = neighbor(cx, cz, d), q = F.facAt(nx, nz); if (q && q.type === 'crate') consider(q, 0); }
+    for (const a of arms.front.get(cz * GW + cx) || []) push(a, 0);
     for (let k = 0; k < queue.length && k < 600 && !best; k++) {
       const c = queue[k];
-      if (c.type === 'tunnel' && c.exit) { const e = F.facById(c.pair); if (e) push(e, c.id); continue; }
-      for (let d = 0; d < 6; d++) {
-        const [nx, nz] = neighbor(c.cx, c.cz, d), q = F.facAt(nx, nz);
-        if (!q) continue;
-        if (!conveyor(q.type)) { if (c.type !== 'splitter' && !(c.type === 'tunnel' && pointsAt(c, q.cx, q.cz))) consider(q, c.id); continue; }
-        // (as Factory.carry: nothing moves between two belts or a tunnel exit and a belt that point into each other; a splitter feeds a belt or a tunnel entrance that does not point back)
-        if (q.type === 'belt' && pointsAt(q, c.cx, c.cz) && !((c.type === 'tunnel' || c.type === 'belt') && pointsAt(c, q.cx, q.cz))) push(q, c.id);
-        else if (q.type === 'splitter' && (c.type === 'belt' || (c.type === 'tunnel' && !c.exit)) && !pointsAt(c, q.cx, q.cz)) push(q, c.id);
-        else if (q.type === 'tunnel' && q.exit && pointsAt(q, c.cx, c.cz) && c.type !== 'tunnel') push(q, c.id);
-      }
+      for (const q of preds(F, c, arms)) { if (q.type === 'arm' || conveyor(q.type)) push(q, c.id); else consider(q, c.id); }
     }
     const prod = (best || fb) as Fac | null;
     if (!prod) return null;
@@ -1085,10 +1210,17 @@ export class CueView {
     }
     pts.push(prod.x, 0.62, prod.z);
     chain.forEach((c, i) => {
-      const last = i === chain.length - 1;
+      const before = chain[i - 1], after = chain[i + 1];
+      // an arm: up over its own pad, between what it takes from and what it puts into
+      if (c.type === 'arm') { pts.push(c.x, ROUTE_GEOM.ARM_TOP, c.z); return; }
       if (c.type !== 'belt') { pts.push(c.x, yb, c.z); return; }
-      const p0 = i === 0 ? 0.4 : 0, p1 = last ? 0.5 : 1, straight = this.fac.beltPoint(c, p0, P);
+      // a belt: from where the arm before it puts things on (its start when that arm stands right behind it, else its
+      // middle) to where the arm after it takes them off (its middle, or near its end when the belt runs into that arm)
+      const p0 = before && before.type === 'arm' ? (before.dir === c.dir ? 0 : 0.5) : 0;
+      const p1 = after && after.type === 'arm' ? (pointsAt(c, after.cx, after.cz) ? 0.92 : 0.5) : 1;
+      const straight = this.fac.beltPoint(c, p0, P);
       pts.push(P.x, yb, P.z);
+      if (p1 <= p0) return;
       const n = straight ? 1 : 4;
       for (let s = 1; s <= n; s++) { this.fac.beltPoint(c, p0 + ((p1 - p0) * s) / n, P); pts.push(P.x, yb, P.z); }
     });

@@ -5,12 +5,12 @@ import {
   CELL, TOWERS, TOWER_TYPES, TOWER_TIER, TOWER_CHAIN, TOWER_SUPPLY, TOWER_NEEDS_L3, TOWER_SUPPLY_L3, TOWER_CHAIN_L3,
   ITEMS, FLUIDS, ORES, FACS, FAC_TYPES, MAKES, FAC_UPGRADABLE, FAC_LVL_SPEED, ITEM_SHOTS, CRATE_STOCK,
   ENEMIES, CARDS, WHEEL_GUARD, GYRE_FIRST, GYRE_EVERY, GYRE_PAIR, BROOD_SIZE, BROOD_EVERY, MITE_HOLD,
-  TITAN_STUN, TITAN_STRIKE, TITAN_LEAD, TUNE, BREACH_SHARE, LINK_RANGE, upgradeCost, upgradeMat,
+  TITAN_STUN, TITAN_STRIKE, TITAN_LEAD, TUNE, BREACH_SHARE, LINK_RANGE, upgradeCost, upgradeMat, START_FACS, FAC_CARD, CARD_BY_ID, AMMO2_CARD,
 } from './game/data.ts';
 import type { TowerType, EnemyType, FacType, ItemType, FluidType, OreType, TowerNeeds } from './game/data.ts';
 import {
   MINE_TIME, PUMP_RATE, SMELT_TIME, COAL_SMELTS, REFINE_IN, REFINE_OUT, REFINE_TIME, GEN_POWER, COAL_SECONDS,
-  POLE_REACH, SUPPLY, TUNNEL_REACH,
+  POLE_REACH, SUPPLY, TUNNEL_REACH, ARM_TIME,
 } from './game/factory.ts';
 import { DIFFS } from './game/map.ts';
 import { icon } from './icons.ts';
@@ -145,10 +145,11 @@ function buildRoster(host: HTMLElement) {
     const l3 = TOWER_NEEDS_L3[t];
     if (l3) {
       const c3 = h('ul', 'chips', ...needChips(l3));
-      c3.setAttribute('aria-label', 'What it needs at Mk3');
+      c3.setAttribute('aria-label', 'Its second ammunition, a switch on each Mk3 once its card is taken');
       const gain = l3.dmg ? `hits ${Math.round((l3.dmg - 1) * 100)}% harder` : '';
-      const more = [gain, perItem(t, l3)].filter(Boolean).join(', ');
-      txt.append(h('div', 'unit-row unit-mk3', h('span', 'unit-k', 'At Mk3'), c3, more ? h('span', 'unit-more', more) : null));
+      const card = AMMO2_CARD[t] ? CARD_BY_ID[AMMO2_CARD[t]!]?.name : '';
+      const more = [gain, perItem(t, l3), card ? `with the ${card} card` : ''].filter(Boolean).join(', ');
+      txt.append(h('div', 'unit-row unit-mk3', h('span', 'unit-k', 'Mk3 option'), c3, more ? h('span', 'unit-more', more) : null));
     }
     if (d.special) txt.append(h('p', 'unit-spec', h('b', '', d.special.name), ' ' + d.special.desc + ' ', h('span', '', `Charges in ${d.special.charge} s`)));
     const li = h('li', 'unit', frame, txt);
@@ -205,16 +206,15 @@ function buildDeposits(host: HTMLElement) {
   }
 }
 
-/** Which blueprint brings a building: the towers of the lowest tier whose supply chain has it. */
+/** How a building is unlocked: from the start, or the production card that opens it, with the cards and the level that card waits for. */
 function unlock(f: FacType): string {
   if (f === 'crate') return 'On the deck when the run starts';
-  if (f === 'tunnel' || f === 'ptunnel') return 'The Tunnels card';
-  const with_ = TOWER_TYPES.filter((t) => TOWER_CHAIN[t].includes(f));
-  const tier = Math.min(...with_.map((t) => TOWER_TIER[t]));
-  if (tier === 0) return 'From the start';
-  const first = with_.filter((t) => TOWER_TIER[t] === tier).map((t) => TOWERS[t].name);
-  const l3 = TOWER_TYPES.filter((t) => TOWER_CHAIN_L3[t]?.includes(f) && TOWER_TIER[t] < tier).map((t) => TOWERS[t].name + ' Mk3');
-  return list(first, 'or') + ' blueprint' + (l3.length ? ', or ' + list(l3, 'or') : '');
+  if (START_FACS.includes(f)) return 'From the start';
+  const id = FAC_CARD[f], c = id ? CARD_BY_ID[id] : undefined;
+  if (!c) return 'From the start';
+  const pre = (c.requires || []).map((r) => CARD_BY_ID[r]?.name).filter(Boolean);
+  const when = [pre.length ? 'after ' + list(pre) : '', c.guaranteeBy !== undefined && c.guaranteeBy <= 2 ? 'always among the first offers' : c.minLevel ? `from level ${c.minLevel}` + (c.guaranteeBy ? `, sure by level ${c.guaranteeBy}` : '') : ''].filter(Boolean);
+  return `The ${c.name} card` + (when.length ? ` (${when.join(', ')})` : '');
 }
 function recipe(f: FacType): { makes: string; needs: string } {
   const r = MAKES[f];
@@ -225,24 +225,25 @@ function recipe(f: FacType): { makes: string; needs: string } {
   }
   switch (f) {
     case 'mine': return { makes: `1 ore or coal every ${MINE_TIME} s, about what one Pulse Turret burns`, needs: 'An iron, copper or coal deposit under it' };
+    case 'arm': return { makes: `Takes one item at a time from the hex behind it and puts it into the hex in front: ${Math.round(60 / ARM_TIME)} a minute at Mk1. It picks up only what its target will take, and can be told to take one kind only`, needs: 'Something to take from behind it and something that takes it in front. R turns it' };
     case 'pump': return { makes: `${PUMP_RATE} crude oil a second, into pipes or the building beside it`, needs: 'An oil field under it' };
     case 'generator': return { makes: `${GEN_POWER} power for everything within ${SUPPLY} tiles`, needs: `1 coal every ${COAL_SECONDS} s at full load` };
     case 'pole': return { makes: `Carries power ${POLE_REACH} tiles to the next pole, across roads too, and powers everything within ${SUPPLY} tiles`, needs: 'A Generator on its line' };
     case 'smelter': return { makes: `1 iron or copper plate every ${SMELT_TIME} s`, needs: `Ore, and 1 coal for every ${COAL_SMELTS} plates` };
     case 'refinery': return { makes: `${REFINE_OUT} petrol every ${REFINE_TIME} s, out by pipe`, needs: `${REFINE_IN} crude oil by pipe` };
-    case 'belt': return { makes: 'Carries items the way its arrow points. One belt feeds every tower and building it runs past or points at; belts merge', needs: 'Nothing. Drag to lay a line' };
-    case 'splitter': return { makes: 'Deals what comes in out in turn to every belt leading away, or to a taker beside it', needs: 'Belts in and out' };
+    case 'belt': return { makes: 'Carries items the way its arrow points, and nothing else: it feeds nothing it runs past or ends at. Belts merge where one points into another', needs: 'A Transfer Arm to put items on it and one to take them off. Drag to lay a line' };
+    case 'splitter': return { makes: 'Deals what comes in out in turn to every belt leading away', needs: 'Belts in and out' };
     case 'tunnel': return { makes: `Items go in at one and come out of the other, up to ${TUNNEL_REACH} tiles on, under roads, towers and buildings`, needs: 'Two, facing the same way' };
     case 'pipe': return { makes: 'Carries crude oil or petrol to whatever stands beside it. Pipes join up by themselves', needs: 'A Pumpjack or Refinery on the line' };
     case 'ptunnel': return { makes: `Joins two pipe runs up to ${TUNNEL_REACH} tiles apart under whatever stands between`, needs: 'Two, in a straight line' };
     default: {
       const stock = (Object.entries(CRATE_STOCK) as [ItemType, number][]).map(([it, n]) => `${n} ${plural(it, n)}`);
-      return { makes: `Feeds a tower built right next to it, or a belt, until it is empty: ${list(stock, 'or')}`, needs: 'Nothing. It cannot be built or refilled' };
+      return { makes: `Feeds the towers built right next to it until it is empty, and a Transfer Arm can take from it: ${list(stock, 'or')}`, needs: 'Nothing. It cannot be built or refilled' };
     }
   }
 }
 const FAC_ALT: Partial<Record<FacType, string>> = {
-  mine: 'A Mine on an iron deposit.', pump: 'A Pumpjack on an oil field.', pipe: 'A bent run of pipe.', belt: 'A curved conveyor belt carrying ore.',
+  arm: 'A Transfer Arm between a Mine and a Pulse Turret.', mine: 'A Mine on an iron deposit.', pump: 'A Pumpjack on an oil field.', pipe: 'A bent run of pipe.', belt: 'A curved conveyor belt carrying ore.',
   splitter: 'A Belt Splitter with belts in and out, carrying ore.', tunnel: 'A pair of Belt Tunnels under the road.', ptunnel: 'A pair of Pipe Tunnels under the road.',
 };
 function buildFacs(host: HTMLElement) {
@@ -430,7 +431,7 @@ function buildChain(host: HTMLElement) {
     if (tn) tn.setAttribute('color', hex(d.color));
     if (towerText) towerText.textContent = d.name + (mk3 ? ' Mk3' : '');
     const supply = (mk3 && TOWER_SUPPLY_L3[cur]) || TOWER_SUPPLY[cur];
-    if (title) title.textContent = `Supply chain of the ${d.name}${mk3 ? ' at Mk3' : ''}. ${supply}`;
+    if (title) title.textContent = `Supply chain of the ${d.name}${mk3 ? ' Mk3 on its second ammunition' : ''}. ${supply}`;
 
     // legend: what runs along the lit lines
     legend.textContent = '';
@@ -442,7 +443,10 @@ function buildChain(host: HTMLElement) {
     const need = (mk3 && l3) || d.needs;
     const chips = h('ul', 'chips', ...needChips({ ...need, power: d.needs.power || need.power }));
     chips.setAttribute('aria-label', 'What it needs');
-    const chainFacs = [...new Set([...TOWER_CHAIN[cur], ...(mk3 ? TOWER_CHAIN_L3[cur] || [] : [])])].map((f) => FACS[f].name);
+    const facs = [...new Set([...TOWER_CHAIN[cur], ...(mk3 ? TOWER_CHAIN_L3[cur] || [] : [])])], chainFacs = facs.map((f) => FACS[f].name);
+    // the production cards those buildings come with (the Mine and the Transfer Arm are there from the start), and the ammo card of a second ammunition
+    const cards = [...new Set(facs.map((f) => FAC_CARD[f]).filter((id): id is string => !!id))].map((id) => CARD_BY_ID[id].name);
+    const ammoCard = mk3 && AMMO2_CARD[cur] ? CARD_BY_ID[AMMO2_CARD[cur]!]?.name : '';
     const thumb = still('tower_' + cur, 640, TOWER_COPY[cur].alt, '120px');
     thumb.loading = 'eager';
     panel.append(
@@ -451,11 +455,13 @@ function buildChain(host: HTMLElement) {
       h('h4', '', d.name + (mk3 ? ' Mk3' : '')),
       chips,
       h('p', 'chain-text', supply),
-      h('p', 'chain-unlock', h('b', '', TOWER_TIER[cur] === 0 ? 'You start with ' : 'Its blueprint brings '), list(chainFacs) + '.'),
+      h('p', 'chain-unlock', h('b', '', 'Its supply needs '), list(chainFacs) + '.'),
+      h('p', 'chain-unlock', h('b', '', 'Cards '), cards.length ? `${TOWER_TIER[cur] === 0 ? '' : 'Its blueprint unlocks the tower alone. '}The buildings come with ${list(cards)}${ammoCard ? `, and ${ammoCard} opens the switch on each Mk3` : ''}.` : 'None: the Mine and the Transfer Arm are there from the start.'),
+      h('p', 'chain-unlock', h('b', '', 'Hand-offs '), 'Every line of items in the picture is carried by Transfer Arms, with belts between them over a distance. Fluids run in pipes; power reaches what stands near.'),
     );
     if (d.mat) panel.append(h('p', 'chain-unlock', h('b', '', 'Price '), `${d.mat} building materials on top of ${d.cost} credits. A Frame Works makes them from iron plates; a run starts with a few in stock.`));
     if (l3) {
-      const b = h('button', 'chain-mk3', mk3 ? 'Back to Mk1 and Mk2' : 'Show its Mk3 supply');
+      const b = h('button', 'chain-mk3', mk3 ? 'Back to its first ammunition' : 'Show its second ammunition (a Mk3 switch)');
       b.type = 'button';
       b.setAttribute('aria-pressed', String(mk3));
       b.addEventListener('click', () => { mk3 = !mk3; update(); panel.querySelector<HTMLButtonElement>('.chain-mk3')?.focus(); });

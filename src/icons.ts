@@ -188,6 +188,17 @@ const ICONS: Record<IconName, Def> = {
     'l|' + DROP(12, 5.4, 4.6, 7.4), 'l|M7.5 14.2q3 1.6 6.4 0.6q-3 2.6 -6.4 -0.6Z',
   ] },
   // ---- buildings: hull tones on a ground line, one accent
+  // transfer arm: a jointed arm on a turntable, reaching over with an item in its gripper (the item is the accent)
+  fac_arm: { c: FACS.arm.color, p: [
+    GROUND,
+    'h|' + P(5, 20.6, 6.2, 17.2, 13.8, 17.2, 15, 20.6), 'd|' + P(11.4, 17.2, 13.8, 17.2, 15, 20.6, 12.2, 20.6),
+    'h~3.4|M10 15.6L6.6 7.2', 'd~1.2|M11.2 15.2L7.8 6.8',
+    'H~2.6|M6.6 7.2L17.2 4.6',
+    'd+|' + C(10, 15.8, 2.3), 'H|' + C(10, 15.8, 0.9),
+    'H+|' + C(6.6, 7.2, 2.3), 'd|' + C(6.6, 7.2, 0.9),
+    'h~1.5|M15.2 4.2V8.2M20.4 3.4V7.4', 'd+|' + C(17.6, 4.5, 1.6),
+    'a+|' + R(14.6, 8, 6.6, 5.4, 1), 'l|' + R(14.6, 8, 6.6, 1.7, 0.8), 's|' + R(18.6, 9.7, 2.6, 3.7, 0.6),
+  ] },
   // belt: a band over three rollers on two legs, carrying a crate
   fac_belt: { c: AMBER, p: [
     'd~1.7|M6.5 16.5V21M17.5 16.5V21',
@@ -587,40 +598,46 @@ export interface ChainTarget { item?: ItemType; fluid?: FluidType; tower?: Tower
 /**
  * A node of a chain: a deposit ('ore'), a resource ('res') or the tower at its end. `n`: how many of it one batch of its
  * parent takes (for the root: how many one batch gives). `by`: how it comes to be: the building, the batch size and time,
- * the power and fuel that takes; for a tower: how long one item lasts it (`time`) or what it burns per second (`rate`).
+ * the power and fuel that takes; for a tower: how long one item lasts it (`time`) or what it burns per second (`rate`),
+ * and `arm` when its ammunition is an item (a Transfer Arm has to hand it over: nothing feeds a tower by itself).
  */
 export interface ChainNode {
   kind: 'ore' | 'res' | 'tower'; id: string; icon: IconName; name: string; n: number;
-  by?: { fac?: FacType; n: number; time?: number; rate?: number; power: number; fuel?: { res: ItemType; per: number } };
+  by?: { fac?: FacType; n: number; time?: number; rate?: number; power: number; fuel?: { res: ItemType; per: number }; arm?: boolean };
   kids: ChainNode[];
 }
 /**
  * A production chain. `roots`: one tree per product (a Mine or a Smelter has several), each from its deposits (the
  * leaves) to the product. `power`: the tree that makes power, when anything in the chain draws it (it is drawn once,
  * beside the chain, not under every step). `fuel`: the tree of a fuel some step burns, when it is not already part of
- * the power tree. `facs` / `ores`: every building and deposit the whole thing takes. `draw`: the power one of each
- * building and the tower draw together.
+ * the power tree. `facs` / `ores`: every building and deposit the whole thing takes (the Transfer Arms are not listed in
+ * `facs`: they are no step of production). `draw`: the power one of each building and the tower draw together. `arms`:
+ * the item hand-offs of the line, so the fewest Transfer Arms it takes with one of each building standing side by side
+ * (an item into a building or the tower, a fuel into what burns it; fluids run in pipes and power over wires, a Mine or
+ * Pumpjack stands on its deposit).
  */
-export interface Chain { target: ChainTarget; roots: ChainNode[]; power: ChainNode | null; fuel: ChainNode[]; facs: FacType[]; ores: OreType[]; draw: number }
+export interface Chain { target: ChainTarget; roots: ChainNode[]; power: ChainNode | null; fuel: ChainNode[]; facs: FacType[]; ores: OreType[]; draw: number; arms: number }
 
 const resIcon = (r: Res): IconName => r;
 const resName = (r: Res) => iconLabel(r);
 const isRes = (r: string): r is Res => r === 'mats' || r === 'power' || r in ITEMS || r in FLUIDS;
 
-/** The chain that makes a resource, feeds a tower (at its level: Mk3 can change the ammunition) or runs through a building. Null when there is none (a belt, a pole). */
-export function chainOf(target: ChainTarget, lvl = 1): Chain | null {
+/** The chain that makes a resource, feeds a tower (`ammo2`: a Mk3 tower switched to its second ammunition, see needsOf; the
+ *  level alone changes nothing) or runs through a building. Null when there is none (a belt, an arm, a pole). */
+export function chainOf(target: ChainTarget, lvl = 1, ammo2 = false): Chain | null {
   const steps = recipes();
   const maker = (r: Res) => steps.find((s) => s.out === r);
   const facs = new Set<FacType>(), ores = new Set<OreType>(), fuels = new Set<ItemType>();
   let draw = 0, powered = false;
-  const drawn = new Set<FacType>();
+  const drawn = new Set<FacType>(), hands = new Set<string>();
   const grow = (r: Res, n: number, seen: Res[], only?: Step): ChainNode => {
     const node: ChainNode = { kind: 'res', id: r, icon: resIcon(r), name: resName(r), n, kids: [] };
     const s = only ?? maker(r);
     if (!s || seen.includes(r)) return node;
     facs.add(s.fac);
     if (s.power) { powered = true; if (!drawn.has(s.fac)) { drawn.add(s.fac); draw += s.power; } }
-    if (s.fuel) fuels.add(s.fuel.res);
+    if (s.fuel) { fuels.add(s.fuel.res); hands.add(s.fuel.res + '>' + s.fac); }
+    for (const i of s.inp) if (i.res in ITEMS) hands.add(i.res + '>' + s.fac);
     node.by = { fac: s.fac, n: s.n, power: s.power, fuel: s.fuel, ...(s.rate ? { rate: s.n } : { time: s.time }) };
     if (s.on) { ores.add(s.on); node.kids.push({ kind: 'ore', id: s.on, icon: `dep_${s.on}`, name: ORES[s.on].name, n: 1, kids: [] }); }
     for (const i of s.inp) node.kids.push(grow(i.res, i.n, [...seen, r]));
@@ -630,11 +647,12 @@ export function chainOf(target: ChainTarget, lvl = 1): Chain | null {
   let tw: TowerNeeds | null = null;
   if (target.tower) {
     const t = TOWERS[target.tower];
-    tw = needsOf({ type: target.tower, lvl });
+    tw = needsOf({ type: target.tower, lvl, ammo2 });
     const node: ChainNode = { kind: 'tower', id: target.tower, icon: `tw_${target.tower}`, name: t.name, n: 1, kids: [], by: { n: 1, power: tw.power ?? 0 } };
     if (tw.item) {
       const shots = tw.shots ?? ITEM_SHOTS[tw.item] ?? 1;
       if (t.rate > 0) node.by!.time = shots / t.rate;
+      node.by!.arm = true; hands.add(tw.item + '>tower');
       node.kids.push(grow(tw.item, 1, []));
     }
     if (tw.fluid) { node.by!.rate = FUEL_PER_TICK * t.rate; node.kids.push(grow(tw.fluid, 1, [])); }
@@ -654,7 +672,7 @@ export function chainOf(target: ChainTarget, lvl = 1): Chain | null {
   const power = powered && !inMain('power') ? grow('power', GEN_POWER, []) : null;
   const fuel: ChainNode[] = [];
   for (const f of fuels) if (!inMain(f) && !(power && has(power, f))) fuel.push(grow(f, 1, []));
-  return { target, roots, power, fuel, facs: (Object.keys(FACS) as FacType[]).filter((f) => facs.has(f)), ores: ORE_TYPES.filter((o) => ores.has(o)), draw };
+  return { target, roots, power, fuel, facs: (Object.keys(FACS) as FacType[]).filter((f) => facs.has(f)), ores: ORE_TYPES.filter((o) => ores.has(o)), draw, arms: hands.size };
 }
 
 const secs = (t: number) => (Math.abs(t - Math.round(t)) < 0.05 ? String(Math.round(t)) : t.toFixed(1)) + ' s';
@@ -668,7 +686,7 @@ function stepText(n: ChainNode): string {
   if (n.kind === 'tower') {
     const eats = n.kids.map((k) => (k.id === 'power' ? `${qty(k.n)} power` : k.name));
     if (b.power && !n.kids.some((k) => k.id === 'power')) eats.push(`${qty(b.power)} power`);
-    return `${n.name} runs on ${eats.join(' + ')}` + (b.time ? `, one every ${secs(b.time)}` : b.rate ? `, ${qty(b.rate)} per second` : '');
+    return `${n.name} runs on ${eats.join(' + ')}` + (b.time ? `, one every ${secs(b.time)}` : b.rate ? `, ${qty(b.rate)} per second` : '') + (b.arm ? `, handed over by a ${FACS.arm.name}` : '');
   }
   const ins = n.kids.map((k) => (k.kind === 'ore' ? `on a ${k.name.toLowerCase()}` : `${qty(k.n)} ${k.name}`));
   if (b.fuel) ins.push(`${frac(b.fuel.per)} ${ITEMS[b.fuel.res].name}`);
@@ -677,8 +695,8 @@ function stepText(n: ChainNode): string {
   return `${FACS[b.fac!].name}: ${ins.join(' + ')} -> ${made}`;
 }
 /** The whole chain in words, deposits first (for the diagram's label and for tests). */
-export function chainText(target: ChainTarget, lvl = 1): string {
-  const c = chainOf(target, lvl);
+export function chainText(target: ChainTarget, lvl = 1, ammo2 = false): string {
+  const c = chainOf(target, lvl, ammo2);
   if (!c) return '';
   const lines: string[] = [];
   const walk = (n: ChainNode) => { for (const k of n.kids) walk(k); if (n.by) { const t = stepText(n); if (!lines.includes(t)) lines.push(t); } };
@@ -695,8 +713,8 @@ export interface DiagramOpts {
   width?: number;
   /** row: left to right; stack: top to bottom; auto (default): row when it fits the width */
   layout?: 'auto' | 'row' | 'stack';
-  /** tower level (3 changes what some towers run on) */
-  lvl?: number;
+  /** tower level, and whether it is switched to its second ammunition (Mk3 only, see needsOf) */
+  lvl?: number; ammo2?: boolean;
   /** leave out the power and fuel lines under the chain */
   bare?: boolean;
 }
@@ -770,8 +788,9 @@ function drawTree(root: ChainNode, row: boolean): { svg: SVGSVGElement; w: numbe
     const [ax, ay] = xy(tip, cc);
     svgEl('path', { d: row ? P(ax, ay, ax - 5.5, ay - 3.6, ax - 5.5, ay + 3.6) : P(ax, ay, ax - 3.6, ay - 5.5, ax + 3.6, ay - 5.5), class: 'ic-d-head' }, lines);
     if (!b) { for (const k of l.kids) draw(k); return; }
-    // the step's marks: the building, the power and fuel it takes, its time
+    // the step's marks: the building (into a tower: the Transfer Arm that hands the item over), the power and fuel it takes, its time
     const mid = (bus + tip) / 2;
+    const bic: IconName | null = b.fac ? `fac_${b.fac}` : b.arm ? 'fac_arm' : null, bname = b.fac ? FACS[b.fac].name : `${FACS.arm.name}: nothing feeds a tower by itself`;
     const marks: { ic: IconName; size: number; text: string; cls: string; title: string }[] = [];
     if (b.power) marks.push({ ic: 'power', size: 11, text: qty(b.power), cls: 'ic-d-pw', title: `Draws ${qty(b.power)} power` });
     if (b.fuel) marks.push({ ic: b.fuel.res, size: 12, text: frac(b.fuel.per), cls: 'ic-d-q', title: `Burns one ${ITEMS[b.fuel.res].short} for every ${qty(b.fuel.per)}` });
@@ -779,10 +798,10 @@ function drawTree(root: ChainNode, row: boolean): { svg: SVGSVGElement; w: numbe
     const markW = (k: (typeof marks)[number]) => k.size + 1 + k.text.length * CH;
     if (row) {
       // above the arrow: building, then power and fuel; below it: the time
-      let wsum = (b.fac ? BLD : 0) + marks.reduce((s, k) => s + 3 + markW(k), 0) - (b.fac ? 0 : 3);
+      let wsum = (bic ? BLD : 0) + marks.reduce((s, k) => s + 3 + markW(k), 0) - (bic ? 0 : 3);
       let x = Math.max(from + 1, Math.min(mid - wsum / 2, m0 - 1 - wsum));
       const base = cc - 5;
-      if (b.fac) { place(svg, `fac_${b.fac}`, x, base - BLD, BLD, FACS[b.fac].name); x += BLD + 3; }
+      if (bic) { place(svg, bic, x, base - BLD, BLD, bname); x += BLD + 3; }
       for (const k of marks) {
         const g = svgEl('g', {}, svg); svgEl('title', {}, g).textContent = k.title;
         place(g, k.ic, x, base - k.size - 1, k.size); label(g, x + k.size + 1, base - 2.5, k.text, k.cls, 'start'); x += markW(k) + 3;
@@ -791,7 +810,7 @@ function drawTree(root: ChainNode, row: boolean): { svg: SVGSVGElement; w: numbe
     } else {
       // left of the arrow: the building; right of it: time, then power and fuel
       const midY = mid + 1;
-      if (b.fac) place(svg, `fac_${b.fac}`, cc - 6 - BLD, midY - BLD / 2, BLD, FACS[b.fac].name);
+      if (bic) place(svg, bic, cc - 6 - BLD, midY - BLD / 2, BLD, bname);
       let y = midY + 3 - (marks.length ? 6 : 0) - (marks.length > 1 ? 6 : 0);
       if (time) { label(svg, cc + 7, y, time, 'ic-d-t', 'start'); y += 13; } else y += 3;
       for (const k of marks) {
@@ -815,18 +834,19 @@ function rowWidth(c: Chain, bare: boolean) {
  * The production chain of an item, a fluid, a tower or a building as a diagram: icons joined by arrows from the raw
  * deposits to the product, the building of each step over its arrow with the power and fuel it takes, the time under
  * it, counts where a batch takes or gives more than one. Power and fuel are drawn once, on a line of their own under
- * the chain. Everything comes out of chainOf(), so out of data.ts. With nothing to show (a belt, a pole) the element is
+ * the chain. A Transfer Arm is drawn only where no building marks the arrow (the hand-off into a tower); how many arms the
+ * whole line takes at least is said once, on a last line. Everything comes out of chainOf(), so out of data.ts. With nothing to show (a belt, a pole) the element is
  * empty and carries the class ic-d-none.
  */
 export function recipeDiagram(target: ChainTarget, opts: DiagramOpts = {}): HTMLElement {
   const box = htmlEl('div', 'ic-diagram');
-  const c = chainOf(target, opts.lvl ?? 1);
+  const c = chainOf(target, opts.lvl ?? 1, !!opts.ammo2);
   if (!c) { box.classList.add('ic-d-none'); return box; }
   const width = opts.width ?? 420, need = rowWidth(c, !!opts.bare);
   const row = opts.layout === 'row' || (opts.layout !== 'stack' && need <= width);
   box.classList.add(row ? 'ic-d-row' : 'ic-d-stack');
   box.setAttribute('role', 'img');
-  box.setAttribute('aria-label', chainText(target, opts.lvl ?? 1));
+  box.setAttribute('aria-label', chainText(target, opts.lvl ?? 1, !!opts.ammo2));
   const part = (root: ChainNode, cap?: string, note?: string) => {
     const sec = htmlEl('div', 'ic-d-part' + (cap ? ' ic-d-aux' : ''), box);
     if (cap) { const hd = htmlEl('div', 'ic-d-cap', sec); htmlEl('span', '', hd, cap); if (note) htmlEl('i', '', hd, note); }
@@ -837,6 +857,13 @@ export function recipeDiagram(target: ChainTarget, opts: DiagramOpts = {}): HTML
   if (!opts.bare) {
     for (const f of c.fuel) part(f, 'Fuel', ITEMS[f.id as ItemType]?.name);
     if (c.power) part(c.power, 'Power', c.draw ? `this line draws ${qty(c.draw)}` : undefined);
+    // the hand-offs: said once under the chain (an arm on every arrow would bury the recipe)
+    if (c.arms) {
+      const hd = htmlEl('div', 'ic-d-cap', htmlEl('div', 'ic-d-part ic-d-aux ic-d-arms', box));
+      hd.appendChild(icon('fac_arm', { size: 14 }));
+      htmlEl('span', '', hd, `${c.arms} ${FACS.arm.name}${c.arms > 1 ? 's' : ''}`);
+      htmlEl('i', '', hd, c.arms > 1 ? 'at least: one for every item handed from one building to the next' : 'hands the item over');
+    }
   }
   return box;
 }

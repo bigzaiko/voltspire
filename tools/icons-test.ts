@@ -81,7 +81,14 @@ for (const t of TOWER_TYPES) for (const lvl of [1, 2, 3]) {
   // the power one of each draws: the tower and every powered building once
   ok(c.draw === (nd.power ?? 0) + c.facs.reduce((s, f) => s + (FACS[f].power ?? 0), 0), `${what}: draw ${c.draw}`);
 }
-ok(Object.keys(TOWER_NEEDS_L3).length > 0 && chainText({ tower: 'pulse' }, 3) !== chainText({ tower: 'pulse' }, 1), 'Mk3 changes the pulse chain');
+// Mk3 alone no longer changes what a tower eats: its second ammunition is a switch per tower (Tower.ammo2, after its card),
+// so chainOf({ tower }, 3) is the first ammunition's chain; the second one's buildings are TOWER_CHAIN_L3
+ok(Object.keys(TOWER_NEEDS_L3).length > 0 && chainText({ tower: 'pulse' }, 3) === chainText({ tower: 'pulse' }, 1), 'Mk3 alone keeps the pulse chain');
+for (const t of Object.keys(TOWER_NEEDS_L3) as (keyof typeof TOWER_NEEDS_L3)[]) {
+  const n = TOWER_NEEDS_L3[t]!, c = chainOf(n.item ? { item: n.item } : { fluid: n.fluid! });
+  const have = new Set<FacType>(['mine', ...TOWER_CHAIN[t], ...(TOWER_CHAIN_L3[t] ?? [])]);
+  ok(!!c && c.facs.every((f) => have.has(f)), `${t}: the second ammunition's chain is covered by its buildings (${c?.facs.join()})`);
+}
 // spot checks against the rules as the game states them
 { const c = chainOf({ item: 'shell' })!; ok(c.facs.join() === 'mine,generator,smelter,press' && c.ores.join() === 'iron_ore,coal' && !c.fuel.length && !!c.power, 'shell: ' + c.facs.join() + ' / ' + c.ores.join()); }
 { const c = chainOf({ tower: 'missile' })!; ok(c.ores.join() === 'iron_ore,copper_ore,coal,oil' && c.facs.join() === 'mine,generator,pump,smelter,refinery,missiles', 'missile: ' + c.facs.join()); }

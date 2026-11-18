@@ -17,6 +17,12 @@
 //  d. deposits keep off roads, scenery, towers and crate tiles, and never cover more than half of the roadside tiles
 //     around any roadside tile (towers need those).
 //  e. deterministic: the same map (roads, core, scenery, tier) always gives the same deposits.
+//  f. the arm opening (the Transfer Arm is the only transport at the start; belts come with a card): every crate of iron
+//     ore has an ARM LINE on its own side of the road: an iron deposit, then one or two tiles of free deck for Transfer
+//     Arms, then a free roadside turret tile, all in one straight line (arms only hand on straight through a tile, so an
+//     arm line has no bends), the turret tile at most BELT_REACH steps of free deck from the crate's turret tiles. And
+//     every map has two arm lines that share no arm or turret tile (they may share the mine), so a 2-turret opening fits.
+//     Where the rules above left none, an iron deposit is added at the back of the best line (shortest, inland mine tile).
 import { GW, GH, cellX, cellZ, ORE_TYPES, TOWERS } from './data.ts';
 import type { OreType, ItemType } from './data.ts';
 import { neighbor, hexDist, disc, inBoard } from './hex.ts';
@@ -51,6 +57,8 @@ function nbrs(i: number): number[] {
   return out;
 }
 const NB: number[][] = Array.from({ length: N }, (_, i) => nbrs(i));
+/** The neighbour of tile i in direction d (0..5), -1 off the board. */
+const NBD = Int32Array.from({ length: N * 6 }, (_, k) => { const i = (k / 6) | 0, [x, z] = neighbor(i % GW, (i / GW) | 0, k % 6); return idx(x, z); });
 const DISC2: number[][] = Array.from({ length: N }, (_, i) => disc(i % GW, (i / GW) | 0, 2).map(([x, z]) => idx(x, z)).filter((j) => j >= 0));
 
 /** The map's grid as a run starts it: roads and the core 1, scenery 3, the map's own towers 2 (the same rule as the Sim). */
@@ -189,8 +197,32 @@ function crowded(G: Ground, ore: ArrayLike<number>): number[] {
   return out;
 }
 
+/** A straight arm line (rule f), as tile indices: the mine's tile, the arms' tiles (from the mine on), the turret tile, and the direction from the mine to the turret. */
+interface Line { m: number; arms: number[]; t: number; d: number }
+/** The tiles of a straight line back from turret tile t against direction d: n arm tiles, then the mine tile; null if it leaves the board or crosses anything but free deck (no crate). */
+function lineBack(G: Ground, t: number, d: number, n: number): Line | null {
+  const back = (d + 3) % 6, arms: number[] = [];
+  let i = t;
+  for (let k = 0; k < n; k++) { i = NBD[i * 6 + back]; if (i < 0 || !G.open[i]) return null; arms.unshift(i); }
+  const m = NBD[i * 6 + back];
+  return m >= 0 && G.open[m] ? { m, arms, t, d } : null;
+}
+/** Every arm line on the board whose mine tile already holds iron: shorter lines first, then by turret tile and direction. */
+function armLinesOf(G: Ground, O: ArrayLike<number>): Line[] {
+  const IRON = oreVal('iron_ore'), out: Line[] = [];
+  for (const n of [1, 2]) for (let t = 0; t < N; t++) {
+    if (!G.open[t] || !G.side[t]) continue;
+    for (let d = 0; d < 6; d++) { const l = lineBack(G, t, d, n); if (l && O[l.m] === IRON) out.push(l); }
+  }
+  return out;
+}
+/** Two lines that share no arm or turret tile (the mine may be shared). */
+const apart = (a: Line, b: Line) => a.t !== b.t && !a.arms.includes(b.t) && !b.arms.includes(a.t) && !a.arms.some((i) => b.arms.includes(i));
+/** True if some two of the lines are apart. */
+function twoApart(L: Line[]): boolean { for (let i = 0; i < L.length; i++) for (let k = i + 1; k < L.length; k++) if (apart(L[i], L[k])) return true; return false; }
+
 /**
- * Deposits for a map (rules a to e above). `grid`: the start grid (startGrid), `key`: what makes the layout differ between
+ * Deposits for a map (rules a to f above). `grid`: the start grid (startGrid), `key`: what makes the layout differ between
  * maps (oreKey), `crates`: the run's supply crates (planCrates), `tier`: the map's tier, `core`: its core tile. Returns one value per tile:
  * 0 none, else 1 + the index in ORE_TYPES.
  */
@@ -272,6 +304,31 @@ export function makeDeposits(grid: ArrayLike<number>, key: string, crates: Crate
       if (iron.length >= 2) { ore[iron[0]] = COAL; patches[ri].coal++; }
     }
   }
+  // f. the arm opening: an arm line for every crate of iron ore, and two apart somewhere on the map (no random draws here:
+  // a map whose rules a and b already give the lines keeps exactly the deposits it had)
+  const lineFor = (k: number, need: (l: Line) => boolean) => {
+    const D = steps(G, G.spots[k]);
+    const ok = (l: Line) => D[l.t] >= 0 && D[l.t] <= BELT_REACH && need(l);
+    if (armLinesOf(G, ore).some(ok)) return true;
+    // the best new line: fewest arms, an inland mine tile, nearest the crate's turret tiles
+    const cand: [number, number, Line][] = [];
+    for (const n of [1, 2]) for (let t = 0; t < N; t++) {
+      if (!G.open[t] || !G.side[t] || D[t] < 0 || D[t] > BELT_REACH) continue;
+      for (let d = 0; d < 6; d++) {
+        const l = lineBack(G, t, d, n);
+        if (l && can(l.m) && need(l)) cand.push([n * 100 + (G.side[l.m] ? 50 : 0) + D[t] * 2 + (l.arms.some((i) => ore[i]) ? 10 : 0), cand.length, l]);
+      }
+    }
+    cand.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+    // (a mine tile beside the road can be refused: it would crowd the roadside, see put)
+    for (const [, , l] of cand) if (put(l.m, IRON)) return true;
+    return false;
+  };
+  for (const { k } of ironCrates) lineFor(k, () => true);
+  if (!twoApart(armLinesOf(G, ore))) {
+    const have = armLinesOf(G, ore);
+    for (const { k } of ironCrates) if (lineFor(k, (l) => !have.length || have.some((h) => apart(h, l)))) break;
+  }
   // c. the rest, per region by size: counts grow with the region and the tier
   const farFromCore = (list: number[]) => {
     const dist = (i: number) => hexDist(i % GW, (i / GW) | 0, core[0], core[1]);
@@ -344,6 +401,24 @@ export function autoOre(def: MapDef): OreLayout {
   return oreLayout(mapResources(new GameMap(def), true).ore);
 }
 
+/** A straight Transfer Arm line from an iron deposit to a turret tile (rule f): mine, arms (from the mine on, each facing `dir`), turret. */
+export interface ArmLine { mine: [number, number]; arms: [number, number][]; turret: [number, number]; dir: number }
+const cell = (i: number): [number, number] => [i % GW, (i / GW) | 0];
+const toArm = (l: Line): ArmLine => ({ mine: cell(l.m), arms: l.arms.map(cell), turret: cell(l.t), dir: l.d });
+/**
+ * The arm lines of a run on this map (rule f): `crates[k]` the lines of the k-th supply crate (empty for crates that are not
+ * iron ore), nearest first; `all` every line on the board (one or two arms, shorter first). Uses the deposits a run gets.
+ */
+export function armLines(def: MapDef, ore?: ArrayLike<number>): { crates: ArmLine[][]; all: ArmLine[]; spots: CrateSpot[] } {
+  const res = mapResources(new GameMap(def)), O = ore ?? res.ore, G = ground(res.grid, res.crates), L = armLinesOf(G, O);
+  const crates = res.crates.map((c, k) => {
+    if (c.it !== 'iron_ore') return [];
+    const D = steps(G, G.spots[k]);
+    return L.filter((l) => D[l.t] >= 0 && D[l.t] <= BELT_REACH).sort((a, b) => a.arms.length - b.arms.length || D[a.t] - D[b.t] || a.t - b.t || a.d - b.d).map(toArm);
+  });
+  return { crates, all: L.map(toArm), spots: res.crates };
+}
+
 export interface ResourceCheck {
   ok: boolean;
   /** what is wrong, in words for the player (empty when ok) */
@@ -395,12 +470,14 @@ export function checkResources(def: MapDef, ore?: ArrayLike<number>): ResourceCh
     if (!spots.length) { say(`The iron ore crate at ${where(ci)} has no free tile beside the road for a turret.`, ci); return; }
     const D = steps(G, spots);
     if (!O.some((v, i) => v === oreVal('iron_ore') && D[i] >= 0 && D[i] <= BELT_REACH)) say(`No iron within a ${BELT_REACH}-tile belt of the iron ore crate at ${where(ci)} on its side of the road.`, ci);
+    if (!armLinesOf(G, O).some((l) => D[l.t] >= 0 && D[l.t] <= BELT_REACH)) say(`No straight line iron deposit > Transfer Arm (one or two) > roadside turret tile within ${BELT_REACH} steps of the iron ore crate at ${where(ci)}.`, ci);
     const ri = G.home[k];
     if (ri >= 0 && !coalChecked.has(ri)) {
       coalChecked.add(ri);
       if (!G.regions[ri].some((i) => O[i] === oreVal('coal') && usable(i))) say(`No coal on the side of the road of the iron ore crate at ${where(ci)}.`, ci);
     }
   });
+  if (crates.some((c) => c.it === 'iron_ore') && !twoApart(armLinesOf(G, O))) say('No room anywhere for two turrets fed by Transfer Arms from iron (two straight arm lines that share no tile).');
   const crowd = crowded(G, O), told: number[] = [];
   for (const i of crowd) {
     if (told.some((j) => hexDist(i % GW, (i / GW) | 0, j % GW, (j / GW) | 0) <= 4)) continue;

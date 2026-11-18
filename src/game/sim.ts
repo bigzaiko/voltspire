@@ -6,7 +6,7 @@ import {
   TWIN_BOLT, PULSE_CRIT, RAIL_CAP, LANCE_FOCUS, BREACH_TIME, BREACH_TIME_BOSS, BREACH_SHARE, coopScale,
   FIRST_WAVE_IN, NEXT_WAVE_IN, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR,
   FACS, FAC_TYPES, ITEM_SHOTS, FUEL_PER_TICK, START_MATS, START_GOLD_MUL, TOWER_TIER, TOWER_CHAIN, CRATE_STOCK,
-  FAC_UPGRADABLE, FAC_UP_COST, TOWER_NEEDS_L3, TOWER_CHAIN_L3, needsOf, TARGET_MODES, TARGETABLE, TARGET_DEFAULT,
+  FAC_UPGRADABLE, FAC_UP_COST, TOWER_NEEDS_L3, START_FACS, FAC_CARD, AMMO2_CARD, ITEMS, needsOf, TARGET_MODES, TARGETABLE, TARGET_DEFAULT,
   WHEEL_GUARD, WHEEL_CRAWL, WHEEL_BLEED, WHEEL_DRAG, WHEEL_SINK, WHEEL_REST, WHEEL_SPINUP, WHEEL_PIERCE, WAVE_POOL, gyreCount, GYRE_WAVE,
   BROOD_EVERY, BROOD_FIRST, BROOD_SIZE, BROOD_REACH, MITE_HOLD, MITE_LIFE, JAM_LINGER,
   TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY, TITAN_STRIKE, TITAN_SLOW, TITAN_WALK, TITAN_PACE, TITAN_LEAD, TITAN_GOLD, TITAN_SURVIVAL, TITAN_AGAIN, TITAN_TOUGHER, TITAN_SMASH,
@@ -61,6 +61,8 @@ export interface Tower {
   starve: number;
   /** Targeting mode (see TargetMode): set by the player with Sim.setAim, kept over upgrades. Towers without TARGETABLE keep their TARGET_DEFAULT. */
   aim: TargetMode;
+  /** Switched to its second ammunition (TOWER_NEEDS_L3; see Sim.setAmmo2 and needsOf). Only a Mk3 tower whose ammo card was taken can be. */
+  ammo2: boolean;
 }
 /** True while a tower does nothing: rebooting, jammed by mites, stunned by the Titan, or out of supply. */
 export const towerOff = (t: Tower) => t.down > 0 || t.jam > 0 || t.stun > 0 || t.dry;
@@ -185,9 +187,11 @@ export interface SimOpts {
 }
 
 /** Factory buildings that give back all they cost when taken down. */
-const FULL_REFUND: ReadonlySet<FacType> = new Set<FacType>(['belt', 'splitter', 'tunnel', 'pipe', 'ptunnel', 'pole']);
+const FULL_REFUND: ReadonlySet<FacType> = new Set<FacType>(['arm', 'belt', 'splitter', 'tunnel', 'pipe', 'ptunnel', 'pole']);
 /** The levels whose card offer brings a blueprint (as long as one is left). */
 const BP_LEVELS = [2, 4, 6, 8, 10, 13, 16, 19, 22, 25, 28];
+/** How much more often (rarity weight) a production card an unlocked tower waits on fills an offer's free places. */
+const NEEDED_PROD = 3;
 const xpNeed = (lvl: number) => Math.round(12 + lvl * 7 + lvl * lvl * 0.55);
 const GAPS: Record<EnemyType, number> = { grunt: 0.55, runner: 0.33, drone: 0.5, shield: 0.95, brute: 1.3, boss: 3, wheel: 8, brood: 1.7, mite: 0.1, titan: 5 };
 const tmp: PathOut = { x: 0, z: 0, dx: 0, dz: 0, y: 0 };
@@ -231,10 +235,10 @@ export function mapEase(map: GameMap): number {
 }
 
 function newTower(id: number, type: TowerType, cx: number, cz: number, spent: number): Tower {
-  // a new tower is empty: it fires once a supply crate, a mine or a belt beside it feeds it
+  // a new tower is empty: it fires once a supply crate beside it or a Transfer Arm pointing at it feeds it
   return {
     id, type, cx, cz, x: cellX(cx, cz), z: cellZ(cz), lvl: 1, cd: 0.3, yaw: 0, buff: 0, spent, h: TOWER_H[type], charge: 0, spec: 0, down: 0, heat: 0, tgt: 0, aux: 0, fxT: 0, jam: 0, stun: 0,
-    stock: 0, ammo: 0, tank: 0, pwr: 0, dry: false, spentMat: 0, starve: 0, aim: TARGET_DEFAULT[type],
+    stock: 0, ammo: 0, tank: 0, pwr: 0, dry: false, spentMat: 0, starve: 0, aim: TARGET_DEFAULT[type], ammo2: false,
   };
 }
 /** An enemy of a type with everything else at rest (spawn() and the co-op replica fill in the rest). */
@@ -260,8 +264,8 @@ export class Sim {
   mats = START_MATS;
   mods: Mods = baseMods();
   unlocked = new Set<TowerType>(['pulse']);
-  /** factory buildings the player may build: a run starts with the Mine and the Belt, each blueprint adds what its tower's supply needs */
-  facs = new Set<FacType>(TOWER_CHAIN.pulse);
+  /** factory buildings the player may build: a run starts with the Transfer Arm and the Mine (START_FACS); the rest come with their production cards (FAC_CARD) */
+  facs = new Set<FacType>(START_FACS);
   /** Waves start by themselves after a pause (off: only when the player calls them). holdFirst: the first wave always waits for the call. */
   autoWaves = true; holdFirst = false;
   stacks: Record<string, number> = {};
@@ -411,12 +415,8 @@ export class Sim {
     const c = this.upCost(t), mt = this.upMat(t);
     if (this.gold < c || this.mats < mt) return false;
     this.gold -= c; this.mats -= mt; t.spent += c; t.spentMat += mt; t.lvl++;
-    if (t.lvl === 3 && TOWER_NEEDS_L3[t.type]) {
-      // a new ammunition from level 3 on: the old one is dropped, and the building that makes the new one is unlocked with it
-      t.stock = 0; t.ammo = 0; t.tank = 0;
-      for (const f of TOWER_CHAIN_L3[t.type] || []) this.facs.add(f);
-    }
-    this.factory.dirty = true; // (what it takes off the belts can change with its level)
+    // (an upgrade never changes what a tower eats: its second ammunition is a switch of its own, see setAmmo2)
+    this.factory.dirty = true;
     this.recomputeBuffs();
     this.events.push({ k: 'build', x: t.x, z: t.z, c: TOWERS[t.type].color });
     return true;
@@ -446,6 +446,34 @@ export class Sim {
     t.aim = mode;
     if (t.tgt) { if (t.type === 'lance' && t.spec <= 0) t.heat *= this.mods.lanceRamp ? 0.5 : 0; t.tgt = 0; }
     this.events.push({ k: 'aim', id: t.id, t: t.type, m: mode, x: t.x, z: t.z });
+    return true;
+  }
+  /**
+   * Whether a tower may be switched to its second ammunition (TOWER_NEEDS_L3) right now: '' if it may, else why not.
+   */
+  ammo2Block(id: number): string {
+    const t = this.towerById(id);
+    if (!t || this.over) return 'no tower';
+    const card = AMMO2_CARD[t.type];
+    if (!card || !TOWER_NEEDS_L3[t.type]) return 'it has no second ammunition';
+    if (t.lvl < 3) return 'Mk3 only';
+    if (!(this.stacks[card] > 0) && !this.opts.free) return 'needs the ' + CARD_BY_ID[card].name + ' card';
+    return '';
+  }
+  /**
+   * Switch a tower to its second ammunition (on) or back to its first (off). Validated like ammo2Block (switching off is
+   * always allowed). On a change the ammunition, tank and stock it held are dropped (they were the other kind), the factory
+   * works out what it takes again, and an { k: 'ammo', id, on: 0 | 1, x, z } event goes out. True when the tower ends up in
+   * the asked state, false when refused.
+   */
+  setAmmo2(id: number, on: boolean): boolean {
+    const t = this.towerById(id);
+    if (!t || this.over || typeof on !== 'boolean') return false;
+    if (t.ammo2 === on) return true;
+    if (on && this.ammo2Block(id)) return false;
+    t.ammo2 = on; t.stock = 0; t.ammo = 0; t.tank = 0;
+    this.factory.dirty = true;
+    this.events.push({ k: 'ammo', id: t.id, on: on ? 1 : 0, x: t.x, z: t.z });
     return true;
   }
   /** A beacon's current boost (0 while it reboots; tripled during Surge). */
@@ -479,7 +507,8 @@ export class Sim {
     for (const c of spots) F.placeCrate(c.cx, c.cz, c.it, CRATE_STOCK[c.it] || 10);
     for (const it of ['copper', 'shell'] as ItemType[]) {
       if (!F.facs.some((f) => f.type === 'crate' && f.hold === it)) continue;
-      for (const t of TOWER_TYPES) if (TOWERS[t].needs.item === it) { this.unlocked.add(t); if (TOWERS[t].needs.power) { this.facs.add('generator'); this.facs.add('pole'); } }
+      // its tower is open from the start, with the Power Grid card (it runs on power too)
+      for (const t of TOWER_TYPES) if (TOWERS[t].needs.item === it) { this.unlocked.add(t); if (TOWERS[t].needs.power) this.grant('power'); }
     }
   }
 
@@ -504,7 +533,7 @@ export class Sim {
     this.events.push({ k: 'build', x: f.x, z: f.z, c: FACS[type].color, fac: 1 });
     return f;
   }
-  /** Take a factory building down. Logistics (belts, splitters, tunnels, pipes, poles) give back all they cost (they are moved around a lot), the rest 60%. Items in it are lost. */
+  /** Take a factory building down. Logistics (Transfer Arms, belts, splitters, tunnels, pipes, poles) give back their price (they are moved around a lot), the rest and every upgrade 60%. Items in it are lost. */
   sellFac(id: number) {
     if (this.over) return false;
     const f = this.factory.facById(id);
@@ -514,7 +543,16 @@ export class Sim {
     this.events.push({ k: 'sell', x: f.x, z: f.z, fac: 1 });
     return true;
   }
-  facSellValue(id: number) { const f = this.factory.facById(id); return !f ? 0 : FULL_REFUND.has(f.type) ? f.spent : Math.round(f.spent * 0.6); }
+  facSellValue(id: number) {
+    const f = this.factory.facById(id);
+    if (!f) return 0;
+    if (!FULL_REFUND.has(f.type)) return Math.round(f.spent * 0.6);
+    // (logistics give back their price; upgrades, like every other building's, 60%: a Transfer Arm's levels are not free to undo)
+    let up = 0;
+    for (let l = 1; l < f.lvl; l++) up += Math.round(FACS[f.type].cost * FAC_UP_COST[l - 1] * this.mods.cheap);
+    up = Math.min(up, f.spent);
+    return f.spent - up + Math.round(up * 0.6);
+  }
   /** Credits the next level of a factory building costs (FAC_UP_COST of its price), or 0 when it is at the top or has no levels. */
   facUpCost(f: Fac) { return FAC_UPGRADABLE.has(f.type) && f.lvl < 3 ? Math.round(FACS[f.type].cost * FAC_UP_COST[f.lvl - 1] * this.mods.cheap) : 0; }
   /** Upgrade a mine, pumpjack, plant or generator one level (it works FAC_LVL_SPEED faster). */
@@ -528,6 +566,8 @@ export class Sim {
     return true;
   }
   rotateFac(id: number, dir: number) { this.factory.rotate(id, dir); }
+  /** Set a Transfer Arm's item filter (null: any item). False for anything that is not an arm, an unknown item, or a finished game. */
+  setArmFilter(id: number, it: ItemType | null): boolean { return !this.over && (it === null || (typeof it === 'string' && Object.hasOwn(ITEMS, it))) && this.factory.setFilter(id, it); }
 
   // ---------- tower supply ----------
   /** True if a tower has what it needs to fire right now (power, petrol, and ammunition loaded or in stock). */
@@ -866,34 +906,92 @@ export class Sim {
   }
 
   // ---------- cards ----------
-  private cardOk(_pi: number, c: Card) {
-    const stack = this.stacks[c.id] || 0;
-    if (c.kind === 'blueprint') return this.bpOpen().includes(c.id.slice(3) as TowerType);
-    if (c.id === 'tunnels' && this.level < 3) return false; // (not before there is a factory to connect)
-    return stack < c.max && (!c.needs || this.unlocked.has(c.needs));
+  /** True if card `id` counts as taken: in the stacks, or a production card whose buildings are all open anyway (a free run). */
+  taken(id: string): boolean {
+    if ((this.stacks[id] || 0) > 0) return true;
+    const c = Object.hasOwn(CARD_BY_ID, id) ? CARD_BY_ID[id] : undefined;
+    return !!c && !!c.unlocks && c.unlocks.every((f) => this.facs.has(f));
   }
   /**
-   * The blueprints on offer right now. They come tier by tier (see TOWER_TIER): only the lowest tier that still has something
-   * locked, so every new tower adds one step to what the player already runs.
-   * A tower a map opened early (its crate) still has a blueprint while its supply buildings are locked.
+   * True if a card may be offered right now: not maxed, within its levels (minLevel / maxLevel) and waves (minWave), every
+   * card it requires taken, none it excludes taken, its tower unlocked (needs), something left for it to unlock (a
+   * production card), an ammo card only where there is supply (not in free runs), a blueprint only from the lowest tier still locked.
+   */
+  cardOk(_pi: number, c: Card): boolean {
+    if (!c || (this.stacks[c.id] || 0) >= c.max) return false;
+    if (c.minLevel !== undefined && this.level < c.minLevel) return false;
+    if (c.maxLevel !== undefined && this.level > c.maxLevel) return false;
+    if (c.minWave !== undefined && this.wave < c.minWave) return false;
+    if (c.requires && !c.requires.every((r) => this.taken(r))) return false;
+    if (c.excludes && c.excludes.some((r) => (this.stacks[r] || 0) > 0)) return false;
+    if (c.needs && !this.unlocked.has(c.needs)) return false;
+    if (c.unlocks && c.unlocks.every((f) => this.facs.has(f))) return false;
+    if (c.ammo && this.opts.free) return false;
+    if (c.kind === 'blueprint') return this.bpOpen().includes(c.id.slice(3) as TowerType);
+    return true;
+  }
+  /**
+   * The blueprints on offer right now. They come tier by tier (see TOWER_TIER): only the lowest tier that still has a tower
+   * locked, so every new tower adds one step to what the player already runs. (A blueprint brings only its tower: the
+   * buildings its supply needs come with their production cards, which the offers push while a tower waits for them.)
    */
   bpOpen(): TowerType[] {
-    const locked = TOWER_TYPES.filter((t) => !this.unlocked.has(t) || TOWER_CHAIN[t].some((f) => !this.facs.has(f)));
+    const locked = TOWER_TYPES.filter((t) => !this.unlocked.has(t));
     if (!locked.length) return [];
-    const low = Math.min(...locked.map((t) => TOWER_TIER[t])), first = locked.filter((t) => TOWER_TIER[t] === low);
-    return first;
+    const low = Math.min(...locked.map((t) => TOWER_TIER[t]));
+    return locked.filter((t) => TOWER_TIER[t] === low);
   }
-  /** Roll an offer of up to three cards. */
+  /** The production cards a tower's supply still waits on (not taken), with what they require in turn, in PROD order. */
+  supplyCards(t: TowerType): string[] {
+    const need = new Set<string>();
+    const want = (id: string | undefined) => {
+      if (!id || need.has(id) || this.taken(id)) return;
+      need.add(id);
+      for (const r of CARD_BY_ID[id].requires || []) want(r);
+    };
+    for (const f of TOWER_CHAIN[t]) if (!this.facs.has(f)) want(FAC_CARD[f]);
+    return CARDS.filter((c) => need.has(c.id)).map((c) => c.id);
+  }
+  /** True if the player can build every building a tower's supply needs. */
+  canSupply(t: TowerType): boolean { return TOWER_CHAIN[t].every((f) => this.facs.has(f)); }
+  /**
+   * The production cards that can be offered now and that an unlocked tower waits on: the "frontier" of the towers' supply,
+   * oldest tower first. The offers take one of them in turn (see rollCards).
+   */
+  supplyFrontier(): string[] {
+    const out: string[] = [];
+    for (const t of this.unlocked) for (const id of this.supplyCards(t)) if (!out.includes(id) && this.cardOk(0, CARD_BY_ID[id])) out.push(id);
+    return out;
+  }
+  private prodTurn = 0;
+  /**
+   * Roll an offer of up to three cards (deterministic: the Sim's own seeded stream). In order: cards past their
+   * guaranteeBy level that can be offered and are not taken (the Conveyor Belts from the first level-up, the Tunnels from
+   * level 7); on the set levels a blueprint, and with it the first production card its tower's supply needs if the player
+   * cannot make that yet; otherwise, while an unlocked tower waits on production cards, one of them (in turn); the rest by
+   * rarity weight. Tower upgrades for a tower not on the field come less often, production cards no tower needs yet too.
+   */
   rollCards(pi: number): string[] {
     const all = CARDS.filter((c) => this.cardOk(pi, c));
     const out: string[] = [];
+    const push = (id: string | undefined) => { if (id && out.length < 3 && !out.includes(id)) out.push(id); };
+    for (const c of all) if (c.guaranteeBy !== undefined && this.level >= c.guaranteeBy) push(c.id);
     // blueprints come on set levels only, one at a time, so each new supply chain has a few waves to be built in
-    const bps = all.filter((c) => c.kind === 'blueprint'), pool = all.filter((c) => c.kind !== 'blueprint');
-    if (bps.length && BP_LEVELS.includes(this.level)) out.push(bps[Math.floor(this.rand() * bps.length)].id);
+    const bps = all.filter((c) => c.kind === 'blueprint');
+    let bpT: TowerType | null = null;
+    if (bps.length && BP_LEVELS.includes(this.level)) { const c = bps[Math.floor(this.rand() * bps.length)]; push(c.id); bpT = c.id.slice(3) as TowerType; }
+    if (bpT && !this.canSupply(bpT)) push(this.supplyCards(bpT).find((id) => this.cardOk(pi, CARD_BY_ID[id])));
+    const fr = this.supplyFrontier();
+    // (not when a forced card and a blueprint already hold two places, so such an offer keeps a third, free place; a
+    // blueprint's own supply card above is the one exception: an early offer can be belts + blueprint + its supply card)
+    if (fr.length && !out.some((id) => fr.includes(id)) && out.length < 2) push(fr[this.prodTurn++ % fr.length]);
     const W = [10, TUNE.rare, TUNE.epic];
     // dedicated upgrades are only useful once that tower is on the field, so they are offered less often until it is
-    const built = new Set(this.towers.map((t) => t.type));
-    const wt = (c: Card) => W[c.rar] * (c.needs && !built.has(c.needs) ? 0.3 : 1);
+    const built = new Set(this.towers.map((t) => t.type)), needed = new Set<string>();
+    for (const t of this.unlocked) for (const id of this.supplyCards(t)) needed.add(id);
+    // (production cards an unlocked tower waits on come more often, so a new tower is suppliable a few levels after its blueprint)
+    const wt = (c: Card) => W[c.rar] * (c.needs && !built.has(c.needs) ? 0.3 : 1) * (c.unlocks && !c.guaranteeBy ? (needed.has(c.id) ? NEEDED_PROD : 0.5) : 1);
+    const pool = all.filter((c) => c.kind !== 'blueprint');
     while (out.length < 3) {
       const rest = pool.filter((c) => !out.includes(c.id));
       if (!rest.length) break;
@@ -905,6 +1003,16 @@ export class Sim {
     }
     return out;
   }
+  /** Hand a card out without an offer (a map's opening, a test): it counts as taken and applies, unless it is maxed. */
+  grant(id: string) {
+    const card = Object.hasOwn(CARD_BY_ID, id) ? CARD_BY_ID[id] : undefined;
+    if (!card || (this.stacks[id] || 0) >= card.max) return;
+    this.stacks[id] = (this.stacks[id] || 0) + 1;
+    card.apply({
+      mods: this.mods, unlocked: this.unlocked, facs: this.facs,
+      addGold: (n) => { this.gold += n; }, addLives: (n) => { this.lives = Math.min(30, this.lives + n); }, addMats: (n) => { this.mats += n; },
+    });
+  }
   pickCard(pi: number, idx: number) {
     const p = this.players[pi];
     if (!p || !p.pending.length) return;
@@ -912,15 +1020,10 @@ export class Sim {
     const id = offer[Math.max(0, Math.min(offer.length - 1, idx | 0))];
     const card = typeof id === 'string' && Object.hasOwn(CARD_BY_ID, id) ? CARD_BY_ID[id] : undefined;
     if (!card) return;
-    const st = this.stacks;
-    if ((st[card.id] || 0) >= card.max) { this.gold += 100; return; }
-    st[card.id] = (st[card.id] || 0) + 1;
-    card.apply({
-      mods: this.mods, unlocked: this.unlocked, facs: this.facs,
-      addGold: (n) => { this.gold += n; }, addLives: (n) => { this.lives = Math.min(30, this.lives + n); }, addMats: (n) => { this.mats += n; },
-    });
+    if ((this.stacks[card.id] || 0) >= card.max) { this.gold += 100; return; }
+    this.grant(card.id);
     this.recomputeBuffs();
-    // offers rolled earlier may now contain a card that is maxed or a blueprint that is already unlocked
+    // offers rolled earlier may now contain a card that is maxed, a blueprint that is already unlocked or a production card with nothing left to open
     this.players.forEach((q, i) => {
       q.pending = q.pending.map((offer2) => (offer2.some((c) => !this.cardOk(i, CARD_BY_ID[c])) ? this.rollCards(i) : offer2)).filter((o) => o.length > 0);
     });
@@ -1653,7 +1756,7 @@ export class Sim {
       ti: [TITAN_PHASES.indexOf(this.titan.phase), r(this.titan.danger), this.titan.wave, r(this.titan.t), this.titan.lane],
       u: [...this.unlocked].map((t) => TOWER_TYPES.indexOf(t)),
       e: this.enemies.map((e) => [e.id, ENEMY_TYPES.indexOf(e.type), r(e.x), r(e.z), r(e.yaw), Math.ceil(e.hp), Math.ceil(e.maxHp), Math.ceil(e.shield), e.slowT > 0 ? 1 : 0, r(e.gy), (e.burnT > 0 ? 1 : 0) | (e.frz > 0 ? 2 : 0) | (e.vulnT > 0 ? 4 : 0) | (e.latched ? 32 : 0), r(e.breach), r(e.spin), e.prey]),
-      t: this.towers.map((t) => [t.id, TOWER_TYPES.indexOf(t.type), t.cx, t.cz, t.lvl, r(t.yaw), r(t.buff), t.spent, r(t.charge), r(t.down), r(t.spec), r(t.heat), r(t.jam), r(t.stun), t.dry ? 1 : 0, TARGET_MODES.indexOf(t.aim)]),
+      t: this.towers.map((t) => [t.id, TOWER_TYPES.indexOf(t.type), t.cx, t.cz, t.lvl, r(t.yaw), r(t.buff), t.spent, r(t.charge), r(t.down), r(t.spec), r(t.heat), r(t.jam), r(t.stun), t.dry ? 1 : 0, TARGET_MODES.indexOf(t.aim), t.ammo2 ? 1 : 0]),
       p: this.projs.map((p) => [p.id, PROJ_KINDS.indexOf(p.kind), r(p.x), r(p.y), r(p.z), r(p.vx), r(p.vy), r(p.vz), p.tier]),
       z: this.zones.map((z) => [z.id, ZONE_KINDS.indexOf(z.kind), r(z.x), r(z.z), r(z.r), r(z.life), r(z.y)]),
       pl: this.players.map((p) => [p.pending[0] || [], p.pending.length]),
@@ -1727,6 +1830,7 @@ export class Sim {
       t.jam = clamp(num(v[12]), 0, 60); t.stun = clamp(num(v[13]), 0, 60); t.dry = v[14] === 1;
       const aim = TARGET_MODES[num(v[15], -1) | 0]; // (a host that does not send it yet: the tower keeps what it has)
       if (aim && TARGETABLE[type]) t.aim = aim;
+      t.ammo2 = v[16] === 1 && t.lvl >= 3 && !!TOWER_NEEDS_L3[type]; // (a host that does not send it yet: the first ammunition)
       this.grid[cz * GW + cx] = 2;
       this.towers.push(t);
     }

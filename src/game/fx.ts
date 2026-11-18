@@ -7,7 +7,7 @@ import { FX_LAYER } from './world.ts';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const v1 = new THREE.Vector3(), v2 = new THREE.Vector3();
-const M4 = new THREE.Matrix4(), Q4 = new THREE.Quaternion();
+const M4 = new THREE.Matrix4(), Q4 = new THREE.Quaternion(), QT = new THREE.Quaternion();
 const c1 = new THREE.Color();
 const BEAM_GEO = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true).translate(0, 0.5, 0);
 
@@ -335,8 +335,475 @@ export const orbMat = (clock: { value: number }) => new THREE.ShaderMaterial({
   depthWrite: false, transparent: true, fog: false, side: THREE.DoubleSide,
 });
 
+// ---------- the kit of the tower specials ----------
+// Everything below is instanced and pooled: one draw per kind however many are alive, nothing allocated after start-up.
+const WHITE = new THREE.Color(0xffffff);
+const NOISE2 = `
+  float h21(vec2 p){ p = fract(p * vec2(0.1031, 0.1030)); p += dot(p, p.yx + 33.33); return fract((p.x + p.y) * p.x); }
+  float vn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(h21(i), h21(i + vec2(1.0, 0.0)), f.x), mix(h21(i + vec2(0.0, 1.0)), h21(i + vec2(1.0, 1.0)), f.x), f.y); }
+  float fbm(vec2 p){ float a = 0.5, s = 0.0; for (int i = 0; i < 4; i++) { s += a * vn(p); p = p * 2.03 + vec2(17.0, 9.0); a *= 0.5; } return s; }`;
+const PREMULT = { blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor } as const;
+
+/**
+ * Bolts: every segment of the specials' lightning, tracers and pillars of light in ONE instanced draw (the short-lived beams
+ * of Fx.beam are a mesh each). A segment may wait before it shows (`delay`): a leader that steps its way down, a chain that
+ * runs from machine to machine. Same hot-cored glow as the beams.
+ */
+class Bolts {
+  mesh: THREE.InstancedMesh;
+  private col: THREE.InstancedBufferAttribute;
+  private base: Float32Array; private life: Float32Array; private max: Float32Array; private wait: Float32Array;
+  private head = 0; private live = 0;
+  constructor(private cap = 768) {
+    const g = BEAM_GEO.clone();
+    this.col = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4);
+    this.col.setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute('aCol', this.col);
+    this.base = new Float32Array(cap * 3); this.life = new Float32Array(cap); this.max = new Float32Array(cap); this.wait = new Float32Array(cap);
+    this.mesh = new THREE.InstancedMesh(g, new THREE.ShaderMaterial({
+      vertexShader: `attribute vec4 aCol; varying vec3 vN, vV, vC;
+        void main(){ vec3 p = position; p.xz *= step(0.001, aCol.a) * (0.25 + 0.75 * aCol.a);
+          vec4 mv = modelViewMatrix * instanceMatrix * vec4(p, 1.0); vN = normalMatrix * mat3(instanceMatrix) * normal; vV = -mv.xyz;
+          vC = aCol.rgb * aCol.a * aCol.a * 1.6; gl_Position = projectionMatrix * mv; }`,
+      fragmentShader: `varying vec3 vN, vV, vC;
+        void main(){ float c = clamp(abs(dot(normalize(vN), normalize(vV))), 1e-4, 1.0);
+          float peak = max(max(vC.r, vC.g), vC.b);
+          vec3 hot = mix(vC, vec3(1.0, 0.95, 0.88) * peak, 0.42);
+          vec3 col = vC * pow(c, 1.8) + hot * 0.8 * pow(c, 7.2);
+          col /= 1.0 + 0.3 * max(col.r, max(col.g, col.b));
+          gl_FragColor = vec4(col, 1.0);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false,
+    }), cap);
+    this.mesh.count = 0; this.mesh.visible = false; this.mesh.frustumCulled = false;
+  }
+  add(ax: number, ay: number, az: number, bx: number, by: number, bz: number, color: number, width: number, life: number, delay: number, gain: number) {
+    const i = this.head; this.head = (this.head + 1) % this.cap;
+    v1.set(bx - ax, by - ay, bz - az);
+    const L = v1.length() || 0.001;
+    M4.compose(v2.set(ax, ay, az), Q4.setFromUnitVectors(UP, v1.divideScalar(L)), v1.set(width * 0.7, L, width * 0.7));
+    this.mesh.setMatrixAt(i, M4); this.mesh.instanceMatrix.needsUpdate = true;
+    c1.setHex(color);
+    this.base[i * 3] = c1.r * gain; this.base[i * 3 + 1] = c1.g * gain; this.base[i * 3 + 2] = c1.b * gain;
+    this.life[i] = this.max[i] = life; this.wait[i] = delay;
+    (this.col.array as Float32Array)[i * 4 + 3] = 0;
+    this.live = this.cap;
+  }
+  update(dt: number) {
+    if (this.live <= 0) { this.mesh.visible = false; return; }
+    const a = this.col.array as Float32Array, { life, max, wait, base } = this;
+    let hi = 0;
+    for (let i = 0; i < this.cap; i++) {
+      if (life[i] <= 0) continue;
+      const k = i * 4;
+      if (wait[i] > 0) { wait[i] -= dt; a[k + 3] = 0; hi = i + 1; continue; }
+      life[i] -= dt;
+      if (life[i] <= 0) { a[k + 3] = 0; continue; }
+      a[k] = base[i * 3]; a[k + 1] = base[i * 3 + 1]; a[k + 2] = base[i * 3 + 2]; a[k + 3] = life[i] / max[i];
+      hi = i + 1;
+    }
+    this.live = hi; this.mesh.count = hi; this.mesh.visible = hi > 0;
+    this.col.needsUpdate = true;
+  }
+}
+
+/** What a Decals instance draws (aA.y). */
+const D_SHOCK = 0, D_FROST = 1, D_LICHT = 2, D_CRATER = 3, D_MARK = 4, D_SHADE = 5, D_GLOW = 6, D_HOOP = 7;
+/**
+ * Decals: flat marks of the specials in one instanced draw, each a quad with a little shader of its own kind. On the deck:
+ * a shock band, a front of frost that leaves rime behind, the branching burn of a lightning strike, a crater, a target
+ * mark, a patch of shadow, a pool of light. Standing free at any angle: a hoop (a thin ring that grows or closes).
+ * Premultiplied: a mark can darken the deck and glow on top of it at once.
+ */
+class Decals {
+  mesh: THREE.InstancedMesh;
+  private a: THREE.InstancedBufferAttribute; private b: THREE.InstancedBufferAttribute; private c: THREE.InstancedBufferAttribute;
+  private life: Float32Array; private max: Float32Array; private wait: Float32Array;
+  private head = 0; private live = 0;
+  constructor(private cap = 128) {
+    const g = new THREE.PlaneGeometry(2, 2);
+    const attr = (n: number) => { const x = new THREE.InstancedBufferAttribute(new Float32Array(cap * n), n); x.setUsage(THREE.DynamicDrawUsage); return x; };
+    this.a = attr(4); this.b = attr(4); this.c = attr(3);
+    g.setAttribute('aA', this.a); g.setAttribute('aB', this.b); g.setAttribute('aC', this.c);
+    this.life = new Float32Array(cap); this.max = new Float32Array(cap); this.wait = new Float32Array(cap);
+    this.mesh = new THREE.InstancedMesh(g, new THREE.ShaderMaterial({
+      vertexShader: `attribute vec4 aA, aB; attribute vec3 aC; varying vec2 vUv; varying vec4 vA, vB; varying vec3 vC;
+        void main(){ vUv = uv; vA = aA; vB = aB; vC = aC;
+          gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position * step(0.0, aA.x), 1.0); }`,
+      fragmentShader: `varying vec2 vUv; varying vec4 vA, vB; varying vec3 vC;
+        ${NOISE2}
+        float ridge(float v, float p){ return pow(1.0 - abs(2.0 * v - 1.0), p); }
+        void main(){
+          vec2 p = vUv * 2.0 - 1.0; float r = length(p);
+          if (r > 1.0) discard;
+          float t = vA.x, kind = vA.y, seed = vA.z, gain = vA.w, ang = atan(p.y, p.x);
+          vec3 add = vec3(0.0); float a = 0.0, edge = 1.0 - smoothstep(0.9, 1.0, r);
+          if (kind < 0.5) {
+            // shock band: a soft-backed front that runs out from vB.x of the radius, vB.y wide
+            float R = mix(vB.x, 0.97, 1.0 - (1.0 - t) * (1.0 - t)), w = vB.y;
+            float band = smoothstep(R - w, R, r) * (1.0 - smoothstep(R, R + 0.012, r));
+            add = vC * band * band * (1.0 - t) * (1.0 - t) * gain; edge = 1.0;
+          } else if (kind < 1.5) {
+            // frost: the front races out in the first vB.x of its life, needles of rime shoot ahead of it and stay behind it
+            float R = min(1.0, t / vB.x); R = (1.0 - (1.0 - R) * (1.0 - R)) * 0.96;
+            float needles = ridge(vn(vec2(ang * 9.0 + seed, r * 2.0 + seed)), 5.0), fine = ridge(vn(vec2(ang * 31.0 - seed, r * 7.0)), 7.0);
+            float lead = smoothstep(R - 0.14 - 0.12 * needles, R, r) * (1.0 - smoothstep(R, R + 0.015, r));
+            float inside = 1.0 - smoothstep(R - 0.03, R, r);
+            float rime = inside * (0.14 + 0.62 * needles + 0.5 * fine) * smoothstep(1.0, 0.4, t) * smoothstep(0.0, 0.12, r);
+            add = vC * (lead * (1.0 - smoothstep(vB.x * 0.9, vB.x * 1.7, t)) * 1.0 + rime * 0.5) * gain;
+          } else if (kind < 2.5) {
+            // the burn of a strike: branches that run out from the middle white-hot and cool to a char
+            float w1 = fbm(vec2(ang * 1.9 + seed, r * 2.4 + seed * 0.37));
+            float v = ridge(fbm(vec2(ang * 3.0 + w1 * 2.6 + seed, r * 1.7 - w1)), 10.0), f2 = ridge(fbm(vec2(ang * 7.0 - seed, r * 4.0 + w1 * 3.0)), 14.0);
+            float lines = (v * pow(1.0 - r, 0.7) + f2 * (1.0 - r) * 0.5) * smoothstep(0.0, 0.1, t * 7.0 + 0.15 - r);
+            float heat = pow(1.0 - t, 3.0);
+            add = vC * (lines * (heat * 2.4 + 0.14 * (1.0 - t)) + pow(1.0 - r, 3.0) * heat * 0.55) * gain;
+            a = clamp(lines * 0.8 + pow(1.0 - r, 2.0) * 0.32, 0.0, 0.85) * smoothstep(1.0, 0.7, t);
+          } else if (kind < 3.5) {
+            // crater: a charred bowl with a torn edge, cracks that glow while it is fresh
+            float n = fbm(p * 3.0 + seed);
+            float disc = 1.0 - smoothstep(0.3 + 0.3 * n, 0.95, r);
+            float cracks = ridge(fbm(vec2(ang * 2.5 + seed, r * 2.0 + n)), 22.0) * (1.0 - smoothstep(0.4, 0.95, r));
+            float heat = pow(1.0 - t, 9.0);
+            add = vC * (cracks * (heat * 2.4 + 0.05 * (1.0 - t)) + disc * heat * 0.45) * gain;
+            a = clamp(disc * 0.74 + cracks * 0.3, 0.0, 0.88) * smoothstep(1.0, 0.75, t);
+          } else if (kind < 4.5) {
+            // target mark: a ring that closes on the spot, four brackets turning round it, a cross in the middle
+            float R = mix(1.0, 0.7, smoothstep(0.0, 0.3, t)), w = 0.035;
+            float ring = smoothstep(R - w - 0.02, R - w, r) * (1.0 - smoothstep(R - 0.02, R, r));
+            float tk = abs(fract((ang + t * 5.0 + seed) / 6.2831853 * 4.0) - 0.5) * 2.0;
+            float ticks = step(0.78, tk) * smoothstep(R - 0.32, R - 0.3, r) * (1.0 - smoothstep(R - 0.1, R - 0.08, r));
+            float cross = (1.0 - smoothstep(0.0, 0.025, min(abs(p.x), abs(p.y)))) * (1.0 - smoothstep(0.1, 0.24, r));
+            add = vC * (ring + ticks * 0.8 + cross) * (0.65 + 0.35 * sin(t * 70.0)) * smoothstep(1.0, 0.9, t) * smoothstep(0.0, 0.04, t) * gain;
+            edge = 1.0;
+          } else if (kind < 5.5) {
+            // shadow: the light goes out of a patch of deck
+            a = pow(1.0 - r, 1.3) * gain * smoothstep(0.0, 0.1, t) * smoothstep(1.0, 0.6, t);
+          } else if (kind < 6.5) {
+            add = vC * pow(1.0 - r, 2.0) * (1.0 - t) * (1.0 - t) * gain;
+          } else {
+            // hoop: a thin ring from vB.x to vB.y of the quad's radius, vB.z thick
+            float R = mix(vB.x, vB.y, 1.0 - (1.0 - t) * (1.0 - t)), w = vB.z;
+            float ring = smoothstep(R - w, R - w * 0.5, r) * (1.0 - smoothstep(R - w * 0.5, R, r));
+            add = vC * ring * min(1.0, (1.0 - t) * 3.0) * gain * 1.5; edge = 1.0;
+          }
+          gl_FragColor = vec4(add * edge, a * edge);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+      ...PREMULT, depthWrite: false, transparent: true, fog: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
+    }), cap);
+    this.mesh.count = 0; this.mesh.visible = false; this.mesh.frustumCulled = false;
+  }
+  /** (nx, ny, nz): the way the mark faces (0, 1, 0 for one on the deck). p0..p2: per kind (see the shader). */
+  add(kind: number, x: number, y: number, z: number, nx: number, ny: number, nz: number, r: number, color: number, life: number, gain: number, p0: number, p1: number, p2: number, delay: number) {
+    const i = this.head; this.head = (this.head + 1) % this.cap;
+    Q4.setFromUnitVectors(v1.set(0, 0, 1), v2.set(nx, ny, nz).normalize());
+    if (kind !== D_HOOP) Q4.multiply(QT.setFromAxisAngle(v1, Math.random() * 6.283));
+    M4.compose(v2.set(x, y, z), Q4, v1.set(r, r, r));
+    this.mesh.setMatrixAt(i, M4); this.mesh.instanceMatrix.needsUpdate = true;
+    const a = this.a.array as Float32Array, b = this.b.array as Float32Array, c = this.c.array as Float32Array;
+    a[i * 4] = delay > 0 ? -1 : 0; a[i * 4 + 1] = kind; a[i * 4 + 2] = Math.random() * 40; a[i * 4 + 3] = gain;
+    b[i * 4] = p0; b[i * 4 + 1] = p1; b[i * 4 + 2] = p2;
+    c1.setHex(color); c[i * 3] = c1.r; c[i * 3 + 1] = c1.g; c[i * 3 + 2] = c1.b;
+    this.life[i] = this.max[i] = life; this.wait[i] = delay;
+    this.a.needsUpdate = this.b.needsUpdate = this.c.needsUpdate = true;
+    this.live = this.cap;
+  }
+  update(dt: number) {
+    if (this.live <= 0) { this.mesh.visible = false; return; }
+    const a = this.a.array as Float32Array, { life, max, wait } = this;
+    let hi = 0;
+    for (let i = 0; i < this.cap; i++) {
+      if (life[i] <= 0) continue;
+      if (wait[i] > 0) { wait[i] -= dt; a[i * 4] = -1; hi = i + 1; continue; }
+      life[i] -= dt;
+      if (life[i] <= 0) { a[i * 4] = -1; continue; }
+      a[i * 4] = 1 - life[i] / max[i]; hi = i + 1;
+    }
+    this.live = hi; this.mesh.count = hi; this.mesh.visible = hi > 0;
+    this.a.needsUpdate = true;
+  }
+}
+
+/** A crystal of ice standing on its base: six-sided, a shoulder two thirds up, the tip a little off its axis. */
+function spikeGeometry() {
+  const pos: number[] = [], nor: number[] = [], A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3(), N = new THREE.Vector3();
+  const tri = (a: number[], b: number[], c: number[]) => {
+    A.fromArray(a); B.fromArray(b); C.fromArray(c);
+    N.copy(B).sub(A).cross(C.clone().sub(A)).normalize();
+    const flip = N.x * (A.x + B.x + C.x) + N.z * (A.z + B.z + C.z) < 0;
+    if (flip) N.negate();
+    for (const v of flip ? [a, c, b] : [a, b, c]) { pos.push(v[0], v[1], v[2]); nor.push(N.x, N.y, N.z); }
+  };
+  const ring = (y: number, r: number) => Array.from({ length: 6 }, (_, i) => { const a = (i / 6) * 6.2832 + 0.3, k = 0.85 + 0.3 * ((i * 7) % 3) / 2; return [Math.cos(a) * r * k, y, Math.sin(a) * r * k]; });
+  const r0 = ring(0, 1), r1 = ring(0.62, 0.78), tip = [0.12, 1, -0.08];
+  for (let i = 0; i < 6; i++) { const j = (i + 1) % 6; tri(r0[i], r1[i], r1[j]); tri(r0[i], r1[j], r0[j]); tri(r1[i], tip, r1[j]); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  return g;
+}
+/** Spikes of ice that are driven up out of the deck, stand a while and sink back: one instanced draw. */
+class Spikes {
+  mesh: THREE.InstancedMesh;
+  private st: THREE.InstancedBufferAttribute;
+  private life: Float32Array; private max: Float32Array; private wait: Float32Array;
+  private head = 0; private live = 0;
+  constructor(private cap = 192) {
+    const g = spikeGeometry();
+    this.st = new THREE.InstancedBufferAttribute(new Float32Array(cap * 2), 2);
+    this.st.setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute('aS', this.st);
+    this.life = new Float32Array(cap); this.max = new Float32Array(cap); this.wait = new Float32Array(cap);
+    this.mesh = new THREE.InstancedMesh(g, new THREE.ShaderMaterial({
+      vertexShader: `attribute vec2 aS; varying vec3 vN, vV; varying vec2 vS;
+        void main(){ vec3 p = position; p.y *= aS.x; p.xz *= 0.35 + 0.65 * min(1.0, aS.x); vS = aS;
+          vec4 mv = modelViewMatrix * instanceMatrix * vec4(p, 1.0); vN = normalMatrix * mat3(instanceMatrix) * normal; vV = -mv.xyz; gl_Position = projectionMatrix * mv; }`,
+      fragmentShader: `varying vec3 vN, vV; varying vec2 vS;
+        ${ICE_SHADE}
+        void main(){ float fres, spec; vec3 col = iceShade(normalize(vN), normalize(vV), 1.0, fres, spec);
+          col += vec3(1.3, 1.45, 1.6) * spec + vec3(0.55, 0.8, 1.0) * vS.y;
+          gl_FragColor = vec4(col, clamp(0.62 + 0.38 * fres + spec + vS.y, 0.0, 1.0) * step(0.004, vS.x));
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+      transparent: true, depthWrite: false, fog: false,
+    }), cap);
+    this.mesh.count = 0; this.mesh.visible = false; this.mesh.frustumCulled = false; this.mesh.renderOrder = 2;
+  }
+  /** h tall, w wide at the foot, leaning `lean` rad toward heading `yaw`. */
+  add(x: number, y: number, z: number, h: number, w: number, lean: number, yaw: number, life: number, delay: number) {
+    const i = this.head; this.head = (this.head + 1) % this.cap;
+    Q4.setFromAxisAngle(v1.set(Math.cos(yaw), 0, -Math.sin(yaw)), lean).multiply(QT.setFromAxisAngle(UP, Math.random() * 6.283));
+    M4.compose(v2.set(x, y, z), Q4, v1.set(w, h, w));
+    this.mesh.setMatrixAt(i, M4); this.mesh.instanceMatrix.needsUpdate = true;
+    this.life[i] = this.max[i] = life; this.wait[i] = delay;
+    (this.st.array as Float32Array)[i * 2] = 0;
+    this.live = this.cap;
+  }
+  update(dt: number) {
+    if (this.live <= 0) { this.mesh.visible = false; return; }
+    const a = this.st.array as Float32Array, { life, max, wait } = this;
+    let hi = 0;
+    for (let i = 0; i < this.cap; i++) {
+      if (life[i] <= 0) continue;
+      if (wait[i] > 0) { wait[i] -= dt; a[i * 2] = 0; hi = i + 1; continue; }
+      life[i] -= dt;
+      if (life[i] <= 0) { a[i * 2] = 0; continue; }
+      const age = max[i] - life[i], u = Math.min(1, age / 0.14), c = 1.70158, e = 1 + (c + 1) * Math.pow(u - 1, 3) + c * Math.pow(u - 1, 2);   // out with a little overshoot
+      a[i * 2] = Math.max(0.005, e * Math.min(1, life[i] / 0.35)); a[i * 2 + 1] = Math.max(0, 1 - age / 0.3) * 0.7;
+      hi = i + 1;
+    }
+    this.live = hi; this.mesh.count = hi; this.mesh.visible = hi > 0;
+    this.st.needsUpdate = true;
+  }
+}
+
+/**
+ * Chunks: small solid bits that are thrown, tumble, bounce on the deck and fade (spent brass, splinters of deck plate):
+ * one instanced draw, flown on the CPU like the splinters of ice.
+ */
+class Chunks {
+  mesh: THREE.InstancedMesh;
+  private col: THREE.InstancedBufferAttribute;
+  private pos: Float32Array; private vel: Float32Array; private axis: Float32Array; private dat: Float32Array; private base: Float32Array; private gy: Float32Array;
+  private head = 0; private live = 0;
+  constructor(private cap = 256) {
+    const g = new THREE.CylinderGeometry(0.5, 0.5, 1, 6);
+    this.col = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4);
+    this.col.setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute('aK', this.col);
+    this.pos = new Float32Array(cap * 3); this.vel = new Float32Array(cap * 3); this.axis = new Float32Array(cap * 3); this.base = new Float32Array(cap * 4);
+    this.dat = new Float32Array(cap * 6); // angle, turn rate, size, life, max life, stretch
+    this.gy = new Float32Array(cap);
+    this.mesh = new THREE.InstancedMesh(g, new THREE.ShaderMaterial({
+      vertexShader: `attribute vec4 aK; varying vec3 vN; varying vec4 vK;
+        void main(){ vK = aK; vN = normalMatrix * mat3(instanceMatrix) * normal; gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `varying vec3 vN; varying vec4 vK;
+        void main(){ vec3 n = normalize(vN); float l = 0.3 + 0.7 * max(0.0, dot(n, normalize(vec3(0.3, 0.8, 0.5))));
+          float s = pow(max(0.0, dot(n, normalize(vec3(0.2, 0.6, 0.77)))), 18.0);
+          gl_FragColor = vec4(vK.rgb * l + vK.rgb * s * 1.5, min(1.0, vK.a * 4.0));
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+      transparent: true, depthWrite: false, fog: false,
+    }), cap);
+    this.mesh.count = 0; this.mesh.visible = false; this.mesh.frustumCulled = false; this.mesh.renderOrder = 2;
+  }
+  add(x: number, y: number, z: number, vx: number, vy: number, vz: number, size: number, stretch: number, life: number, color: number, gain: number, gy: number) {
+    const i = this.head; this.head = (this.head + 1) % this.cap;
+    const j = i * 3, k = i * 6;
+    this.pos[j] = x; this.pos[j + 1] = y; this.pos[j + 2] = z; this.vel[j] = vx; this.vel[j + 1] = vy; this.vel[j + 2] = vz;
+    v1.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+    this.axis[j] = v1.x; this.axis[j + 1] = v1.y; this.axis[j + 2] = v1.z;
+    this.dat[k] = Math.random() * 6.28; this.dat[k + 1] = (Math.random() < 0.5 ? -1 : 1) * (8 + Math.random() * 16); this.dat[k + 2] = size; this.dat[k + 3] = this.dat[k + 4] = life; this.dat[k + 5] = stretch;
+    c1.setHex(color);
+    this.base[i * 4] = c1.r * gain; this.base[i * 4 + 1] = c1.g * gain; this.base[i * 4 + 2] = c1.b * gain;
+    this.gy[i] = gy;
+    this.live = this.cap;
+  }
+  update(dt: number) {
+    if (this.live <= 0) { this.mesh.visible = false; return; }
+    const { pos, vel, axis, dat, gy, base } = this, col = this.col.array as Float32Array;
+    let n = 0;
+    for (let i = 0; i < this.cap; i++) {
+      const k = i * 6;
+      if (dat[k + 3] <= 0) continue;
+      dat[k + 3] -= dt;
+      const j = i * 3, f = Math.max(0, dat[k + 3] / dat[k + 4]);
+      vel[j + 1] -= 16 * dt;
+      pos[j] += vel[j] * dt; pos[j + 1] += vel[j + 1] * dt; pos[j + 2] += vel[j + 2] * dt;
+      const floor = gy[i] + dat[k + 2] * 0.5;
+      if (pos[j + 1] < floor && vel[j + 1] < 0) { pos[j + 1] = floor; vel[j + 1] *= -0.4; vel[j] *= 0.55; vel[j + 2] *= 0.55; dat[k + 1] *= 0.5; }
+      dat[k] += dat[k + 1] * dt;
+      M4.compose(v1.set(pos[j], pos[j + 1], pos[j + 2]), Q4.setFromAxisAngle(v2.set(axis[j], axis[j + 1], axis[j + 2]), dat[k]), v2.set(dat[k + 2], dat[k + 2] * dat[k + 5], dat[k + 2]));
+      this.mesh.setMatrixAt(n, M4);
+      col[n * 4] = base[i * 4]; col[n * 4 + 1] = base[i * 4 + 1]; col[n * 4 + 2] = base[i * 4 + 2]; col[n * 4 + 3] = f;
+      n++;
+    }
+    this.live = n; this.mesh.count = n; this.mesh.visible = n > 0;
+    if (n) { this.mesh.instanceMatrix.needsUpdate = true; this.col.needsUpdate = true; }
+  }
+}
+
+/**
+ * Flares: points of light that face the camera with a lens star round them (a hot core, a soft halo, a long level streak,
+ * four fine rays): one instanced draw. A flare given a key is one light that is fed every frame (an emitter that burns for
+ * seconds, a ball of lightning that crawls along the road): the same key moves and re-lights the same flare.
+ */
+class Flares {
+  mesh: THREE.InstancedMesh;
+  private p: THREE.InstancedBufferAttribute; private f: THREE.InstancedBufferAttribute;
+  private life: Float32Array; private max: Float32Array; private gain: Float32Array; private key: Int32Array;
+  private head = 0; private live = 0;
+  constructor(private cap = 48) {
+    const g = new THREE.PlaneGeometry(2, 2);
+    const attr = (n: number) => { const x = new THREE.InstancedBufferAttribute(new Float32Array(cap * n), n); x.setUsage(THREE.DynamicDrawUsage); return x; };
+    this.p = attr(4); this.f = attr(4);
+    g.setAttribute('aP', this.p); g.setAttribute('aF', this.f);
+    this.life = new Float32Array(cap); this.max = new Float32Array(cap); this.gain = new Float32Array(cap); this.key = new Int32Array(cap).fill(-1);
+    this.mesh = new THREE.InstancedMesh(g, new THREE.ShaderMaterial({
+      vertexShader: `attribute vec4 aP, aF; varying vec2 vUv; varying vec4 vF;
+        void main(){ vUv = uv; vF = aF; vec4 mv = modelViewMatrix * vec4(aP.xyz, 1.0); mv.xy += position.xy * aP.w * step(0.0001, aF.a); gl_Position = projectionMatrix * mv; }`,
+      fragmentShader: `varying vec2 vUv; varying vec4 vF;
+        void main(){ vec2 p = vUv * 2.0 - 1.0; float r = length(p);
+          float core = exp(-r * r * 46.0), halo = exp(-r * 6.5) * 0.22;
+          float streak = exp(-abs(p.y) * 52.0) * exp(-abs(p.x) * 3.4) * 0.75;
+          float rays = (exp(-abs(p.x + p.y) * 44.0) + exp(-abs(p.x - p.y) * 44.0)) * exp(-r * 6.0) * 0.3;
+          float box = 1.0 - smoothstep(0.82, 1.0, max(abs(p.x), abs(p.y)));
+          vec3 col = vF.rgb * (halo + streak + rays) * 0.7 + mix(vF.rgb, vec3(1.0, 0.97, 0.92) * max(vF.r, max(vF.g, vF.b)), 0.5) * core * 1.1;
+          gl_FragColor = vec4(col * vF.a * box, 1.0);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false,
+    }), cap);
+    this.mesh.count = 0; this.mesh.visible = false; this.mesh.frustumCulled = false; this.mesh.renderOrder = 5;
+  }
+  add(x: number, y: number, z: number, size: number, color: number, life: number, gain: number, key: number) {
+    let i = -1;
+    if (key >= 0) for (let k = 0; k < this.cap; k++) if (this.key[k] === key && this.life[k] > 0) { i = k; break; }
+    if (i < 0) {
+      for (let n = 0; n < this.cap; n++) { const k = (this.head + n) % this.cap; if (this.life[k] <= 0) { i = k; break; } }
+      if (i < 0) i = this.head;
+      this.head = (i + 1) % this.cap;
+    }
+    const p = this.p.array as Float32Array, f = this.f.array as Float32Array;
+    p[i * 4] = x; p[i * 4 + 1] = y; p[i * 4 + 2] = z; p[i * 4 + 3] = size;
+    c1.setHex(color); f[i * 4] = c1.r; f[i * 4 + 1] = c1.g; f[i * 4 + 2] = c1.b;
+    this.life[i] = this.max[i] = life; this.gain[i] = gain; this.key[i] = key;
+    this.p.needsUpdate = true;
+    this.live = this.cap;
+  }
+  update(dt: number) {
+    if (this.live <= 0) { this.mesh.visible = false; return; }
+    const f = this.f.array as Float32Array, { life, max, gain, key } = this;
+    let hi = 0;
+    for (let i = 0; i < this.cap; i++) {
+      if (life[i] <= 0) continue;
+      life[i] -= dt;
+      if (life[i] <= 0) { f[i * 4 + 3] = 0; key[i] = -1; continue; }
+      // a fed flare (keyed) holds its light and only dies away when it is no longer fed; a single one fades over its life
+      f[i * 4 + 3] = gain[i] * (key[i] >= 0 ? Math.min(1, life[i] / (max[i] * 0.6)) : (life[i] / max[i]) * (life[i] / max[i]));
+      hi = i + 1;
+    }
+    this.live = hi; this.mesh.count = hi; this.mesh.visible = hi > 0;
+    this.f.needsUpdate = true;
+  }
+}
+
+/**
+ * A storm cell: three decks of slowly turning cloud, one above the other, with an eye in the middle and lightning that
+ * flickers inside it (uniform flash). One draw per cell; two cells are kept (two pylons may fire at once).
+ */
+class Storm {
+  mesh: THREE.Mesh; mat: THREE.ShaderMaterial;
+  life = 0; max = 1; flash = 0;
+  constructor(clock: { value: number }) {
+    const pos: number[] = [], uv: number[] = [], lay: number[] = [], idx: number[] = [];
+    for (let l = 0; l < 3; l++) {
+      const r = [1, 0.84, 0.6][l], y = l * 0.5, o = l * 4;
+      pos.push(-r, y, -r, r, y, -r, r, y, r, -r, y, r); uv.push(0, 0, 1, 0, 1, 1, 0, 1); lay.push(l, l, l, l); idx.push(o, o + 2, o + 1, o, o + 3, o + 2);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setAttribute('aL', new THREE.Float32BufferAttribute(lay, 1));
+    g.setIndex(idx);
+    this.mat = new THREE.ShaderMaterial({
+      uniforms: { time: clock, on: { value: 0 }, flash: { value: 0 }, seed: { value: Math.random() * 40 }, color: { value: new THREE.Color() } },
+      vertexShader: 'attribute float aL; varying vec2 vUv; varying float vL; void main(){ vUv = uv; vL = aL; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `uniform float time, on, flash, seed; uniform vec3 color; varying vec2 vUv; varying float vL;
+        ${NOISE2}
+        void main(){
+          vec2 p = vUv * 2.0 - 1.0; float r = length(p);
+          if (r > 1.0) discard;
+          // the decks turn at different speeds and wind tighter toward the eye
+          float ang = atan(p.y, p.x) + time * (0.5 + 0.22 * vL) + (1.0 - r) * (2.4 - 0.5 * vL);
+          vec2 q = vec2(cos(ang), sin(ang)) * r * (2.4 + 0.9 * vL) + seed + vL * 7.3;
+          float d = fbm(q + vec2(time * 0.15, 0.0));
+          float mask = (1.0 - smoothstep(0.5, 1.0, r)) * smoothstep(0.06, 0.34 - 0.07 * vL, r);
+          float dens = smoothstep(0.3, 0.68, d * 1.3) * mask * on;
+          vec3 col = mix(vec3(0.02, 0.018, 0.045), vec3(0.15, 0.14, 0.25), smoothstep(0.42, 0.9, d) * (0.35 + 0.33 * vL));
+          float fl = flash * (0.3 + 0.7 * vn(q * 1.9 + time * 4.0));
+          gl_FragColor = vec4(col * dens * 0.9 + color * fl * dens * (0.25 + 0.9 * smoothstep(0.45, 0.85, d)), dens * 0.8);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+      ...PREMULT, depthWrite: false, transparent: true, fog: false, side: THREE.DoubleSide,
+    });
+    this.mesh = new THREE.Mesh(g, this.mat);
+    this.mesh.visible = false; this.mesh.frustumCulled = false; this.mesh.renderOrder = 4;
+  }
+  start(x: number, y: number, z: number, r: number, life: number, color: number) {
+    this.mesh.position.set(x, y, z); this.mesh.scale.set(r, r * 0.42, r); this.mesh.visible = true;
+    this.life = this.max = life; this.flash = 0;
+    (this.mat.uniforms.color.value as THREE.Color).setHex(color); this.mat.uniforms.seed.value = Math.random() * 40;
+  }
+  update(dt: number) {
+    if (this.life <= 0) return;
+    this.life -= dt;
+    if (this.life <= 0) { this.mesh.visible = false; return; }
+    const age = this.max - this.life;
+    this.mat.uniforms.on.value = Math.min(1, age / 0.3) * Math.min(1, this.life / 0.9);
+    this.flash *= Math.exp(-dt * 9);
+    this.mat.uniforms.flash.value = this.flash;
+  }
+}
+
 export class Fx {
   group = new THREE.Group();
+  /** 1 on high quality, less on low: the specials scale their particle counts (Fx.n) and their camera shake by it */
+  detail = 1;
+  /** less motion asked for (prefers-reduced-motion, set by the view): flashes are smaller and shorter, glows on the deck half as bright */
+  calm = false;
+  private bolts = new Bolts(); private decals = new Decals(); private spikes = new Spikes(); private chunks = new Chunks(); private flares = new Flares();
+  private clock = { value: 0 };
+  /** three cells (three Arc Pylons firing together, before a Colossus), and a start count per slot so a cell taken over
+   *  by a newer storm no longer flashes for the old one's late strikes (see thunder()) */
+  private storms = [new Storm(this.clock), new Storm(this.clock), new Storm(this.clock)];
+  private stormGen = [0, 0, 0];
   private N = 6000;
   private pos = new Float32Array(this.N * 3);
   private col = new Float32Array(this.N * 3);
@@ -461,7 +928,7 @@ export class Fx {
       transparent: true, depthWrite: false, fog: false,
     }), this.HN);
     this.shards.count = 0; this.shards.visible = false; this.shards.frustumCulled = false; this.shards.renderOrder = 2;
-    this.group.add(this.smoke_, this.shards, this.points);
+    this.group.add(this.decals.mesh, this.smoke_, this.shards, this.spikes.mesh, this.chunks.mesh, this.points, this.bolts.mesh, ...this.storms.map((s) => s.mesh), this.flares.mesh);
     this.group.traverse((o) => o.layers.set(FX_LAYER));
   }
 
@@ -610,6 +1077,7 @@ export class Fx {
     g.mesh.visible = true;
   }
   flash(x: number, y: number, z: number, r: number, color: number, life = 0.25) {
+    if (this.calm) { r *= 0.6; life *= 0.7; }
     const g = this.flashes[this.fi]; this.fi = (this.fi + 1) % this.flashes.length;
     g.mesh.position.set(x, y, z);
     g.color.setHex(color); g.life = g.max = life; g.r0 = r * 0.3; g.r1 = r;
@@ -631,7 +1099,84 @@ export class Fx {
     this.smoke(x, y + 0.3, z, 4, 1.3, 1.6, 0.6);
   }
 
+  // ---------- the specials' kit ----------
+  /** A count scaled by the quality setting (never below 1). */
+  n(n: number) { return Math.max(1, Math.round(n * this.detail)); }
+  /** One straight segment of light (instanced). delay: seconds before it shows. */
+  bolt(ax: number, ay: number, az: number, bx: number, by: number, bz: number, color: number, width = 0.1, life = 0.2, delay = 0, gain = 1) {
+    this.bolts.add(ax, ay, az, bx, by, bz, color, width, life, delay, gain);
+  }
+  /**
+   * A bolt of lightning from a to b: a jagged path with forks, drawn with a hot core. step = seconds between one segment
+   * and the next (0: all at once; above 0 it steps its way from a to b like a leader), jag = how wild the path is,
+   * forks = how many side branches to expect. Returns the delay at which its far end shows.
+   */
+  lightning(ax: number, ay: number, az: number, bx: number, by: number, bz: number, color: number, width = 0.12, life = 0.25, delay = 0, step = 0, jag = 1, forks = 2, core = true, depth = 0): number {
+    const dx = bx - ax, dy = by - ay, dz = bz - az, L = Math.hypot(dx, dy, dz) || 0.001, n = Math.max(3, Math.min(22, Math.round(L / 0.85)));
+    const tx = dx / L, ty = dy / L, tz = dz / L;
+    // two directions across the path
+    let ux: number, uy: number, uz: number;
+    if (Math.abs(ty) < 0.9) { const l = Math.hypot(tz, tx) || 1; ux = tz / l; uy = 0; uz = -tx / l; } else { ux = 1; uy = 0; uz = 0; }
+    const wx = ty * uz - tz * uy, wy = tz * ux - tx * uz, wz = tx * uy - ty * ux;
+    const amp = jag * Math.min(0.85, L * 0.075), hot = core ? c1.setHex(color).lerp(WHITE, 0.6).getHex() : 0;
+    let px = ax, py = ay, pz = az, ou = 0, ow = 0;
+    for (let s = 1; s <= n; s++) {
+      const t = s / n, taper = s === n ? 0 : Math.pow(Math.sin(Math.PI * t), 0.6), d = delay + s * step;
+      ou = ou * 0.55 + (Math.random() - 0.5) * 2 * amp; ow = ow * 0.55 + (Math.random() - 0.5) * 2 * amp;
+      const nx = ax + dx * t + (ux * ou + wx * ow) * taper, ny = ay + dy * t + (uy * ou + wy * ow) * taper, nz = az + dz * t + (uz * ou + wz * ow) * taper;
+      this.bolts.add(px, py, pz, nx, ny, nz, color, width, life, d, 1);
+      if (core) this.bolts.add(px, py, pz, nx, ny, nz, hot, width * 0.34, life * 0.85, d, 1.5);
+      if (forks > 0 && depth < 2 && s < n && Math.random() < forks / n) {
+        // a side branch: off to one side and a little downward, shorter and thinner, branching again now and then
+        const fl = L * (0.14 + Math.random() * 0.24) * (1 - t * 0.5), a = (Math.random() - 0.5) * 1.7, b = (Math.random() - 0.5) * 1.7;
+        let fx = tx * 0.6 + ux * a + wx * b, fy = ty * 0.6 + uy * a + wy * b - 0.35, fz = tz * 0.6 + uz * a + wz * b;
+        const l = Math.hypot(fx, fy, fz) || 1; fx /= l; fy /= l; fz /= l;
+        this.lightning(nx, ny, nz, nx + fx * fl, Math.max(0.05, ny + fy * fl), nz + fz * fl, color, width * 0.5, life * 0.8, d, step, jag, forks * 0.6, false, depth + 1);
+      }
+      px = nx; py = ny; pz = nz;
+    }
+    return delay + n * step;
+  }
+  /** A soft-backed shock front on the deck that runs out to r (width = its share of r). */
+  wave(x: number, y: number, z: number, r: number, color: number, life = 0.5, r0 = 0.1, width = 0.14, gain = 1, delay = 0) { this.decals.add(D_SHOCK, x, y, z, 0, 1, 0, r, color, life, gain, r0, width, 0, delay); }
+  /** A front of frost that races out to r within `front` seconds and leaves needles of rime behind it for the rest of `life`. */
+  frostWave(x: number, y: number, z: number, r: number, life = 3, gain = 1, front = 0.35) { this.decals.add(D_FROST, x, y + 0.04, z, 0, 1, 0, r, 0x86cdf6, life, gain, Math.max(0.02, front / life), 0, 0, 0); }
+  /** The burn a lightning strike leaves on the deck: branches that glow and cool to a char. */
+  lichten(x: number, y: number, z: number, r: number, color: number, life = 5, gain = 1, delay = 0) { this.decals.add(D_LICHT, x, y + 0.03, z, 0, 1, 0, r, color, life, gain, 0, 0, 0, delay); }
+  /** A crater: a charred bowl with cracks that glow while it is fresh. */
+  crater(x: number, y: number, z: number, r: number, color: number, life = 7, gain = 1) { this.decals.add(D_CRATER, x, y + 0.03, z, 0, 1, 0, r, color, life, gain, 0, 0, 0, 0); }
+  /** A target mark on the deck: a ring that closes on the spot, turning brackets, a cross. */
+  mark(x: number, y: number, z: number, r: number, color: number, life = 0.9, gain = 1) { this.decals.add(D_MARK, x, y + 0.05, z, 0, 1, 0, r, color, life, gain, 0, 0, 0, 0); }
+  /** The light goes out of a patch of deck for a while (gain: how dark). */
+  shade(x: number, y: number, z: number, r: number, life: number, gain = 0.6) { this.decals.add(D_SHADE, x, y + 0.04, z, 0, 1, 0, r, 0, life, gain, 0, 0, 0, 0); }
+  /** A pool of light on the deck that dies away. */
+  glow(x: number, y: number, z: number, r: number, color: number, life = 0.4, gain = 1, delay = 0) { if (this.calm) gain *= 0.5; this.decals.add(D_GLOW, x, y + 0.05, z, 0, 1, 0, r, color, life, gain, 0, 0, 0, delay); }
+  /** A thin ring facing (nx, ny, nz) that runs from radius r0 to r1 (r1 below r0: it closes). */
+  hoop(x: number, y: number, z: number, nx: number, ny: number, nz: number, r0: number, r1: number, color: number, life = 0.4, thick = 0.07, gain = 1, delay = 0) {
+    const R = Math.max(r0, r1, 0.001);
+    this.decals.add(D_HOOP, x, y, z, nx, ny, nz, R / 0.97, color, life, gain, (r0 / R) * 0.97, (r1 / R) * 0.97, Math.min(0.4, thick / R), delay);
+  }
+  /** A spike of ice driven up out of the deck: h tall, w wide, leaning `lean` rad toward heading `yaw`; it stands `life` seconds. */
+  spike(x: number, y: number, z: number, h: number, w: number, lean = 0, yaw = 0, life = 2.5, delay = 0) { this.spikes.add(x, y, z, h, w, lean, yaw, life, delay); }
+  /** A small solid bit that tumbles and bounces on the deck at gy (stretch above 1: a casing, 1: a lump). gain above 1 makes it glow. */
+  chunk(x: number, y: number, z: number, vx: number, vy: number, vz: number, size: number, life: number, color: number, gy = 0, stretch = 1, gain = 1) { this.chunks.add(x, y, z, vx, vy, vz, size, stretch, life, color, gain, gy); }
+  /** A point of light with a lens star. key at or above 0: one light fed every frame (it moves and holds instead of stacking). */
+  flare(x: number, y: number, z: number, size: number, color: number, life = 0.2, gain = 1, key = -1) { this.flares.add(x, y, z, size, color, life, gain, key); }
+  /** A storm cell of radius r with its base at height y, for `life` seconds (in the free slot, else the one with least
+   *  life left). Returns a handle for thunder(): the slot and its start count. */
+  storm(x: number, y: number, z: number, r: number, life: number, color: number): number {
+    let i = 0;
+    for (let k = 1; k < this.storms.length; k++) if (this.storms[k].life < this.storms[i].life) i = k;
+    this.storms[i].start(x, y, z, r, life, color);
+    return i + 4 * ++this.stormGen[i];
+  }
+  /** Lightning flickers inside the storm cell `h` (from storm()); nothing once its slot holds a newer storm. */
+  thunder(h: number, amount = 1) { const i = h & 3, s = this.storms[i]; if (s && h >> 2 === this.stormGen[i] && s.life > 0) s.flash = Math.max(s.flash, amount); }
+
   update(dt: number, camera: THREE.PerspectiveCamera, viewH: number) {
+    this.clock.value += dt;
+    this.bolts.update(dt); this.decals.update(dt); this.spikes.update(dt); this.chunks.update(dt); this.flares.update(dt);
+    for (const s of this.storms) s.update(dt);
     const scale = viewH / (2 * Math.tan((camera.fov * Math.PI) / 360));
     this.pmat.uniforms.scale.value = scale; this.smat.uniforms.scale.value = scale;
     const { pos, vel, col, base, life, max, size, sz0, grav, cold, heat } = this;

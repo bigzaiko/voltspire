@@ -1,5 +1,5 @@
-// Touch controls. Tap, drag with one finger to pan, hold then drag to move the build ghost (a belt laid that way follows
-// the finger). Two fingers either pinch (zoom) or twist (turn): whichever passes its threshold first, and it stays that
+// Touch controls. Tap, drag with one finger to pan, hold then drag to move the build ghost (a belt or a line of arms laid
+// that way follows the finger). A long press (about 450 ms without moving) or a double tap on a tower fires its special. Two fingers either pinch (zoom) or twist (turn): whichever passes its threshold first, and it stays that
 // until a finger lifts. A round button turns the belt that is about to be placed.
 // Mouse and keyboard handlers in play.ts stay active; everything here only reacts to touch pointers,
 // except the on-screen buttons, which also take a mouse press or a keyboard activation.
@@ -23,6 +23,11 @@ export interface TouchApi {
   rotate(angle: number): void;
   pause(): void;
   speed(): void;
+  /**
+   * A long press or a double tap at client coordinates: fire the special of the tower there. True when the press was taken
+   * (a tower is there and nothing is chosen for building); false leaves it to be the tap or the ghost drag it would have been.
+   */
+  special?(clientX: number, clientY: number, double?: boolean): boolean;
 }
 
 const FREE = 0, BIRD = 1;
@@ -30,11 +35,15 @@ const FREE = 0, BIRD = 1;
 const DEAD = 12;
 /** press this long without moving and the drag moves the build ghost instead of the camera */
 const HOLD_MS = 240;
+/** press this long without moving on a tower and its special fires (the press then is no tap) */
+const LONG_MS = 450;
+/** two taps this close in time (ms) and place (px) are a double tap */
+const DOUBLE_MS = 340, DOUBLE_PX = 30;
 // Two fingers: the spread has to change by this much (px, or this share of the spread) to become a pinch,
 // or the line between the fingers has to turn by this much (radians, with the fingers at least APART px apart) to become a twist.
 const PINCH_PX = 18, PINCH_PART = 0.07, TWIST = 0.14, APART = 70;
 
-interface Slot { id: number; role: number; x: number; y: number; sx: number; sy: number; moved: boolean; pan: boolean; hover: boolean; el: Element | null; t: number; v: number }
+interface Slot { id: number; role: number; x: number; y: number; sx: number; sy: number; moved: boolean; pan: boolean; hover: boolean; fired: boolean; el: Element | null; t: number; v: number }
 /** What two fingers on the board are doing: 0 undecided, 1 pinch, 2 twist. d and a are the spread and angle last used. */
 interface Pair { mode: 0 | 1 | 2; d0: number; a0: number; d: number; a: number }
 const turn = (a: number): number => (a > Math.PI ? a - Math.PI * 2 : a < -Math.PI ? a + Math.PI * 2 : a);
@@ -45,11 +54,12 @@ export function initTouch(api: TouchApi): void {
   const byId = (id: string): HTMLElement | null => document.getElementById(id);
 
   const slots: Slot[] = [];
-  for (let i = 0; i < 4; i++) slots.push({ id: -1, role: FREE, x: 0, y: 0, sx: 0, sy: 0, moved: false, pan: false, hover: false, el: null, t: 0, v: 0 });
+  for (let i = 0; i < 4; i++) slots.push({ id: -1, role: FREE, x: 0, y: 0, sx: 0, sy: 0, moved: false, pan: false, hover: false, fired: false, el: null, t: 0, v: 0 });
   let active = false;
   let pair: Pair | null = null;
-  let holdTimer = 0;
-  let holdSlot: Slot | null = null;
+  let holdTimer = 0, longTimer = 0;
+  let holdSlot: Slot | null = null, longSlot: Slot | null = null;
+  const lastTap = { t: -1e9, x: 0, y: 0 };
 
   function activate(): void {
     if (active) return;
@@ -82,24 +92,36 @@ export function initTouch(api: TouchApi): void {
     if (!s) return null;
     s.id = e.pointerId; s.role = role; s.el = el;
     s.x = s.sx = e.clientX; s.y = s.sy = e.clientY;
-    s.moved = false; s.pan = false; s.hover = false; s.t = e.timeStamp; s.v = 0;
+    s.moved = false; s.pan = false; s.hover = false; s.fired = false; s.t = e.timeStamp; s.v = 0;
     try { el.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
     return s;
   }
   function clearHold(): void {
     if (holdTimer) { clearTimeout(holdTimer); holdTimer = 0; }
     holdSlot = null;
+    if (longTimer) { clearTimeout(longTimer); longTimer = 0; }
+    longSlot = null;
+  }
+  /** The finger is still down where it landed after LONG_MS: a long press. On a tower it fires the special and the press is used up. */
+  function onLong(): void {
+    longTimer = 0;
+    const s = longSlot;
+    longSlot = null;
+    if (!s || s.role !== BIRD || s.moved || s.pan || count(BIRD) !== 1) return;
+    if (Math.hypot(s.x - s.sx, s.y - s.sy) >= DEAD) return;
+    if (api.special && api.special(s.sx, s.sy)) s.fired = true;
   }
   function onHold(): void {
     holdTimer = 0;
     const s = holdSlot;
     holdSlot = null;
+    // (the long press keeps counting: the hold only hands the drag to the build ghost)
     if (!s || s.role !== BIRD || s.moved || count(BIRD) !== 1) return;
     s.hover = true;
     api.hoverAt(s.x, s.y);
   }
   function release(s: Slot): void {
-    if (holdSlot === s) clearHold();
+    if (holdSlot === s || longSlot === s) clearHold();
     if (s.el) { try { s.el.releasePointerCapture(s.id); } catch { /* not captured any more */ } }
     const bird = s.role === BIRD;
     s.role = FREE; s.id = -1; s.el = null;
@@ -125,6 +147,8 @@ export function initTouch(api: TouchApi): void {
       clearHold();
       holdSlot = s;
       holdTimer = window.setTimeout(onHold, HOLD_MS);
+      longSlot = s;
+      longTimer = window.setTimeout(onLong, LONG_MS);
     } else {
       // A second finger starts a pinch or a twist. Neither finger may end as a tap, and the pan stops.
       clearHold();
@@ -176,7 +200,7 @@ export function initTouch(api: TouchApi): void {
       if (tx * tx + ty * ty < DEAD * DEAD) return;
       // Leaving the dead zone starts the drag from here, so the camera does not jump. From now on it is no tap.
       s.moved = true; s.pan = true;
-      if (holdSlot === s) clearHold();
+      if (holdSlot === s || longSlot === s) clearHold();
       return;
     }
     s.x = e.clientX; s.y = e.clientY;
@@ -187,11 +211,17 @@ export function initTouch(api: TouchApi): void {
     const s = find(e.pointerId);
     if (!s) return;
     e.preventDefault();
-    const tap = s.role === BIRD && (s.hover || !s.moved), held = s.hover;
+    const tap = s.role === BIRD && (s.hover || !s.moved) && !s.fired, held = s.hover;
     const x = s.hover ? e.clientX : s.sx, y = s.hover ? e.clientY : s.sy;
     release(s);
-    if (tap) api.tap(x, y);
-    else if (held) api.hoverEnd();
+    if (tap) {
+      // the second of two quick taps on a tower fires its special (the first went through as a tap; special() undoes its selection)
+      const dbl = e.timeStamp - lastTap.t < DOUBLE_MS && Math.hypot(x - lastTap.x, y - lastTap.y) < DOUBLE_PX;
+      lastTap.t = dbl ? -1e9 : e.timeStamp; lastTap.x = x; lastTap.y = y;
+      if (!(dbl && api.special && api.special(x, y, true))) api.tap(x, y);
+    }
+    // (a finger that was held, whether it then moved the ghost or not, ends the line it was laying: the next press starts a new one)
+    if (held) api.hoverEnd();
   }
 
   function cancel(e: PointerEvent): void {

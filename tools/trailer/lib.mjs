@@ -57,6 +57,8 @@ export function installHelpers() {
       s.opts.pauseOnCards = false; s.opts.free = !!o.free; s.xpNext = 1e9; s.gold = 1e6; s.mats = 1e4;
       s.autoWaves = false; s.nextWaveIn = 1e9;
       for (const t of ['pulse', 'cryo', 'arc', 'mortar', 'rail', 'beacon', 'flame', 'lance', 'missile', 'gravity']) s.unlocked.add(t);
+      // (a run starts with the Transfer Arm and the Mine only; the scripted scenes build with every production card taken)
+      for (const f of ['arm', 'belt', 'splitter', 'tunnel', 'mine', 'generator', 'pole', 'pump', 'pipe', 'ptunnel', 'smelter', 'works', 'press', 'cells', 'refinery', 'missiles']) s.facs.add(f);
       V.view.skipIntro(); V.view.setQuality('high');
       s.events.length = 0;
       return s;
