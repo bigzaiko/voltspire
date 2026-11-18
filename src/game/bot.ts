@@ -1,7 +1,7 @@
 // Autoplayer: drives the menu attract mode, the trailer, and headless balance tests. It builds and upgrades towers,
 // picks cards and fires tower specials. It does not lay out a factory: the runs it plays have towers that need no supply (SimOpts.free).
 import { GW, GH, TOWERS, ENEMIES, CARD_BY_ID, LINK_RANGE, WALL_HALF, FIRE_RING, cellX, cellZ } from './data.ts';
-import type { TowerType } from './data.ts';
+import type { TowerType, TargetMode } from './data.ts';
 import { Sim, linkRange, segDist } from './sim.ts';
 import type { Tower } from './sim.ts';
 import { hexDist } from './hex.ts';
@@ -46,6 +46,9 @@ export class Bot {
   mix: Partial<Record<TowerType, number>> | null = null;
   /** Fire tower specials (balance tests switch this off to measure what the specials are worth). */
   useSpecials = true;
+  /** Targeting modes the bot sets on the towers it builds (types left out keep their TARGET_DEFAULT). A Cryo Tower on 'fast' slows the
+   *  runners first: a little better than 'first' in tools/balance.ts sweeps (the other modes tried were no better or worse). */
+  aims: Partial<Record<TowerType, TargetMode>> = { cryo: 'fast' };
   constructor(sim: Sim, pi = 0, skill = 1) { this.sim = sim; this.pi = pi; this.skill = skill; this.seed = ((sim.opts.seed | 0) ^ (0x9e3779b9 * (pi + 1))) >>> 0; }
 
   private rnd() { let t = (this.seed = (this.seed + 0x6d2b79f5) >>> 0); t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
@@ -191,6 +194,7 @@ export class Bot {
   step(dt: number) {
     const s = this.sim, p = s.players[this.pi];
     if (s.over || !p) return;
+    for (const t of s.towers) { const a = this.aims[t.type]; if (a && t.aim !== a) s.setAim(t.id, a); }
     while (p.pending.length) {
       const o = p.pending[0];
       let best = 0, bv = -Infinity;

@@ -2,3 +2,12 @@
 #touch, #touch * { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 body.touch canvas#c { touch-action: none; }
 body.touch { overscroll-behavior: none; }
+/* targeting: six modes a finger can hit (44 px each), so the tower panel is a little wider where it is not a bottom sheet */
+body.touch #tower { width: 356px; }
+body.touch .aim-b { height: 44px; }
+body.touch #tower #t-aim-all { min-height: 44px; padding: 0 10px; }
+@media (min-height: 481px) and (min-width: 601px) { body.touch #tower { width: 300px; } body.touch #tower #t-aim-all { min-height: 32px; } }
+@media (max-width: 600px) and (orientation: portrait) { body.touch #tower { width: auto; } }
+/* a resource chip is small: its touch target reaches a little past it */
+body.touch .ic-chip[data-rt] { position: relative; }
+body.touch .ic-chip[data-rt]::after { content: ''; position: absolute; inset: -9px -5px; }

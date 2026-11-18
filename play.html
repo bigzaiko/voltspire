@@ -20,6 +20,7 @@
   <link rel="stylesheet" href="./src/editor.css" />
   <link rel="stylesheet" href="./src/touch.css" />
   <link rel="stylesheet" href="./src/music.css" />
+  <link rel="stylesheet" href="./src/icons.css" />
 </head>
 <body>
   <canvas id="c"></canvas>
@@ -31,10 +32,10 @@
       <div class="gauges">
         <div class="stat"><label>Wave</label><b id="wave">0</b><small id="wave-sub"></small></div>
         <div class="stat core"><label>Core</label><b id="lives">20</b></div>
-        <div class="stat"><label>Credits</label><b id="gold">0</b></div>
-        <div class="stat" title="Building materials from a Frame Works: the stronger towers cost them"><label>Materials</label><b id="mats">0</b></div>
+        <div class="stat ics" id="st-gold"><label>Credits</label><b id="gold">0</b></div>
+        <div class="stat ics" id="st-mats" tabindex="0" aria-describedby="rtip" data-rt="res:mats"><label>Materials</label><b id="mats">0</b></div>
         <div class="stat wide"><label>Level <span id="level">1</span></label><div class="bar"><i id="xpbar"></i></div></div>
-        <div class="stat power" title="Power on all grids. Between waves: what everything needs at full load / what the fuelled generators will give. During a wave: drawn / available."><label id="power-label">Power</label><b id="power" class="sm">0 / 0</b></div>
+        <div class="stat power ics" id="st-power" tabindex="0" aria-describedby="rtip" data-rt="res:power"><label id="power-label">Power</label><b id="power" class="sm">0 / 0</b></div>
         <div class="stat next" id="next"><label id="next-label">Next wave</label><div id="next-row"></div></div>
       </div>
       <div class="spacer"></div>
@@ -57,10 +58,18 @@
     </div>
 
     <div id="tower" class="panel hidden">
-      <h3 id="t-name"></h3>
+      <h3><span id="t-name"></span><span id="t-aim-now"></span></h3>
       <div id="t-stats"></div>
       <div id="t-sup"></div>
       <div id="t-diag" class="diag"></div>
+      <!-- which enemy it shoots at: six modes, the lit one is set (T / Shift+T step through them) -->
+      <div id="t-aim" class="hidden">
+        <div class="aim-head"><span class="lab">Target</span><b id="t-aim-name"></b></div>
+        <button id="t-aim-all" class="chip" type="button">Set all</button>
+        <div id="t-aim-seg" role="radiogroup" aria-label="Which enemy this tower targets"></div>
+        <p id="t-aim-desc"></p>
+      </div>
+      <p id="t-aim-none" class="hidden"></p>
       <div id="t-spec">
         <b id="t-spec-name"></b>
         <p id="t-spec-desc"></p>
@@ -68,7 +77,7 @@
         <span id="t-spec-state"></span>
         <button id="t-special" class="btn small" type="button">Fire special (Space)</button>
       </div>
-      <p id="t-next"></p>
+      <div id="t-next"></div>
       <div id="t-btns">
         <button id="t-up" class="btn small"></button>
         <button id="t-sell" class="btn small ghost"></button>
@@ -79,6 +88,7 @@
     <div id="fpanel" class="panel hidden">
       <h3 id="f-name"></h3>
       <p id="f-state"></p>
+      <div id="f-make" class="rrow"></div>
       <div id="f-stats"></div>
       <div id="f-diag" class="diag"></div>
       <div id="t-btns2">
@@ -91,7 +101,7 @@
 
     <div id="opanel" class="panel hidden" aria-live="polite">
       <h3 id="o-name"></h3>
-      <p id="o-use"></p>
+      <div id="o-use"></div>
       <div id="o-stats"></div>
       <p id="o-pick"></p>
       <p id="o-why" class="muted small"></p>
@@ -121,6 +131,7 @@
       <span class="kicker" id="guide-step">Tutorial</span>
       <b id="guide-title"></b>
       <p id="guide-text"></p>
+      <div id="guide-ic" class="rrow"></div>
       <div class="guide-btns">
         <button id="guide-next" class="btn small hidden" type="button">Got it</button>
         <button id="guide-skip" class="btn small ghost" type="button">Skip tutorial</button>
@@ -274,7 +285,7 @@
       <div class="help-grid">
         <div class="panel"><h3>Command view</h3>
           <p class="kbd-only">Pick a tower or a factory building from the bar (number keys; <kbd>F</kbd> switches between Towers and Factory), then click a free hex to build. <kbd>Shift</kbd> keeps building.</p>
-          <p class="kbd-only">Click something you built to upgrade <span class="nowrap">(<kbd>U</kbd>)</span> or sell <span class="nowrap">(<kbd>X</kbd>)</span> it: towers, and mines, pumpjacks, plants and generators too. The tags over the spawn gates show what the next wave sends down each road.</p>
+          <p class="kbd-only">Click something you built to upgrade <span class="nowrap">(<kbd>U</kbd>)</span> or sell <span class="nowrap">(<kbd>X</kbd>)</span> it: towers, and mines, pumpjacks, plants and generators too. <kbd>T</kbd> steps a selected tower through its targeting modes (<kbd>Shift</kbd>+<kbd>T</kbd> backwards). The tags over the spawn gates show what the next wave sends down each road.</p>
           <p class="kbd-only"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or right-drag to pan, wheel to zoom. <kbd>Q</kbd> <kbd>E</kbd> or middle-drag turns the view, <kbd>Home</kbd> resets it.</p>
           <p class="kbd-only"><kbd>N</kbd> calls the next wave. Between waves time stands still: build, nothing is made and nothing moves until you call (or Auto waves calls for you). <kbd>G</kbd> switches the game speed, <kbd>P</kbd> or <kbd>Esc</kbd> pauses.</p>
           <p class="tap-only lead">Tap a building in the bar, then tap a hex. Hold and drag to move the preview first (a belt follows your finger). Tap something on the board to upgrade or sell it.</p>
@@ -283,17 +294,25 @@
         </div>
         <div class="panel"><h3>Supplying towers</h3>
           <p>A tower fires only what it is fed. It starts empty and keeps just one item in hand, pulling the next off its belt or pipe as it fires. Supply crates on the deck feed any tower built right next to them, but a crate runs out: every tower needs a supply line of its own in the end.</p>
-          <p>The Pulse Turret runs on iron ore: build a Mine on an iron deposit, right next to the turret or with a belt between them (<span class="kbd-only">point at</span><span class="tap-only">tap</span> a deposit to see what it is). A mine digs about one ore every 3 seconds, enough for one turret. <span class="kbd-only">Drag to lay a line of belts; <kbd>R</kbd> turns the belt you are placing.</span><span class="tap-only">Hold and drag to lay belts; Turn changes their direction.</span></p>
+          <p>A Mine digs about one ore every 3 seconds, enough for one Pulse Turret; build it right next to the turret or run a belt between them (<span class="kbd-only">point at</span><span class="tap-only">tap</span> a deposit to see what it is). <span class="kbd-only">Drag to lay a line of belts; <kbd>R</kbd> turns the belt you are placing.</span><span class="tap-only">Hold and drag to lay belts; Turn changes their direction.</span></p>
           <p>Nothing needs pointing: a building hands what it makes to a neighbour that needs it, or to a belt beside it when something further down that belt needs it. Towers and buildings take what they need from a belt that points at them or runs past them, so one belt can feed a whole row of towers. A belt pointing into another merges onto it.</p>
           <p>Between waves a broken rust ring under a tower or building, with a hologram of the missing item over it, means it will lack something when the wave starts; <span class="kbd-only">click</span><span class="tap-only">tap</span> it to see what is missing and what supplies it. The Power gauge shows what the grids need against what they have.</p>
           <p>While you place something, a green ring marks everything that will be supplied, dashes flow along the route the new piece would get, and brackets close on what it would feed or power. <span class="kbd-only">Hold <kbd>V</kbd> to see the green rings at any time between waves, or switch them on for good with the hexagon button beside Auto waves.</span><span class="tap-only">The hexagon button beside Auto waves keeps the green rings on between waves.</span></p>
-          <p>Each blueprint card unlocks a tower together with the buildings its supply needs, one step at a time: a Generator for power, a Pumpjack and pipes for oil, a Smelter for plates, then presses and plants, and from tier 2 the Belt Splitter. The Tunnels card adds Belt and Pipe Tunnels that pass up to 4 tiles under roads, towers and buildings. Mines, pumpjacks, plants and generators upgrade twice to work faster. At Mk3 the Pulse Turret fires plasma shells and the Firewall Pylon burns petrol.</p>
+          <p>Each blueprint card unlocks a tower together with the buildings its supply needs, one step at a time. The Tunnels card adds Belt and Pipe Tunnels that pass up to 4 tiles under roads, towers and buildings. Mines, pumpjacks, plants and generators upgrade twice to work faster.</p>
         </div>
         <div class="panel"><h3>Cards, specials and the machines</h3>
           <p>Every level you pick one of three cards: tower blueprints, tower upgrades, factory upgrades or economy.</p>
           <p>Towers charge a special. Select a charged tower and press <span class="kbd-only"><kbd>Space</kbd> or </span>Fire special. The tower then reboots for a few seconds.</p>
           <p>A campaign lasts 20, 25 or 30 waves depending on the threat level. A Colossus arrives every 5th wave. Survival has no last wave. A machine that reaches the Heart stops and attacks it. Destroy it before it strikes and the core takes no damage.</p>
+          <p id="help-aim-p">Every tower that picks a target can be told which: select it and choose First, Last, Strongest, Weakest, Fastest or Slowest in its panel<span class="kbd-only"> (<kbd>T</kbd> steps through them)</span>. Set all gives the mode to every tower of that kind<span class="kbd-only">, as does a <kbd>Shift</kbd>-click on a mode</span>, and new towers of the kind start with it. A bracket marks the enemy the selected tower is aiming at.</p>
+          <div id="help-aim" class="help-aim"></div>
           <p>Broodcarriers let mites loose that climb a tower and jam it: a violet ring crackles round its base with a mite over it, and any hit knocks them off. Late in a campaign the Titan lands and stuns every tower (a cold blue ring and a bolt until it reboots): its hull turns most tower fire, so save the specials for it.</p>
+        </div>
+        <!-- what every tower runs on and how each resource is made: built by play.ts from the game's own tables -->
+        <div class="panel help-res"><h3>What the towers run on</h3>
+          <p class="help-res-lead"><span class="kbd-only">Point at</span><span class="tap-only">Tap</span> any icon, here or in the game, to see how it is made.</p>
+          <div id="help-towers" class="help-towers"></div>
+          <div id="help-recipes" class="help-recipes"></div>
         </div>
       </div>
       <div class="menu-buttons row">
@@ -402,6 +421,8 @@
     </div>
   </div>
 
+  <!-- the recipe of whatever resource icon the pointer rests on, has the focus or was tapped (see play.ts) -->
+  <div id="rtip" class="hidden" role="tooltip"></div>
   <div id="notes" aria-live="polite"></div>
   <pre id="diag" class="hidden" aria-hidden="true"></pre>
 

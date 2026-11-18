@@ -13,6 +13,7 @@ import {
   POLE_REACH, SUPPLY, TUNNEL_REACH,
 } from './game/factory.ts';
 import { DIFFS } from './game/map.ts';
+import { icon } from './icons.ts';
 
 const root = document.documentElement;
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
@@ -55,7 +56,8 @@ const inkOf = (r: Res) => INK[r] || (r in ITEMS ? hex(ITEMS[r as ItemType].color
 const resName = (r: Res) => (r === 'power' ? 'Power' : r === 'mats' ? 'Building materials' : r in ITEMS ? ITEMS[r as ItemType].name : FLUIDS[r as FluidType].name);
 const plural = (r: ItemType, n: number) => (n === 1 || r === 'coal' || r.endsWith('_ore') ? ITEMS[r].short : ITEMS[r].short + 's');
 function chip(r: Res, text?: string): HTMLLIElement {
-  const li = h('li', 'chip' + (r === 'power' ? ' chip-pw' : ''), h('i'), text || resName(r));
+  // (the game's own icon of the resource: the same one its HUD shows)
+  const li = h('li', 'chip', icon(r, { size: 16 }), text || resName(r));
   li.style.setProperty('--k', inkOf(r));
   return li;
 }

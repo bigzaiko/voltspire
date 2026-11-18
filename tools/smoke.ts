@@ -9,9 +9,9 @@ import {
   TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY, TITAN_STRIKE, TITAN_SLOW, TITAN_GOLD, TITAN_SURVIVAL, TITAN_AGAIN, TITAN_TOUGHER, TITAN_SMASH, TITAN_LEAD, WHEEL_GUARD, WHEEL_CRAWL, WHEEL_BLEED, WHEEL_DRAG, WHEEL_SINK, WHEEL_REST, WHEEL_SPINUP, WHEEL_PIERCE, TOWERS, TOWER_TYPES, CARDS, CARD_BY_ID, GW, GH, TWIN_BOLT, TUNE, COOP_HP, coopScale,
   BREACH_TIME, BREACH_TIME_BOSS, BREACH_SHARE, FIRST_WAVE_IN, NEXT_WAVE_IN, LINK_RANGE, WALL_HALF, FIRE_RING,
   ORE_TYPES, FACS, FAC_TYPES, MAKES, TOWER_CHAIN, TOWER_TIER, CRATE_STOCK, START_MATS, START_GOLD_MUL, ITEM_SHOTS, upgradeMat,
-  TOWER_NEEDS_L3, needsOf, FAC_LVL_SPEED, FAC_UP_COST, FAC_UPGRADABLE, cellX, cellZ,
+  TOWER_NEEDS_L3, needsOf, FAC_LVL_SPEED, FAC_UP_COST, FAC_UPGRADABLE, cellX, cellZ, TARGET_MODES, TARGET_DEFAULT,
 } from '../src/game/data.ts';
-import type { FacType, OreType } from '../src/game/data.ts';
+import type { FacType, OreType, TargetMode, TowerType } from '../src/game/data.ts';
 import { waveHpMul } from '../src/game/data.ts';
 import { hexDist, neighbor, disc, inBoard } from '../src/game/hex.ts';
 import type { MapDef } from '../src/game/map.ts';
@@ -207,6 +207,87 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
       e.dist = 10; priv(s).place(e);
       ok(s.triggerSpecial(t.id, 0), type + ' special fires with a target in range');
     }
+  }
+  {
+    // targeting modes: each picks the expected enemy of a fixed line-up; defaults; setAim rules; upgrades and co-op keep the mode
+    const lineup = (s: Sim) => {
+      const at = (type: string, dist: number, hp: number, speed: number) => { const e = put(s, type, dist, 0, speed); e.hp = e.maxHp = hp; e.shield = e.maxShield = 0; return e; };
+      const lead = at('grunt', 20, 300, 2), tail = at('grunt', 5, 200, 2), fly = at('drone', 12, 50, 3.8), boss = at('boss', 10, 5000, 1.2);
+      const cold = at('grunt', 15, 400, 2); cold.slowT = 1; cold.slowF = 0.5; // pace 1: slower than the boss
+      const ice = at('grunt', 8, 250, 2); ice.frz = 2; // frozen solid: pace 0
+      return { lead, tail, fly, boss, cold, ice };
+    };
+    const s = mk(), L = lineup(s), pick = (t: Tower) => priv(s).pickTarget(t, 999, 0) as Enemy | null;
+    /** build on the next free cell (where it stands does not matter: the picks below ignore the range) */
+    const at = (ty: TowerType) => { for (let i = 0; i < GW * GH; i++) { const t = s.build(ty, i % GW, Math.floor(i / GW)); if (t) return t; } throw new Error('no free cell'); };
+    const p = at('pulse'), m = at('mortar'), ra = at('rail'), la = at('lance');
+    ok(TOWER_TYPES.every((ty) => at(ty).aim === TARGET_DEFAULT[ty]) && ra.aim === 'strong' && la.aim === 'strong' && p.aim === 'first' && m.aim === 'first', 'new towers start on their default targeting mode');
+    ok(pick(p) === L.lead && pick(ra) === L.boss && pick(la) === L.boss && pick(m) === L.lead, 'the defaults: first for the turret and mortar, strongest for rail and lance');
+    const want: Record<TargetMode, Enemy> = { first: L.lead, last: L.tail, strong: L.boss, weak: L.fly, fast: L.fly, slow: L.ice };
+    for (const mode of TARGET_MODES) { ok(s.setAim(p.id, mode) && p.aim === mode && pick(p) === want[mode], `'${mode}' picks the ${mode === 'slow' ? 'frozen grunt' : want[mode].type}`); }
+    L.ice.frz = 0; L.ice.slowT = 0; L.ice.speed = 3;
+    ok(pick(p) === L.cold, "'slow' picks a slowed enemy once nothing is frozen");
+    // the mortar cannot shell a flyer, whatever its mode: the weakest and the fastest on the ground instead (two grunts at pace 2: the one further along)
+    s.setAim(m.id, 'weak'); const mw = pick(m); s.setAim(m.id, 'fast'); const mf = pick(m);
+    ok(mw === L.tail && mf === L.ice, `the mortar's modes skip flyers (weak: ${mw?.type} at ${mw?.dist}, fast: ${mf?.type} at ${mf?.dist})`);
+    L.ice.speed = 2; s.setAim(m.id, 'fast');
+    ok(pick(m) === L.lead, 'an exact tie on pace goes to the enemy further along');
+    // the missile volley takes its targets in the same order pickTarget ranks them
+    for (const mode of TARGET_MODES.filter((x) => x !== 'first')) { const list = s.enemies.slice().sort((a, b) => priv(s).aimCmp(mode, a, b)); p.aim = mode; ok(list[0] === pick(p), `the volley order agrees with '${mode}'`); }
+    // an exact tie on 'strong' goes to the boss, even when the other enemy came first
+    const s2 = mk(), g = put(s2, 'grunt', 10), b = put(s2, 'boss', 10); g.hp = b.hp = 900; g.shield = b.shield = 0;
+    const r2 = s2.build('rail', 3, 5)!;
+    ok(priv(s2).pickTarget(r2, 999, 0) === b, 'strongest: a boss wins an exact tie');
+    // setAim rules
+    const bc = at('beacon'), fl = at('flame'), gr = at('gravity');
+    s.events.length = 0;
+    ok(!s.setAim(bc.id, 'last') && !s.setAim(fl.id, 'last') && !s.setAim(gr.id, 'last') && bc.aim === 'first' && fl.aim === 'first' && gr.aim === 'first', 'beacon, firewall pylon and graviton well have no targeting setting');
+    ok(!s.setAim(p.id, 'nope' as TargetMode) && !s.setAim(p.id, undefined as unknown as TargetMode) && !s.setAim(-1, 'first') && !s.setAim(NaN, 'first') && !s.setAim(p.id, '__proto__' as TargetMode), 'unknown towers and modes are refused');
+    ok(!s.events.length, 'and refused calls emit nothing');
+    s.setAim(p.id, 'weak'); s.events.length = 0;
+    ok(s.setAim(p.id, 'weak') && !s.events.length, 'setting the mode a tower already has is accepted quietly');
+    ok(s.setAim(p.id, 'fast') && s.events.length === 1 && s.events[0].k === 'aim' && s.events[0].id === p.id && s.events[0].m === 'fast' && s.events[0].t === 'pulse', "a change emits an 'aim' event");
+    ok(s.upgrade(p.id) && s.upgrade(p.id) && p.lvl === 3 && p.aim === 'fast', 'the mode is kept over upgrades');
+    {
+      // a sold tower's id is refused; the build phase's time stop takes changes; exact ties stay with the lowest surviving id after deaths
+      const s4 = mk(), sold = s4.build('pulse', 3, 5)!;
+      ok(s4.planning && s4.setAim(sold.id, 'last') && sold.aim === 'last', 'the mode can be set during the build phase');
+      ok(s4.sell(sold.id) && !s4.setAim(sold.id, 'first'), 'a sold tower takes no mode');
+      const gs = [0, 1, 2, 3].map(() => { const e = put(s4, 'grunt', 10, 0, 2); e.hp = e.maxHp = 300; e.shield = 0; return e; });
+      s4.damage(gs[0], 1e9, -1); run(s4, 1 / 60); // (the step drops the dead one from the list)
+      const tw = s4.build('pulse', 3, 5)!;
+      ok(s4.enemies.length === 3 && s4.enemies[0] === gs[1], 'the dead grunt is gone and the order is kept');
+      for (const mode of TARGET_MODES) { tw.aim = mode; ok(priv(s4).pickTarget(tw, 999, 0) === gs[1], `'${mode}': an exact tie goes to the lowest surviving id`); }
+      // shields count as health for 'weak' and 'strong'
+      gs[1].shield = 150; gs[2].hp = 400;
+      tw.aim = 'weak'; ok(priv(s4).pickTarget(tw, 999, 0) === gs[3], "'weak' counts the shield");
+      tw.aim = 'strong'; ok(priv(s4).pickTarget(tw, 999, 0) === gs[1], "'strong' counts the shield");
+    }
+    // a lance switched to a new mode lets go of its lock at once (and loses its heat like on any retarget)
+    const s3 = mk(), A = lineup(s3), ln = s3.build('lance', 3, 5)!;
+    priv(s3).mods.tRange = 50; run(s3, 1.5);
+    ok(ln.tgt === A.boss.id && ln.heat > 0.2, `the lance holds the boss (heat ${ln.heat.toFixed(2)})`);
+    ok(s3.setAim(ln.id, 'first') && ln.tgt === 0 && ln.heat === 0, 'switching its mode drops the lock and the heat');
+    run(s3, 1 / 60);
+    ok(ln.tgt === A.lead.id, 'and it takes the new target on the very next step');
+    // co-op: the guest sees the host's modes; hostile values leave a tower's mode alone; a finished game takes no changes
+    const c = mk(); c.replica = true;
+    c.applySnapshot(JSON.parse(JSON.stringify(s.snapshot([]))));
+    ok(s.towers.every((t) => c.towerById(t.id)?.aim === t.aim), 'the guest replica carries every tower mode');
+    const AIM_COL = 15;
+    for (const v of [99, -1, 'x', null, 1e9, {}, [2]]) {
+      const o = JSON.parse(JSON.stringify(s.snapshot([]))); o.t = o.t.map((row: unknown[]) => { const q = row.slice(); q[AIM_COL] = v; return q; });
+      c.applySnapshot(o);
+      ok(s.towers.every((t) => c.towerById(t.id)?.aim === t.aim), 'hostile modes from the host are ignored: ' + JSON.stringify(v));
+    }
+    const o = JSON.parse(JSON.stringify(s.snapshot([]))); o.t = o.t.map((row: unknown[]) => { const q = row.slice(); q[AIM_COL] = 1; return q; });
+    c.applySnapshot(o);
+    ok(c.towerById(bc.id)?.aim === 'first' && c.towerById(p.id)?.aim === 'last', 'a mode sent for a tower without the setting is ignored');
+    const old = JSON.parse(JSON.stringify(s.snapshot([]))); old.t = old.t.map((row: unknown[]) => row.slice(0, 15));
+    c.applySnapshot(old);
+    ok(c.towerById(p.id)?.aim === 'last', 'a host that sends no modes leaves the guest towers as they are');
+    s.over = true;
+    ok(!s.setAim(p.id, 'first') && p.aim === 'fast', 'a finished game takes no mode changes');
   }
   {
     // Collapse (and any singularity) never hurries enemies along the road

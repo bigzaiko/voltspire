@@ -1,14 +1,14 @@
 // BEATSPIRE - game controller: input, HUD, menus, saved progress, multiplayer glue.
-// The fonts, style.css, editor.css, touch.css and music.css are linked from play.html, so the page never shows unstyled.
+// The fonts, style.css, editor.css, touch.css, music.css and icons.css are linked from play.html, so the page never shows unstyled.
 import * as THREE from 'three';
 import {
   GW, GH, TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, CARD_BY_ID, RARITY, SQUADS, worldToCell, cellX, cellZ, FACS, FAC_TYPES, ITEMS, FLUIDS, ORES, MAKES,
   TOWER_SUPPLY, TOWER_CHAIN, TOWER_NEEDS_L3, TOWER_CHAIN_L3, TOWER_SUPPLY_L3, FAC_LVL_SPEED, FAC_UPGRADABLE, needsOf, ITEM_SHOTS,
-  ORE_TYPES, TOWER_TIER,
+  ORE_TYPES, TOWER_TIER, TARGET_MODES, TARGET_INFO, TARGETABLE, ITEM_TYPES, FLUID_TYPES,
 } from './game/data.ts';
-import type { TowerType, EnemyType, FacType, ItemType, TowerNeeds, OreType } from './game/data.ts';
-import { Sim, TITAN_STUN } from './game/sim.ts';
-import type { Ev, Mode, Tower } from './game/sim.ts';
+import type { TowerType, EnemyType, FacType, ItemType, TowerNeeds, OreType, TargetMode, FluidType } from './game/data.ts';
+import { Sim, TITAN_STUN, towerOff } from './game/sim.ts';
+import type { Ev, Mode, Tower, Enemy } from './game/sim.ts';
 import {
   TOWER_STOCK, TANK, TOWER_TANK, SUPPLY, POLE_REACH, OUT_CAP, TUNNEL_REACH, GEN_POWER, MINE_TIME, PUMP_RATE, SMELT_TIME, REFINE_TIME, REFINE_OUT, turns, facKey,
 } from './game/factory.ts';
@@ -27,6 +27,8 @@ import { openEditor, loadCustomMaps } from './editor.ts';
 import { initTouch } from './touch.ts';
 import { initMusic } from './music.ts';
 import type { Msg } from './game/net.ts';
+import { icon as ic, chip, recipeDiagram, iconLabel, recipes } from './icons.ts';
+import type { IconName, ChainTarget } from './icons.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const el = (tag: string, cls = '', text = '') => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; };
@@ -71,6 +73,8 @@ interface Store {
   /** per map and difficulty, keyed "<map id>|<difficulty id>" */
   records: Record<string, Rec>;
   tips: { node: boolean; boss: boolean; mite: boolean; titan: boolean; factory: boolean; dry: boolean; tutorial: boolean };
+  /** the targeting mode new towers of a type start with (set by "Set all" in the tower panel); a type not listed starts on the game's default */
+  aim: Partial<Record<TowerType, TargetMode>>;
 }
 const REC_KEY = /^[A-Za-z0-9 _.:\-]{1,64}\|(easy|normal|hard)$/;
 const MAX_RECORDS = 300;
@@ -121,7 +125,10 @@ function readStore(raw: unknown): Store {
     },
     records: {},
     tips: { node: bool(t.node, false), boss: bool(t.boss, false), mite: bool(t.mite, false), titan: bool(t.titan, false), factory: bool(t.factory, false), dry: bool(t.dry, false), tutorial: bool(t.tutorial, false) },
+    aim: {},
   };
+  const am = o(r.aim);
+  for (const ty of TOWER_TYPES) { const md = TARGET_MODES.find((x) => x === am[ty]); if (md && TARGETABLE[ty]) store.aim[ty] = md; }
   let n = 0;
   for (const [k, v] of Object.entries(o(r.records))) {
     if (n >= MAX_RECORDS || !REC_KEY.test(k)) continue;
@@ -186,6 +193,8 @@ let paused = false, speed = 1, acc = 0;
 let buildType: TowerType | null = null, buildFac: FacType | null = null, selected = 0, selFac = 0;
 /** The direction the next belt (or other building) faces, and the bar the number keys pick from. */
 let facDir = 0, barTab: 'towers' | 'factory' = 'towers';
+/** The targeting mode new towers of a type start with in this run: the last one the player chose for the type (from the saved defaults at the start). */
+let aimPref: Partial<Record<TowerType, TargetMode>> = {};
 /** the Factory bar button the deposit cue points at, the tab it switched away from ('' when none or a panel opened), seconds without a deposit */
 const cue = { k: '' as FacType | '', was: '' as '' | 'towers', off: 0, at: 0 };
 /** the free deposit tile whose info panel is open */
@@ -229,8 +238,17 @@ const touchUi = () => shown('touch');
 // ---------- actions (local sim, or sent to the co-op host) ----------
 const act = {
   build(type: TowerType, cx: number, cz: number) {
-    if (isClient) { if (sim.canBuild(type, cx, cz)) net?.send({ t: 'in', a: 'build', ty: TOWER_TYPES.indexOf(type), cx, cz }); else return false; return true; }
-    return !!sim.build(type, cx, cz);
+    if (isClient) { if (sim.canBuild(type, cx, cz)) net?.send({ t: 'in', a: 'build', ty: TOWER_TYPES.indexOf(type), cx, cz, m: aimPref[type] ? TARGET_MODES.indexOf(aimPref[type]!) : -1 }); else return false; return true; }
+    const t = sim.build(type, cx, cz), md = t ? aimPref[type] : undefined;
+    // a new tower starts on the mode the player last chose for its kind
+    if (t && md && md !== t.aim) sim.setAim(t.id, md);
+    return !!t;
+  },
+  /** set a tower's targeting mode (a co-op guest asks the host, and reads the mode back from the next snapshot) */
+  aim(id: number, mode: TargetMode) {
+    if (isClient) { net?.send({ t: 'in', a: 'aim', id, m: TARGET_MODES.indexOf(mode) }); return true; }
+    if (!sim.setAim(id, mode)) { sound.play('error'); return false; }
+    return true;
   },
   upgrade(id: number) {
     if (isClient) { net?.send({ t: 'in', a: 'up', id }); return; }
@@ -332,6 +350,217 @@ function enemyChips(box: HTMLElement, list: Group[]) {
   return ok;
 }
 
+// ---------- resource icons and the recipe tooltip ----------
+// Every resource, building and tower the HUD names is drawn as its icon (icons.ts). An icon that carries a tip key
+// (data-rt, or data-lp for something that is a button of its own: long-press and keyboard focus only) explains itself:
+// the pointer resting on it, the keyboard focus, a tap or a long press opens one tooltip with the diagram of how it is
+// made, from the deposits on. The tooltip never takes the pointer (pointer-events: none) and goes on Escape, on a press
+// anywhere else, and while the board is dragged or a belt is laid.
+const plural = (name: string) => (name.endsWith('y') ? name.slice(0, -1) + 'ies' : name + 's');
+const andList = (a: string[]) => (a.length < 2 ? a.join('') : `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}`);
+/** What goes on a deposit: a Pumpjack on oil, a Mine on the rest. */
+const oreFac = (o: OreType): FacType => (o === 'oil' ? 'pump' : 'mine');
+/** What a deposit gives. */
+const oreRaw = (o: OreType): ItemType | FluidType => (o === 'oil' ? 'crude' : o);
+/** The tip key of what an icon shows ('' for one that has no recipe to show). */
+function rtOf(n: IconName): string {
+  if (Object.hasOwn(ITEMS, n)) return 'item:' + n;
+  if (Object.hasOwn(FLUIDS, n)) return 'fluid:' + n;
+  if (n === 'power' || n === 'mats') return 'res:' + n;
+  const i = n.indexOf('_'), kind = n.slice(0, i), id = n.slice(i + 1);
+  return kind === 'dep' ? 'ore:' + id : kind === 'fac' ? 'fac:' + id : kind === 'tw' ? 'tower:' + id : '';
+}
+/** The towers and buildings that take a resource, from the tower and recipe tables. */
+function takers(r: string): { tw: TowerType[]; tw3: TowerType[]; fac: FacType[] } {
+  const tw = TOWER_TYPES.filter((t) => TOWERS[t].needs.item === r || TOWERS[t].needs.fluid === r);
+  const tw3 = TOWER_TYPES.filter((t) => { const n = TOWER_NEEDS_L3[t]; return !!n && (n.item === r || n.fluid === r); });
+  const fac: FacType[] = [];
+  for (const st of recipes()) if ((st.inp.some((i) => i.res === r) || st.fuel?.res === r) && !fac.includes(st.fac)) fac.push(st.fac);
+  return { tw, tw3, fac };
+}
+function takersText(r: string): string {
+  const u = takers(r), all = [...u.tw.map((t) => TOWERS[t].name), ...u.tw3.map((t) => TOWERS[t].name + ' Mk3'), ...u.fac.map((f) => FACS[f].name)];
+  return all.length ? `Goes into: ${andList(all)}.` : '';
+}
+interface RtInfo { icon: IconName; name: string; kind: string; target: ChainTarget; lvl: number; line: string }
+/** What a tip key shows: "item:shell", "fluid:crude", "res:power", "ore:coal", "fac:press", "tower:missile" (":3" for its Mk3 supply). */
+function rtInfo(key: string): RtInfo | null {
+  const [k, id, lv] = key.split(':'), lvl = lv === '3' ? 3 : 1;
+  if (k === 'item' && Object.hasOwn(ITEMS, id)) return { icon: id as ItemType, name: ITEMS[id as ItemType].name, kind: 'Item', target: { item: id as ItemType }, lvl, line: takersText(id) };
+  if (k === 'fluid' && Object.hasOwn(FLUIDS, id)) return { icon: id as FluidType, name: FLUIDS[id as FluidType].name, kind: 'Fluid', target: { fluid: id as FluidType }, lvl, line: takersText(id) };
+  if (k === 'res' && id === 'power') return { icon: 'power', name: 'Power', kind: 'Grid', target: { res: 'power' }, lvl, line: `A Generator or Power Pole powers everything within ${SUPPLY} tiles. The gauge shows what the grids need against what they have.` };
+  if (k === 'res' && id === 'mats') return { icon: 'mats', name: 'Building materials', kind: 'Stock', target: { res: 'mats' }, lvl, line: 'Not ammunition: the heavier towers and their upgrades cost them on top of credits.' };
+  if (k === 'ore' && Object.hasOwn(ORES, id)) {
+    const o = id as OreType, raw = oreRaw(o);
+    return { icon: `dep_${o}`, name: ORES[o].name, kind: 'Deposit', target: o === 'oil' ? { fluid: 'crude' } : { item: raw as ItemType }, lvl, line: takersText(raw) };
+  }
+  if (k === 'fac' && Object.hasOwn(FACS, id)) {
+    const f = id as FacType, d = FACS[f];
+    return { icon: `fac_${f}`, name: d.name, kind: 'Building', target: { fac: f }, lvl, line: d.desc.split('. ')[0].replace(/\.$/, '') + '.' };
+  }
+  if (k === 'tower' && Object.hasOwn(TOWERS, id)) {
+    const t = id as TowerType, n = needsOf({ type: t, lvl });
+    return { icon: `tw_${t}`, name: TOWERS[t].name + (lvl === 3 ? ' Mk3' : ''), kind: 'Tower', target: { tower: t }, lvl, line: n.item ? ((q: number) => `One ${ITEMS[n.item!].short} lasts ${q} shot${q === 1 ? '' : 's'}.`)(Math.round((n.shots || ITEM_SHOTS[n.item] || 1) * sim.mods.ammo)) : '' };
+  }
+  return null;
+}
+const rt = { key: '', line: '', a: null as HTMLElement | null, by: '' as '' | 'hover' | 'focus' | 'tap', vw: 0, x: -1, y: -1 };
+const rtKey = (a: HTMLElement) => a.dataset.rt || a.dataset.lp || '';
+function rtClose() {
+  if (!rt.a) return;
+  rt.a = null; rt.by = '';
+  show('rtip', false);
+}
+/** Put the tooltip beside its anchor: over it where there is room, else under it, else beside it; always inside the window. */
+function rtPlace() {
+  const a = rt.a, tip = $('rtip');
+  if (!a) return;
+  const r = a.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight, W = innerWidth, H = innerHeight, g = 10;
+  let x = r.left + r.width / 2 - w / 2, y = r.top - h - g;
+  // no room over it: beside the panel it sits in (so the panel stays readable), else under it, else beside the icon itself
+  const box = y < 8 ? a.closest('.panel, #guide, .card, #tip')?.getBoundingClientRect() : undefined;
+  const side = (q: DOMRect) => (q.right + g + w <= W - 8 ? q.right + g : q.left - g - w >= 8 ? q.left - g - w : NaN);
+  if (box && !Number.isNaN(side(box))) { x = side(box); y = clamp(r.top + r.height / 2 - h / 2, 8, Math.max(8, H - h - 8)); }
+  else {
+    if (y < 8) y = r.bottom + g;
+    if (y + h > H - 8) { y = clamp(r.top + r.height / 2 - h / 2, 8, Math.max(8, H - h - 8)); const sx = side(r); x = Number.isNaN(sx) ? x : sx; }
+  }
+  x = Math.round(clamp(x, 8, Math.max(8, W - w - 8))); y = Math.round(y);
+  if (x !== rt.x || y !== rt.y) { rt.x = x; rt.y = y; tip.style.transform = `translate(${x}px, ${y}px)`; }
+}
+function rtOpen(a: HTMLElement, by: 'hover' | 'focus' | 'tap') {
+  const key = rtKey(a), info = rtInfo(key), tip = $('rtip');
+  if (!info) return;
+  // (the line can change under the same key: "lasts N shots" follows the run's ammunition cards)
+  if (rt.key !== key || rt.line !== info.line || rt.vw !== innerWidth || !tip.firstChild) {
+    rt.key = key; rt.line = info.line; rt.vw = innerWidth;
+    const fill = (layout: 'auto' | 'row') => {
+      tip.textContent = '';
+      const head = el('div', 'rt-head');
+      head.append(ic(info.icon, { size: 22 }), el('b', '', info.name), el('span', '', info.kind));
+      tip.append(head);
+      const dia = recipeDiagram(info.target, { width: Math.min(620, innerWidth - 44), layout, lvl: info.lvl });
+      if (!dia.classList.contains('ic-d-none')) tip.append(dia);
+      if (info.line) tip.append(el('p', '', info.line));
+    };
+    fill('auto');
+    show('rtip');
+    // a chain stacked top to bottom that is taller than the window is laid out left to right instead (it shrinks to the width)
+    if (tip.offsetHeight > innerHeight - 16) fill('row');
+  }
+  rt.a = a; rt.by = by; rt.x = rt.y = -1;
+  show('rtip');
+  rtPlace();
+}
+/** Once a frame: the tooltip follows its anchor; when the anchor was rebuilt under a resting pointer, the new one takes over. */
+function rtFrame() {
+  if (!rt.a) return;
+  if (painting || dragging || rotating) { rtClose(); return; }
+  if (!rt.a.isConnected || rt.a.closest('.hidden')) {
+    const under = rt.by === 'hover' ? (document.elementFromPoint(lastMouse.x, lastMouse.y)?.closest('[data-rt]') as HTMLElement | null) : null;
+    if (under && rtKey(under) === rt.key) rt.a = under; else { rtClose(); return; }
+  }
+  rtPlace();
+}
+const rtAnchor = (t: EventTarget | null, lp = false) => (t instanceof Element ? (t.closest(lp ? '[data-rt],[data-lp]' : '[data-rt]') as HTMLElement | null) : null);
+document.addEventListener('pointerover', (e) => {
+  if (e.pointerType === 'touch' || painting || dragging || rotating) return;
+  const a = rtAnchor(e.target);
+  if (a && a !== rt.a) rtOpen(a, 'hover');
+});
+document.addEventListener('pointerout', (e) => {
+  if (rt.by !== 'hover' || !rt.a) return;
+  const to = e.relatedTarget;
+  if (!(to instanceof Node) || !rt.a.contains(to)) { const a = rtAnchor(to); if (a) rtOpen(a, 'hover'); else rtClose(); }
+});
+document.addEventListener('focusin', (e) => { const a = rtAnchor(e.target, true); if (a && a.matches(':focus-visible')) rtOpen(a, 'focus'); });
+document.addEventListener('focusout', () => { if (rt.by === 'focus') rtClose(); });
+// fingers: a tap on an icon that is not a button of its own opens its tooltip (a second tap, or one anywhere else, shuts
+// it); a long press opens it on anything, buttons and cards too, and that press then does not count as a tap on them
+const rtHold = { timer: 0, x: 0, y: 0, ate: 0 };
+document.addEventListener('pointerdown', (e) => {
+  clearTimeout(rtHold.timer);
+  const a = rtAnchor(e.target, true);
+  if (rt.a && (e.pointerType !== 'touch' || a !== rt.a)) rtClose();
+  if (e.pointerType !== 'touch' || !a) return;
+  rtHold.x = e.clientX; rtHold.y = e.clientY;
+  rtHold.timer = window.setTimeout(() => { rtHold.ate = performance.now(); rtOpen(a, 'tap'); }, 420);
+}, { capture: true, passive: true });
+document.addEventListener('pointermove', (e) => { if (e.pointerType === 'touch' && Math.hypot(e.clientX - rtHold.x, e.clientY - rtHold.y) > 10) clearTimeout(rtHold.timer); }, { capture: true, passive: true });
+for (const ev of ['pointerup', 'pointercancel'] as const) document.addEventListener(ev, () => clearTimeout(rtHold.timer), { capture: true, passive: true });
+document.addEventListener('click', (e) => {
+  // (the click that ends a long press belongs to the tooltip, not to the button under the finger)
+  if (performance.now() - rtHold.ate < 700) { rtHold.ate = 0; e.stopPropagation(); e.preventDefault(); return; }
+  if (!byTouch) return;
+  const a = rtAnchor(e.target);
+  if (!a || a.closest('button, a, .card')) return;
+  if (rt.a === a) rtClose(); else rtOpen(a, 'tap');
+}, { capture: true });
+document.addEventListener('contextmenu', (e) => { if (byTouch && rtAnchor(e.target, true)) e.preventDefault(); });
+addEventListener('resize', rtClose);
+addEventListener('scroll', rtClose, { capture: true, passive: true });
+
+interface RChip { state?: 'ok' | 'missing' | 'dim' | 'plain'; label?: string; rt?: string; tab?: boolean; size?: number }
+/**
+ * A chip that explains itself: an icon, a short count beside it, and the recipe tooltip of what it shows. `tab: false`
+ * for one inside a button or a tooltip (not a stop of its own). `label`: what a screen reader says instead of the icon's name.
+ */
+function rchip(name: IconName, text?: string | number, o: RChip = {}): HTMLElement {
+  const c = chip(name, text, { state: o.state, size: o.size }), key = o.rt ?? rtOf(name), t = text === undefined || text === '' ? '' : ' ' + text;
+  c.setAttribute('role', 'img');
+  c.setAttribute('aria-label', o.label ?? iconLabel(name) + t);
+  if (key) { c.dataset.rt = key; if (o.tab !== false) { c.tabIndex = 0; c.setAttribute('aria-describedby', 'rtip'); } }
+  else c.title = o.label ?? iconLabel(name);
+  return c;
+}
+/** What a tower runs on as chips: its ammunition, its fluid, the power it draws. */
+function needChips(n: TowerNeeds, o: RChip = {}): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  if (n.item) out.push(rchip(n.item, '', o));
+  if (n.fluid) out.push(rchip(n.fluid, '', o));
+  if (n.power) out.push(rchip('power', n.power, o));
+  return out;
+}
+/** A row of the HUD: a small label and what follows it. */
+function rrow(label: string, ...kids: (Node | string)[]): HTMLElement {
+  const r = el('div', 'rr');
+  if (label) r.append(rgrp(label, ...kids)); else r.append(...kids);
+  return r;
+}
+const arrow = () => el('span', 'ra', '›');
+/** A label and the chips it belongs to, kept together when the row wraps. */
+function rgrp(label: string, ...kids: (Node | string)[]): HTMLElement {
+  const g = el('span', 'rg');
+  g.append(el('span', 'rl', label), ...kids);
+  return g;
+}
+/** The icons of what a diagnosis says is missing ("power", "a taker for its output", an item's short name ...); none for a line only words can say. */
+function missIcons(m: string): IconName[] {
+  const it = ITEM_TYPES.find((i) => ITEMS[i].short === m);
+  if (it) return [it];
+  const fl = FLUID_TYPES.find((f) => FLUIDS[f].name.toLowerCase() === m);
+  if (fl) return [fl];
+  if (m === 'power') return ['power'];
+  if (m.startsWith('a Generator')) return ['fac_generator'];
+  if (m.startsWith('coal for')) return ['coal'];
+  if (m === 'an oil field') return ['dep_oil'];
+  if (m === 'an ore deposit') return ['dep_iron_ore', 'dep_copper_ore', 'dep_coal'];
+  if (m === 'iron or copper ore') return ['iron_ore', 'copper_ore'];
+  if (m.startsWith('a taker')) return ['st_notaker'];
+  if (m.startsWith('a second pipe')) return ['fac_ptunnel'];
+  if (m.startsWith('a second')) return ['fac_tunnel'];
+  return [];
+}
+/** The building a "Supplied by" entry names ("Mine", "Smelter (by belt)"). */
+function fromIcon(n: string): IconName | null {
+  const base = n.replace(/ \(.*\)$/, ''), f = (Object.keys(FACS) as FacType[]).find((k) => FACS[k].name === base);
+  return f ? `fac_${f}` : null;
+}
+// the gauges that count a resource carry its icon; Materials and Power open their recipe like any other icon
+$('st-gold').insertBefore(ic('credits', { size: 20 }), $('gold'));
+$('st-mats').insertBefore(ic('mats', { size: 20 }), $('mats'));
+$('st-power').insertBefore(ic('power', { size: 18 }), $('power'));
+
 // ---------- build bar ----------
 /** What a tower runs on, in words (its level-1 supply for a tower type, else the supply given). */
 function needsText(t: TowerType | TowerNeeds): string {
@@ -341,14 +570,28 @@ function needsText(t: TowerType | TowerNeeds): string {
   if (n.power) parts.push(`${n.power} power`);
   return parts.join(' and ');
 }
+/** The width the docked tooltip's diagram may take. */
+const tipWidth = () => Math.min(600, innerWidth - 60);
+/** A price as chips: credits, and building materials where it costs them. */
+function priceChips(credits: number, mats = 0): HTMLElement[] {
+  const out = [rchip('credits', credits, { tab: false })];
+  if (mats) out.push(rchip('mats', mats, { tab: false }));
+  return out;
+}
 function towerTip(t: TowerType) {
-  const d = TOWERS[t], tip = $('tip');
+  const d = TOWERS[t], tip = $('tip'), l3 = TOWER_NEEDS_L3[t];
   tip.textContent = '';
   const stats = d.dmg > 0 ? ` Damage ${d.dmg}, ${d.rate} per second, range ${d.range}.` : d.range > 0 ? ` Range ${d.range}.` : '';
-  tip.append(el('b', '', d.name), el('span', '', d.desc + stats));
-  tip.append(el('i', 'needs', `Runs on ${needsText(t)}. ${TOWER_SUPPLY[t]}`));
-  if (TOWER_SUPPLY_L3[t]) tip.append(el('i', 'needs', TOWER_SUPPLY_L3[t]!));
-  tip.append(el('i', '', sim.matCost(t) ? `Costs ${sim.cost(t)} credits and ${sim.matCost(t)} materials (from a Frame Works).` : `Costs ${sim.cost(t)} credits.`));
+  const head = el('b'); head.append(ic(`tw_${t}`, { size: 22 }), d.name);
+  tip.append(head, el('span', '', d.desc + stats));
+  // what it runs on: the chips, the whole chain as a diagram (left out where there is no room for it: a long press shows it)
+  const row = rrow('Needs', ...needChips(d.needs, { tab: false }));
+  if (l3) row.append(rgrp('Mk3', ...needChips({ ...l3, power: l3.power ?? d.needs.power }, { tab: false })));
+  row.append(rgrp('Costs', ...priceChips(sim.cost(t), sim.matCost(t))));
+  tip.append(row);
+  const dia = recipeDiagram({ tower: t }, { width: tipWidth() });
+  dia.classList.add('tip-dia');
+  tip.append(dia);
   if (d.special) tip.append(el('i', '', `Special: ${d.special.name}. ${d.special.desc}`));
   if (!sim.unlocked.has(t)) tip.append(el('i', 'lock', 'Locked. Find its blueprint card to build it.'));
   show('tip');
@@ -356,20 +599,49 @@ function towerTip(t: TowerType) {
 function facTip(t: FacType) {
   const d = FACS[t], tip = $('tip');
   tip.textContent = '';
-  tip.append(el('b', '', d.name), el('span', '', d.desc), el('i', 'needs', `Costs ${sim.facCost(t)} credits.`));
+  const head = el('b'); head.append(ic(`fac_${t}`, { size: 22 }), d.name);
+  tip.append(head, el('span', '', d.desc));
+  const row = rrow('Costs', ...priceChips(sim.facCost(t)));
+  if (d.power) row.append(rgrp('Draws', rchip('power', d.power, { tab: false })));
+  tip.append(row);
+  const dia = recipeDiagram({ fac: t }, { width: tipWidth() });
+  dia.classList.add('tip-dia');
+  if (!dia.classList.contains('ic-d-none')) tip.append(dia);
   if (FAC_UPGRADABLE.has(t)) tip.append(el('i', '', `Upgrade it twice for credits: Mk2 works ${FAC_LVL_SPEED[1]}x, Mk3 ${FAC_LVL_SPEED[2]}x as fast${t === 'generator' ? ' (gives that much more power, burning coal as much faster)' : ''}.`));
   show('tip');
 }
+/** What a building puts out, for its button on the bar. */
+function facMakes(t: FacType): IconName[] {
+  const out: IconName[] = [];
+  for (const st of recipes()) if (st.fac === t && !out.includes(st.out)) out.push(st.out);
+  return out;
+}
+/** The power a tower or building draws, on its bar button: a small bolt and the number. */
+function drawMark(n: number, cls = 'pw'): HTMLElement {
+  const s = el('span', cls);
+  s.append(ic('power', { size: 13 }), String(n));
+  return s;
+}
 const buildBtns = {} as Record<TowerType, HTMLButtonElement>;
 const facBtns = {} as Record<FacType, HTMLButtonElement>;
+/** the price line of each bar button (the last thing written to it is kept in btnState) */
+const btnCost = new Map<HTMLElement, HTMLElement>();
 let tipHover: TowerType | FacType | null = null;
 for (const t of TOWER_TYPES) {
   const d = TOWERS[t];
   const b = el('button', 'tw') as HTMLButtonElement;
   b.type = 'button';
   b.style.setProperty('--c', hex(d.color));
-  b.setAttribute('aria-label', `${d.name}, key ${d.key.toUpperCase()}`);
-  b.append(el('kbd', '', d.key), el('div', 'ico'), el('div', 'nm', d.name), el('div', 'cost'));
+  b.setAttribute('aria-label', `${d.name}, key ${d.key.toUpperCase()}. Runs on ${needsText(t)}.`);
+  b.dataset.lp = 'tower:' + t;
+  // the final resources it has to be fed, as icons (how each is made: the tooltip's diagram)
+  const need = el('div', 'need'), cost = el('div', 'cost'), sign = ic(`tw_${t}`, { size: 18 });
+  sign.classList.add('twi');
+  if (d.needs.item) need.append(ic(d.needs.item, { size: 15 }));
+  if (d.needs.fluid) need.append(ic(d.needs.fluid, { size: 15 }));
+  if (d.needs.power) need.append(drawMark(d.needs.power));
+  b.append(el('kbd', '', d.key), sign, el('div', 'nm', d.name), cost, need);
+  btnCost.set(b, cost);
   b.addEventListener('click', () => { sound.init(); pickBuild(t); });
   // A tooltip opens when the mouse moves over the button, not when a button appears under a resting pointer.
   // Fingers have no hover: the tooltip of the tower picked for building is shown instead.
@@ -379,12 +651,20 @@ for (const t of TOWER_TYPES) {
   $('build').appendChild(b);
 }
 for (const t of FAC_TYPES) {
-  const d = FACS[t];
+  const d = FACS[t], makes = facMakes(t);
   const b = el('button', 'tw fac') as HTMLButtonElement;
   b.type = 'button';
   b.style.setProperty('--c', hex(d.color));
-  b.setAttribute('aria-label', d.name);
-  b.append(el('kbd', '', ''), el('div', 'ico'), el('div', 'nm', d.name), el('div', 'cost'));
+  b.setAttribute('aria-label', d.name + (makes.length ? `. Makes ${andList(makes.map(iconLabel))}` : '') + (d.power ? `. Draws ${d.power} power` : '') + '.');
+  b.dataset.lp = 'fac:' + t;
+  // what it makes, and on the right the power it draws
+  const need = el('div', 'need'), cost = el('div', 'cost'), sign = ic(`fac_${t}`, { size: 18 });
+  sign.classList.add('twi');
+  for (const m of makes) need.append(ic(m, { size: 15 }));
+  if (t === 'generator') need.append(el('span', 'pw', String(GEN_POWER)));
+  if (d.power) need.append(drawMark(d.power, 'pw draw'));
+  b.append(el('kbd', '', ''), sign, el('div', 'nm', d.name), cost, need);
+  btnCost.set(b, cost);
   b.addEventListener('click', () => { sound.init(); pickFac(t); });
   b.addEventListener('pointermove', (e) => { if (e.pointerType !== 'touch' && (e.movementX || e.movementY)) tipHover = t; });
   b.addEventListener('pointerleave', () => { if (tipHover === t) tipHover = null; });
@@ -461,6 +741,12 @@ SQUADS.forEach((s, i) => {
 // A fresh offer cannot be taken for a moment (the bar under the heading drains), and not before the mouse button
 // and the keys 1 to 3 have been let go once. A click or key press meant for the fight never picks a card unread.
 const CARD_GUARD_MS = 900;
+/** What a factory or economy card is about, as icons under its text. */
+const CARD_ICONS: Record<string, IconName[]> = {
+  f_drill: ['fac_mine', 'fac_pump'], f_belt: ['fac_belt', 'fac_splitter', 'fac_tunnel'], f_craft: ['fac_smelter', 'fac_press', 'fac_cells', 'fac_refinery', 'fac_missiles', 'fac_works'],
+  f_gen: ['fac_generator', 'power'], f_ammo: ['iron_ore', 'copper', 'shell', 'cell', 'missile'], f_stock: ['mats'], tunnels: ['fac_tunnel', 'fac_ptunnel'],
+  salvage: ['credits'], drop: ['credits'], interest: ['credits'], fab: ['credits', 'mats'],
+};
 let cardAt = 0, cardFree = false, cardArmed = false, guardAnim: Animation | null = null;
 function armCards() {
   if (cardArmed) return;
@@ -492,7 +778,28 @@ function showCards() {
       for (let k = 0; k < c.max; k++) pips.append(el('i', k < own ? 'on' : k === own ? 'nx' : ''));
       stk.append(pips);
     } else stk.append(el('span', '', c.kind === 'blueprint' ? 'Unlocks the tower and its supply' : 'Once per run'));
-    d.append(el('kbd', '', String(i + 1)), el('div', 'ci', c.icon), el('div', 'rar', RARITY[c.rar]), el('h4', '', c.name), el('p', '', c.desc), stk, el('div', 'kind', c.needs ? TOWERS[c.needs].name : c.kind === 'eco' ? 'economy' : c.kind === 'tower' ? 'all towers' : c.kind));
+    // a blueprint shows what its tower will ask of the factory as icons, and the buildings that come with it; a factory
+    // card the buildings or resources it is about. The icons open their recipe like everywhere else.
+    const bt = c.kind === 'blueprint' && c.id.startsWith('bp_') && Object.hasOwn(TOWERS, c.id.slice(3)) ? (c.id.slice(3) as TowerType) : null;
+    const ci = el('div', 'ci', bt ? '' : c.icon), body = el('div', 'cbody');
+    if (bt) {
+      ci.append(ic(`tw_${bt}`, { size: 38 }));
+      const td = TOWERS[bt], l3 = TOWER_NEEDS_L3[bt];
+      const needs = rrow('Needs', ...needChips(td.needs, { tab: false }));
+      if (td.mat) needs.append(rgrp('Costs', rchip('mats', td.mat, { tab: false })));
+      if (l3) needs.append(rgrp('Mk3', ...needChips(l3, { tab: false })));
+      const brings = rrow('Brings');
+      brings.classList.add('wrap');
+      for (const f of TOWER_CHAIN[bt]) brings.append(rchip(`fac_${f}`, '', { tab: false, state: sim.facs.has(f) ? 'dim' : undefined, label: FACS[f].name + (sim.facs.has(f) ? ' (you have it)' : '') }));
+      body.append(el('p', '', td.desc), needs, brings);
+      d.dataset.lp = 'tower:' + bt;
+      d.setAttribute('aria-label', `${c.name}. ${td.desc} Runs on ${needsText(bt)}. Brings ${andList(TOWER_CHAIN[bt].map((f) => FACS[f].name))}.`);
+    } else {
+      body.append(el('p', '', c.desc));
+      const about = CARD_ICONS[c.id];
+      if (about) body.append(rrow('', ...about.map((n) => rchip(n, '', { tab: false }))));
+    }
+    d.append(el('kbd', '', String(i + 1)), ci, el('div', 'rar', RARITY[c.rar]), el('h4', '', c.name), body, stk, el('div', 'kind', c.needs ? TOWERS[c.needs].name : c.kind === 'eco' ? 'economy' : c.kind === 'tower' ? 'all towers' : c.kind));
     if (c.needs) d.style.setProperty('--tc', hex(TOWERS[c.needs].color));
     d.addEventListener('click', () => pickCard(i));
     d.addEventListener('mouseenter', () => sound.play('hover'));
@@ -709,6 +1016,7 @@ function startGame(m: Mode, opts: { client?: boolean; seed?: number; demo?: bool
   resetUi();
   editorRun = !!opts.editor && m === 'solo';
   mode = m; isClient = !!opts.client; me = isClient ? 1 : 0;
+  aimPref = opts.demo ? {} : { ...store.aim };
   sim = new Sim({
     mode: m, players: m === 'coop' ? 2 : 1, pauseOnCards: m === 'solo' && !opts.demo, seed: opts.seed ?? ((Math.random() * 2 ** 31) | 0),
     map: opts.map ?? choice.map, diff: opts.diff ?? choice.diff, survival: m === 'versus' ? false : opts.survival ?? choice.survival,
@@ -825,12 +1133,13 @@ function onNet(m: Msg) {
     if (!p || typeof m.a !== 'string') return;
     lastRx = performance.now();
     switch (m.a) {
-      case 'build': { const ty = TOWER_TYPES[int(m.ty)], cx = int(m.cx), cz = int(m.cz); if (ty && cx >= 0 && cz >= 0 && cx < GW && cz < GH) sim.build(ty, cx, cz); break; }
+      case 'build': { const ty = TOWER_TYPES[int(m.ty)], cx = int(m.cx), cz = int(m.cz); if (ty && cx >= 0 && cz >= 0 && cx < GW && cz < GH) { const t = sim.build(ty, cx, cz), md = TARGET_MODES[int(m.m)]; if (t && md) sim.setAim(t.id, md); } break; } // (m: the guest's mode for its kind, -1 none)
       case 'up': if (int(m.id) > 0) sim.upgrade(int(m.id)); break;
       case 'sell': if (int(m.id) > 0) sim.sell(int(m.id)); break;
       case 'card': { const i = int(m.i); if (i >= 0 && i < 3) sim.pickCard(1, i); break; }
       case 'spec': if (int(m.id) > 0) sim.triggerSpecial(int(m.id), 1); break;
       case 'wave': sim.startWave(); break;
+      case 'aim': { const md = TARGET_MODES[int(m.m)]; if (int(m.id) > 0 && md) sim.setAim(int(m.id), md); break; }
     }
     return;
   }
@@ -1120,18 +1429,52 @@ click('setup-editor', () => openEditorScreen());
 click('setup-go', () => { saveSetup(); show('setup', false); if (setupFor === 'solo') startGame('solo'); else { show('lobby'); lobbyChoice(); } });
 click('m-coop', () => openLobby('coop'));
 click('m-versus', () => openLobby('versus'));
-click('m-help', () => { helpFrom = 'menu'; show('menu', false); show('help'); });
+click('m-help', () => { helpFrom = 'menu'; show('menu', false); buildHelp(); show('help'); });
 click('m-settings', () => { setFrom = 'menu'; show('menu', false); openSettings(); });
 click('m-music', () => openMusic('menu'));
 click('h-back', () => { show('help', false); show(helpFrom); });
 click('s-back', () => { show('settings', false); show(setFrom); save(); });
 click('mu-back', () => { show('music', false); show(musicFrom); });
 click('p-resume', () => togglePause(false));
-click('p-help', () => { helpFrom = 'pause'; show('pause', false); show('help'); });
+click('p-help', () => { helpFrom = 'pause'; show('pause', false); buildHelp(); show('help'); });
 click('p-settings', () => { setFrom = 'pause'; show('pause', false); openSettings(); });
 click('p-music', () => openMusic('pause'));
 click('p-quit', () => { sound.stopMusic(); startAttract(); });
 // A test play goes straight back to the editor. The draft is still there: the editor keeps it between visits.
+/** The How to play sheet's tables: the six targeting modes, what each tower runs on, and how each resource is made. Built from the game's tables each time the sheet opens (the diagrams follow the window's width). */
+function buildHelp() {
+  const aim = $('help-aim'); aim.textContent = '';
+  for (const m of TARGET_MODES) { const r = el('div', 'ha'); r.append(ic(`aim_${m}`, { size: 20 }), el('b', '', TARGET_INFO[m].name), el('span', '', TARGET_INFO[m].desc)); aim.append(r); }
+  const tw = $('help-towers'); tw.textContent = '';
+  for (const t of TOWER_TYPES) {
+    const d = TOWERS[t], l3 = TOWER_NEEDS_L3[t], r = el('div', 'ht'), nm = el('b');
+    nm.append(ic(`tw_${t}`, { size: 20 }), d.name);
+    const needs = el('span', 'hn');
+    needs.append(...needChips(d.needs));
+    if (d.mat) needs.append(rgrp('costs', rchip('mats', d.mat)));
+    if (l3) needs.append(rgrp('Mk3', ...needChips(l3)));
+    r.dataset.rt = 'tower:' + t; r.tabIndex = 0; r.setAttribute('aria-describedby', 'rtip');
+    r.append(nm, needs);
+    tw.append(r);
+  }
+  const rc = $('help-recipes'); rc.textContent = '';
+  const narrow = innerWidth < 720, list: ChainTarget[] = [{ item: 'iron' }, { item: 'copper' }, { res: 'power' }, { res: 'mats' }, { item: 'shell' }, { item: 'cell' }, { fluid: 'petrol' }, { item: 'missile' }];
+  for (const tg of list) {
+    const name = (tg.item ?? tg.fluid ?? tg.res) as IconName, fig = el('figure', 'hr'), cap = el('figcaption');
+    cap.append(ic(name, { size: 20 }), iconLabel(name));
+    const dia = recipeDiagram(tg, { width: narrow ? Math.min(360, innerWidth - 80) : 520, layout: narrow ? 'auto' : 'row', bare: name !== 'power' });
+    let w = 0;
+    for (const sv of dia.querySelectorAll('svg.ic-d-svg')) w = Math.max(w, +(sv.getAttribute('width') || 0));
+    if (w > 330 && !narrow) fig.classList.add('wide');
+    fig.append(cap, dia);
+    rc.append(fig);
+  }
+  // the buildings the diagrams show over their arrows, by name
+  const leg = el('figure', 'hr legend'), lc = el('figcaption', '', 'Buildings in these chains'), lr = el('div', 'rr');
+  for (const f of ['mine', 'pump', 'generator', 'smelter', 'works', 'press', 'cells', 'refinery', 'missiles'] as FacType[]) lr.append(rchip(`fac_${f}`, FACS[f].name));
+  leg.append(lc, lr);
+  rc.append(leg);
+}
 const backToEditor = () => { sound.stopMusic(); startAttract(); openEditorScreen(); };
 click('p-editor', backToEditor);
 click('e-editor', backToEditor);
@@ -1215,15 +1558,15 @@ $<HTMLInputElement>('fx-custom').addEventListener('input', (e) => {
 });
 
 // reset progress, with a second step instead of a browser dialog
-const RESET_IDLE = 'Records, last run setup and tips are saved in this browser.';
+const RESET_IDLE = 'Records, last run setup, targeting defaults and tips are saved in this browser.';
 function resetStep(asking: boolean, text = RESET_IDLE) {
   show('s-reset', !asking); show('s-reset-yes', asking); show('s-reset-no', asking);
   $('reset-text').textContent = text;
 }
-click('s-reset', () => resetStep(true, 'Delete all records, the last run setup and the tips? Sound and effects settings stay.'));
+click('s-reset', () => resetStep(true, 'Delete all records, the last run setup, the targeting defaults and the tips? Sound and effects settings stay.'));
 click('s-reset-no', () => resetStep(false));
 click('s-reset-yes', () => {
-  store.records = {}; store.tips = { node: false, boss: false, mite: false, titan: false, factory: false, dry: false, tutorial: false }; store.setup = defaultSetup();
+  store.records = {}; store.tips = { node: false, boss: false, mite: false, titan: false, factory: false, dry: false, tutorial: false }; store.setup = defaultSetup(); store.aim = {};
   save();
   // a run in progress keeps its own choice; the defaults are loaded when it goes back to the menu
   if (mode === 'attract') loadSetup(); else setupStale = true;
@@ -1477,6 +1820,7 @@ addEventListener('keydown', (e) => {
   keys.add(k);
   byTouch = false;
   // Escape is "back" on any sheet that has a way back, in a run and from the main menu alike
+  if (k === 'escape' && rt.a) { rtClose(); return; }
   if (k === 'escape' && !e.repeat && !shown('cards') && escBack()) return;
   if (!playing()) return;
   skipIntro();
@@ -1494,6 +1838,7 @@ addEventListener('keydown', (e) => {
   if (k === 'f' && !e.repeat) { sound.play('click'); setTab(barTab === 'towers' ? 'factory' : 'towers'); return; }
   if (barTab === 'factory') { const f = k >= '0' && k <= '9' && k.length === 1 ? facList()[(+k + 9) % 10] : undefined; if (f) { pickFac(f); return; } }
   else { const t = TOWER_TYPES.find((x) => TOWERS[x].key === k); if (t) { pickBuild(t); return; } }
+  if (k === 't' && !e.repeat) { if (selected) stepAim(e.shiftKey ? -1 : 1); return; }
   if (k === 'r' && !e.repeat) turnSelected();
   else if (k === 'u' && selected) act.upgrade(selected);
   else if (k === 'u' && selFac) act.upFac(selFac);
@@ -1615,7 +1960,7 @@ function diagFrame(dt: number) {
 // Each step can point at tiles on the board. It runs on the first solo run and can be replayed from How to play.
 /** A tutorial marker: an arrow over a tile ('here'), or a chevron on a tile of a belt to lay ('path', `i` along it, `a` its screen heading toward the next tile). */
 interface GuideMark { x: number; y: number; z: number; kind: 'here' | 'path'; i?: number; nx?: number; nz?: number }
-interface GuideStep { title: string; text: () => string; done: () => boolean; ready?: () => boolean; points?: () => GuideMark[]; ok?: boolean; tab?: 'towers' | 'factory' }
+interface GuideStep { title: string; text: () => string; done: () => boolean; ready?: () => boolean; points?: () => GuideMark[]; ok?: boolean; tab?: 'towers' | 'factory'; /** what the step names, as labelled icons under its text */ ics?: IconName[] }
 const guide = { on: false, i: 0, t: 0, acked: false };
 const guideOn = () => guide.on;
 const oreIdx = (o: OreType) => ORE_TYPES.indexOf(o) + 1;
@@ -1748,6 +2093,7 @@ function upgradeMarks(): GuideMark[] {
 const GUIDE: GuideStep[] = [
   {
     title: 'Build a Pulse Turret beside a crate',
+    ics: ['tw_pulse', 'fac_crate', 'iron_ore'],
     text: () => `Time stands still until you call a wave, so build first. Towers start empty. The sand-coloured supply crates beside the road hold iron ore, the Pulse Turret's ammunition. ${kb() ? 'Pick the Pulse Turret (key 1)' : 'Tap the Pulse Turret'} and build it on the marked hex beside a crate: a pulse runs from the crate to it and a green ring closes round its base when it will be fed.`,
     done: () => sim.towers.some((t) => t.type === 'pulse' && (t.stock > 0 || t.ammo > 0 || !!sim.diag().get('t' + t.id)?.ok)),
     // (the hex is the turret end of a chain a mine and a belt can still reach; without one, any hex by a crate of iron ore)
@@ -1760,6 +2106,7 @@ const GUIDE: GuideStep[] = [
   },
   {
     title: 'Build a Mine',
+    ics: ['fac_mine', 'dep_iron_ore', 'iron_ore'],
     text: () => `A crate runs out (click it to see what is left). Give the turret a supply of its own: ${kb() ? 'press F for the Factory bar' : 'tap Factory'}, pick the Mine and build it on ${chainPlan() ? 'the marked iron deposit' : 'an iron deposit next to the turret'}, the blue-grey tiles with ore chunks. A mine digs slowly, about one ore every 3 seconds: one keeps one turret firing.`,
     done: () => sim.factory.facs.some((f) => f.type === 'mine' && f.ore === 'iron_ore'),
     // (a deposit a belt can reach the turret from; the marked turret hex too if that turret is not built yet)
@@ -1767,6 +2114,7 @@ const GUIDE: GuideStep[] = [
   },
   {
     title: 'Lay a belt to a turret',
+    ics: ['fac_belt', 'st_ok', 'st_missing'],
     text: () => {
       const c = chainPlan(), more = c ? [c.mineNew ? 'a Mine on the marked deposit' : '', c.turNew ? 'a Pulse Turret on the marked hex' : ''].filter(Boolean) : [];
       return `${more.length ? `First build ${more.join(' and ')}. ` : ''}A mine feeds a turret right next to it. For one further away, pick the Belt and ${kb() ? 'drag' : 'hold and drag'} along the marked hexes from beside the mine to the turret. Towers keep only one item in hand and pull the next off the belt, so a belt that runs past a row of towers feeds them all. A rust ring with a hologram of what is missing marks anything still lacking; the ore moves while a wave runs.`;
@@ -1777,6 +2125,7 @@ const GUIDE: GuideStep[] = [
   },
   {
     title: 'Two more turrets along the belt',
+    ics: ['tw_pulse', 'fac_belt'],
     text: () => `One turret will not hold the road for long. ${barTab === 'factory' ? (kb() ? 'Press F for the Towers bar, pick the Pulse Turret (key 1)' : 'Tap Towers, then the Pulse Turret,') : kb() ? 'Pick the Pulse Turret (key 1)' : 'Tap the Pulse Turret'} and build ${GUIDE_TURRETS - 1} more on the marked hexes beside the belt: each keeps one piece of ore in hand and pulls the next off the belt as it runs past, so one belt feeds the whole row. The crates help while they last.`,
     done: () => sim.towers.filter((t) => t.type === 'pulse').length >= GUIDE_TURRETS || (!!chainPlan() && !moreTurrets().length),
     points: () => moreTurrets().map(([x, z]) => tileMark(x, z)),
@@ -1795,6 +2144,7 @@ const GUIDE: GuideStep[] = [
   },
   {
     title: 'Power',
+    ics: ['dep_coal', 'fac_mine', 'fac_generator', 'fac_pole', 'power'],
     text: () => `Your new tower runs on power. Build a Mine on coal (the dark tiles with black lumps) and a Generator right next to it. The Generator powers everything within 2 tiles; Power Poles carry it further, also across a road. The Power gauge at the top shows what the grid will give against what it needs.`,
     ready: () => sim.facs.has('generator'),
     done: () => sim.factory.powerNets.some((n) => n.cap > 0) || sim.factory.facs.some((f) => f.type === 'generator' && !!sim.diag().get('f' + f.id)?.ok),
@@ -1802,14 +2152,15 @@ const GUIDE: GuideStep[] = [
   },
   {
     title: 'That is the pattern',
-    text: () => `Every later tower adds one more step: pipes for oil, a Smelter for plates, then presses and plants. Between waves, a broken red ring round a tower or building says it will lack something, and the hologram over it shows what; click it for the details. Mines, plants and generators upgrade (${kb() ? 'U' : 'Upgrade'}) to work faster.`,
+    ics: ['fac_pump', 'fac_pipe', 'fac_smelter', 'fac_press', 'aim_first'],
+    text: () => `Every later tower adds one more step: pipes for oil, a Smelter for plates, then presses and plants. Between waves, a broken red ring round a tower or building says it will lack something, and the hologram over it shows what; click it for the details. Mines, plants and generators upgrade (${kb() ? 'U' : 'Upgrade'}) to work faster. A selected tower's panel also sets which enemy it targets${kb() ? ' (T)' : ''}: first, last, strongest, weakest, fastest or slowest.`,
     done: () => guide.acked,
     ok: true,
   },
 ];
 function startGuide() {
   guide.on = true; guide.i = 0; guide.t = 0; guide.acked = false;
-  delete cache.guide;
+  delete cache.guide; delete cache.guideic;
 }
 function endGuide(skipped: boolean) {
   guide.on = false;
@@ -1855,6 +2206,12 @@ function updateGuide() {
   setText('guide-step', `Tutorial ${guide.i + 1} / ${GUIDE.length}`);
   setText('guide-title', st.title);
   setText('guide-text', st.text());
+  const gk = guide.i + ':' + (st.ics || []).join();
+  if (cache.guideic !== gk) {
+    cache.guideic = gk;
+    const box = $('guide-ic'); box.textContent = '';
+    for (const n of st.ics || []) box.append(rchip(n, n.startsWith('aim_') ? 'Targeting' : iconLabel(n)));
+  }
   show('guide-next', !!st.ok);
 }
 click('guide-skip', () => endGuide(true));
@@ -2016,7 +2373,7 @@ function updateHud() {
     const poor = !locked && (sim.gold < cost || sim.mats < mt), st = (locked ? 1 : 0) | (poor ? 2 : 0) | (buildType === t ? 4 : 0);
     const was = btnState.get(b);
     if (!was || was.st !== st) { b.classList.toggle('locked', locked); b.classList.toggle('poor', poor); b.classList.toggle('sel', buildType === t); }
-    if (!was || was.cost !== cost || was.mt !== mt) { const c = b.lastElementChild as HTMLElement, txt = mt ? `${cost} +${mt}m` : String(cost); if (c.textContent !== txt) c.textContent = txt; }
+    if (!was || was.cost !== cost || was.mt !== mt) { const c = btnCost.get(b)!; c.textContent = String(cost); if (mt) { const m = el('span', 'm'); m.append(ic('mats', { size: 13 }), String(mt)); c.append(m); } }
     if (!was) btnState.set(b, { st, cost, mt }); else { was.st = st; was.cost = cost; was.mt = mt; }
   }
   // the factory bar holds what is unlocked so far; the number keys go by place on the bar
@@ -2029,12 +2386,12 @@ function updateHud() {
     const b = facBtns[t], cost = sim.facCost(t), st = (sim.gold < cost ? 2 : 0) | (buildFac === t ? 4 : 0);
     const was = btnState.get(b);
     if (!was || was.st !== st) { b.classList.toggle('poor', sim.gold < cost); b.classList.toggle('sel', buildFac === t); }
-    if (!was || was.cost !== cost) { const c = b.lastElementChild as HTMLElement, txt = String(cost); if (c.textContent !== txt) c.textContent = txt; }
+    if (!was || was.cost !== cost) { const c = btnCost.get(b)!, txt = String(cost); if (c.textContent !== txt) c.textContent = txt; }
     if (!was) btnState.set(b, { st, cost, mt: 0 }); else { was.st = st; was.cost = cost; }
   }
   // tooltip: the building under the pointer, else the one picked for building (touch has no hover). While the mouse
   // places it on the board (or drags a belt) the picked one's tooltip steps aside: it would cover a third of the board.
-  const tipFor = tipHover || (!byTouch && (overBoard || painting) ? null : buildType || buildFac), tipKey = tipFor ? tipFor + (Object.hasOwn(TOWERS, tipFor) && !sim.unlocked.has(tipFor as TowerType) ? ':locked' : '') : '';
+  const tipFor = tipHover || (!byTouch && (overBoard || painting) ? null : buildType || buildFac), tipKey = tipFor ? tipFor + (Object.hasOwn(TOWERS, tipFor) ? (sim.unlocked.has(tipFor as TowerType) ? ':' : ':locked:') + sim.cost(tipFor as TowerType) : ':' + sim.facCost(tipFor as FacType)) + ':' + innerWidth : '';
   if (cache.tip !== tipKey) { cache.tip = tipKey; if (!tipFor) show('tip', false); else if (Object.hasOwn(TOWERS, tipFor)) towerTip(tipFor as TowerType); else facTip(tipFor as FacType); }
 
   // next wave summary in the top bar
@@ -2103,21 +2460,19 @@ function dockPanel(id: string, key: string, x: number, y: number, z: number) {
   const [cx, , cok] = view.project(sim.map.core.x, 1, sim.map.core.z), [tx] = view.project(x, y, z);
   $(key === 'tdock' ? 'tower' : key === 'odock' ? 'opanel' : 'fpanel').classList.toggle('left', cok && cx > innerWidth - 330 && tx > 300);
 }
-/** One supply line of the tower panel: label, value, and whether it is short. */
-function supLine(box: HTMLElement, k: string, v: string, bad: boolean) {
-  box.append(el('span', bad ? 'bad' : '', k), el('b', bad ? 'bad' : '', v));
-}
 /** The building that makes a tower's ammunition or fluid. */
 const MAKER: Partial<Record<ItemType | 'crude' | 'petrol', FacType>> = { iron_ore: 'mine', copper: 'smelter', shell: 'press', cell: 'cells', missile: 'missiles', crude: 'pump', petrol: 'refinery' };
-/** What changes at Mk3 for a tower whose level-3 supply differs, with a warning when the building that makes it is locked or not built. */
-function mk3Note(type: TowerType, l3: TowerNeeds): string {
+/** A warning for a Mk3 whose new supply cannot be made yet: the building that makes it is locked, or none is built. */
+function mk3Warn(l3: TowerNeeds): string {
   const what = l3.item || l3.fluid, mk = what ? MAKER[what] : undefined;
-  let warn = '';
-  if (mk && !sim.facs.has(mk)) warn = ` Locked until then: the Mk3 cannot fire before a ${FACS[mk].name} feeds it.`;
-  else if (mk && !sim.factory.facs.some((f) => f.type === mk)) warn = ` No ${FACS[mk].name} is built yet: the Mk3 cannot fire until one feeds it.`;
-  return (TOWER_SUPPLY_L3[type] || `Mk3 runs on ${needsText(l3)}.`) + warn;
+  if (mk && !sim.facs.has(mk)) return `The ${FACS[mk].name} comes unlocked with the upgrade: the Mk3 cannot fire before one feeds it.`;
+  if (mk && !sim.factory.facs.some((f) => f.type === mk)) return `No ${FACS[mk].name} is built yet: the Mk3 cannot fire until one feeds it.`;
+  return '';
 }
-/** The "Supplied by" and "Missing" lines of a panel, from the factory's diagnosis (empty in a free run). */
+/**
+ * The "Supplied by" and "Missing" lines of a panel, from the factory's diagnosis (empty in a free run): the buildings that
+ * feed it and what it lacks as icons, each with the diagnosis' own words as its label.
+ */
 function diagLines(id: string, key: string) {
   const d = diagOf(key), box = $(id);
   const k = d ? `${key}|${d.from.join(',')}|${d.missing.join(',')}` : '';
@@ -2125,15 +2480,165 @@ function diagLines(id: string, key: string) {
   cache[id] = k;
   box.textContent = '';
   if (!d) return;
-  if (d.from.length) box.append(el('span', '', 'Supplied by'), el('b', '', d.from.join(', ')));
+  if (d.from.length) {
+    const b = el('b');
+    for (const n of d.from) { const f = fromIcon(n); if (f) b.append(rchip(f, n.endsWith('(by belt)') ? 'belt' : '', { label: n, state: 'ok' })); else b.append(el('em', '', n)); }
+    box.append(el('span', '', 'Supplied by'), b);
+  }
   // (only "a taker for its output" missing: the softer tone of the status line, not the red of a missing input)
-  const tone = onlyTaker(d) ? 'warn' : 'bad';
-  if (d.missing.length) box.append(el('span', tone, 'Missing'), el('b', tone, d.missing.join(', ')));
+  const soft = onlyTaker(d);
+  if (d.missing.length) {
+    const b = el('b', soft ? 'warn' : 'bad');
+    for (const m of d.missing) {
+      const icons = missIcons(m);
+      if (!icons.length) b.append(el('em', '', m));
+      for (const n of icons) b.append(rchip(n, '', { label: 'Missing: ' + m, state: soft ? undefined : 'missing' }));
+    }
+    b.setAttribute('aria-label', 'Missing: ' + d.missing.join(', '));
+    box.append(el('span', soft ? 'warn' : 'bad', soft ? 'Unused' : 'Missing'), b);
+  }
+}
+
+// ---------- targeting ----------
+const AIM_NONE: Partial<Record<TowerType, string>> = {
+  beacon: 'Boosts towers in range: no target.', flame: 'Burns whatever crosses its fire: no target.', gravity: 'Pulls on everything in range: no target.',
+};
+/** the mode whose name and description the panel shows instead of the tower's own: the button under the pointer, with the focus or held by a finger */
+let aimPeek: TargetMode | null = null;
+const aimBtns = {} as Record<TargetMode, HTMLButtonElement>;
+/** Set the selected tower's mode, or every tower's of its kind (`all`). The kind remembers it for the towers built next. */
+function setAim(mode: TargetMode, all: boolean) {
+  const t = selected ? sim.towerById(selected) : undefined;
+  if (!t || !TARGETABLE[t.type] || !active()) return;
+  const list = all ? sim.towers.filter((o) => o.type === t.type) : [t];
+  let ok = true;
+  for (const o of list) ok = act.aim(o.id, mode) && ok;
+  if (!ok) return;
+  aimPref[t.type] = mode;
+  sound.play('click');
+  if (all) {
+    // "all of them" is a standing order: it is kept for later runs too
+    store.aim[t.type] = mode; save();
+    toast(`${list.length === 1 ? `The ${TOWERS[t.type].name}` : `All ${list.length} ${plural(TOWERS[t.type].name)}`} now target${list.length === 1 ? 's' : ''} ${TARGET_INFO[mode].name.toLowerCase()}. New ones will too.`);
+  }
+}
+/** T / Shift+T: the selected tower's next or previous mode. */
+function stepAim(d: number) {
+  const t = selected ? sim.towerById(selected) : undefined;
+  if (!t) return;
+  if (!TARGETABLE[t.type]) { sound.play('error'); note(`${TOWERS[t.type].name}: ${(AIM_NONE[t.type] || 'no target.').toLowerCase()}`); return; }
+  const n = TARGET_MODES.length;
+  setAim(TARGET_MODES[(TARGET_MODES.indexOf(t.aim) + d + n) % n], false);
+}
+{
+  const seg = $('t-aim-seg');
+  let held = 0, heldAt = 0;
+  for (const m of TARGET_MODES) {
+    const b = el('button', 'aim-b') as HTMLButtonElement;
+    b.type = 'button';
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-label', `${TARGET_INFO[m].name}: ${TARGET_INFO[m].desc}`);
+    b.append(ic(`aim_${m}`, { size: 22 }));
+    b.addEventListener('click', (e) => {
+      // (a finger that held the button to read about the mode did not choose it)
+      if (performance.now() - heldAt < 600) { heldAt = 0; return; }
+      sound.init(); setAim(m, e.shiftKey);
+    });
+    b.addEventListener('pointerenter', (e) => { if (e.pointerType !== 'touch') aimPeek = m; });
+    b.addEventListener('pointerleave', () => { if (aimPeek === m) aimPeek = null; });
+    b.addEventListener('focus', () => { if (b.matches(':focus-visible')) aimPeek = m; });
+    b.addEventListener('blur', () => { if (aimPeek === m) aimPeek = null; });
+    b.addEventListener('pointerdown', (e) => { if (e.pointerType !== 'touch') return; clearTimeout(held); held = window.setTimeout(() => { aimPeek = m; heldAt = performance.now(); }, 380); });
+    for (const ev of ['pointerup', 'pointercancel'] as const) b.addEventListener(ev, (e) => { if (e.pointerType !== 'touch') return; clearTimeout(held); if (aimPeek === m) { heldAt = performance.now(); setTimeout(() => { if (aimPeek === m) aimPeek = null; }, 1600); } });
+    b.addEventListener('contextmenu', (e) => e.preventDefault());
+    aimBtns[m] = b;
+    seg.appendChild(b);
+  }
+  // the arrow keys walk the six modes (and do not pan the board while they do)
+  seg.addEventListener('keydown', (e) => {
+    const d = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0, i = TARGET_MODES.findIndex((m) => aimBtns[m] === document.activeElement);
+    if (!d || i < 0) return;
+    e.preventDefault(); e.stopPropagation();
+    aimBtns[TARGET_MODES[(i + d + TARGET_MODES.length) % TARGET_MODES.length]].focus();
+  });
+  $('t-aim-all').addEventListener('click', () => { sound.init(); const t = selected ? sim.towerById(selected) : undefined; if (t) setAim(aimPeek || t.aim, true); });
+}
+/**
+ * The enemy a tower is aiming at right now, by the sim's own rule (its private target pick, read here and changed nowhere),
+ * or null: nothing in range, the tower is off, or it is a kind that takes no single target.
+ */
+function aimedAt(t: Tower): Enemy | null {
+  // (not on a co-op guest: its replica has no road progress or lock-on to pick by, so it would mark the wrong enemy;
+  // not on a tower out of supply: it holds its fire)
+  if (!TARGETABLE[t.type] || isClient || towerOff(t) || sim.over) return null;
+  const S = sim as unknown as { pickTarget?(t: Tower, range: number, min: number): Enemy | null; aimCmp?(m: TargetMode, a: Enemy, b: Enemy): number };
+  const range = sim.range(t);
+  if (t.type === 'lance' && t.tgt) { const e = sim.enemies.find((o) => o.id === t.tgt && o.alive); if (e) return e; }
+  if (t.type === 'missile') {
+    // (a Missile Battery fires at up to three: the first of them, flyers first while it is set to First)
+    let best: Enemy | null = null;
+    const val = (o: Enemy) => (ENEMIES[o.type].fly ? 1000 : 0) + o.dist - sim.map.lanes[o.lane].len;
+    for (const o of sim.enemies) {
+      if (!o.alive || o.type === 'mite' || Math.hypot(o.x - t.x, o.z - t.z) > range) continue;
+      if (!best || (t.aim === 'first' ? val(o) > val(best) : S.aimCmp ? S.aimCmp.call(sim, t.aim, o, best) < 0 : false)) best = o;
+    }
+    return best;
+  }
+  return S.pickTarget ? S.pickTarget.call(sim, t, range, TOWERS[t.type].minRange || 0) : null;
+}
+/** The mode's icon on a small dark token, for the view to stand on the range ring (drawn once per mode from the icon's own paths). */
+const aimTokens = new Map<TargetMode, HTMLCanvasElement>();
+function aimToken(m: TargetMode): HTMLCanvasElement {
+  let c = aimTokens.get(m);
+  if (c) return c;
+  c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d')!;
+  g.beginPath(); g.arc(64, 64, 58, 0, Math.PI * 2);
+  g.fillStyle = 'rgba(16, 14, 12, 0.82)'; g.fill();
+  g.lineWidth = 3; g.strokeStyle = 'rgba(227, 220, 146, 0.75)'; g.stroke();
+  g.translate(64 - 12 * 3.1, 64 - 12 * 3.1); g.scale(3.1, 3.1);
+  for (const p of ic(`aim_${m}`).querySelectorAll('path')) {
+    const d = new Path2D(p.getAttribute('d') || ''), fill = p.getAttribute('fill'), stroke = p.getAttribute('stroke');
+    if (p.classList.contains('ic-key') || p.classList.contains('ic-cut') || p.classList.contains('ic-cut-line')) continue;
+    if (fill && fill !== 'none') { g.globalAlpha = +(p.getAttribute('fill-opacity') || 1); g.fillStyle = fill; g.fill(d, 'evenodd'); }
+    if (stroke) { g.globalAlpha = +(p.getAttribute('stroke-opacity') || 1); g.strokeStyle = stroke; g.lineWidth = +(p.getAttribute('stroke-width') || 1); g.setLineDash((p.getAttribute('stroke-dasharray') || '').split(' ').filter(Boolean).map(Number)); g.stroke(d); }
+  }
+  aimTokens.set(m, c);
+  return c;
+}
+/** what the view's targeting marks were last told (the hook it reads them through is optional until it lands) */
+const vAim = view as unknown as { setAimMark?(t: Tower | null, range?: number, glyph?: HTMLCanvasElement | null, e?: { x: number; y: number; z: number; r: number } | null): void };
+/** The targeting block of the tower panel, and the marks in the world: the mode's token by the range ring, the bracket on the enemy aimed at. */
+function updateAim(t: Tower | undefined) {
+  if (!t || !TARGETABLE[t.type]) {
+    vAim.setAimMark?.(null);
+    if (t) { const k = 'none:' + t.type; if (cache.taim !== k) { cache.taim = k; show('t-aim', false); show('t-aim-none'); setText('t-aim-none', AIM_NONE[t.type] || 'No target.'); $('t-aim-now').textContent = ''; } }
+    else cache.taim = '';
+    return;
+  }
+  const e = sim.planning ? null : aimedAt(t);
+  vAim.setAimMark?.(t, sim.range(t), aimToken(t.aim), e);
+  const same = sim.towers.reduce((n, o) => n + (o.type === t.type ? 1 : 0), 0), peek = aimPeek || t.aim;
+  const k = `${t.id}:${t.aim}:${peek}:${same}:${touchUi()}`;
+  if (cache.taim === k) return;
+  cache.taim = k;
+  show('t-aim'); show('t-aim-none', false);
+  const now = $('t-aim-now'); now.textContent = '';
+  now.append(ic(`aim_${t.aim}`, { size: 16 }), el('span', '', TARGET_INFO[t.aim].name));
+  now.setAttribute('aria-label', `Targets: ${TARGET_INFO[t.aim].name}`);
+  for (const m of TARGET_MODES) { const b = aimBtns[m], on = m === t.aim; b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)); b.tabIndex = on ? 0 : -1; }
+  setText('t-aim-name', TARGET_INFO[peek].name);
+  setText('t-aim-desc', TARGET_INFO[peek].desc);
+  $('t-aim').classList.toggle('peek', peek !== t.aim);
+  const all = $<HTMLButtonElement>('t-aim-all'), names = plural(TOWERS[t.type].name);
+  all.setAttribute('aria-label', `Set every ${TOWERS[t.type].name} to ${TARGET_INFO[peek].name}`);
+  all.title = `All ${same} ${same === 1 ? TOWERS[t.type].name : names} target ${TARGET_INFO[t.aim].name.toLowerCase()}, and the ones you build later${touchUi() ? '' : ' (or Shift+click a mode)'}`;
 }
 function updateTowerPanel() {
   const t = selected ? sim.towerById(selected) : undefined;
   if (!t) { selected = 0; if (!selFac) view.setSelected(null); cache.tdock = ''; }
   show('tower', !!t);
+  updateAim(t);
   if (!t) return;
   dockPanel(String(t.id), 'tdock', t.x, t.h * 0.5, t.z);
   view.setSelected(t, sim.range(t));
@@ -2144,7 +2649,7 @@ function updateTowerPanel() {
     cache.tstats = key;
     const st = $('t-stats'); st.textContent = '';
     const line = (k: string, v: string) => { st.append(k + ' ', el('b', '', v), el('br')); };
-    if (t.type === 'beacon') line('Boost', `+${Math.round(sim.beaconBoost(t) * 100)}% damage`);
+    if (t.type === 'beacon') line('Damage boost', `+${Math.round(sim.beaconBoost(t) * 100)}%`);
     else {
       if (d.dmg > 0) line('Damage', sim.towerDmg(t).toFixed(0));
       line(d.dmg > 0 ? 'Fire rate' : 'Pulse rate', sim.towerRate(t).toFixed(2) + '/s');
@@ -2154,16 +2659,33 @@ function updateTowerPanel() {
   }
   // supply: what it runs on and how much it has (one item in hand plus the shots left of the one in use: it pulls the next off its belt)
   const n = needsOf(t), sup = $('t-sup');
-  const sk = sim.opts.free ? 'free' : `${t.lvl}|${sim.planning}|${n.item ? t.stock + ':' + Math.ceil(t.ammo) : ''}|${n.fluid ? Math.round(t.tank) : ''}|${n.power ? Math.round(t.pwr * 100) : ''}`;
+  // (the rows are built once per tower and level; after that only their numbers change, so an icon under the pointer keeps its tooltip)
+  const sk = sim.opts.free ? 'free' : `${t.id}|${t.lvl}`;
   if (cache.tsup !== sk) {
-    cache.tsup = sk;
+    cache.tsup = sk; cache.tsupv = '';
     sup.textContent = '';
-    if (sim.opts.free) supLine(sup, 'Supply', 'not needed', false);
-    else {
-      // (between waves an empty tower is normal: the diagnosis below says whether it will be fed)
-      if (n.item) supLine(sup, ITEMS[n.item].name, `${t.stock}/${TOWER_STOCK} + ${Math.ceil(t.ammo)} shots (${Math.round((n.shots || ITEM_SHOTS[n.item] || 1) * sim.mods.ammo)} per item)`, !sim.planning && t.stock <= 0 && t.ammo <= 0);
-      if (n.fluid) supLine(sup, FLUIDS[n.fluid].name, `${Math.round(t.tank)}/${TOWER_TANK}`, !sim.planning && t.tank < 1);
-      if (n.power) supLine(sup, 'Power', t.pwr <= 0 ? (sim.planning ? `needs ${n.power}` : 'none') : `${Math.round(t.pwr * 100)}% of ${n.power}`, !sim.planning && t.pwr < 0.05);
+    if (sim.opts.free) sup.append(el('span', '', 'Supply'), el('b', '', 'not needed'));
+    else for (const r of ['item', 'fluid', 'power'] as const) {
+      if (!n[r]) continue;
+      const name: IconName = r === 'power' ? 'power' : (n[r] as ItemType | FluidType), c = rchip(name, '', { label: iconLabel(name) });
+      c.classList.add('s-' + r);
+      sup.append(c, el('b', 's-' + r));
+    }
+  }
+  if (!sim.opts.free) {
+    // (between waves an empty tower is normal: the diagnosis below says whether it will be fed)
+    const rows: [string, string, boolean][] = [];
+    if (n.item) rows.push(['item', `${t.stock} in hand · ${Math.ceil(t.ammo)} shot${Math.ceil(t.ammo) === 1 ? '' : 's'}`, !sim.planning && t.stock <= 0 && t.ammo <= 0]);
+    if (n.fluid) rows.push(['fluid', `${Math.round(t.tank)}/${TOWER_TANK}`, !sim.planning && t.tank < 1]);
+    if (n.power) rows.push(['power', t.pwr <= 0 ? (sim.planning ? `needs ${n.power}` : `none of ${n.power}`) : `${Math.round(t.pwr * 100)}% of ${n.power}`, !sim.planning && t.pwr < 0.05]);
+    const vk = rows.map((r) => r.join(':')).join('|');
+    if (cache.tsupv !== vk) {
+      cache.tsupv = vk;
+      for (const [r, txt, bad] of rows) {
+        const b = sup.querySelector('b.s-' + r), c = sup.querySelector('.ic-chip.s-' + r);
+        if (b) { if (b.textContent !== txt) b.textContent = txt; b.classList.toggle('bad', bad); }
+        if (c) c.classList.toggle('is-missing', bad);
+      }
     }
   }
   diagLines('t-diag', 't' + t.id);
@@ -2184,10 +2706,19 @@ function updateTowerPanel() {
     setText('t-special', touchUi() ? 'Fire special' : 'Fire special (Space)');
   }
   // a Mk3 that runs on a new ammunition: say so before the upgrade, and whether the building that makes it is there yet
-  const l3 = t.lvl === 2 && !sim.opts.free ? TOWER_NEEDS_L3[t.type] : undefined;
-  setText('t-next', l3 ? mk3Note(t.type, l3) : '');
+  const l3s = t.lvl < 3 && !sim.opts.free ? TOWER_NEEDS_L3[t.type] : undefined, l3 = t.lvl === 2 ? l3s : undefined;
+  const warn = l3 ? mk3Warn(l3) : '', nk = l3s ? `${t.type}:${warn}` : '';
+  if (cache.tnext !== nk) {
+    cache.tnext = nk;
+    const box = $('t-next'); box.textContent = '';
+    if (l3s) {
+      // what changes at Mk3: what it runs on now, an arrow, what it will run on
+      box.append(rrow('At Mk3', ...needChips(TOWERS[t.type].needs), arrow(), ...needChips({ ...l3s, power: l3s.power ?? TOWERS[t.type].needs.power })));
+      if (warn) box.append(el('p', '', warn));
+    }
+  }
   const up = $<HTMLButtonElement>('t-up');
-  setText('t-up', t.lvl >= 3 ? 'Max level' : `${l3 ? `Mk3: ${needsText(l3)}` : 'Upgrade'}${touchUi() ? '' : ' (U)'} - ${sim.upCost(t)}${sim.upMat(t) ? ` +${sim.upMat(t)}m` : ''}`);
+  setText('t-up', t.lvl >= 3 ? 'Max level' : `${l3 ? 'To Mk3' : 'Upgrade'}${touchUi() ? '' : ' (U)'} - ${sim.upCost(t)}${sim.upMat(t) ? ` +${sim.upMat(t)}m` : ''}`);
   up.disabled = t.lvl >= 3 || sim.gold < sim.upCost(t) || sim.mats < sim.upMat(t);
   setText('t-sell', `Sell${touchUi() ? '' : ' (X)'} +${sim.sellValue(t)}${sim.sellMats(t) ? ` +${sim.sellMats(t)}m` : ''}`);
   setText('t-note', '');
@@ -2198,6 +2729,30 @@ const FAC_STATE: Record<string, string> = {
 };
 /** Inventory line: item counts. */
 const invText = (inv: Partial<Record<ItemType, number>>) => Object.entries(inv).filter(([, n]) => n && n > 0).map(([k, n]) => `${n} ${ITEMS[k as ItemType].short}`).join(', ') || 'empty';
+/** The same as icons with counts (nothing for an empty store: the words say "empty"). */
+type Counted = [IconName, number | string][];
+const invIcons = (inv: Partial<Record<ItemType, number>>): Counted => Object.entries(inv).filter(([, n]) => n && n > 0).map(([k, n]) => [k as ItemType, n as number]);
+/** What a belt, splitter or tunnel carries: each item once, with how many. */
+function carried(items: { it: ItemType }[]): Counted {
+  const m = new Map<ItemType, number>();
+  for (const i of items) m.set(i.it, (m.get(i.it) || 0) + 1);
+  return [...m];
+}
+/** The recipe of a building as one row of chips per product: what goes in, an arrow, what comes out, the power it draws. */
+function recipeRows(f: Fac): HTMLElement[] {
+  const rows: HTMLElement[] = [];
+  for (const st of recipes()) {
+    if (st.fac !== f.type || (st.on && f.ore && st.on !== f.ore)) continue;
+    const r = rrow('');
+    if (st.on) r.append(rchip(`dep_${st.on}`));
+    for (const i of st.inp) r.append(rchip(i.res, i.n > 1 ? i.n : ''));
+    if (st.fuel) r.append(rchip(st.fuel.res, '1/' + st.fuel.per, { label: `${ITEMS[st.fuel.res].name}: one for every ${st.fuel.per}` }));
+    r.append(arrow(), rchip(st.out, st.rate ? st.n + '/s' : st.n > 1 ? st.n : ''));
+    if (st.power) r.append(rgrp('draws', rchip('power', st.power)));
+    rows.push(r);
+  }
+  return rows;
+}
 const per = (sec: number, what: string) => `${what} every ${sec.toFixed(1)}s`;
 /** How fast a building works at a level (with the factory cards), in words. '' for what has no speed. */
 function workRate(f: Fac, lvl: number): string {
@@ -2213,7 +2768,7 @@ function workRate(f: Fac, lvl: number): string {
   return '';
 }
 /** The grid lines of a pole's or generator's panel: generators and their fuel, consumers, need at full load, and a warning when short. */
-function gridLines(f: Fac, lines: [string, string][]) {
+function gridLines(f: Fac, lines: [string, string, Counted?][]) {
   const n = sim.factory.powerNet(f.net);
   if (!n) { lines.push(['Grid', 'none']); return; }
   const dg = sim.diag(), gens = n.nodes.filter((g) => g.type === 'generator');
@@ -2233,9 +2788,6 @@ function freeOre(cx: number, cz: number): OreType | null {
   const i = cz * GW + cx, o = sim.factory.ore[i];
   return o && !sim.factory.at[i] && sim.grid[i] === 0 ? ORE_TYPES[o - 1] ?? null : null;
 }
-/** What goes on a deposit: a Pumpjack on oil, a Mine on the rest. */
-const oreFac = (o: OreType): FacType => (o === 'oil' ? 'pump' : 'mine');
-const andList = (a: string[]) => (a.length < 2 ? a.join('') : `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}`);
 /** The connected tiles of one deposit kind (a patch), worked out once per map. */
 const patches = new WeakMap<Uint8Array, Map<number, number[]>>();
 function orePatch(cx: number, cz: number): number[] {
@@ -2255,20 +2807,21 @@ function orePatch(cx: number, cz: number): number[] {
   for (const j of tiles) m.set(j, tiles);
   return tiles;
 }
-/** What a deposit is good for, in one line, from the tower and recipe tables. */
+/** What a deposit is good for, in words (the label of the icon row that shows it). */
 function oreUse(o: OreType): string {
-  const name = o === 'oil' ? FLUIDS.crude.name : ITEMS[o].name, parts: string[] = [];
-  const direct = TOWER_TYPES.filter((t) => (o === 'oil' ? TOWERS[t].needs.fluid === 'crude' : TOWERS[t].needs.item === o)).map((t) => TOWERS[t].name + 's');
-  if (direct.length) parts.push(`feeds ${andList(direct)} directly`);
-  if (o === 'iron_ore' || o === 'copper_ore') {
-    const plate: ItemType = o === 'iron_ore' ? 'iron' : 'copper', by = TOWER_TYPES.filter((t) => TOWERS[t].needs.item === plate).map((t) => TOWERS[t].name + 's');
-    parts.push(`a ${FACS.smelter.name} makes ${ITEMS[plate].short}s${by.length ? ` for ${andList(by)}` : ''}`);
-  }
-  if (o === 'coal') parts.push(`${FACS.generator.name}s burn it for power, ${FACS.smelter.name}s as fuel`);
-  const users = (Object.keys(MAKES) as FacType[]).filter((f) => { const r = MAKES[f]!; return o === 'oil' ? r.fluid?.[0] === 'crude' : !!r.inp[o as ItemType]; }).map((f) => FACS[f].name);
-  if (o === 'oil') users.push(FACS.refinery.name);
-  if (users.length) parts.push(`the ${andList(users)} ${users.length > 1 ? 'take' : 'takes'} it`);
-  return `${name}: ${parts.join('; ')}.`;
+  const raw = oreRaw(o), name = o === 'oil' ? FLUIDS.crude.name : ITEMS[o].name;
+  return `${name}: a ${FACS[oreFac(o)].name} brings it up. ${takersText(raw)}`;
+}
+/** A deposit's use as icons: the building that goes on it, what that gives, and the towers and buildings that take it. */
+function oreUseRow(o: OreType, tab: boolean): HTMLElement[] {
+  const raw = oreRaw(o), u = takers(raw), opt = { tab };
+  const first = rrow('', rchip(`fac_${oreFac(o)}`, '', opt), arrow(), rchip(raw, '', opt));
+  const feeds = rrow('Feeds');
+  for (const t of u.tw) feeds.append(rchip(`tw_${t}`, '', opt));
+  for (const t of u.tw3) feeds.append(rchip(`tw_${t}`, 'Mk3', { ...opt, rt: `tower:${t}:3`, label: TOWERS[t].name + ' Mk3' }));
+  for (const f of u.fac) feeds.append(rchip(`fac_${f}`, '', opt));
+  first.setAttribute('aria-label', oreUse(o));
+  return [first, feeds];
 }
 /** Where the building for a deposit is ("Pick the Mine in the Factory bar."), or why it cannot be built yet. `why` is the short reason alone. */
 function oreBuildLine(o: OreType): { text: string; locked: boolean; why: string } {
@@ -2300,11 +2853,10 @@ function facCue(k: FacType | null, panel: boolean, dt: number) {
     if (l < bar.scrollLeft) bar.scrollLeft = l - 8; else if (r > bar.scrollLeft + bar.clientWidth) bar.scrollLeft = r - bar.clientWidth + 8;
   }
 }
-/** The name line: a swatch in the deposit's colour and its name. */
+/** The name line: the deposit's icon and its name. */
 function oreHead(box: HTMLElement, o: OreType, tag = 'b') {
-  const h = el(tag, 'ore-name'), sw = el('i', 'swatch');
-  sw.style.setProperty('--c', hex(ORES[o].color));
-  h.append(sw, ORES[o].name);
+  const h = el(tag, 'ore-name');
+  h.append(ic(`dep_${o}`, { size: 20 }), ORES[o].name);
   box.append(h);
 }
 /** Tiles of a patch that carry a mine or pumpjack. */
@@ -2330,7 +2882,7 @@ function updateOre() {
     if (cache.otip !== key) {
       cache.otip = key; tip.textContent = '';
       oreHead(tip, ho);
-      tip.append(el('span', '', oreUse(ho)), el('i', bl.locked ? 'lock' : 'needs', bl.text), el('i', '', `Patch: ${tiles.length} tile${tiles.length === 1 ? '' : 's'}.`));
+      tip.append(...oreUseRow(ho, false), el('i', bl.locked ? 'lock' : 'needs', bl.text), el('i', '', `Patch: ${tiles.length} tile${tiles.length === 1 ? '' : 's'}.`));
       show('oretip');
     }
     // beside the pointer, kept on screen
@@ -2352,7 +2904,7 @@ function updateOre() {
       const fresh = !cache.opanel;
       cache.opanel = key;
       const nm = $('o-name'); nm.textContent = ''; oreHead(nm, so, 'span');
-      setText('o-use', oreUse(so));
+      const use = $('o-use'); use.textContent = ''; use.append(...oreUseRow(so, true));
       const st = $('o-stats'); st.textContent = '';
       const rate = workRate({ type: k, ore: so } as Fac, 1);
       const lines: [string, string][] = [
@@ -2391,21 +2943,23 @@ function updateFacPanel() {
   // between waves nothing runs: the state is what the diagnosis expects, not what the last step left behind
   const dg = diagOf('f' + f.id);
   const [stTxt, stCls] = plan && f.type !== 'crate'
-    ? dg ? (dg.ok ? ['Build phase: will work when the wave starts', 'ok'] : onlyTaker(dg) ? ['Build phase: nothing takes its output', 'warn'] : ['Build phase: will lack ' + dg.missing.join(', '), 'bad']) : ['Build phase: time stands still', 'warn']
+    ? dg ? (dg.ok ? ['Build phase: will work when the wave starts', 'ok'] : onlyTaker(dg) ? ['Build phase: nothing takes its output', 'warn'] : ['Build phase: will lack an input', 'bad']) : ['Build phase: time stands still', 'warn']
     : [f.type === 'crate' && f.state === 'ok' ? 'Feeding what stands next to it' : FAC_STATE[f.state] || f.state, f.state === 'ok' ? 'ok' : f.state === 'idle' || f.state === 'full' || f.state === 'noinput' ? 'warn' : 'bad'];
   setText('f-state', stTxt);
   if ($('f-state').className !== stCls) $('f-state').className = stCls;
+  const mk = `${f.id}:${f.ore || ''}`;
+  if (cache.fmake !== mk) { cache.fmake = mk; const box = $('f-make'); box.textContent = ''; box.append(...recipeRows(f)); }
   const st = $('f-stats');
-  const lines: [string, string][] = [];
+  const lines: [string, string, Counted?][] = [];
   const rate = workRate(f, f.lvl), uc = sim.facUpCost(f);
   if (rate) lines.push(['Speed', rate]);
   if (rate && uc) lines.push([`Mk ${f.lvl + 1}`, workRate(f, f.lvl + 1)]);
   switch (f.type) {
-    case 'belt': case 'splitter': lines.push(['Carrying', f.items.map((i) => ITEMS[i.it].short).join(', ') || 'nothing']); break;
+    case 'belt': case 'splitter': lines.push(['Carrying', f.items.map((i) => ITEMS[i.it].short).join(', ') || 'nothing', carried(f.items)]); break;
     case 'tunnel': {
       const o = f.pair ? sim.factory.facById(f.pair) : undefined;
       lines.push(['End', o ? `${f.exit ? 'exit' : 'entrance'}, ${hexDist(f.cx, f.cz, o.cx, o.cz)} tiles from its ${f.exit ? 'entrance' : 'exit'}` : `unpaired: build its partner facing the same way within ${TUNNEL_REACH} tiles`]);
-      if (o && !f.exit) lines.push(['Underground', f.items.map((i) => ITEMS[i.it].short).join(', ') || 'nothing']);
+      if (o && !f.exit) lines.push(['Underground', f.items.map((i) => ITEMS[i.it].short).join(', ') || 'nothing', carried(f.items)]);
       break;
     }
     case 'ptunnel': {
@@ -2417,28 +2971,33 @@ function updateFacPanel() {
     case 'pipe': { const pf = sim.factory.pipeFluid(f); lines.push(['Network', pf.fluid ? `${FLUIDS[pf.fluid].name}, ${Math.round(pf.fill * 100)}% full` : 'empty']); break; }
     case 'pole': case 'generator': {
       gridLines(f, lines);
-      if (f.type === 'generator') lines.push(['Fuel', `${invText(f.inv)}, ${Math.max(0, f.fuel).toFixed(0)}s burning`]);
+      if (f.type === 'generator') lines.push(['Fuel', `${invText(f.inv)}, ${Math.max(0, f.fuel).toFixed(0)}s burning`, [...invIcons(f.inv), ['time', Math.max(0, f.fuel).toFixed(0) + 's']]]);
       lines.push(['Reach', `wires to poles within ${POLE_REACH} tiles, powers what is within ${SUPPLY}`]);
       break;
     }
     case 'mine': lines.push(['Output', f.out.length ? `${f.out.length}/${OUT_CAP} waiting` : 'none waiting']); break;
     case 'pump': lines.push(['Crude', `${Math.round(f.tout)}/${TANK}`], ['Power', `${Math.round(f.pwr * 100)}%`]); break;
-    case 'smelter': lines.push(['Input', invText(f.inv)], ['Output', f.out.length ? `${f.out.length}/${OUT_CAP} plates waiting` : 'none waiting']); break;
+    case 'smelter': lines.push(['Input', invText(f.inv), invIcons(f.inv)], ['Output', f.out.length ? `${f.out.length}/${OUT_CAP} plates waiting` : 'none waiting']); break;
     case 'works': case 'press': case 'cells': case 'missiles': {
-      const r = MAKES[f.type]!, need = Object.entries(r.inp).map(([k, n]) => `${n} ${ITEMS[k as ItemType].short}`).concat(r.fluid ? [`${r.fluid[1]} ${FLUIDS[r.fluid[0]].name.toLowerCase()}`] : []).join(' + ');
-      lines.push(['Makes', `${r.out ? ITEMS[r.out].name : `${r.mats} building material`} from ${need}`], ['Input', invText(f.inv) + (r.fluid ? `, ${Math.round(f.tin)} ${FLUIDS[r.fluid[0]].name.toLowerCase()}` : '')]);
+      const r = MAKES[f.type]!;
+      lines.push(['Input', invText(f.inv) + (r.fluid ? `, ${Math.round(f.tin)} ${FLUIDS[r.fluid[0]].name.toLowerCase()}` : ''), [...invIcons(f.inv), ...(r.fluid ? [[r.fluid[0], Math.round(f.tin)] as [IconName, number]] : [])]]);
       if (r.out) lines.push(['Output', f.out.length ? `${f.out.length}/${OUT_CAP} waiting` : 'none waiting']);
       else lines.push(['Materials', `${Math.floor(sim.mats)} in store`]);
       lines.push(['Power', `${Math.round(f.pwr * 100)}%`]);
       break;
     }
-    case 'crate': lines.push(['Holds', f.hold ? `${f.left} ${ITEMS[f.hold].short}` : 'nothing']); break;
+    case 'crate': lines.push(['Holds', f.hold ? `${f.left} ${ITEMS[f.hold].short}` : 'nothing', f.hold ? [[f.hold, f.left]] : []]); break;
     case 'refinery': lines.push(['Crude', `${Math.round(f.tin)}/${TANK}`], ['Petrol', `${Math.round(f.tout)}/${TANK}`], ['Power', `${Math.round(f.pwr * 100)}%`]); break;
   }
-  const lk = lines.map((l) => l.join(':')).join('|');
+  const lk = lines.map((l) => l[0] + ':' + l[1]).join('|');
   if (cache.fstats !== lk) {
     cache.fstats = lk; st.textContent = '';
-    for (const [k, v] of lines) st.append(k + ' ', el('b', k === 'Short' ? 'bad' : '', v), el('br'));
+    // (a line that counts items shows them as icons with their numbers; its words stay as the label)
+    for (const [k, v, cs] of lines) {
+      const b = el('b', k === 'Short' ? 'bad' : '', cs && cs.length ? '' : v);
+      if (cs && cs.length) { b.setAttribute('aria-label', v); for (const [n, q] of cs) b.append(rchip(n, q, { tab: false, state: 'plain' })); }
+      st.append(k + ' ', b, el('br'));
+    }
   }
   diagLines('f-diag', 'f' + f.id);
   // levels: what the next one costs and how fast it would work
@@ -2546,6 +3105,7 @@ function beatLevel(): number {
 function frame(dt: number) {
   if (CAPTURE) sound.clock += dt;
   diagFrame(dt);
+  rtFrame();
   rotSync();
   if (!paused) titanCamera(dt);
   guideFrame(dt);

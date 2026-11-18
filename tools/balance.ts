@@ -28,6 +28,7 @@
 // BAN='arc,missile' locks tower types (never unlocked, their blueprint is never offered); BAN='card:hollow,kind:eco' removes cards by id or kind;
 // BAN='cards:arc' removes the dedicated cards of one tower type but keeps the tower. BAN='specials' makes the bot never fire tower specials.
 // GIVE='hollow:2,chain' hands out cards at the start of a run (what is one card worth when it comes for free?). SEED0=<n> shifts the run seeds (default 1000).
+// AIM='cryo=fast,mortar=strong' makes the bot set these targeting modes on its towers (the others keep the bot's own choice).
 // HP=<n> scales every enemy's health and shield, TDMG=<n> every tower's damage (sweeps).
 // TUNE='hp2=0.07,titan=900' overrides TUNE knobs, TOWER='lance.dmg=7.5' tower stats, ENEMY='brute.hp=190' enemy stats,
 // MAP='gold=1.2,lives=0.8' scales the starting credits and core integrity of every map.
@@ -39,10 +40,10 @@ import { Sim } from '../src/game/sim.ts';
 import { Bot } from '../src/game/bot.ts';
 import { MAPS } from '../src/game/maps.ts';
 import { validateMap } from '../src/game/map.ts';
-import { TUNE, TOWERS, CARDS, CARD_BY_ID, ENEMIES, TOWER_TYPES } from '../src/game/data.ts';
+import { TUNE, TOWERS, CARDS, CARD_BY_ID, ENEMIES, TOWER_TYPES, TARGET_MODES } from '../src/game/data.ts';
 import { generateMap } from '../src/game/mapgen.ts';
 import type { MapDef } from '../src/game/map.ts';
-import type { TowerType, EnemyType } from '../src/game/data.ts';
+import type { TowerType, EnemyType, TargetMode } from '../src/game/data.ts';
 
 /** Seeds of the generated maps the 'gen' groups stand for. */
 const GEN_SEEDS = [1234, 2087, 3391, 4410, 5566, 6072];
@@ -90,6 +91,9 @@ function single() {
   const banned = (process.env.BAN || '').split(',').map((x) => x.trim()).filter(Boolean);
   const banTowers = banned.filter((b) => Object.hasOwn(TOWERS, b)) as TowerType[];
   const noSpecials = banned.includes('specials');
+  // AIM='cryo=fast,mortar=strong': the bot sets these targeting modes on its towers ('cryo=first' puts one back to its default)
+  let aims: Partial<Record<TowerType, TargetMode>> | null = null;
+  for (const kv of (process.env.AIM || '').split(',')) { const [t, m] = kv.split('='); if (t && Object.hasOwn(TOWERS, t) && TARGET_MODES.includes(m as TargetMode)) (aims ||= {})[t as TowerType] = m as TargetMode; }
   for (const c of CARDS) {
     if (banned.includes('card:' + c.id) || banned.includes('kind:' + c.kind) || (c.needs && (banTowers.includes(c.needs) || banned.includes('cards:' + c.needs))) || (c.kind === 'blueprint' && banTowers.includes(c.id.slice(3) as TowerType))) c.max = 0;
   }
@@ -114,6 +118,7 @@ function single() {
       mul = sim.mapMul;
       for (const t of banTowers) sim.unlocked.delete(t);
       if (noSpecials) for (const b of bots) b.useSpecials = false;
+      if (aims) for (const b of bots) b.aims = { ...b.aims, ...aims };
       for (const [id, n] of give) {
         const card = CARD_BY_ID[id];
         if (card.needs) sim.unlocked.add(card.needs);

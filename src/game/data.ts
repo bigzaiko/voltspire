@@ -105,6 +105,34 @@ export const TOWER_SUPPLY_L3: Partial<Record<TowerType, string>> = {
 };
 /** What a tower needs at its level (TOWER_NEEDS_L3 from level 3 on, else TOWERS[type].needs). */
 export const needsOf = (t: { type: TowerType; lvl: number }): TowerNeeds => (t.lvl >= 3 && TOWER_NEEDS_L3[t.type]) || TOWERS[t.type].needs;
+/**
+ * Targeting modes a tower can be set to (Sim.setAim). Each picks one enemy among those the tower can hit right now (in range,
+ * outside its minimum range, flyers only for a tower that can reach them); exact ties go to the enemy that came first (lower id).
+ * first / last: least / most road left to the core (each enemy measured along its own road, flyers too).
+ * strong / weak: most / least health plus shield, with road progress as a small tie-break (0.01 per metre); strong takes a boss or the Titan on an exact tie.
+ * fast / slow: highest / lowest pace right now, after slows, singularities and freezes (a frozen enemy has pace 0, the slowest);
+ * on an exact tie the one further along.
+ */
+export type TargetMode = 'first' | 'last' | 'strong' | 'weak' | 'fast' | 'slow';
+/** Display order of the modes (also their index in co-op snapshots: append, never reorder). */
+export const TARGET_MODES: TargetMode[] = ['first', 'last', 'strong', 'weak', 'fast', 'slow'];
+export const TARGET_INFO: Record<TargetMode, { name: string; desc: string }> = {
+  first: { name: 'First', desc: 'The enemy closest to the core.' },
+  last: { name: 'Last', desc: 'The enemy furthest from the core.' },
+  strong: { name: 'Strongest', desc: 'The most health and shield left. Bosses first.' },
+  weak: { name: 'Weakest', desc: 'The least health and shield left: finishes enemies off.' },
+  fast: { name: 'Fastest', desc: 'The quickest mover right now, after slows.' },
+  slow: { name: 'Slowest', desc: 'The slowest mover right now: frozen and slowed enemies first.' },
+};
+/**
+ * Which towers have a targeting setting: those that pick one enemy (or aim a shell or a volley at one).
+ * Not the Beacon (it boosts towers), the Firewall Pylon (walls and rings burn whatever stands in them) or the Graviton Well
+ * (its field drags everything in range; its Collapse goes for the heaviest enemy as a fixed rule of the special).
+ */
+export const TARGETABLE: Record<TowerType, boolean> = { pulse: true, cryo: true, arc: true, mortar: true, rail: true, beacon: false, flame: false, lance: true, missile: true, gravity: false };
+/** The mode a new tower starts with. The Railgun and the Lance go for the strongest; the Missile Pod on 'first' also takes flyers before anything on the ground. */
+export const TARGET_DEFAULT: Record<TowerType, TargetMode> = { pulse: 'first', cryo: 'first', arc: 'first', mortar: 'first', rail: 'strong', beacon: 'first', flame: 'first', lance: 'strong', missile: 'first', gravity: 'first' };
+
 /** Crude oil a Firewall Pylon burns per tick of its fire. */
 export const FUEL_PER_TICK = 0.5;
 

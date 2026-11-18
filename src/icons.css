@@ -1,0 +1,35 @@
+/* BEATSPIRE icon set (src/icons.ts): the icon itself, the HUD chip that carries one, and the recipe diagram.
+   Linked from the pages, not imported by the script. Colours are the console's; every fallback is its value. */
+.ic { display: inline-block; flex: none; vertical-align: -0.22em; overflow: visible; }
+/* what a cut-out and a keyline show: the ground the icon lies on (a container on another ground sets --ic-bg) */
+.ic-cut { fill: var(--ic-bg, #171411); }
+.ic-cut-line { fill: none; stroke: var(--ic-bg, #171411); }
+.ic-key { fill: none; stroke: var(--ic-bg, #171411); }
+.ic-dim { opacity: 0.45; filter: saturate(0.25); }
+
+/* the chip: a small plate with an icon and a count, ruled on its left by its state */
+.ic-chip { --ic-bg: var(--soot-0, #100e0c); display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 7px 0 4px; font-family: var(--mono, ui-monospace, monospace); font-size: 12px; font-weight: 500; line-height: 1; letter-spacing: 0; white-space: nowrap; color: var(--bone, #efe9d6); background: var(--soot-0, #100e0c); border: 0; border-radius: var(--r, 2px); box-shadow: inset 0 0 0 1px var(--line, rgba(227, 220, 146, 0.16)); vertical-align: middle; }
+.ic-chip > b { font-weight: 500; font-variant-numeric: tabular-nums; }
+.ic-chip:not(:has(> b)) { padding: 0 4px; }
+.ic-chip.is-ok { box-shadow: inset 0 0 0 1px var(--line, rgba(227, 220, 146, 0.16)), inset 2px 0 0 var(--verdigris, #6fe0c8); padding-left: 6px; }
+.ic-chip.is-missing { color: var(--apricot-hi, #ffa474); box-shadow: inset 0 0 0 1px rgba(206, 107, 68, 0.55), inset 2px 0 0 var(--rust, #ce6b44); padding-left: 6px; }
+.ic-chip.is-dim { color: var(--muted, #9c9384); }
+.ic-chip.is-plain { --ic-bg: var(--soot-1, #171411); height: auto; padding: 0; background: none; box-shadow: none; }
+button.ic-chip { cursor: pointer; }
+button.ic-chip:hover { box-shadow: inset 0 0 0 1px var(--sand, #e3dc92); background: var(--soot-3, #2a231e); }
+
+/* the recipe diagram: one drawing per tree, power and fuel on ruled lines of their own under the chain */
+.ic-diagram { --ic-bg: var(--soot-1, #171411); display: flex; flex-direction: column; align-items: flex-start; gap: 6px; max-width: 100%; }
+.ic-diagram.ic-d-stack { align-items: center; }
+.ic-d-part { max-width: 100%; }
+.ic-d-svg { display: block; max-width: 100%; height: auto; overflow: visible; }
+.ic-d-aux { align-self: stretch; padding-top: 5px; border-top: 1px solid var(--line, rgba(227, 220, 146, 0.16)); }
+.ic-d-stack .ic-d-aux .ic-d-svg { margin: 0 auto; }
+.ic-d-cap { display: flex; align-items: baseline; gap: 8px; margin-bottom: 1px; font-family: var(--mono, ui-monospace, monospace); font-size: 10px; font-weight: 500; line-height: 1.3; letter-spacing: 0.16em; text-transform: uppercase; color: var(--sand-dim, #a9a373); }
+.ic-d-cap i { font-style: normal; letter-spacing: 0.04em; text-transform: none; color: var(--muted, #9c9384); }
+.ic-d-line { fill: none; stroke: var(--sand-dim, #a9a373); stroke-width: 1.4; stroke-linejoin: miter; }
+.ic-d-head { fill: var(--sand, #e3dc92); }
+.ic-d-q, .ic-d-t, .ic-d-pw { font-family: var(--mono, ui-monospace, monospace); font-size: 10px; font-weight: 500; }
+.ic-d-q { fill: var(--bone, #efe9d6); }
+.ic-d-t { fill: var(--sand-dim, #a9a373); }
+.ic-d-pw { fill: #a6e070; }

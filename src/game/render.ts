@@ -607,6 +607,9 @@ export class View {
   private rangeRing: THREE.Mesh; private cellMark: THREE.Group; private cellFill: THREE.Mesh; private cellEdge: THREE.Mesh; private cellCross: THREE.Group;
   private ghost = new THREE.Group(); private ghostType = ''; private ghostMat: THREE.MeshStandardMaterial;
   private selRing: THREE.Mesh; private hoverMark: THREE.Mesh;
+  /** the selected tower's targeting (see setAimMark): its mode's glyph by the range ring, the bracket on the enemy it aims at, the line to it */
+  private aimGlyph: THREE.Sprite; private aimLock: THREE.Sprite; private aimLine: THREE.Mesh;
+  private aimTex = new Map<HTMLCanvasElement, THREE.CanvasTexture>(); private aimSide = 0; private aimFor = 0;
   private enemyGlow = new THREE.MeshBasicMaterial({ map: glowTexture(), color: new THREE.Color(STATIC).multiplyScalar(0.4), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
   private bubbleMat = new THREE.MeshBasicMaterial({ color: 0x4a86c8, transparent: true, opacity: 0.2, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
   private haloMats = new Map<TowerType, THREE.SpriteMaterial>();
@@ -683,6 +686,20 @@ export class View {
     this.rangeRing = put(flat(hexFlat(new THREE.RingGeometry(0.985, 1, 128)), 0xffffff, 0.7));
     this.selRing = put(flat(G_HEX_RING, SAND, 0.85));
     this.hoverMark = put(flat(G_HEX_LINE, SAND, 0.45));
+    // targeting: a token with the mode's glyph, a lock-on bracket (four corners, drawn once) and a hair-thin beam
+    const sprite = (map: THREE.Texture | null, order: number) => {
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map, transparent: true, depthTest: false, depthWrite: false, fog: false }));
+      sp.layers.set(FX_LAYER); sp.renderOrder = order;
+      return put(sp);
+    };
+    const bc = document.createElement('canvas'); bc.width = bc.height = 128;
+    const bx = bc.getContext('2d')!;
+    bx.strokeStyle = '#' + APRICOT.toString(16).padStart(6, '0'); bx.lineWidth = 7; bx.lineCap = 'butt'; bx.lineJoin = 'miter';
+    for (const [sx, sy] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) { bx.beginPath(); bx.moveTo(64 - sx * 56, 64 - sy * 26); bx.lineTo(64 - sx * 56, 64 - sy * 56); bx.lineTo(64 - sx * 26, 64 - sy * 56); bx.stroke(); }
+    const bt = new THREE.CanvasTexture(bc); bt.colorSpace = THREE.SRGBColorSpace;
+    this.aimLock = sprite(bt, 9);
+    this.aimGlyph = sprite(null, 9);
+    this.aimLine = put(makeBeam());
     // build marker: a tile-sized plate with a rim, plus a cross when the tile cannot take a tower
     this.cellMark = put(new THREE.Group());
     this.cellFill = flat(G_HEX, SAND, 0.28); this.cellEdge = flat(G_HEX_LINE, SAND, 0.7);
@@ -817,7 +834,7 @@ export class View {
     this.coreHit = this.coreZap = 9;
     this.later.length = 0;
     this.thunder = 0; this.swarm = 0;
-    this.setGhost(null); this.setSelected(null);
+    this.setGhost(null); this.setSelected(null); this.setAimMark(null);
     this.fac.setSim(sim);
     this.cues.setSim(sim); this.cueTower = this.cueFac = null;
     this.hoverMark.visible = false;
@@ -976,6 +993,39 @@ export class View {
     this.selRing.position.set(t.x, 0.08, t.z);
     this.rangeRing.visible = range > 0; this.rangeRing.position.set(t.x, 0.06, t.z); this.rangeRing.scale.setScalar(Math.max(0.01, range));
     (this.rangeRing.material as THREE.MeshBasicMaterial).color.setHex(TOWERS[t.type].color);
+  }
+  /**
+   * The selected tower's targeting, called every frame while one is selected (null clears it). `glyph`: the mode's icon
+   * drawn on a canvas, shown as a small token on the range ring where it is in view (the side toward the camera first; beside
+   * the tower when no part of the ring is). `e`: the enemy the tower is aiming at right now: a bracket closes on it and a
+   * thin line runs to it from the tower, so a change of mode is seen to pick another enemy.
+   */
+  setAimMark(t: Tower | null, range = 0, glyph: HTMLCanvasElement | null = null, e: { x: number; y: number; z: number; r: number } | null = null) {
+    const g = this.aimGlyph, on = !!t && !!glyph;
+    g.visible = on; this.aimLock.visible = on && !!e; if (!on || !e) this.aimLine.visible = false;
+    if (!t || !glyph) return;
+    let tex = this.aimTex.get(glyph);
+    if (!tex) { tex = new THREE.CanvasTexture(glyph); tex.colorSpace = THREE.SRGBColorSpace; this.aimTex.set(glyph, tex); }
+    const gm = g.material as THREE.SpriteMaterial;
+    if (gm.map !== tex) { gm.map = tex; gm.needsUpdate = true; }
+    // where on the ring: toward the camera, else to either side, else the far side; whichever is in the clear part of the picture
+    const cp = this.camera.position;
+    let dx = cp.x - t.x, dz = cp.z - t.z;
+    const dl = Math.hypot(dx, dz) || 1; dx /= dl; dz /= dl;
+    const cv = this.renderer.domElement.getBoundingClientRect(), y = this.deckY(t.x, t.z);
+    const at = (k: number, r: number): [number, number] => { const a = [0, Math.PI / 2, -Math.PI / 2, Math.PI][k], c = Math.cos(a), s = Math.sin(a); return [t.x + (dx * c - dz * s) * r, t.z + (dx * s + dz * c) * r]; };
+    const clear = (k: number) => { const [x, z] = at(k, range); const [sx, sy, ok] = this.project(x, y + 0.7, z); return ok && sx > 60 && sx < cv.width - 60 && sy > 96 && sy < cv.height - 190; };
+    if (this.aimFor !== t.id) { this.aimFor = t.id; this.aimSide = 0; }
+    if (range <= 0 || !clear(this.aimSide)) { let k = -1; if (range > 0) for (let i = 0; i < 4 && k < 0; i++) if (clear(i)) k = i; this.aimSide = k < 0 ? 4 : k; }
+    const [gx, gz] = this.aimSide === 4 || range <= 0 ? at(0, HEX_SIZE * 1.55) : at(this.aimSide, range);
+    // (a steady size on screen between a near and a far zoom: about one tile close up, never a speck from afar)
+    const sc = Math.max(1.05, Math.min(2.6, cp.distanceTo(V.set(gx, y, gz)) * 0.036));
+    g.position.set(gx, y + 0.7, gz); g.scale.setScalar(sc);
+    if (!e) return;
+    const k = 1 + 0.06 * Math.sin(this.time * 6), bs = Math.max(1.5, e.r * 3.4) * k;
+    this.aimLock.position.set(e.x, e.y, e.z); this.aimLock.scale.setScalar(bs);
+    (this.aimLock.material as THREE.SpriteMaterial).rotation = 0;
+    placeBeam(this.aimLine, t.x, y + t.h * 0.85, t.z, e.x, e.y, e.z, 0.05, APRICOT, 0.55, 0.2);
   }
   /** The placement marker for a factory building: its ghost, the tile plate, and a cross where it cannot go. */
   setFacGhost(type: FacType | null, cx = 0, cz = 0, dir = 0, ok = true) {

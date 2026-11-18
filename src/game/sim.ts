@@ -6,12 +6,12 @@ import {
   TWIN_BOLT, PULSE_CRIT, RAIL_CAP, LANCE_FOCUS, BREACH_TIME, BREACH_TIME_BOSS, BREACH_SHARE, coopScale,
   FIRST_WAVE_IN, NEXT_WAVE_IN, LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR,
   FACS, FAC_TYPES, ITEM_SHOTS, FUEL_PER_TICK, START_MATS, START_GOLD_MUL, TOWER_TIER, TOWER_CHAIN, CRATE_STOCK,
-  FAC_UPGRADABLE, FAC_UP_COST, TOWER_NEEDS_L3, TOWER_CHAIN_L3, needsOf,
+  FAC_UPGRADABLE, FAC_UP_COST, TOWER_NEEDS_L3, TOWER_CHAIN_L3, needsOf, TARGET_MODES, TARGETABLE, TARGET_DEFAULT,
   WHEEL_GUARD, WHEEL_CRAWL, WHEEL_BLEED, WHEEL_DRAG, WHEEL_SINK, WHEEL_REST, WHEEL_SPINUP, WHEEL_PIERCE, WAVE_POOL, gyreCount, GYRE_WAVE,
   BROOD_EVERY, BROOD_FIRST, BROOD_SIZE, BROOD_REACH, MITE_HOLD, MITE_LIFE, JAM_LINGER,
   TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY, TITAN_STRIKE, TITAN_SLOW, TITAN_WALK, TITAN_PACE, TITAN_LEAD, TITAN_GOLD, TITAN_SURVIVAL, TITAN_AGAIN, TITAN_TOUGHER, TITAN_SMASH,
 } from './data.ts';
-import type { TowerType, EnemyType, Mods, Card, FacType, ItemType } from './data.ts';
+import type { TowerType, EnemyType, Mods, Card, FacType, ItemType, TargetMode } from './data.ts';
 import { broodCap } from './data.ts';
 import { GameMap, DEFAULT_MAP, diffById } from './map.ts';
 import type { MapDef, Difficulty, PathOut } from './map.ts';
@@ -59,6 +59,8 @@ export interface Tower {
   stock: number; ammo: number; tank: number; pwr: number; dry: boolean; spentMat: number;
   /** Seconds of the wave it has held no ammunition (not saved: a new wave starts it again). */
   starve: number;
+  /** Targeting mode (see TargetMode): set by the player with Sim.setAim, kept over upgrades. Towers without TARGETABLE keep their TARGET_DEFAULT. */
+  aim: TargetMode;
 }
 /** True while a tower does nothing: rebooting, jammed by mites, stunned by the Titan, or out of supply. */
 export const towerOff = (t: Tower) => t.down > 0 || t.jam > 0 || t.stun > 0 || t.dry;
@@ -148,6 +150,16 @@ export function segDist(x: number, z: number, ax: number, az: number, bx: number
 }
 /** An enemy's own pace before slows. A Gyre rolls at WHEEL_CRAWL of its speed with the rim stopped, and at all of it at full spin. */
 export function paceOf(e: Enemy): number { return e.type === 'wheel' ? e.speed * (WHEEL_CRAWL + (1 - WHEEL_CRAWL) * e.spin) : e.speed; }
+/** How fast an enemy moves right now: its pace after slows, singularities and freezes (the same rule the enemy step moves it by; 0 frozen solid). */
+export function paceNow(e: Enemy): number {
+  const boss = e.type === 'boss';
+  let slow = e.slowT > 0 ? e.slowF : 0;
+  if (e.sing > 0) slow = Math.max(slow, boss ? 0.4 : 0.9);
+  if (e.frz > 0) slow = Math.max(slow, boss ? 0.6 : 1);
+  if (e.type === 'titan') slow *= TITAN_SLOW;
+  return paceOf(e) * (1 - slow);
+}
+const isBig = (e: Enemy) => e.type === 'boss' || e.type === 'titan';
 
 // ---------- legacy exports for the default map (scenery code still reads these) ----------
 const DEF = new GameMap(DEFAULT_MAP);
@@ -222,7 +234,7 @@ function newTower(id: number, type: TowerType, cx: number, cz: number, spent: nu
   // a new tower is empty: it fires once a supply crate, a mine or a belt beside it feeds it
   return {
     id, type, cx, cz, x: cellX(cx, cz), z: cellZ(cz), lvl: 1, cd: 0.3, yaw: 0, buff: 0, spent, h: TOWER_H[type], charge: 0, spec: 0, down: 0, heat: 0, tgt: 0, aux: 0, fxT: 0, jam: 0, stun: 0,
-    stock: 0, ammo: 0, tank: 0, pwr: 0, dry: false, spentMat: 0, starve: 0,
+    stock: 0, ammo: 0, tank: 0, pwr: 0, dry: false, spentMat: 0, starve: 0, aim: TARGET_DEFAULT[type],
   };
 }
 /** An enemy of a type with everything else at rest (spawn() and the co-op replica fill in the rest). */
@@ -419,6 +431,21 @@ export class Sim {
     this.recomputeBuffs();
     this.factory.dirty = true;
     this.events.push({ k: 'sell', x: t.x, z: t.z });
+    return true;
+  }
+  /**
+   * Set a tower's targeting mode. False for an unknown tower or mode, a tower type without the setting (TARGETABLE), or a
+   * finished game; true (and no event) when the mode is already set. The tower takes its next target by the new mode on the
+   * next step; a Lance drops the enemy it is locked on and loses its heat the same way as on any retarget.
+   * Emits { k: 'aim', id, t: type, m: mode, x, z }.
+   */
+  setAim(id: number, mode: TargetMode): boolean {
+    const t = this.towerById(id);
+    if (!t || this.over || !TARGETABLE[t.type] || typeof mode !== 'string' || !TARGET_MODES.includes(mode)) return false;
+    if (t.aim === mode) return true;
+    t.aim = mode;
+    if (t.tgt) { if (t.type === 'lance' && t.spec <= 0) t.heat *= this.mods.lanceRamp ? 0.5 : 0; t.tgt = 0; }
+    this.events.push({ k: 'aim', id: t.id, t: t.type, m: mode, x: t.x, z: t.z });
     return true;
   }
   /** A beacon's current boost (0 while it reboots; tripled during Surge). */
@@ -1395,9 +1422,13 @@ export class Sim {
     this.events.push({ k: 'gravity', id: t.id, x: t.x, z: t.z, r: range });
   }
 
+  /**
+   * The enemy a tower aims at, by its targeting mode (t.aim, see TargetMode in data.ts), among those it can hit: in range, outside
+   * its minimum range, on the ground for a mortar. Allocation-free: it runs for every tower on every step.
+   */
   private pickTarget(t: Tower, range: number, minRange: number): Enemy | null {
-    let best: Enemy | null = null, bv = -Infinity;
-    const strongest = t.type === 'rail' || t.type === 'lance', ground = t.type === 'mortar';
+    let best: Enemy | null = null, bv = -Infinity, bp = -Infinity;
+    const ground = t.type === 'mortar', m = t.aim, lanes = this.map.lanes;
     // (a squared distance well past the range rules an enemy out before the exact Math.hypot: the same picks, far fewer hypot calls)
     const far = range * range * (1 + 1e-9) + 1e-9;
     for (let i = 0; i < this.enemies.length; i++) {
@@ -1407,13 +1438,30 @@ export class Sim {
       if (dx * dx + dz * dz > far) continue;
       const d = Math.hypot(dx, dz);
       if (d > range || d < minRange) continue;
-      const prog = e.dist - this.map.lanes[e.lane].len; // 0 = at the core (a mite counts as standing where its carrier let it go)
-      const v = strongest ? e.hp + e.shield + prog * 0.01 : prog;
-      if (v > bv) { bv = v; best = e; }
+      const prog = e.dist - lanes[e.lane].len; // 0 = at the core (a mite counts as standing where its carrier let it go)
+      let v: number;
+      if (m === 'first') v = prog;
+      else if (m === 'strong') v = e.hp + e.shield + prog * 0.01;
+      else if (m === 'last') v = -prog;
+      else if (m === 'weak') v = prog * 0.01 - e.hp - e.shield;
+      else v = m === 'fast' ? paceNow(e) : -paceNow(e);
+      // exact ties: the enemy met first (lower id) keeps it, except a boss or the Titan for 'strong' and the one further along for 'fast' / 'slow'
+      if (v > bv || (v === bv && (m === 'strong' ? isBig(e) && (best === null || !isBig(best)) : (m === 'fast' || m === 'slow') && prog > bp))) { bv = v; bp = prog; best = e; }
     }
     return best;
   }
 
+  /** Order two enemies by a targeting mode the way pickTarget ranks them (negative: a comes first). */
+  private aimCmp(m: TargetMode, a: Enemy, b: Enemy): number {
+    const pa = a.dist - this.map.lanes[a.lane].len, pb = b.dist - this.map.lanes[b.lane].len;
+    let d: number;
+    if (m === 'first') d = pb - pa;
+    else if (m === 'last') d = pa - pb;
+    else if (m === 'strong') d = (b.hp + b.shield + pb * 0.01) - (a.hp + a.shield + pa * 0.01) || +isBig(b) - +isBig(a);
+    else if (m === 'weak') d = (pb * 0.01 - b.hp - b.shield) - (pa * 0.01 - a.hp - a.shield);
+    else d = (m === 'fast' ? paceNow(b) - paceNow(a) : paceNow(a) - paceNow(b)) || pb - pa;
+    return d || a.id - b.id;
+  }
   private shell(t: Tower, tx: number, ty: number, tz: number, dmg: number, T: number, sp = false) {
     this.projs.push({ sp, id: this.nid++, kind: 'shell', owner: -1, hit: [], tier: 0, chain: 0, pierce: 0, x: t.x, y: t.h * 0.8, z: t.z, vx: 0, vy: 0, vz: 0, dmg, target: 0, life: T + 0.1, aoe: TOWERS.mortar.aoe! * (1 + 0.1 * (t.lvl - 1)) * (1 + 0.25 * this.mods.mortarAoe), sx: t.x, sz: t.z, tx, ty, tz, t: 0, T });
     this.events.push({ k: 'shot', t: 'mortar', id: t.id, d: Math.hypot(tx - t.x, tz - t.z), x: t.x, y: t.h * 0.8, z: t.z });
@@ -1514,11 +1562,14 @@ export class Sim {
         break;
       }
       case 'missile': {
-        // up to three different targets, flyers first, then whoever is closest to the core
+        // up to three different targets: on 'first' flyers before anything on the ground, then whoever is closest to the core;
+        // on any other mode the best three by that mode (the order pickTarget would take them in)
         const list: Enemy[] = [];
         for (const o of this.enemies) if (o.alive && o.type !== 'mite' && Math.hypot(o.x - t.x, o.z - t.z) <= range) list.push(o);
-        const val = (o: Enemy) => (ENEMIES[o.type].fly ? 1000 : 0) + o.dist - this.map.lanes[o.lane].len;
-        list.sort((a, b) => val(b) - val(a));
+        if (t.aim === 'first') {
+          const val = (o: Enemy) => (ENEMIES[o.type].fly ? 1000 : 0) + o.dist - this.map.lanes[o.lane].len;
+          list.sort((a, b) => val(b) - val(a));
+        } else list.sort((a, b) => this.aimCmp(t.aim, a, b));
         const k = Math.min(3, list.length), n = 3 + this.mods.missilePods;
         for (let i = 0; i < n && k > 0; i++) this.missile(t, list[i % k], dmg, i);
         this.events.push({ k: 'shot', t: 'missile', id: t.id, x: t.x, y: t.h * 0.9, z: t.z });
@@ -1602,7 +1653,7 @@ export class Sim {
       ti: [TITAN_PHASES.indexOf(this.titan.phase), r(this.titan.danger), this.titan.wave, r(this.titan.t), this.titan.lane],
       u: [...this.unlocked].map((t) => TOWER_TYPES.indexOf(t)),
       e: this.enemies.map((e) => [e.id, ENEMY_TYPES.indexOf(e.type), r(e.x), r(e.z), r(e.yaw), Math.ceil(e.hp), Math.ceil(e.maxHp), Math.ceil(e.shield), e.slowT > 0 ? 1 : 0, r(e.gy), (e.burnT > 0 ? 1 : 0) | (e.frz > 0 ? 2 : 0) | (e.vulnT > 0 ? 4 : 0) | (e.latched ? 32 : 0), r(e.breach), r(e.spin), e.prey]),
-      t: this.towers.map((t) => [t.id, TOWER_TYPES.indexOf(t.type), t.cx, t.cz, t.lvl, r(t.yaw), r(t.buff), t.spent, r(t.charge), r(t.down), r(t.spec), r(t.heat), r(t.jam), r(t.stun), t.dry ? 1 : 0]),
+      t: this.towers.map((t) => [t.id, TOWER_TYPES.indexOf(t.type), t.cx, t.cz, t.lvl, r(t.yaw), r(t.buff), t.spent, r(t.charge), r(t.down), r(t.spec), r(t.heat), r(t.jam), r(t.stun), t.dry ? 1 : 0, TARGET_MODES.indexOf(t.aim)]),
       p: this.projs.map((p) => [p.id, PROJ_KINDS.indexOf(p.kind), r(p.x), r(p.y), r(p.z), r(p.vx), r(p.vy), r(p.vz), p.tier]),
       z: this.zones.map((z) => [z.id, ZONE_KINDS.indexOf(z.kind), r(z.x), r(z.z), r(z.r), r(z.life), r(z.y)]),
       pl: this.players.map((p) => [p.pending[0] || [], p.pending.length]),
@@ -1674,6 +1725,8 @@ export class Sim {
       t.lvl = Math.max(1, Math.min(3, num(v[4], 1) | 0)); t.yaw = num(v[5]); t.buff = clamp(num(v[6]), 0, 10); t.spent = num(v[7]);
       t.charge = clamp(num(v[8]), 0, 1); t.down = clamp(num(v[9]), 0, 120); t.spec = clamp(num(v[10]), 0, 120); t.heat = clamp(num(v[11]), 0, 1);
       t.jam = clamp(num(v[12]), 0, 60); t.stun = clamp(num(v[13]), 0, 60); t.dry = v[14] === 1;
+      const aim = TARGET_MODES[num(v[15], -1) | 0]; // (a host that does not send it yet: the tower keeps what it has)
+      if (aim && TARGETABLE[type]) t.aim = aim;
       this.grid[cz * GW + cx] = 2;
       this.towers.push(t);
     }
