@@ -2530,16 +2530,17 @@ function updateIntel() {
 }
 
 /**
- * Beat level for the view: the built-in score's own beats, or a clock at the BPM set for the player's music.
- * The clock counts from the last tap on the Tap button, so tapped beats land on the music.
+ * Beat level for the view: the built-in score's own beats, or a clock at the BPM of the player's music.
+ * The music module ties that clock to the track position (Spotify, YouTube), the listener or the last tap,
+ * and switches the BPM with every track.
  */
 function beatLevel(): number {
   if (!music.isExternalPlaying()) return sound.beatLevel();
   const bpm = music.bpm();
   if (!bpm || !Number.isFinite(bpm) || bpm <= 0 || !music.beatOn()) return 0;
-  const spb = 60 / clamp(bpm, 30, 300);
-  const t = ((performance.now() - music.beatOrigin()) / 1000) % spb;
-  return Math.exp(-(t < 0 ? t + spb : t) * 5.5);
+  const ph = music.beatPhase(performance.now());
+  if (ph === null) return 0;
+  return Math.exp(-ph * (60 / clamp(bpm, 30, 300)) * 5.5);
 }
 
 function frame(dt: number) {
@@ -2618,6 +2619,8 @@ function frame(dt: number) {
   // the score's tense layer runs while the Titan is on the field
   const tp = sim.titan ? sim.titan.phase : 'none';
   sound.intense = mode !== 'attract' && !ended && (tp === 'landing' || tp === 'walk') ? 1 : 0;
+  // and drops to its calm arrangement while time stands still between waves (the planning phase)
+  sound.calm = mode !== 'attract' && !ended && sim.planning;
   // the built-in score stays quiet for as long as the player's own music is playing
   sound.setScoreMuted(music.isExternalPlaying());
   // the beat reaches the view only while it is switched on and has somewhere to show
@@ -2671,9 +2674,11 @@ function frame(dt: number) {
   }
   startAttract();
   if (params.get('mode') === 'solo') startGame('solo');
+  // back from the Spotify sign-in: show the Music sheet again, where the connection is
+  void music.returnedFromSpotify().then((back) => { if (back && mode === 'attract' && shown('menu')) openMusic('menu'); });
   if (import.meta.env.DEV) {
     (window as unknown as Record<string, unknown>).__dbg = {
-      get sim() { return sim; }, view, act, startGame, sound, diag, zoomS, touch: touchApi,
+      get sim() { return sim; }, view, act, startGame, sound, diag, zoomS, touch: touchApi, music,
       /** the tutorial: its step and the turret / mine / belt chain it points at */
       get guide() { return { on: guide.on, i: guide.i, title: guide.on ? GUIDE[guide.i].title : '', chain: guide.on ? chainPlan() : null, more: guide.on ? moreTurrets() : [], cam: guideCam.on, fold: $('guide').classList.contains('fold') }; },
       /** what the controller has chosen for building and selected */

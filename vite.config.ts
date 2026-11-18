@@ -1,21 +1,28 @@
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import type { Plugin } from 'vite';
 import { resolve } from 'path';
 
 // Strict Content-Security-Policy for the published site (GitHub Pages cannot send headers,
-// so it is delivered as a <meta> tag). Only our own files may run. The only network peer
-// allowed is the PeerJS matchmaking relay that introduces two players to each other.
+// so it is delivered as a <meta> tag). Only our own files may run, plus Spotify's Web Playback SDK
+// (loaded only after the player presses Connect Spotify). The network peers: the PeerJS matchmaking
+// relay, Spotify's sign-in and Web API, and ReccoBeats for opt-in BPM lookups (GetSongBPM only when
+// the build has a key for it).
+const env = loadEnv('production', import.meta.dirname, 'VITE_');
+// Spotify Connect is off unless the build sets VITE_SPOTIFY_CONNECT=1 (see README): its hosts are only allowed then
+const spOn = env.VITE_SPOTIFY_CONNECT === '1';
+const getSong = /^[A-Za-z0-9]{8,64}$/.test(env.VITE_GETSONGBPM_KEY || '') ? ' https://api.getsong.co' : '';
 const CSP = [
   "default-src 'self'",
-  "script-src 'self'",
+  "script-src 'self'" + (spOn ? ' https://sdk.scdn.co' : ''),
   "style-src 'self'",
   "font-src 'self'",
-  "img-src 'self' data: blob:",
+  // Spotify cover art (shown as delivered)
+  "img-src 'self' data: blob:" + (spOn ? ' https://*.scdn.co https://*.spotifycdn.com' : ''),
   "media-src 'self'",
-  "connect-src 'self' https://0.peerjs.com wss://0.peerjs.com",
+  "connect-src 'self' https://0.peerjs.com wss://0.peerjs.com " + (spOn ? 'https://accounts.spotify.com https://api.spotify.com ' : '') + "https://api.reccobeats.com" + getSong,
   "worker-src 'self' blob:",
-  // the player's own playlist (Music sheet) plays in embeds from these two hosts and nowhere else
-  "frame-src https://www.youtube-nocookie.com https://open.spotify.com",
+  // the player's own playlist (Music sheet) plays in embeds from these hosts, and the Spotify SDK runs its player in a frame of its own
+  "frame-src https://www.youtube-nocookie.com https://open.spotify.com" + (spOn ? ' https://sdk.scdn.co' : ''),
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",

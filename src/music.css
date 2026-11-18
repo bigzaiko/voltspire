@@ -37,6 +37,12 @@
 /* Minimised: the frame keeps playing, so it is clipped, not removed. */
 .mu-dock.min { width: min(240px, calc(100vw - 24px)); }
 .mu-dock.min .mu-dock-body { height: 0; overflow: hidden; border-top: 0; visibility: hidden; }
+/* YouTube's terms: a playing embed stays in view, at least 200 x 200 px, with nothing over it.
+   So a folded YouTube dock keeps the player at that size and only hides the controls. */
+.mu-dock.yt.min { width: min(240px, calc(100vw - 24px)); }
+.mu-dock.yt.min .mu-dock-body { height: auto; overflow: visible; visibility: visible; border-top: 1px solid var(--line); }
+.mu-dock.yt.min .mu-dock-ctl { display: none; }
+.mu-dock.yt.min .mu-frame.yt { aspect-ratio: auto; height: 200px; min-width: 200px; }
 .mu-frame { display: block; width: 100%; border: 0; background: var(--soot-0); }
 .mu-frame.yt { aspect-ratio: 16 / 9; min-height: 200px; }
 .mu-frame.sp { height: 152px; }
@@ -53,11 +59,12 @@
 @media (max-height: 520px) {
   /* Too short for a list that scrolls on its own: let the whole sheet scroll. */
   .mu-list { max-height: none; overflow: visible; }
-  .mu-frame.yt { min-height: 0; height: 120px; aspect-ratio: auto; }
+  .mu-frame.yt { min-height: 200px; height: 200px; aspect-ratio: auto; }
   .mu-frame.sp { height: 80px; }
 }
 /* The dock and the match toasts share the top left corner: the toasts move below a folded dock and beside an open one. */
 body:has(.mu-dock.min) #toasts { top: calc(var(--top-h) + 66px); }
+body:has(.mu-dock.yt.min) #toasts { top: calc(var(--top-h) + 270px); }
 body:has(.mu-dock:not(.min)) #toasts { left: calc(344px + var(--safe-l)); }
 @media (max-width: 700px) { body:has(.mu-dock:not(.min)) #toasts { left: calc(12px + var(--safe-l)); top: auto; bottom: calc(var(--console-h) + 12px); } }
 /* Narrow screens cannot move the sheet aside, so it starts below the open dock instead. */
@@ -67,4 +74,77 @@ body:has(.mu-dock:not(.min)) #toasts { left: calc(344px + var(--safe-l)); }
    The :not(#mu-none) only adds weight, so this wins over the overlay padding rules in style.css. */
 @media (min-width: 900px) {
   body:has(.mu-dock:not(.min)) .overlay:has(.mu):not(#mu-none) { padding-left: calc(356px + var(--safe-l)); }
+}
+
+/* ---- Spotify, the beat row and the playlists ---- */
+.mu-dock { max-height: calc(100vh - var(--top-h) - 24px); overflow-y: auto; overscroll-behavior: contain; }
+.mu-dock-art { width: 32px; height: 32px; flex: none; object-fit: contain; }
+.mu-dock-art[hidden] { display: none; }
+.mu-now { display: flex; gap: 10px; padding: 10px; align-items: center; }
+.mu-now-art { width: 96px; height: 96px; flex: none; object-fit: contain; background: var(--soot-0); }
+.mu-now-art[hidden] { display: none; }
+.mu-now-meta { min-width: 0; display: grid; gap: 3px; }
+.mu-now-name { font-family: var(--display); font-size: 17px; font-weight: 600; line-height: 1.15; color: var(--sand); overflow-wrap: anywhere; }
+.mu-now-who { font-size: 13px; color: var(--bone); overflow-wrap: anywhere; }
+.mu-now-brand { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.mu-sp-logo { width: 24px; height: 24px; flex: none; fill: #1ed760; }
+.mu-link { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; color: var(--sand); text-decoration: underline; text-underline-offset: 3px; }
+.mu-link:hover, .mu-link:focus-visible { color: var(--apricot); }
+.mu-toggle.on { color: var(--soot-0); background: var(--apricot); border-color: var(--apricot); }
+.mu-prog { flex-basis: 100%; display: flex; align-items: center; gap: 6px; }
+.mu-seek { flex: 1; min-width: 60px; height: 24px; accent-color: var(--apricot); }
+.mu-time { font-family: var(--mono); font-size: 11px; color: var(--muted); min-width: 34px; text-align: center; }
+.mu-beat { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
+.mu-beat-val { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--sand); min-width: 72px; }
+.mu-beat-in { width: 64px; height: 32px; padding: 0 6px; font-family: var(--mono); font-size: 13px; text-align: center; color: var(--bone); background: var(--soot-0); border: 1px solid var(--line-2); border-radius: var(--r); user-select: text; -webkit-user-select: text; }
+.mu-beat-in:focus { outline: none; border-color: var(--sand); }
+.mu-dock [hidden] { display: none; }
+.mu-ytlist { flex-basis: 100%; margin: 0; padding: 0; list-style: none; max-height: 168px; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--r); background: var(--soot-1); }
+.mu-yt-row { display: flex; align-items: center; border-bottom: 1px solid var(--line); border-left: 3px solid transparent; }
+.mu-yt-row:last-child { border-bottom: 0; }
+.mu-yt-row.on { border-left-color: var(--apricot); background: var(--soot-2); }
+.mu-yt-item { flex: 1; min-width: 0; min-height: 32px; padding: 4px 8px; text-align: left; font-size: 12px; color: var(--bone); background: none; border: 0; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mu-yt-item:focus-visible { outline: 1px solid var(--sand); outline-offset: -1px; }
+.mu-yt-bpm { padding-right: 8px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+.mu-sec { display: grid; gap: 10px; }
+.mu-sp { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--soot-1); }
+.mu-sp-head { display: flex; align-items: center; gap: 8px; }
+.mu-sp-title { margin: 0; font-family: var(--display); font-size: 18px; letter-spacing: 0.06em; color: var(--sand); }
+.mu-sp-msg { margin: 0; font-size: 14px; color: var(--apricot); }
+.mu-sp-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.mu-sp-user { font-size: 14px; color: var(--bone); }
+.mu-sp-cover { width: 40px; height: 40px; flex: none; object-fit: contain; background: var(--soot-0); }
+.mu-sp-ltitle { flex: 1 1 160px; min-width: 0; display: grid; gap: 2px; }
+.mu-filter { flex: 1 1 180px; }
+.mu-pls { max-height: min(40vh, 360px); }
+.mu-pl { flex-wrap: nowrap; }
+.mu-pl .mu-main { flex: 1 1 auto; }
+.mu-empty { color: var(--muted); font-size: 14px; }
+.mu-tracks { position: relative; height: min(46vh, 384px); overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; border: 1px solid var(--line); border-radius: var(--r); background: var(--soot-1); }
+.mu-tracks-in { position: relative; }
+.mu-trk { position: absolute; left: 0; right: 0; height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 10px; text-align: left; color: var(--bone); background: none; border: 0; border-bottom: 1px solid var(--line); border-left: 3px solid transparent; cursor: pointer; }
+.mu-trk:hover, .mu-trk:focus-visible { background: var(--soot-2); outline: none; }
+.mu-trk.on { border-left-color: var(--apricot); background: var(--soot-2); }
+.mu-trk:disabled { opacity: 0.45; cursor: default; }
+.mu-trk-n { width: 28px; flex: none; font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: right; }
+.mu-trk-meta { flex: 1; min-width: 0; display: grid; }
+.mu-trk-name, .mu-trk-who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mu-trk-name { font-size: 14px; color: var(--sand); }
+.mu-trk-who { font-size: 12px; color: var(--muted); }
+.mu-trk-bpm { width: 36px; flex: none; font-family: var(--mono); font-size: 12px; color: var(--apricot); text-align: right; }
+.mu-trk-dur { width: 40px; flex: none; font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: right; }
+.mu-adv summary { cursor: pointer; font-size: 14px; color: var(--sand); min-height: 32px; display: flex; align-items: center; }
+.mu-adv[open] { display: grid; gap: 8px; }
+.mu-steps { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.mu-code { font-family: var(--mono); font-size: 12px; color: var(--bone); overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
+@media (pointer: coarse) {
+  .mu-beat-in { height: 40px; }
+  .mu-seek { height: 40px; }
+  .mu-yt-item { min-height: 44px; }
+  .mu-sp .chip, .mu-sp .btn.small { min-height: 44px; }
+}
+@media (max-width: 420px) {
+  .mu-now-art { width: 72px; height: 72px; }
+  .mu-trk-dur { display: none; }
 }
