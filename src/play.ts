@@ -29,6 +29,7 @@ import { initMusic } from './music.ts';
 import type { Msg } from './game/net.ts';
 import { icon as ic, chip, recipeDiagram, iconLabel, recipes, chainOf } from './icons.ts';
 import type { IconName, ChainTarget } from './icons.ts';
+import { initReport, openReport, openLoad, reportOpen, loadOpen, closeForms, logEvents, logAction, showBanner, reportHooks } from './report.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const el = (tag: string, cls = '', text = '') => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; };
@@ -227,7 +228,7 @@ let lastRx = 0, squadTokens = 3, squadT = 0, endTimer = 0;
 let runKey = '', runWon = false;
 /** set when progress was reset during a run: the saved setup is read again on the way back to the menu */
 let setupStale = false;
-const OVERLAYS = ['pause', 'help', 'settings', 'music'];
+const OVERLAYS = ['pause', 'help', 'settings', 'music', 'report', 'loadrep'];
 const menuOpen = () => OVERLAYS.some(shown);
 const hover = { cx: -1, cz: -1 };
 const keys = new Set<string>();
@@ -284,6 +285,11 @@ const act = {
   sellFac(id: number) { return sim.sellFac(id); },
   turnFac(id: number, dir: number) { sim.rotateFac(id, dir); },
 };
+// every player action goes into the bug report's event log (report.ts)
+for (const k of Object.keys(act) as (keyof typeof act)[]) {
+  const f = act[k] as (...a: unknown[]) => unknown;
+  (act as Record<string, unknown>)[k] = (...a: unknown[]) => { if (mode !== 'attract') logAction(k, a, sim.time); return f(...a); };
+}
 
 // ---------- HUD helpers ----------
 const cache: Record<string, string> = {};
@@ -1202,7 +1208,7 @@ function fastForward(seconds: number) {
   for (let i = 0; i < seconds * 60 && !sim.over; i++) { bot?.step(STEP); sim.step(STEP); sim.events.length = 0; }
 }
 function resetUi() {
-  for (const id of ['cards', 'menu', 'lobby', 'help', 'settings', 'music', 'pause', 'end', 'tower', 'fpanel', 'opanel', 'oretip', 'vs', 'tip', 'setup', 'editor', 'tutor', 'guide']) show(id, false);
+  for (const id of ['cards', 'menu', 'lobby', 'help', 'settings', 'music', 'pause', 'end', 'rp-banner', 'tower', 'fpanel', 'opanel', 'oretip', 'vs', 'tip', 'setup', 'editor', 'tutor', 'guide']) show(id, false);
   guide.on = false;
   clearTimeout(endTimer); clearTimeout(tutorTimer);
   for (const id of ['prep', 'p-editor', 'e-editor']) show(id, false);
@@ -1680,6 +1686,11 @@ click('p-help', () => { helpFrom = 'pause'; show('pause', false); buildHelp(); s
 click('p-settings', () => { setFrom = 'pause'; show('pause', false); openSettings(); });
 click('p-music', () => openMusic('pause'));
 click('p-quit', () => { sound.stopMusic(); startAttract(); });
+click('p-report', () => reportFrom('pause'));
+click('m-report', () => reportFrom('menu'));
+click('h-report', () => reportFrom('help'));
+click('p-load', () => loadFrom('pause'));
+click('m-load', () => loadFrom('menu'));
 // A test play goes straight back to the editor. The draft is still there: the editor keeps it between visits.
 /** The How to play sheet's tables: the six targeting modes, what each tower runs on, and how each resource is made. Built from the game's tables each time the sheet opens (the diagrams follow the window's width). */
 function buildHelp() {
@@ -1751,6 +1762,58 @@ function togglePause(on = !menuOpen()) {
   show('pause', on);
   if (on) { rotating = false; dragging = false; painting = false; }
 }
+// ---------- bug reports (report.ts) ----------
+/** Sheets a report or a load can be opened over: hidden while the form is up, shown again after. */
+const REPORT_FROM = ['menu', 'pause', 'help', 'settings', 'music', 'setup', 'lobby', 'end'];
+const DEBUG = import.meta.env.DEV || params.get('debug') === '1';
+let repFrom = '', repPaused = false;
+function holdFor(from: string) {
+  repFrom = from; repPaused = paused;
+  if (from) show(from, false);
+  if (playing() && mode === 'solo') paused = true; // the form pauses a solo run (a co-op host keeps going)
+  rotating = false; dragging = false; painting = false;
+}
+function reportFrom(from: string) { if (reportOpen() || loadOpen()) return; sound.init(); holdFor(from); openReport(); }
+function loadFrom(from: string) { if (!DEBUG || reportOpen() || loadOpen()) return; holdFor(from); openLoad(); }
+function gpuName(): string {
+  try {
+    const gl = view.renderer.getContext();
+    // (Firefox gives the real renderer as RENDERER and warns about the debug extension)
+    const ext = /Firefox/.test(navigator.userAgent) ? null : gl.getExtension('WEBGL_debug_renderer_info');
+    return String(gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+  } catch { return ''; }
+}
+/** A report's state continues as a solo run here, paused, with nothing recorded. */
+function loadRun(s: Sim, note: string) {
+  resetUi();
+  net?.close(); net = null; isClient = false; me = 0; bot = null;
+  mode = 'solo';
+  aimPref = { ...store.aim };
+  sim = s; sim.replica = false;
+  view.setSim(sim, 0); view.orbit = false;
+  frameBoard();
+  show('hud'); show('vs', false); show('btn-speed', true); show('btn-pause', true);
+  rival = { l: 20, w: 0, k: 0 };
+  sound.init();
+  repFrom = ''; repPaused = true;
+  togglePause(true);
+  showBanner(note);
+}
+initReport({
+  sim: () => (mode === 'attract' ? null : sim),
+  context: () => {
+    const fx = (['impact', 'beat', 'borders', 'env', 'towers'] as const).filter((k) => store.fx[k]).join(', ') || 'none';
+    return {
+      run: mode === 'attract' ? 'none (main menu)' : `${mode}${sim.opts.free ? ' (free towers)' : ''}, map ${sim.map.def.name} (${sim.map.def.id}), ${sim.endless ? 'Survival' : sim.diff.name}, wave ${sim.wave}${sim.campaign ? ' of ' + sim.winWave : ''}, ${clock(sim.time)} in, ${sim.over ? 'over' : sim.planning ? 'build phase' : 'wave on'}, ${sim.towers.length} towers, ${sim.factory.facs.length} buildings, ${sim.enemies.length} enemies`,
+      quality: `${settings.q}; effects ${fx} at ${store.fx.intensity}; speed ${speed}x`,
+      gpu: gpuName(), touch: touchUi(),
+    };
+  },
+  canvas, render: () => view.render(0),
+  closed: () => { paused = repPaused; if (repFrom) show(repFrom); repFrom = ''; },
+  load: loadRun,
+}, DEBUG);
+if (DEBUG) (window as unknown as Record<string, unknown>).__report = reportHooks;
 /** Escape on a sheet that has a way back: take it. Returns false when no such sheet is open. */
 function escBack(): boolean {
   const open = ([['help', 'h-back'], ['settings', 's-back'], ['music', 'mu-back'], ['setup', 'setup-back'], ['lobby', 'l-back']] as const).find(([id]) => shown(id));
@@ -2131,6 +2194,8 @@ addEventListener('keydown', (e) => {
   if (typing) return;
   const k = e.key.toLowerCase();
   if (k === 'f3') { e.preventDefault(); if (!e.repeat) toggleDiag(); return; }
+  if (reportOpen() || loadOpen()) { if (k === 'escape') closeForms(); return; } // (the forms take their own keys)
+  if (k === 'f8') { e.preventDefault(); if (!e.repeat && !shown('editor')) reportFrom(REPORT_FROM.find(shown) || ''); return; }
   keys.add(k);
   byTouch = false;
   // Escape is "back" on any sheet that has a way back, in a run and from the main menu alike
@@ -2222,6 +2287,8 @@ addEventListener('resize', () => view.resize());
 const preTap: { sel: number; fac: number; ore: { cx: number; cz: number } | null; t: number } = { sel: 0, fac: 0, ore: null, t: -1e9 };
 const touchApi = {
   canvas,
+  // a tap that lands on a tower waits a moment for a second tap (double tap fires its special without selecting it)
+  onTower(x: number, y: number) { return active() && !buildType && !buildFac && !vx.introActive?.() && !!towerAtScreen(x, y, 1.5); },
   turn() { sound.init(); if (active()) turnSelected(); },
   // a finger that held and dragged the ghost lays belts on the way, like a held mouse button
   hoverEnd() { painting = false; paintAt.cx = paintAt.cz = -1; },
@@ -3768,6 +3835,7 @@ function frame(dt: number) {
   }
 
   const evs = sim.events.splice(0);
+  if (mode !== 'attract') logEvents(evs, sim.time);
   handleEvents(evs);
   if (mode !== 'attract') {
     updateHud();

@@ -325,6 +325,16 @@ export class Factory {
     if (f.only !== it) { f.only = it; this.rev++; }
     return true;
   }
+  /**
+   * Put back a saved layout (snapshot.ts): these buildings, in this order, replace all there are. The host's grid is the
+   * caller's business; the networks are worked out again on the next sync(), and every cache is dropped.
+   */
+  restore(facs: Fac[]) {
+    this.facs = facs; this.byId = new Map(facs.map((f) => [f.id, f]));
+    this.at.fill(0);
+    for (const f of facs) { const i = idx(f.cx, f.cz); if (i >= 0) this.at[i] = f.id; }
+    this.dirty = true; this.rev++; this.diagRev = -1; this.linkRev = -1;
+  }
   /** Work the networks out again if anything changed, and bring the grids' potential / full up to date. Cheap when nothing did. */
   sync() {
     if (this.dirty) this.rebuild();

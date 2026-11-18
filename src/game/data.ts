@@ -440,7 +440,9 @@ export type CardKind = 'blueprint' | 'tower' | 'factory' | 'eco';
  * A level-up card. Preconditions (all optional, see Sim.cardOk): `requires`: card ids that must have been taken before it is
  * offered; `excludes`: card ids that, once taken, keep it out; `minLevel` / `maxLevel`: the player levels it may be offered
  * on; `minWave`: not before this wave; `guaranteeBy`: from this level on it is put into every offer while it can be offered
- * and has not been taken. `needs`: a tower type that must be unlocked. `unlocks`: the factory buildings it opens (the
+ * and has not been taken (a forced card the player passes over backs off for a few levels, see Sim.pushable); `guaranteeAfter`:
+ * forced from this many levels after the last card it requires was taken, once a tower of its type (`needs`) on the field is
+ * Mk2 or Mk3 (the ammo cards: offered within a few levels of their plant). `needs`: a tower type that must be unlocked. `unlocks`: the factory buildings it opens (the
  * production cards; a card whose buildings are all open already is not offered). `ammo`: the tower type whose second
  * ammunition it opens (see AMMO2_CARD).
  */
@@ -459,6 +461,7 @@ export interface Card {
   maxLevel?: number;
   minWave?: number;
   guaranteeBy?: number;
+  guaranteeAfter?: number;
   unlocks?: FacType[];
   ammo?: TowerType;
   apply(c: CardCtx): void;
@@ -499,8 +502,8 @@ export const CARDS: Card[] = [
   bp('cryo', '❄'), bp('arc', '↯'), bp('mortar', '◉'), bp('rail', '⟫'), bp('beacon', '✶'), bp('flame', '♨'), bp('lance', '╪'), bp('missile', '➹'), bp('gravity', '◍'),
   ...PROD_CARDS,
   // ammo upgrades: a Mk3 tower may be switched to a better ammunition (per tower, in its panel) once its plant is open
-  { id: 'pulse_shells', name: 'Plasma Rounds', desc: 'Pulse Turrets Mk3 can be switched to plasma shells from a Shell Press: 30% more damage, 20 shots a shell. Switch each turret in its panel when its shell line is ready.', rar: 1, kind: 'tower', max: 1, icon: '◉', needs: 'pulse', ammo: 'pulse', requires: ['press'], apply: () => {} },
-  { id: 'flame_petrol', name: 'Petrol Burners', desc: 'Firewall Pylons Mk3 can be switched to petrol from a Refinery: they burn 35% hotter. Switch each pylon in its panel when its petrol pipe is ready.', rar: 1, kind: 'tower', max: 1, icon: '♨', needs: 'flame', ammo: 'flame', requires: ['refinery'], apply: () => {} },
+  { id: 'pulse_shells', name: 'Plasma Rounds', desc: 'Pulse Turrets Mk3 can be switched to plasma shells from a Shell Press: 30% more damage, 20 shots a shell. Switch each turret in its panel when its shell line is ready.', rar: 1, kind: 'tower', max: 1, icon: '◉', needs: 'pulse', ammo: 'pulse', requires: ['press'], guaranteeAfter: 2, apply: () => {} },
+  { id: 'flame_petrol', name: 'Petrol Burners', desc: 'Firewall Pylons Mk3 can be switched to petrol from a Refinery: they burn 35% hotter. Switch each pylon in its panel when its petrol pipe is ready.', rar: 1, kind: 'tower', max: 1, icon: '♨', needs: 'flame', ammo: 'flame', requires: ['refinery'], guaranteeAfter: 2, apply: () => {} },
   // tower buffs
   { id: 'overclock', name: 'Overclock', desc: 'All towers fire 12% faster.', rar: 0, kind: 'tower', max: 5, icon: '»', apply: (c) => { c.mods.tRate *= 1.12; } },
   { id: 'hollow', name: 'Hot Rounds', desc: 'All towers deal 15% more damage.', rar: 0, kind: 'tower', max: 6, icon: '▲', apply: (c) => { c.mods.tDmg *= 1.15; } },

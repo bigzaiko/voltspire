@@ -1602,11 +1602,12 @@ ok(!sv.won, 'survival never "wins"'); console.log('survival reached wave', sv.wa
   }
   {
     // 500 runs with random picks: every offer holds only cards that can be offered; Belts come in the first two offers until
-    // taken; the Tunnels never before level 4 or without belts, always from level 7 once belts are in; ammo cards only after
-    // their plant; at most one blueprint; and while an unlocked tower waits on production cards, each card of that "frontier"
-    // is offered within N offers of becoming available. N = 5: the frontier gets one slot per offer and rotates through its
-    // cards (at most 4 at a time, measured below), and a blueprint level gives that slot to the blueprint's own first card
-    // instead, so a card waits at most for the others in the rotation plus one blueprint level.
+    // taken; the Tunnels never before level 4 or without belts, and from level 7 once belts are in unless they were passed
+    // over (they rest DECLINE_REST levels after each time, and are no longer forced after DECLINE_MAX times) or another
+    // forced card holds the one forced place; ammo cards only after their plant; at most one blueprint; at most one forced
+    // or pushed card (two with a blueprint and its own supply card); and while an unlocked tower waits on production cards,
+    // each card of that "frontier" that may still be pushed is offered within N offers. N = 5: the frontier gets one place
+    // per offer (not when a forced card or a blueprint and its own card hold it), a fresh blueprint's path comes first.
     const N = 5;
     let bad = 0, maxWait = 0, maxFr = 0, belts2 = 0, runs = 0, tun = 0, firstBad = '';
     const rnd = (() => { let a = 12345; return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; })();
@@ -1617,24 +1618,118 @@ ok(!sv.won, 'survival never "wins"'); console.log('survival reached wave', sv.wa
       for (let L = 2; L <= 30; L++) {
         q.wave = Math.floor(L * 0.8);
         priv(q).levelUp();
-        const o = q.players[0].pending[0] || [];
+        const o = q.players[0].pending[0] || [], pu: string[] = priv(q).offerPushed.get(o) || [];
+        const dueNow = (id: string) => { const d = priv(q).dueAt(CARD_BY_ID[id]); return d !== undefined && q.level >= d; };
         if (o.some((id) => !q.cardOk(0, CARD_BY_ID[id]))) say('an offered card cannot be offered: ' + o.join());
         if (o.filter((id) => id.startsWith('bp_')).length > 1) say('two blueprints');
+        if (pu.length > (o.some((id) => id.startsWith('bp_')) ? 2 : 1) || pu.filter(dueNow).length > 1) say('too many forced cards: ' + pu.join());
         if (q.level <= 3 && !q.taken('belts') && !o.includes('belts')) say('no Belts in an early offer');
         if (q.level === 2 && o.includes('belts')) belts2++;
         if (o.includes('tunnels') && (q.level < 4 || !q.taken('belts'))) say('Tunnels too early');
-        if (q.level >= 7 && q.taken('belts') && !q.taken('tunnels') && !o.includes('tunnels')) say('no Tunnels from level 7');
+        if (q.level >= 7 && q.taken('belts') && !q.taken('tunnels') && !o.includes('tunnels') && priv(q).pushable('tunnels') && !pu.some(dueNow)) say('no Tunnels from level 7');
         if (o.includes('tunnels')) tun++;
         if (o.includes('pulse_shells') && !q.taken('press')) say('Plasma Rounds before the press');
         maxFr = Math.max(maxFr, q.supplyFrontier().length);
-        for (const id of q.supplyFrontier()) { const w = o.includes(id) ? 0 : (wait.get(id) || 0) + 1; wait.set(id, w); maxWait = Math.max(maxWait, w); }
+        for (const id of q.supplyFrontier()) { const w = o.includes(id) || !priv(q).pushable(id) ? 0 : (wait.get(id) || 0) + 1; wait.set(id, w); maxWait = Math.max(maxWait, w); }
         for (const id of [...wait.keys()]) if (!q.supplyFrontier().includes(id)) wait.delete(id);
         q.pickCard(0, Math.floor(rnd() * o.length));
       }
     }
-    ok(!bad && belts2 === runs && tun > 0, `${runs} random runs: every offer valid, Belts in the first offer, Tunnels in their window (${bad ? firstBad : 'ok'})`);
+    ok(!bad && belts2 === runs && tun > 0, `${runs} random runs: every offer valid, Belts in the first offer, Tunnels in their window, at most one forced card (${bad ? firstBad : 'ok'})`);
     console.log(`card offers: a waiting production card came within ${maxWait} offers, the frontier held at most ${maxFr} cards (500 random runs)`);
     ok(maxWait <= N && maxFr <= 4, `a production card a tower waits on is offered within ${N} offers of becoming available (longest wait ${maxWait}, longest frontier ${maxFr} cards)`);
+  }
+  {
+    // card pacing (1): a forced or pushed card the player passes over backs off. The Cryo Lance unlocked by hand (no fresh
+    // blueprint) waits on the Power Grid; a player who never takes it sees it pushed at most every third level and, with no
+    // Cryo Lance on the field, no longer after the third time; with one built (it cannot be fed) it keeps coming back.
+    const pushedIn = (q: Sim, o: string[]): string[] => priv(q).offerPushed.get(o) || [];
+    const decline = (built: boolean) => {
+      const q = new Sim({ seed: 41, map: bare, pauseOnCards: false }); q.gold = 1e9; q.mats = 1e9; q.nextWaveIn = 1e9;
+      q.grant('belts'); q.grant('tunnels'); q.unlocked.add('cryo');
+      if (built) for (let i = 0; i < GW * GH; i++) if (q.grid[i] === 0 && q.build('cryo', i % GW, Math.floor(i / GW))) break;
+      const lv: number[] = [];
+      for (let L = 2; L <= 16; L++) {
+        priv(q).levelUp(); const o = q.players[0].pending[0];
+        if (pushedIn(q, o).includes('power')) lv.push(q.level);
+        q.pickCard(0, Math.max(0, o.findIndex((id) => id !== 'power' && !id.startsWith('bp_') && !CARD_BY_ID[id].unlocks)));
+      }
+      return lv;
+    };
+    const a = decline(false), b = decline(true), gaps = (l: number[]) => l.every((v, i) => i === 0 || v - l[i - 1] >= 3);
+    console.log(`card offers: a Power Grid always passed over is pushed on levels ${a.join()} (with a Cryo Lance on the field ${b.join()})`);
+    ok(a.length === 3 && gaps(a) && b.length >= 4 && gaps(b) && b[b.length - 1] > a[2], `a passed-over Power Grid rests two levels each time and is no longer pushed after three (pushed on levels ${a.join()}; with a Cryo Lance on the field ${b.join()})`);
+    // two guarantees due on the same level: one forced card per offer, the later in the table waits a level
+    const g: Card = { id: '_due', name: 'Due', desc: '', rar: 2, kind: 'eco', max: 1, icon: 'x', guaranteeBy: 7, apply: () => {} };
+    CARDS.push(g); CARD_BY_ID._due = g;
+    const q = new Sim({ seed: 42, map: bare, pauseOnCards: false }); q.grant('belts'); q.level = 6;
+    priv(q).levelUp(); const o7 = q.players[0].pending[0], p7 = pushedIn(q, o7).join();
+    q.pickCard(0, o7.findIndex((id) => id !== 'tunnels' && id !== '_due'));
+    priv(q).levelUp(); const o8 = q.players[0].pending[0], p8 = pushedIn(q, o8).join();
+    CARDS.pop(); delete CARD_BY_ID._due;
+    ok(p7 === 'tunnels' && !o7.includes('_due') && p8.split(',')[0] === '_due' && !o8.includes('tunnels'), `two guarantees due on level 7: the Tunnels are forced on 7 (${o7.join()}), the other card on 8 (${o8.join()})`);
+  }
+  {
+    // card pacing (2): an ammo card comes within three levels of its plant, once a tower of its type on the field is Mk2 or
+    // Mk3 (deterministic: the press granted on level 6 with a Mk2 Pulse Turret; the Plasma Rounds are passed over by chance otherwise)
+    const mkA = (lvl: number) => {
+      const q = new Sim({ seed: 43, map: bare, pauseOnCards: false }); q.gold = 1e9; q.nextWaveIn = 1e9;
+      for (let i = 0; i < GW * GH; i++) if (q.grid[i] === 0) { const t = q.build('pulse', i % GW, Math.floor(i / GW)); if (t) { t.lvl = lvl; break; } }
+      for (const id of ['belts', 'power', 'smelter']) q.grant(id);
+      q.level = 6; q.grant('press');
+      let at = 0; for (let L = 7; L <= 12 && !at; L++) { priv(q).levelUp(); const o = q.players[0].pending[0]; if (o.includes('pulse_shells')) at = q.level; else q.pickCard(0, 0); }
+      return { at, due: priv(q).dueAt(CARD_BY_ID.pulse_shells) as number | undefined };
+    };
+    const m2 = mkA(2), m3 = mkA(3), m1 = mkA(1);
+    ok(m2.due === 8 && m2.at >= 7 && m2.at <= 9 && m3.due === 8 && m3.at <= 9 && m1.due === undefined, `Plasma Rounds are forced two levels after the Shell Press (level 8; offered on ${m2.at} with a Mk2, ${m3.at} with a Mk3); not with a Mk1 turret only`);
+    // 300 random runs that build each tower they unlock at Mk2: the ammo card comes within three levels of its plant
+    const rnd = (() => { let a = 4242; return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; })();
+    const waits: Record<string, number[]> = { pulse_shells: [], flame_petrol: [] };
+    for (let r = 0; r < 300; r++) {
+      const q = new Sim({ seed: 9000 + r, map: MAPS[r % MAPS.length], pauseOnCards: false }); q.gold = 1e9; q.mats = 1e9; q.nextWaveIn = 1e9;
+      const built = new Set<TowerType>(), from: Record<string, number> = {};
+      for (let L = 2; L <= 30; L++) {
+        q.wave = Math.floor(L * 0.8);
+        for (const t of q.unlocked) if (!built.has(t)) for (let i = 0; i < GW * GH; i++) if (q.grid[i] === 0) { const tw = q.build(t, i % GW, Math.floor(i / GW)); if (tw) { tw.lvl = 2; built.add(t); break; } }
+        priv(q).levelUp(); const o = q.players[0].pending[0];
+        for (const [ammo, w] of Object.entries(waits)) if (from[ammo] >= 0 && o.includes(ammo)) { w.push(q.level - from[ammo]); from[ammo] = -1; }
+        q.pickCard(0, Math.floor(rnd() * o.length));
+        for (const [ammo, plant] of [['pulse_shells', 'press'], ['flame_petrol', 'refinery']]) {
+          const tw = CARD_BY_ID[ammo].needs!;
+          if (from[ammo] === undefined && built.has(tw) && q.taken(plant) && !q.taken(ammo)) from[ammo] = Math.max(q.level, priv(q).cardTakenAt[plant] ?? 0);
+        }
+      }
+    }
+    const mx = (a: number[]) => Math.max(0, ...a);
+    const hist = (a: number[]) => [1, 2, 3].map((k) => `${a.filter((v) => v === k).length}x ${k}`).join(', ');
+    console.log(`card offers: levels from the plant to the ammo card: Plasma Rounds ${hist(waits.pulse_shells)}; Petrol Burners ${hist(waits.flame_petrol)}`);
+    ok(waits.pulse_shells.length > 100 && waits.flame_petrol.length > 10 && mx(waits.pulse_shells) <= 3 && mx(waits.flame_petrol) <= 3,
+      `300 random runs: Plasma Rounds come at most ${mx(waits.pulse_shells)} levels after the Shell Press (${waits.pulse_shells.length} runs), Petrol Burners at most ${mx(waits.flame_petrol)} after the Refinery (${waits.flame_petrol.length} runs)`);
+  }
+  {
+    // card pacing (3): a blueprint's supply path comes first in the next offers, one card at a time in dependency order. 500
+    // random runs that take every blueprint offered: levels from the Mortar blueprint to being able to build its whole
+    // supply (Smelter, Frame Works, Shell Press...). Was a median of 8 levels (p75 12, p90 16) before the priority.
+    const rnd = (() => { let a = 99; return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; })();
+    const d: number[] = []; let n = 0, hit = 0;
+    for (let r = 0; r < 500; r++) {
+      const q = new Sim({ seed: 20000 + r, map: MAPS[r % MAPS.length], pauseOnCards: false });
+      if (q.unlocked.has('mortar')) continue;
+      let at = -1;
+      for (let L = 2; L <= 40; L++) {
+        q.wave = Math.floor(L * 0.8); priv(q).levelUp();
+        const o: string[] = q.players[0].pending[0];
+        if (at >= 0 && q.level - at <= 6 && !q.canSupply('mortar') && !o.some((id) => id.startsWith('bp_'))) { n++; if (o.some((id) => q.supplyCards('mortar').includes(id))) hit++; }
+        const b = o.findIndex((id) => id.startsWith('bp_'));
+        q.pickCard(0, b >= 0 ? b : Math.floor(rnd() * o.length));
+        if (at < 0 && q.unlocked.has('mortar')) at = q.level;
+        if (at >= 0 && q.canSupply('mortar')) { d.push(q.level - at); break; }
+      }
+    }
+    d.sort((x, y) => x - y);
+    const P = (p: number) => d[Math.min(d.length - 1, Math.floor(p * d.length))];
+    console.log(`card offers: the Mortar is suppliable a median ${P(0.5)} levels after its blueprint (p75 ${P(0.75)}, p90 ${P(0.9)}, ${d.length} runs); its path is in ${(100 * hit / n).toFixed(0)}% of the offers in between`);
+    ok(d.length > 200 && P(0.5) <= 5 && P(0.75) <= 9 && hit / n > 0.9, `a fresh blueprint's supply path is in ${(100 * hit / n).toFixed(0)}% of the next offers; the Mortar is suppliable a median ${P(0.5)} levels after its blueprint (was 8)`);
   }
   {
     // no Underpass any more: nothing at all goes on a road, Belt and Pipe Tunnels pass under it instead
@@ -2211,6 +2306,95 @@ ok(!sv.won, 'survival never "wins"'); console.log('survival reached wave', sv.wa
       const r = playOpening(MAPS.find((m) => m.id === id)!, 7, 4);
       ok(!r.over && r.lives[r.lives.length - 1] >= r.maxLives * 0.75 && r.lines >= 2 && r.delivered > 20, `${id}: the arm opening holds waves 1 to 4 (core ${r.lives.join(' > ')}; wave 1 with ${r.first}; ${r.lines} arm lines, ${r.delivered} ore delivered)`);
     }
+  }
+}
+{
+  // bug-report state blocks (snapshot.ts): a run saved, packed into text and restored into a fresh Sim goes on exactly like
+  // the original, step for step: the same events every step, the same diagnosis and links, the same whole state after
+  const { encodeSnapshot, decodeSnapshot, restoreSim, stateHash, extractBlock, SnapError } = await import('../src/game/snapshot.ts');
+  const { bigFactory } = await import('./bench.ts');
+  const { generateMap } = await import('../src/game/mapgen.ts');
+  const dt = 1 / 60;
+  const same = async (a: Sim, label: string, M: number, act?: (s: Sim) => void) => {
+    a.events.length = 0;
+    const text = await encodeSnapshot(a, { build: 'smoke' }), b = restoreSim(await decodeSnapshot(text));
+    const h0 = stateHash(a) === stateHash(b);
+    if (act) { act(a); act(b); }
+    let evOk = true;
+    for (let i = 0; i < M; i++) {
+      a.step(dt); b.step(dt);
+      if (JSON.stringify(a.events) !== JSON.stringify(b.events)) evOk = false;
+      a.events.length = 0; b.events.length = 0;
+      if (i % 30 === 0) { a.diag(); b.diag(); }
+    }
+    const dg = JSON.stringify([...a.factory.diagnose()]) === JSON.stringify([...b.factory.diagnose()]) && JSON.stringify(a.factory.links()) === JSON.stringify(b.factory.links());
+    ok(h0 && evOk && dg && stateHash(a) === stateHash(b), `state block round trip, ${label}: ${text.length} characters, ${M} steps on (same state at once ${h0}, same events ${evOk}, same diagnosis ${dg}, same state after ${stateHash(a) === stateHash(b)})`);
+    return text;
+  };
+  for (const seed of [7, 13]) {
+    const s = bigFactory(seed);
+    await same(s, `big factory seed ${seed}, build phase`, 300);
+    s.startWave();
+    for (let i = 0; i < 60 * 60 && s.enemies.length < 8; i++) { s.step(dt); s.events.length = 0; }
+    await same(s, `big factory seed ${seed}, mid-wave (${s.enemies.length} enemies, ${s.factory.facs.reduce((n, f) => n + f.items.length, 0)} belt items)`, 1200);
+  }
+  {
+    // a card offer waiting (the run pauses for it): both pick the same card
+    const s = new Sim({ seed: 21, map: MAPS[1], pauseOnCards: true });
+    s.startWave();
+    for (let i = 0; i < 600; i++) { s.step(dt); s.events.length = 0; }
+    (s as unknown as { levelUp(): void }).levelUp(); s.events.length = 0;
+    ok(s.paused, 'state block: the run waits for a card pick');
+    await same(s, 'a card offer waiting, then picked', 900, (x) => x.pickCard(0, 1));
+  }
+  {
+    // the Titan on the field (a free bot-played run), a generated map, a map of the player's own (saved whole)
+    const s = new Sim({ seed: 11, pauseOnCards: false, free: true }), bot = new Bot(s, 0);
+    for (let n = 0; s.titan.phase !== 'walk' && n < 60 * 60 * 60; n++) { bot.step(dt); s.step(dt); s.events.length = 0; }
+    for (let i = 0; i < 300; i++) { bot.step(dt); s.step(dt); s.events.length = 0; }
+    ok(s.titan.phase === 'walk', 'state block: the bot run reaches the Titan');
+    await same(s, `Titan walking (wave ${s.wave})`, 1200);
+    const g = new Sim({ seed: 5, map: generateMap(42, 3) });
+    g.startWave(); for (let i = 0; i < 900; i++) { g.step(dt); g.events.length = 0; }
+    const tg = await same(g, 'generated map', 600);
+    const own = new Sim({ seed: 5, map: { ...MAPS[2], id: 'custom-mine', name: 'Mine' } });
+    const to = await same(own, 'a map of the player\'s own', 120);
+    ok((await decodeSnapshot(tg)).m === generateMap(42, 3).id && typeof (await decodeSnapshot(to)).m === 'object', 'state block: a generated map is saved by its id, a map of the player\'s own whole');
+  }
+  {
+    // reading blocks back: from a whole issue body with the block wrapped over lines; and clear errors for broken ones
+    const s = bigFactory(3), text = await encodeSnapshot(s);
+    const issue = '### What happened\nstuff\n\n### State\n```text\n' + text.replace(/(.{76})/g, '$1\n') + '\n```\n\nthanks\n';
+    ok(extractBlock(issue) === text && stateHash(restoreSim(await decodeSnapshot(issue))) === stateHash(s), 'state block: read back from an issue body with the block wrapped over lines');
+    const why = async (t: string) => { try { await decodeSnapshot(t); return ''; } catch (e) { return e instanceof SnapError ? e.message : 'not a SnapError: ' + String(e); } };
+    const msgs = [await why('nothing here'), await why(text.slice(0, 900)), await why(text.replace('BSR1:', 'BSR9:')), await why(text.slice(0, 40) + '!' + text.slice(41)), await why(text.slice(0, 60) + 'AAAA' + text.slice(64))];
+    ok(/no BEATSPIRE state block/.test(msgs[0]) && /truncated/.test(msgs[1]) && /version 9/.test(msgs[2]) && msgs[3] !== '' && msgs[4] !== '' && msgs.every((m) => !m.startsWith('not a')), 'state block: missing, cut off, another version and damaged blocks are refused with a clear message: ' + msgs.map((m) => m.slice(0, 50)).join(' / '));
+  }
+  {
+    // a block is untrusted input: tampered fields are refused with a SnapError (never another error, never a Sim that throws
+    // later), the prototype is never touched, and a fake class member (a method named in the block) is ignored
+    const { snapshotOf, trialRun } = await import('../src/game/snapshot.ts');
+    const s = bigFactory(7); s.startWave();
+    for (let i = 0; i < 600; i++) { s.step(dt); s.events.length = 0; }
+    const base = JSON.stringify(snapshotOf(s));
+    type O = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const cases: [string, (o: O) => void][] = [
+      ['a method', (o) => { o.s.step = 5; }], ['a set', (o) => { o.s.unlocked = 3; }], ['the cards', (o) => { o.s.stacks = null; }],
+      ['a number', (o) => { o.s.gold = 'x'; }], ['NaN time', (o) => { o.s.time = '#NaN'; }], ['the players', (o) => { o.s.players = []; }],
+      ['the modifiers', (o) => { o.s.mods = {}; }], ['an offer', (o) => { o.s.players = [{ pending: [['nope']], kills: 0 }]; }],
+      ['a tower type', (o) => { o.T.k.type = 'bogus'; delete o.T.v.type; }], ['an enemy type', (o) => { o.E.k.type = 'xx'; delete o.E.v.type; }],
+      ['a building type', (o) => { o.F.f.k.type = 'zz'; delete o.F.f.v.type; }], ['an inventory', (o) => { o.F.f.k.inv = null; delete o.F.f.v.inv; }],
+      ['a wall', (o) => { o.W[0] = null; }], ['a power grid', (o) => { o.F.wn[0] = ['a']; }], ['a pipe', (o) => { o.F.pn[0] = [{ a: 1 }, 'x']; }],
+      ['a huge queue', (o) => { o.Q = { c: ['t'], k: { t: 1 }, n: 1e6, v: {} }; }], ['players 1e9', (o) => { o.o.players = 1e9; }],
+      ['the mode', (o) => { o.o.mode = 'zz'; }], ['the prototype', (o) => { o.s.stacks = JSON.parse('{"__proto__":{"polluted":1}}'); o.s.mods.__proto__ = { polluted: 1 }; }],
+    ];
+    const bad: string[] = [];
+    for (const [label, mut] of cases) {
+      const o = JSON.parse(base); mut(o);
+      try { const b = restoreSim(o); if (label !== 'a method' && label !== 'the prototype') bad.push(label + ' loaded'); trialRun(o, 120); for (let i = 0; i < 120; i++) { b.step(dt); b.events.length = 0; } }
+      catch (e) { if (!(e instanceof SnapError)) bad.push(`${label}: ${String(e).slice(0, 60)}`); }
+    }
+    ok(!bad.length && ({} as Record<string, unknown>).polluted === undefined, 'state block: tampered blocks are refused with a clear message or load harmlessly' + (bad.length ? ': ' + bad.join('; ') : ''));
   }
 }
 console.log(fail ? `${fail} FAILED` : 'all smoke checks passed');

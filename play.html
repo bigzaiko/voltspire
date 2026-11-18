@@ -21,6 +21,7 @@
   <link rel="stylesheet" href="./src/touch.css" />
   <link rel="stylesheet" href="./src/music.css" />
   <link rel="stylesheet" href="./src/icons.css" />
+  <link rel="stylesheet" href="./src/report.css" />
 </head>
 <body>
   <canvas id="c"></canvas>
@@ -177,6 +178,8 @@
         <button class="btn ghost" id="m-music">Music</button>
         <button class="btn ghost" id="m-help">How to play</button>
         <button class="btn ghost" id="m-settings">Settings</button>
+        <button class="btn ghost" id="m-report">Report on GitHub</button>
+        <button class="btn ghost hidden" id="m-load">Load report</button>
       </div>
       <p class="foot" id="best"></p>
       <a class="foot link" href="./index.html">About and trailer</a>
@@ -329,6 +332,7 @@
       </div>
       <div class="menu-buttons row">
         <button class="btn small" id="h-back">Got it</button>
+        <button class="btn small ghost" id="h-report" type="button">Report on GitHub</button>
       </div>
     </div>
   </div>
@@ -411,6 +415,8 @@
         <button class="btn ghost" id="p-music">Music</button>
         <button class="btn ghost" id="p-help">How to play</button>
         <button class="btn ghost hidden" id="p-editor">Back to editor</button>
+        <button class="btn ghost" id="p-report">Report on GitHub</button>
+        <button class="btn ghost hidden" id="p-load">Load report</button>
         <button class="btn ghost" id="p-quit">Quit to menu</button>
       </div>
     </div>
@@ -451,6 +457,61 @@
       </div>
     </div>
   </div>
+
+  <div id="report" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="rp-title" aria-describedby="rp-note rp-what-in">
+    <div class="sheet report-sheet">
+      <header class="sheet-head">
+        <span class="kicker">Field report / F8</span>
+        <h2 id="rp-title">Report a bug</h2>
+      </header>
+      <p class="rp-note" id="rp-note">This opens GitHub in a new tab. Nothing is sent until you submit the issue there, and the issue is public. You need a GitHub account.</p>
+      <p class="rp-note rp-small" id="rp-what-in">It holds what you write, the run (map, wave, settings), your browser, OS and GPU names, recent game events and console messages (web addresses cut to the site), and the game state (towers, buildings, enemies, cards: nothing else). Not your saved progress, your music list or any account.</p>
+      <form id="rp-form" class="rp-form" novalidate>
+        <label class="lab" for="rp-sum">Summary, in one line</label>
+        <input class="rp-in" id="rp-sum" type="text" required autocomplete="off" spellcheck="true" placeholder="Arms stop taking ore from the mine after a wave" />
+        <label class="lab" for="rp-what">What happened (required)</label>
+        <textarea class="rp-in" id="rp-what" rows="4" required aria-describedby="rp-what-n" placeholder="What you did, and what the game did then."></textarea>
+        <span class="rp-count" id="rp-what-n">0 / 2000</span>
+        <label class="lab" for="rp-exp">What you expected (optional)</label>
+        <textarea class="rp-in" id="rp-exp" rows="2"></textarea>
+        <h3 class="lab rp-ph" id="rp-prev-h">Preview: exactly what goes into the issue</h3>
+        <p class="rp-how" id="rp-how"></p>
+        <pre class="rp-preview" id="rp-preview" tabindex="0" aria-labelledby="rp-prev-h"></pre>
+        <p class="rp-status" id="rp-status" role="status" aria-live="polite"></p>
+        <a class="rp-link hidden" id="rp-link" target="_blank" rel="noopener noreferrer">No new tab? Open the issue page here.</a>
+        <div class="rp-clipbox hidden" id="rp-clipbox">
+          <label class="lab" for="rp-clip">Copy this and paste it on GitHub</label>
+          <textarea class="rp-in rp-clip" id="rp-clip" rows="4" readonly spellcheck="false"></textarea>
+        </div>
+        <div class="menu-buttons row">
+          <button class="btn" id="rp-send" type="submit">Report on GitHub</button>
+          <button class="btn ghost" id="rp-shot" type="button">Copy screenshot</button>
+          <button class="btn ghost" id="rp-cancel" type="button">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="loadrep" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="lr-title">
+    <div class="sheet report-sheet">
+      <header class="sheet-head">
+        <span class="kicker">Debug</span>
+        <h2 id="lr-title">Load report</h2>
+      </header>
+      <p class="rp-note">Paste a state block or a whole issue, or open a downloaded report file. The game goes on from exactly that state, paused.</p>
+      <label class="lab" for="lr-text">State block or issue text</label>
+      <textarea class="rp-in rp-clip" id="lr-text" rows="6" spellcheck="false" autocomplete="off"></textarea>
+      <label class="lab" for="lr-file">Or a report file</label>
+      <input class="rp-file" id="lr-file" type="file" accept=".txt,.md,text/plain" />
+      <p class="rp-status" id="lr-status" role="status" aria-live="polite"></p>
+      <div class="menu-buttons row">
+        <button class="btn" id="lr-go" type="button">Load</button>
+        <button class="btn ghost" id="lr-cancel" type="button">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="rp-banner hidden" id="rp-banner" role="status"><span id="rp-banner-text"></span><button class="chip" id="rp-banner-x" type="button">Dismiss</button></div>
 
   <div id="loading" class="overlay">
     <div class="sheet narrow boot">

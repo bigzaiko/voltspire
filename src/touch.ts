@@ -1,5 +1,7 @@
 // Touch controls. Tap, drag with one finger to pan, hold then drag to move the build ghost (a belt or a line of arms laid
-// that way follows the finger). A long press (about 450 ms without moving) or a double tap on a tower fires its special. Two fingers either pinch (zoom) or twist (turn): whichever passes its threshold first, and it stays that
+// that way follows the finger). A long press (about 450 ms without moving) or a double tap on a tower fires its special
+// (a single tap on a tower waits a moment for the second one, so a double tap leaves the tower unselected). Two fingers
+// either pinch (zoom) or twist (turn): whichever passes its threshold first, and it stays that
 // until a finger lifts. A round button turns the belt that is about to be placed.
 // Mouse and keyboard handlers in play.ts stay active; everything here only reacts to touch pointers,
 // except the on-screen buttons, which also take a mouse press or a keyboard activation.
@@ -28,6 +30,12 @@ export interface TouchApi {
    * (a tower is there and nothing is chosen for building); false leaves it to be the tap or the ghost drag it would have been.
    */
   special?(clientX: number, clientY: number, double?: boolean): boolean;
+  /**
+   * True if a tap at client coordinates would land on a tower whose special a double tap fires. Such a tap is held back for
+   * TAP_DEFER ms: a second tap in that time fires the special and the tower never gets selected. Without it every tap goes
+   * through at once (and special(x, y, true) has to undo the first tap's selection).
+   */
+  onTower?(clientX: number, clientY: number): boolean;
 }
 
 const FREE = 0, BIRD = 1;
@@ -39,6 +47,8 @@ const HOLD_MS = 240;
 const LONG_MS = 450;
 /** two taps this close in time (ms) and place (px) are a double tap */
 const DOUBLE_MS = 340, DOUBLE_PX = 30;
+/** a single tap on a tower waits this long (ms) for a second one before it selects the tower (see TouchApi.onTower) */
+const TAP_DEFER = 250;
 // Two fingers: the spread has to change by this much (px, or this share of the spread) to become a pinch,
 // or the line between the fingers has to turn by this much (radians, with the fingers at least APART px apart) to become a twist.
 const PINCH_PX = 18, PINCH_PART = 0.07, TWIST = 0.14, APART = 70;
@@ -60,6 +70,16 @@ export function initTouch(api: TouchApi): void {
   let holdTimer = 0, longTimer = 0;
   let holdSlot: Slot | null = null, longSlot: Slot | null = null;
   const lastTap = { t: -1e9, x: 0, y: 0 };
+  /** a tap on a tower held back for TAP_DEFER ms (0: none) */
+  let deferTimer = 0;
+  const deferred = { x: 0, y: 0 };
+  /** The held-back tap goes through now (its time is up, or another tap that is no double tap came). */
+  function flushTap(): void {
+    if (!deferTimer) return;
+    clearTimeout(deferTimer); deferTimer = 0;
+    api.tap(deferred.x, deferred.y);
+  }
+  function dropTap(): void { if (deferTimer) { clearTimeout(deferTimer); deferTimer = 0; } }
 
   function activate(): void {
     if (active) return;
@@ -215,10 +235,24 @@ export function initTouch(api: TouchApi): void {
     const x = s.hover ? e.clientX : s.sx, y = s.hover ? e.clientY : s.sy;
     release(s);
     if (tap) {
-      // the second of two quick taps on a tower fires its special (the first went through as a tap; special() undoes its selection)
+      // The second of two quick taps on a tower fires its special. The first was held back (onTower): it is dropped, so the
+      // tower is never selected. A first tap that went through already (a slow double tap, or no onTower) selected the
+      // tower, and special() undoes that selection.
       const dbl = e.timeStamp - lastTap.t < DOUBLE_MS && Math.hypot(x - lastTap.x, y - lastTap.y) < DOUBLE_PX;
       lastTap.t = dbl ? -1e9 : e.timeStamp; lastTap.x = x; lastTap.y = y;
-      if (!(dbl && api.special && api.special(x, y, true))) api.tap(x, y);
+      if (dbl && deferTimer) {
+        dropTap();
+        // (no `double`: there is no first tap's selection to undo. Not taken after all, say something was chosen for
+        // building meanwhile: both taps go through as taps)
+        if (!(api.special && api.special(x, y))) { api.tap(deferred.x, deferred.y); api.tap(x, y); }
+      } else {
+        flushTap();
+        if (dbl && api.special && api.special(x, y, true)) { /* taken */ }
+        else if (!dbl && !held && api.special && api.onTower?.(x, y)) {
+          deferred.x = x; deferred.y = y;
+          deferTimer = window.setTimeout(() => { deferTimer = 0; api.tap(deferred.x, deferred.y); }, TAP_DEFER);
+        } else api.tap(x, y);
+      }
     }
     // (a finger that was held, whether it then moved the ghost or not, ends the line it was laying: the next press starts a new one)
     if (held) api.hoverEnd();
@@ -230,7 +264,7 @@ export function initTouch(api: TouchApi): void {
   }
 
   function releaseAll(): void {
-    clearHold();
+    clearHold(); dropTap();
     for (let i = 0; i < slots.length; i++) if (slots[i].role !== FREE) release(slots[i]);
   }
 

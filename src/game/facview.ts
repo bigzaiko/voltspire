@@ -880,7 +880,8 @@ function fluidMat(tex: THREE.Texture): THREE.MeshStandardMaterial {
       .replace('#include <color_fragment>', `#include <color_fragment>
         float flM1 = dN(vec3(flS * 1.7, flY * 11.0, 2.0)), flM2 = dN(vec3(flS * 4.3 + 7.0, flY * 30.0, 5.0));
         float flDepth = clamp((flLev - flY) / max(0.02, flLev - vFlY.y), 0.0, 1.0);
-        vec3 flCrude = mix(vec3(0.02, 0.012, 0.008), vec3(0.1, 0.058, 0.03), smoothstep(0.45, 0.8, flM1 * 0.7 + flM2 * 0.3) * 0.75);
+        // (crude is dark amber-brown, not black: a working crude line must read fuller than an empty glass one at play zoom)
+        vec3 flCrude = mix(vec3(0.05, 0.026, 0.01), vec3(0.17, 0.085, 0.03), smoothstep(0.45, 0.8, flM1 * 0.7 + flM2 * 0.3) * 0.8);
         vec3 flPet = mix(vec3(0.8, 0.4, 0.05), vec3(0.42, 0.13, 0.01), flDepth * 0.8);
         diffuseColor.rgb = mix(flPet, flCrude, flCr);`)
       .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = mix(0.3, 0.22, flCr);')
@@ -897,7 +898,11 @@ function fluidMat(tex: THREE.Texture): THREE.MeshStandardMaterial {
             float rim = (1.0 - smoothstep(0.003, 0.008, abs(d - br))) * on, core = (1.0 - smoothstep(br * 0.2, br, d)) * on;
             vec3 film = 0.5 + 0.5 * cos(6.2831 * (vec3(0.0, 0.33, 0.67) + flFr * 1.3 + flS * 0.23 + 0.9 * flM1));
             float patch_ = smoothstep(0.5, 0.75, dN(vec3(flS * 0.9 + 3.0, flY * 5.0, 8.0)));
-            totalEmissiveRadiance += film * patch_ * (flFr * 0.1 + flTop * 0.04 + 0.02 * smoothstep(0.55, 0.9, flM2)) + vec3(0.34, 0.23, 0.13) * rim + vec3(0.07, 0.045, 0.025) * core + vec3(0.2, 0.12, 0.06) * flMen;
+            // slow lighter bands roll along with the flow (they stand still with the network), and a warm sheen near the top
+            float band = smoothstep(0.55, 0.95, 0.5 + 0.5 * sin(flS * 5.0 + 2.2 * flM1)) * (0.6 + 0.4 * flM2);
+            float sheen = smoothstep(0.35, 1.0, 1.0 - flDepth);
+            totalEmissiveRadiance += film * patch_ * (flFr * 0.1 + flTop * 0.04 + 0.02 * smoothstep(0.55, 0.9, flM2)) + vec3(0.34, 0.23, 0.13) * rim + vec3(0.07, 0.045, 0.025) * core + vec3(0.2, 0.12, 0.06) * flMen
+              + diffuseColor.rgb * 0.08 + vec3(0.24, 0.12, 0.035) * band + vec3(0.05, 0.028, 0.012) * sheen;
           } else {
             float st = pow(dN(vec3(flS * 1.1, flY * 70.0, 1.0)), 3.0);
             float c = flS * 7.0, id = floor(c), f = fract(c) - 0.5;
@@ -909,7 +914,7 @@ function fluidMat(tex: THREE.Texture): THREE.MeshStandardMaterial {
           }
         }`);
   };
-  m.customProgramCacheKey = () => 'fluid2';
+  m.customProgramCacheKey = () => 'fluid3';
   return m;
 }
 /** The pipe state texture over its data (four floats per texel, see FacView.syncPipes). */
@@ -930,14 +935,15 @@ function glassMat(tex: THREE.Texture): THREE.MeshStandardMaterial {
     sh.fragmentShader = 'varying vec3 vGl;\n' + sh.fragmentShader.replace('#include <opaque_fragment>',
       `float fres = pow(1.0 - abs(dot(normalize(normal), normalize(vViewPosition))), 2.2);
       // (over black crude the glass's own milky edge would turn the whole tube grey: it is thinned there, and carries the film's colours instead)
-      float glCr = step(0.5, vGl.x) * step(vGl.x, 1.5);
-      diffuseColor.a = mix(diffuseColor.a, mix(0.62, 0.16, glCr), fres);
-      outgoingLight *= 1.0 - 0.6 * glCr;
-      outgoingLight += vec3(0.5, 0.66, 0.74) * fres * mix(0.34, 0.06, glCr);
+      // (and an empty tube's edge is kept dimmer than a full one: an empty line must not read brighter than a working one)
+      float glCr = step(0.5, vGl.x) * step(vGl.x, 1.5), glNo = 1.0 - step(0.5, vGl.x);
+      diffuseColor.a = mix(diffuseColor.a, mix(0.62, 0.16, glCr) * (1.0 - 0.35 * glNo), fres);
+      outgoingLight *= (1.0 - 0.6 * glCr) * (1.0 - 0.3 * glNo);
+      outgoingLight += vec3(0.5, 0.66, 0.74) * fres * mix(0.34, 0.06, glCr) * (1.0 - 0.4 * glNo);
       outgoingLight += (0.5 + 0.5 * cos(6.2831 * (vec3(0.0, 0.33, 0.67) + fres * 1.7 + 0.31 * (vGl.y + vGl.z)))) * fres * fres * 0.1 * glCr;
       #include <opaque_fragment>`);
   };
-  m.customProgramCacheKey = () => 'glass2';
+  m.customProgramCacheKey = () => 'glass3';
   return m;
 }
 

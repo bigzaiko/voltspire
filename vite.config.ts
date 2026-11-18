@@ -1,4 +1,8 @@
 import { defineConfig, loadEnv } from 'vite';
+import { execSync } from 'node:child_process';
+
+// the build's git hash and date, shown in bug reports
+const BUILD = (() => { try { return execSync('git rev-parse --short HEAD').toString().trim(); } catch { return 'unknown'; } })();
 import type { Plugin } from 'vite';
 import { resolve } from 'path';
 
@@ -51,6 +55,7 @@ const csp = (): Plugin => ({
 
 export default defineConfig({
   base: './',
+  define: { __BEATSPIRE_BUILD__: JSON.stringify({ hash: BUILD, date: new Date().toISOString().slice(0, 10) }) },
   plugins: [csp()],
   build: {
     target: 'es2022',

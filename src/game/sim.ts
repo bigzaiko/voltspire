@@ -168,15 +168,18 @@ const DEF = new GameMap(DEFAULT_MAP);
 export const CORE_POS = DEF.core;
 export const BASE_GRID = DEF.grid;
 
-function mulberry(seed: number) {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
+/** A seeded random stream; `s` is its position (read and set by a save, see Sim.rngState). */
+type Rng = (() => number) & { s: number };
+function mulberry(seed: number): Rng {
+  const f = (() => {
+    f.s = (f.s + 0x6d2b79f5) >>> 0;
+    let t = f.s;
     t = Math.imul(t ^ (t >>> 15), t | 1);
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+  }) as Rng;
+  f.s = seed >>> 0;
+  return f;
 }
 
 export type Mode = 'solo' | 'coop' | 'versus';
@@ -192,6 +195,16 @@ const FULL_REFUND: ReadonlySet<FacType> = new Set<FacType>(['arm', 'belt', 'spli
 const BP_LEVELS = [2, 4, 6, 8, 10, 13, 16, 19, 22, 25, 28];
 /** How much more often (rarity weight) a production card an unlocked tower waits on fills an offer's free places. */
 const NEEDED_PROD = 3;
+/** A forced or pushed card the player passed over is not pushed again for this many levels (see Sim.pushable). */
+const DECLINE_REST = 2;
+/** After being passed over this often a card is no longer pushed, unless a tower on the field cannot be fed without it. */
+const DECLINE_MAX = 3;
+/** For this many levels after a blueprint is taken, its supply path is pushed into every offer that has room (see rollCards). */
+const PRIO_LEVELS = 8;
+/** ... and the other cards on that path come this much more often in the offer's free places (on top of NEEDED_PROD). */
+const FRESH_PROD = 10;
+/** A frontier card not offered for this many levels takes the frontier's place before a fresh blueprint's path. */
+const OVERDUE = 4;
 const xpNeed = (lvl: number) => Math.round(12 + lvl * 7 + lvl * lvl * 0.55);
 const GAPS: Record<EnemyType, number> = { grunt: 0.55, runner: 0.33, drone: 0.5, shield: 0.95, brute: 1.3, boss: 3, wheel: 8, brood: 1.7, mite: 0.1, titan: 5 };
 const tmp: PathOut = { x: 0, z: 0, dx: 0, dz: 0, y: 0 };
@@ -291,7 +304,7 @@ export class Sim {
   /** The Titan (see TitanState). */
   titan: TitanState = { phase: 'none', danger: 0, wave: 0, t: 0, lane: 0 };
   /** Titans destroyed so far (each one after the first is tougher), the time until it wrecks the next building, its own random stream, and when the current wave began. */
-  private titanN = 0; private smashIn = 0; private trand: () => number = Math.random; private waveT0 = 0;
+  private titanN = 0; private smashIn = 0; private trand: Rng = mulberry(0); private waveT0 = 0;
   /** Set while a hit comes from a tower special: it hits the Titan at full strength. */
   private sp = false;
   private next: { wave: number; items: { t: number; type: EnemyType; lane: number }[] } | null = null;
@@ -299,7 +312,7 @@ export class Sim {
   private snapN = 0; private modsSig = '';
   private wallTw: [Tower, Tower][] = [];
   private nospecAt = new Map<number, number>();
-  private rand: () => number;
+  private rand: Rng;
 
   constructor(opts: Partial<SimOpts> = {}) {
     this.opts = { mode: 'solo', players: 1, seed: (Math.random() * 1e9) | 0, pauseOnCards: true, map: DEFAULT_MAP, diff: 'normal', survival: false, free: false, ...opts };
@@ -491,6 +504,12 @@ export class Sim {
     }
     this.rebuildWalls();
   }
+  // ---------- save / restore (snapshot.ts; no rules here) ----------
+  /** Where the two random streams stand: the waves' and cards' stream, and the Titan's own. */
+  rngState(): [number, number] { return [this.rand.s, this.trand.s]; }
+  setRngState(a: number, b: number) { this.rand.s = a >>> 0; this.trand.s = b >>> 0; }
+  /** Link the walls of fire again from the towers as they stand (after a restore; buffs are left as saved). */
+  relink() { this.rebuildWalls(); }
   private rebuildWalls() {
     this.walls = computeWalls(this.towers, this.mods.flameLink);
     this.wallTw = this.walls.map((w) => [this.towerById(w.a)!, this.towerById(w.b)!]);
@@ -956,41 +975,100 @@ export class Sim {
   canSupply(t: TowerType): boolean { return TOWER_CHAIN[t].every((f) => this.facs.has(f)); }
   /**
    * The production cards that can be offered now and that an unlocked tower waits on: the "frontier" of the towers' supply,
-   * oldest tower first. The offers take one of them in turn (see rollCards).
+   * oldest tower first (the order they were unlocked in), each tower's cards in dependency order.
    */
   supplyFrontier(): string[] {
     const out: string[] = [];
     for (const t of this.unlocked) for (const id of this.supplyCards(t)) if (!out.includes(id) && this.cardOk(0, CARD_BY_ID[id])) out.push(id);
     return out;
   }
-  private prodTurn = 0;
   /**
-   * Roll an offer of up to three cards (deterministic: the Sim's own seeded stream). In order: cards past their
-   * guaranteeBy level that can be offered and are not taken (the Conveyor Belts from the first level-up, the Tunnels from
-   * level 7); on the set levels a blueprint, and with it the first production card its tower's supply needs if the player
-   * cannot make that yet; otherwise, while an unlocked tower waits on production cards, one of them (in turn); the rest by
-   * rarity weight. Tower upgrades for a tower not on the field come less often, production cards no tower needs yet too.
+   * Card bookkeeping for the offers (host only; deterministic, it follows the picks): the level each card was taken on, and
+   * for every forced or pushed card the player passed over how often that happened and on which level the last time.
+   */
+  private cardTakenAt: Record<string, number> = {};
+  private cardDeclines: Record<string, number> = {};
+  private cardDeclinedAt: Record<string, number> = {};
+  /** The level each card was last offered on (for a frontier card not offered yet: the level it joined the frontier). */
+  private cardSeenAt: Record<string, number> = {};
+  /** The cards rollCards forced or pushed into each offer it rolled (only those count as passed over when another card is picked). */
+  private offerPushed = new WeakMap<string[], string[]>();
+  /**
+   * True if a card may be pushed into an offer (forced, or as the frontier's card): not passed over in the last
+   * DECLINE_REST levels, and passed over fewer than DECLINE_MAX times, unless `need` (a tower on the field cannot be fed
+   * without it). A card is still offered by chance in the free places either way.
+   */
+  private pushable(id: string, need = false): boolean {
+    const at = this.cardDeclinedAt[id];
+    if (at !== undefined && this.level - at <= DECLINE_REST) return false;
+    return (this.cardDeclines[id] || 0) < DECLINE_MAX || need;
+  }
+  /**
+   * The level from which a card is forced into the offers, if it is: its guaranteeBy; for a guaranteeAfter card that many
+   * levels after the last card it requires was taken, once a tower of its type (needs) on the field is Mk2 or Mk3.
+   */
+  private dueAt(c: Card): number | undefined {
+    if (c.guaranteeBy !== undefined) return c.guaranteeBy;
+    if (c.guaranteeAfter === undefined || !c.needs || !this.towers.some((t) => t.type === c.needs && t.lvl >= 2)) return undefined;
+    return Math.max(0, ...(c.requires || []).map((r) => this.cardTakenAt[r] ?? 0)) + c.guaranteeAfter;
+  }
+  /**
+   * Roll an offer of up to three cards (deterministic: the Sim's own seeded stream). In order:
+   * - at most one forced card: the card whose guarantee came due first (guaranteeBy: the Conveyor Belts from the first
+   *   level-up, the Tunnels from level 7; guaranteeAfter: an ammo card a few levels after its plant, for a Mk2+ tower of its
+   *   type; two due on the same level: the later in the table waits);
+   * - on the set levels a blueprint, and with it the first production card its tower's supply needs if the player cannot make that yet;
+   * - with no forced card, while an unlocked tower waits on production cards, one of them: those on the supply path of a
+   *   blueprint taken in the last PRIO_LEVELS levels first, in dependency order (so a tower just unlocked becomes
+   *   suppliable soon), then the rest of the frontier;
+   * - the rest by rarity weight. Tower upgrades for a tower not on the field come less often, production cards no tower needs yet too.
+   * A forced or pushed card the player passes over backs off (see pushable); the Belts are forced into their first two
+   * offers all the same.
    */
   rollCards(pi: number): string[] {
     const all = CARDS.filter((c) => this.cardOk(pi, c));
     const out: string[] = [];
     const push = (id: string | undefined) => { if (id && out.length < 3 && !out.includes(id)) out.push(id); };
-    for (const c of all) if (c.guaranteeBy !== undefined && this.level >= c.guaranteeBy) push(c.id);
+    const owned = new Set(this.towers.map((t) => t.type));
+    const need = (id: string) => [...owned].some((t) => !this.canSupply(t) && this.supplyCards(t).includes(id));
+    const ok = (id: string) => !out.includes(id) && this.cardOk(pi, CARD_BY_ID[id]) && this.pushable(id, need(id));
+    let forced = false, pushed: string | undefined;
+    const due = all.map((c, i) => ({ c, i, at: this.dueAt(c) })).filter((d) => d.at !== undefined && this.level >= d.at)
+      .sort((a, b) => a.at! - b.at! || a.i - b.i);
+    for (const d of due) {
+      const first2 = d.c.id === 'belts' && this.level <= d.at! + 1;
+      if (first2 || ok(d.c.id)) { push(d.c.id); forced = true; pushed = d.c.id; break; }
+    }
     // blueprints come on set levels only, one at a time, so each new supply chain has a few waves to be built in
     const bps = all.filter((c) => c.kind === 'blueprint');
     let bpT: TowerType | null = null;
     if (bps.length && BP_LEVELS.includes(this.level)) { const c = bps[Math.floor(this.rand() * bps.length)]; push(c.id); bpT = c.id.slice(3) as TowerType; }
-    if (bpT && !this.canSupply(bpT)) push(this.supplyCards(bpT).find((id) => this.cardOk(pi, CARD_BY_ID[id])));
-    const fr = this.supplyFrontier();
-    // (not when a forced card and a blueprint already hold two places, so such an offer keeps a third, free place; a
-    // blueprint's own supply card above is the one exception: an early offer can be belts + blueprint + its supply card)
-    if (fr.length && !out.some((id) => fr.includes(id)) && out.length < 2) push(fr[this.prodTurn++ % fr.length]);
+    const comp = bpT && !this.canSupply(bpT) ? this.supplyCards(bpT).find(ok) : undefined;
+    push(comp);
+    // with no forced card one production card an unlocked tower waits on. First the supply path of the blueprints taken in
+    // the last PRIO_LEVELS levels whose towers cannot be supplied yet (the oldest of them first, each in dependency order),
+    // passed over or not (one that was passed over lately lets the next one on the path go first): a player who just took a
+    // tower wants it fed. Then the rest of the frontier, as far as pushable. A pushable frontier card left out of the last
+    // OVERDUE offers goes before all that, so an older tower is not starved by a run of new blueprints.
+    // (Not when a forced card and a blueprint already hold two places, so such an offer keeps a third, free place; a
+    // blueprint's own supply card above is the one exception: an early offer can be belts + blueprint + its supply card.)
+    const fr = this.supplyFrontier(), fresh: string[] = [];
+    for (const t of this.unlocked) {
+      if (this.level - (this.cardTakenAt['bp_' + t] ?? -1e9) > PRIO_LEVELS || this.canSupply(t)) continue;
+      for (const id of this.supplyCards(t)) if (!fresh.includes(id) && this.cardOk(pi, CARD_BY_ID[id])) fresh.push(id);
+    }
+    const frc = !forced && fr.length && !out.some((id) => fr.includes(id)) && out.length < 2
+      ? fr.find((id) => ok(id) && this.level - (this.cardSeenAt[id] ??= this.level) >= OVERDUE) ||
+        fresh.find((id) => !out.includes(id) && this.pushable(id, true)) || fresh.find((id) => !out.includes(id)) || fr.find(ok) : undefined;
+    push(frc);
     const W = [10, TUNE.rare, TUNE.epic];
     // dedicated upgrades are only useful once that tower is on the field, so they are offered less often until it is
-    const built = new Set(this.towers.map((t) => t.type)), needed = new Set<string>();
+    const needed = new Set<string>();
     for (const t of this.unlocked) for (const id of this.supplyCards(t)) needed.add(id);
-    // (production cards an unlocked tower waits on come more often, so a new tower is suppliable a few levels after its blueprint)
-    const wt = (c: Card) => W[c.rar] * (c.needs && !built.has(c.needs) ? 0.3 : 1) * (c.unlocks && !c.guaranteeBy ? (needed.has(c.id) ? NEEDED_PROD : 0.5) : 1);
+    // (production cards an unlocked tower waits on come more often, those on a fresh blueprint's path much more often, so a
+    // new tower is suppliable a few levels after its blueprint; one the player keeps passing over only as often as any card)
+    const fp = new Set(fresh);
+    const wt = (c: Card) => W[c.rar] * (c.needs && !owned.has(c.needs) ? 0.3 : 1) * (c.unlocks && !c.guaranteeBy ? (fp.has(c.id) ? NEEDED_PROD * FRESH_PROD : needed.has(c.id) ? (this.pushable(c.id, need(c.id)) ? NEEDED_PROD : 1) : 0.5) : 1);
     const pool = all.filter((c) => c.kind !== 'blueprint');
     while (out.length < 3) {
       const rest = pool.filter((c) => !out.includes(c.id));
@@ -1001,17 +1079,26 @@ export class Sim {
       for (const c of rest) { x -= wt(c); if (x <= 0) { got = c; break; } }
       out.push(got.id);
     }
+    for (const id of fr) this.cardSeenAt[id] ??= this.level;
+    for (const id of out) this.cardSeenAt[id] = this.level;
+    const p = [pushed, comp, frc].filter((id): id is string => !!id && out.includes(id));
+    if (p.length) this.offerPushed.set(out, p);
     return out;
   }
-  /** Hand a card out without an offer (a map's opening, a test): it counts as taken and applies, unless it is maxed. */
+  /**
+   * Hand a card out without an offer (a map's opening, a test): it counts as taken and applies, unless it is maxed. A
+   * blueprint clears what the player passed over on its tower's supply path, so those cards are pushed again.
+   */
   grant(id: string) {
     const card = Object.hasOwn(CARD_BY_ID, id) ? CARD_BY_ID[id] : undefined;
     if (!card || (this.stacks[id] || 0) >= card.max) return;
     this.stacks[id] = (this.stacks[id] || 0) + 1;
+    this.cardTakenAt[id] ??= this.level;
     card.apply({
       mods: this.mods, unlocked: this.unlocked, facs: this.facs,
       addGold: (n) => { this.gold += n; }, addLives: (n) => { this.lives = Math.min(30, this.lives + n); }, addMats: (n) => { this.mats += n; },
     });
+    if (card.kind === 'blueprint') for (const s of this.supplyCards(id.slice(3) as TowerType)) { delete this.cardDeclines[s]; delete this.cardDeclinedAt[s]; }
   }
   pickCard(pi: number, idx: number) {
     const p = this.players[pi];
@@ -1020,6 +1107,7 @@ export class Sim {
     const id = offer[Math.max(0, Math.min(offer.length - 1, idx | 0))];
     const card = typeof id === 'string' && Object.hasOwn(CARD_BY_ID, id) ? CARD_BY_ID[id] : undefined;
     if (!card) return;
+    for (const o of this.offerPushed.get(offer) || []) if (o !== card.id) { this.cardDeclines[o] = (this.cardDeclines[o] || 0) + 1; this.cardDeclinedAt[o] = this.level; }
     if ((this.stacks[card.id] || 0) >= card.max) { this.gold += 100; return; }
     this.grant(card.id);
     this.recomputeBuffs();
