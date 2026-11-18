@@ -18,15 +18,15 @@ if HERE not in sys.path:
 import bpy  # noqa: E402
 import vs_lib  # noqa: E402
 import fac_common  # noqa: E402
-import models_towers, models_enemies, models_hero, models_misc, models_factory  # noqa: E402
+import models_towers, models_enemies, models_hero, models_misc, models_factory, models_deposits  # noqa: E402
 
-for mod in (vs_lib, fac_common, models_towers, models_enemies, models_hero, models_misc, models_factory):
+for mod in (vs_lib, fac_common, models_towers, models_enemies, models_hero, models_misc, models_factory, models_deposits):
     importlib.reload(mod)
 
-BUILDERS = models_towers.TOWERS + models_enemies.ENEMIES + models_hero.HERO + models_misc.MISC + models_factory.FACTORY
+BUILDERS = models_towers.TOWERS + models_enemies.ENEMIES + models_hero.HERO + models_misc.MISC + models_factory.FACTORY + models_deposits.DEPOSITS
 
 BUDGET = {'enemy_grunt': 2500, 'enemy_runner': 2500, 'enemy_drone': 2500, 'enemy_brute': 4000, 'enemy_shield': 4000,
-          'enemy_boss': 10000, 'enemy_wheel': 6500, 'enemy_brood': 5000, 'enemy_mite': 300, 'enemy_titan': 14000, 'hero': 9000, 'core': 12000, 'tower_spire': 9000}
+          'enemy_boss': 10000, 'enemy_wheel': 6500, 'enemy_brood': 5000, 'enemy_mite': 300, 'enemy_titan': 21000, 'hero': 9000, 'core': 12000, 'tower_spire': 9000}
 
 
 def budget(name):
@@ -38,6 +38,8 @@ def budget(name):
         return 1800
     if name.startswith('fac_'):
         return 3500
+    if name.startswith('dep_'):
+        return 1800     # three bodies (up to about 520 each), the rim rubble, the oil pool
     return 8000 if name.startswith('tower_') else 1500
 
 
@@ -64,13 +66,15 @@ def build(fn):
         ob.select_set(True)
     bpy.context.view_layer.objects.active = root
     path = os.path.join(OUT, model.name + '.glb')
-    bpy.ops.export_scene.gltf(
+    kw = dict(
         filepath=path, export_format='GLB', use_selection=True, export_apply=True, export_yup=True,
         export_texcoords=False, export_normals=True, export_tangents=False, export_materials='EXPORT',
         export_cameras=False, export_lights=False, export_animations=False, export_skins=False,
         export_morph=False, export_extras=False, export_attributes=False)
+    kw.update(getattr(model, 'export_kw', {}))     # the deposits carry vertex colours and a uv set (see models_deposits)
+    bpy.ops.export_scene.gltf(**kw)
     kb = os.path.getsize(path) / 1024
-    flag = '' if tris <= budget(model.name) and kb <= (500 if model.name == 'enemy_titan' else 400) else '   <-- OVER BUDGET'
+    flag = '' if tris <= budget(model.name) and kb <= (590 if model.name == 'enemy_titan' else 400) else '   <-- OVER BUDGET'
     print(f'[build] {model.name:14s} tris={tris:6d}/{budget(model.name):<6d} {kb:7.1f} KB  '
           f'nodes={per}{flag}')
     return model.name

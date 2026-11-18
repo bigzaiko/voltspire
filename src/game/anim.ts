@@ -33,6 +33,8 @@
 //                            Its six legs are leg_1..6 (1-3 left front to rear, 4-6 right front to rear).
 //   neck_1 > neck_2 > head   Titan only. The head's pivot is its eye (weak_1), so the eye stays where the game tests it.
 //                            Its legs are leg_1..4 like the Colossus'; weak_3 / weak_4 are its hip hubs, weak_2 its reactor.
+//   pist_<id>_a, pist_<id>_b   hydraulic cylinders (Titan legs): two bones, the barrel on one part and the rod on the next.
+//                            Each is aimed at the other's pivot after the pose is set, so the rod slides in the barrel.
 //   body, eye, legs_a, legs_b   Mite: no rig. The view draws mites instanced and swings the two leg sets itself.
 //
 // Towers  (root = tower_<type>)
@@ -75,6 +77,19 @@ function relPos(node: O3, root: O3, out: THREE.Vector3) {
   return root.worldToLocal(out.setFromMatrixPosition(node.matrixWorld));
 }
 
+/** Length of a bone's own geometry (bones lie along their local -Y). */
+function boneLen(o: O3) {
+  if (typeof o.userData.boneLen === 'number') return o.userData.boneLen as number;   // (the view merged the parts into skinned meshes: see render.ts mergeRigid)
+  let l = 0;
+  o.traverse((m) => {
+    const g = (m as THREE.Mesh).geometry;
+    if (!g || (m !== o && m.parent !== o)) return;
+    if (!g.boundingBox) g.computeBoundingBox();
+    l = Math.max(l, -g.boundingBox!.min.y);
+  });
+  return l;
+}
+
 // ---------- legs ----------
 // Feet are planted in WORLD space: a foot that touches down stays exactly where it landed until its phase
 // in the gait lifts it again, whatever the body does in between (bob, sway, turning, slowing, stopping).
@@ -92,6 +107,8 @@ interface Leg {
   wx: number; wz: number; wyaw: number;    // world position / heading of the plant (or of the last lift-off)
   sx: number; sz: number;                  // current toe pivot, root space
   tx: number; tz: number;                  // world spot the swing is heading for (rigs with a snap callback)
+  pyaw: number;                            // world heading of the pad while it stands (gaits with `pad`)
+  hop: number; ox: number; oz: number;     // a step out of turn (gaits with `restep`): progress 0..1 (0 = none) and where it began (world)
 }
 
 function makeLeg(root: O3, id: string, ph: number, body: O3 | null): Leg | null {
@@ -112,7 +129,7 @@ function makeLeg(root: O3, id: string, ph: number, body: O3 | null): Leg | null 
     l1: H.distanceTo(K), l2: K.distanceTo(A), l3: foot ? A.distanceTo(T) : 0, bend: a1 >= a2 ? 1 : -1,
     hx: H.x, hy: H.y, hz: H.z, bhx: H.x - bp.x, bhy: H.y - bp.y, bhz: H.z - bp.z,
     fx: T.x, fz: T.z, toeH: T.y, a3: foot ? ang(A, T) : 0, ph, lift: 0,
-    down: false, wx: 0, wz: 0, wyaw: 0, sx: T.x, sz: T.z, tx: 0, tz: 0,
+    down: false, wx: 0, wz: 0, wyaw: 0, sx: T.x, sz: T.z, tx: 0, tz: 0, pyaw: 0, hop: 0, ox: 0, oz: 0,
   };
 }
 
@@ -152,13 +169,18 @@ interface Gait {
   roll: number;     // third segment rolls over the toe through the stance (rad at the ends of the stride)
   ph: number[];     // phase per leg
   shape?: number;   // where the swing peaks: below 1 early (a quick snatch), above 1 late (a slow heave, then the foot comes down hard)
+  leash?: number;   // how far from its neutral spot a planted foot may get, in strides (0.85 if not given)
+  restep?: number;  // seconds of a step out of turn: a planted foot that gets out of reach is picked up and set down again instead of being dragged
+  pad?: boolean;    // the foot is a pad on a ball joint: while it stands it keeps the heading it was set down with, the leg turns above it
   curve?: number;   // 0..1: in a bend the footfalls follow the curve of the road (EnemyRig.roadF / roadR) instead of the machine's own tangent
 }
 
 /** Per-update context shared by all legs of one rig. */
-const C = { X: 0, Y: 0, Z: 0, cs: 1, sn: 0, sc: 1, psi: 0, vx: 0, vz: 0, om: 0, sp: 0, spMin: 1, liftAmp: 1, pitch: 0, yaw: 0, init: false };
+const C = { X: 0, Y: 0, Z: 0, cs: 1, sn: 0, sc: 1, psi: 0, vx: 0, vz: 0, om: 0, sp: 0, spMin: 1, liftAmp: 1, pitch: 0, yaw: 0, init: false, dt: 0 };
 const QBI = new THREE.Quaternion(), QC = new THREE.Quaternion(), QD = new THREE.Quaternion(), EU = new THREE.Euler();
 const SN = { x: 0, z: 0 };
+/** Gaits with `restep`: a foot never stands closer than this to the axis of its own hip (model units). */
+const HIP_CLEAR = 1.9;
 /** How far a leaping machine pulls its feet up under itself (model units). */
 const AIR_TUCK = 3.2;
 
@@ -172,24 +194,50 @@ function stepLeg(r: EnemyRig, L: Leg, G: Gait) {
   let ox = vnx * G.stride * 0.5 / den, oz = vnz * G.stride * 0.5 / den;
   const ol = Math.hypot(ox, oz), omax = G.stride * 0.6;
   if (ol > omax) { ox *= omax / ol; oz *= omax / ol; }
-  const leash = G.stride * 0.85 + 0.06;
-  let lx: number, lz: number, lift = 0, toe = 0, yawF = 0, roll: number;
+  const leash = G.stride * (G.leash || 0.85) + 0.06;
+  let lx: number, lz: number, lift = 0, toe = 0, yawF = 0, roll: number, sw = 0;
   if (C.init) {
     // first frame of a (re)used visual: drop every foot where a steady walk would have it
     const u = p < G.duty ? p / G.duty : 1;
     L.down = p < G.duty; L.sx = nx + ox * (1 - 2 * u); L.sz = nz + oz * (1 - 2 * u); L.wyaw = C.psi;
     L.wx = C.X + (L.sx * C.cs + L.sz * C.sn) * C.sc; L.wz = C.Z + (-L.sx * C.sn + L.sz * C.cs) * C.sc;
     if (r.snap && L.down) { r.snap(L.wx, L.wz, SN); L.wx = SN.x; L.wz = SN.z; }
+    L.hop = 0; L.pyaw = NaN;
   }
   // the stored world point seen from the body now
   let dx = (L.wx - C.X) / C.sc, dz = (L.wz - C.Z) / C.sc;
   let ax = dx * C.cs - dz * C.sn, az = dx * C.sn + dz * C.cs;
   const ex = ax - nx, ez = az - nz, ed = Math.hypot(ex, ez);
-  if (ed > leash) { // out of reach (dragged, pushed): give way, keep the foot under the machine
-    ax = nx + ex * leash / ed; az = nz + ez * leash / ed;
+  // a radial leg cannot stand right under its own hip either (it would have to spin round to follow the foot through)
+  const under = L.root && G.restep ? Math.hypot(ax - L.hx, az - L.hz) < HIP_CLEAR : false;
+  if (G.restep && L.down && !L.hop && !C.init && p < G.duty - 0.1 && r.air <= 0 && (ed > leash || under)) {
+    // out of reach with most of its stance still to come: pick the foot up and set it down where it belongs
+    L.hop = 1e-4; L.ox = L.wx; L.oz = L.wz;
+    const k = 0.5 - p / G.duty;   // where a foot at this point of its stance would stand
+    const tx = nx + ox * 2 * k, tz = nz + oz * 2 * k;
+    L.tx = C.X + (tx * C.cs + tz * C.sn) * C.sc; L.tz = C.Z + (-tx * C.sn + tz * C.cs) * C.sc;
+    if (r.snap) { r.snap(L.tx, L.tz, SN); L.tx = SN.x; L.tz = SN.z; }
+    // (no better spot to be had: it stays where it is)
+    dx = (L.tx - C.X) / C.sc; dz = (L.tz - C.Z) / C.sc;
+    if (Math.hypot(dx * C.cs - dz * C.sn - nx, dx * C.sn + dz * C.cs - nz) > Math.min(leash, ed) * 0.8 && !under) L.hop = 0;
+  }
+  // out of reach (dragged, pushed): give way, keep the foot under the machine. A machine that re-steps has the reach to
+  // let a planted foot trail far behind instead: it is only dragged at the very end of what the leg can do
+  const hard = G.restep ? leash * 1.4 : leash;
+  if (ed > hard && !L.hop) {
+    ax = nx + ex * hard / ed; az = nz + ez * hard / ed;
     L.wx = C.X + (ax * C.cs + az * C.sn) * C.sc; L.wz = C.Z + (-ax * C.sn + az * C.cs) * C.sc;
   }
-  if (p < G.duty) {
+  if (L.hop > 0 && p < G.duty) {
+    // the step out of turn: a short, low arc from where it stood to its new spot, both fixed in the world
+    const u = (L.hop = Math.min(1, L.hop + C.dt / (G.restep || 1))), e = ease(u);
+    const hx = L.ox + (L.tx - L.ox) * e, hz = L.oz + (L.tz - L.oz) * e;
+    dx = (hx - C.X) / C.sc; dz = (hz - C.Z) / C.sc;
+    lx = dx * C.cs - dz * C.sn; lz = dx * C.sn + dz * C.cs;
+    lift = Math.sin(PI * u) * 0.55 * C.liftAmp; sw = e; roll = 0;
+    L.down = false; L.wx = hx; L.wz = hz;
+    if (u >= 1) { L.hop = 0; L.down = true; L.wyaw = C.psi; if (r.steps && r.air <= 0) r.steps.push(L.wx, L.wz); }
+  } else if (p < G.duty) {
     if (!L.down) { // touchdown: plant where the swing was heading
       L.down = true; L.wyaw = C.psi;
       const back = p * (G.stride / G.duty) / den;                 // ground covered since the exact moment of touchdown
@@ -218,10 +266,14 @@ function stepLeg(r: EnemyRig, L: Leg, G: Gait) {
       if (L.down || C.init) { r.snap(C.X + (tx * C.cs + tz * C.sn) * C.sc, C.Z + (-tx * C.sn + tz * C.cs) * C.sc, SN); L.tx = SN.x; L.tz = SN.z; }
       dx = (L.tx - C.X) / C.sc; dz = (L.tz - C.Z) / C.sc;
       tx = dx * C.cs - dz * C.sn; tz = dx * C.sn + dz * C.cs;
-      const td = Math.hypot(tx - nx, tz - nz), tmax = leash * 1.15;
-      if (td > tmax) { tx = nx + (tx - nx) * tmax / td; tz = nz + (tz - nz) * tmax / td; }
+      const td = Math.hypot(tx - nx, tz - nz), tmax = leash * (G.restep ? 0.9 : 1.15);
+      if (td > tmax) {
+        tx = nx + (tx - nx) * tmax / td; tz = nz + (tz - nz) * tmax / td;
+        // (a gait that never drags a foot comes down where the swing really ends, so the spot gives way with the machine)
+        if (G.restep) { L.tx = C.X + (tx * C.cs + tz * C.sn) * C.sc; L.tz = C.Z + (-tx * C.sn + tz * C.cs) * C.sc; }
+      }
     }
-    L.down = false;
+    L.down = false; L.hop = 0; sw = e;
     lx = ax + (tx - ax) * e; lz = az + (tz - az) * e;
     lift = Math.sin(PI * Math.pow(u, G.shape || 0.8)) * C.liftAmp;
     toe = (1 - u) * (1 - u) * (0.35 + 0.65 * Math.sin(PI * u)) - 0.25 * Math.sin(PI * u) * u;
@@ -254,7 +306,15 @@ function stepLeg(r: EnemyRig, L: Leg, G: Gait) {
   if (L.root) QC.multiply(L.root.quaternion);
   QC.multiply(L.upper.quaternion).multiply(L.lower.quaternion);
   if (L.foot) QC.multiply(L.foot.quaternion);
-  QD.setFromEuler(EU.set(toe * G.toe, L.root ? legYaw + C.yaw : yawF, 0, 'YXZ'));
+  let padYaw = L.root ? legYaw + C.yaw : yawF;
+  if (G.pad && L.root) {
+    // a pad on a ball joint: it stands as it was set down while the leg turns above it, and lines up with the leg again in the air
+    const free = Math.max(sw, air);
+    if (L.pyaw !== L.pyaw) L.pyaw = C.psi + padYaw;
+    padYaw += clamp(wrap(L.pyaw - C.psi - padYaw), -0.7, 0.7) * (1 - free);
+    L.pyaw = C.psi + padYaw;
+  }
+  QD.setFromEuler(EU.set(toe * G.toe, padYaw, 0, 'YXZ'));
   L.toe.quaternion.copy(QC.invert()).multiply(QD);
 }
 
@@ -283,7 +343,7 @@ const GAITS: Record<ET, Gait> = {
   brood: { stride: 0.7, duty: 0.6, lift: 0.15, toe: 0.3, meta: 0, roll: 0, ph: [0, 0.5, 0, 0.5, 0, 0.5] },
   mite: { stride: 1, duty: 0.5, lift: 0, toe: 0, meta: 0, roll: 0, ph: [] },
   // one foot at a time, each a long slow heave that comes down hard; four fifths of the cycle on the ground
-  titan: { stride: 4.6, duty: 0.8, lift: 2.3, toe: 0.22, meta: 0.2, roll: 0.05, ph: [0.75, 0, 0.25, 0.5], shape: 1.35 },
+  titan: { stride: 4.6, duty: 0.8, lift: 2.3, toe: 0.22, meta: 0.2, roll: 0.05, ph: [0.75, 0, 0.25, 0.5], shape: 1.35, leash: 0.95, restep: 0.6, pad: true },
 };
 const LEG_IDS: Record<ET, string[]> = {
   grunt: ['l', 'r'], runner: ['fl', 'hl', 'fr', 'hr'], brute: ['l', 'r'], shield: ['1', '2', '3'], boss: ['1', '2', '3', '4'], drone: [], wheel: [],
@@ -315,6 +375,8 @@ export interface EnemyRig {
    * snap: may move the spot a foot is about to step to (world x, z in, the result in out).
    */
   neck: O3[]; lookPitch: number; crouch: number; air: number; lunge: number; dead: number;
+  /** Hydraulic cylinders: barrel, rod, barrel, rod, ... (see aimPistons), and how long each of them is. */
+  pist: O3[]; pistLen: number[];
   steps: number[] | null; ground: ((x: number, z: number) => number) | null; snap: ((x: number, z: number, out: { x: number; z: number }) => void) | null;
 }
 
@@ -327,7 +389,8 @@ export function makeEnemyRig(root: O3, type: ET): EnemyRig {
   if (type === 'boss') legs.forEach((l) => { const f = BOSS_FEET[l.hz > 0 ? 0 : 1]; l.fx = Math.sign(l.hx || 1) * f[0]; l.fz = l.hz + f[1]; l.sx = l.fx; l.sz = l.fz; });
   const rim = type === 'wheel' ? find(root, 'rim') : null;
   if (rim) { rim.rotation.order = 'ZYX'; if (body) body.rotation.order = 'ZYX'; }   // lean, then wobble, then the turn about the axle: the hub stays in the plane of its wheel
-  const spins: O3[] = [], cells: O3[] = [], neck: O3[] = [];
+  const spins: O3[] = [], cells: O3[] = [], neck: O3[] = [], pist: O3[] = [];
+  root.traverse((o) => { if (o.name.startsWith('pist_') && o.name.endsWith('_a')) { const b = find(root, o.name.slice(0, -1) + 'b'); if (b) pist.push(o, b); } });
   root.traverse((o) => { if (o.name.startsWith('spin')) spins.push(o); else if (o.name.startsWith('cell_')) cells.push(o); else if (o.name.startsWith('neck_')) neck.push(o); });
   cells.sort((a, b) => (a.name < b.name ? -1 : 1)); neck.sort((a, b) => (a.name < b.name ? -1 : 1));
   let footR = 0;
@@ -339,7 +402,7 @@ export function makeEnemyRig(root: O3, type: ET): EnemyRig {
     cyc: 0, t: 0, seed: 0, age: 0, flinch: 0, hp: -1, speed: 0, mv: 0, sing: 0, lastYaw: 0, bank: 0, look: 0,
     lastX: 0, lastZ: 0, vx: 0, vz: 0, om: 0, init: true, walk: 1, atk: 0, atkT: 0, hit: false,
     sag: 0, sagV: 0, downN: 0, roadF: 0, roadR: 0, rim, roll: 0, pend: 0, pendV: 0, pvz: 0, spin: 1, stag: 0,
-    cells, open: 0, lid: 0, neck, lookPitch: 0, crouch: 0, air: 0, lunge: 0, dead: 0, steps: type === 'titan' ? [] : null, ground: null, snap: null,
+    cells, open: 0, lid: 0, neck, lookPitch: 0, crouch: 0, air: 0, lunge: 0, dead: 0, pist, pistLen: pist.map(boneLen), steps: type === 'titan' ? [] : null, ground: null, snap: null,
   };
   if (type === 'titan' && r.head) r.head.rotation.order = 'YXZ';   // it turns its head, then nods along where it now looks
   resetEnemy(r);
@@ -588,7 +651,7 @@ export function updateEnemy(r: EnemyRig, dt: number, hpFrac: number, sing: boole
   if (body) { body.position.set(r.bx + bx, r.by + by, r.bz + bz); body.rotation.set(pitch, yaw, roll); QBI.copy(body.quaternion).invert(); }
   C.X = root.position.x; C.Y = root.position.y; C.Z = root.position.z; C.cs = cs; C.sn = sn; C.sc = sc; C.psi = psi;
   C.vx = r.vx; C.vz = r.vz; C.om = r.om; C.sp = r.speed + Math.abs(r.om) * r.footR; C.spMin = NOMINAL[r.type] * 0.2;
-  C.liftAmp = r.walk * (sg > 0.05 ? 0.55 + 0.45 * mv : 1) * (r.dead > 0 ? 0 : 1); C.pitch = pitch; C.yaw = yaw; C.init = r.init;
+  C.liftAmp = r.walk * (sg > 0.05 ? 0.55 + 0.45 * mv : 1) * (r.dead > 0 ? 0 : 1); C.pitch = pitch; C.yaw = yaw; C.init = r.init; C.dt = dt;
   const legs = r.legs;
   let downN = 0;
   for (let i = 0; i < legs.length; i++) { stepLeg(r, legs[i], g); if (legs[i].down) downN++; }
@@ -598,6 +661,28 @@ export function updateEnemy(r: EnemyRig, dt: number, hpFrac: number, sing: boole
   r.init = false;
   const sp = dt * (r.type === 'drone' ? 38 : r.type === 'boss' ? 2.5 : r.type === 'wheel' ? 6 + 16 * spin : 4.5);
   for (let i = 0; i < r.spins.length; i++) r.spins[i].rotateY(i & 1 ? -sp : sp);
+  if (r.pist.length) aimPistons(r);
+}
+
+/**
+ * Hydraulic cylinders follow the pose: every barrel is turned about its pin to point at the pin of its rod, and the rod
+ * back at the barrel's, so the rod runs in and out as the joint between them works. Both are bones (they lie along local -Y
+ * and turn about local X, the hinge they share with the parts that carry them).
+ */
+function aimPistons(r: EnemyRig) {
+  const P = r.pist;
+  r.root.updateWorldMatrix(true, true);
+  for (let i = 0; i < P.length; i += 2) {
+    const a = P[i], b = P[i + 1];
+    a.parent!.worldToLocal(V.setFromMatrixPosition(b.matrixWorld)).sub(a.position);
+    a.rotation.set(Math.atan2(-V.z, -V.y), 0, 0);
+    // the cylinders are cut for everything the legs do on their feet. Beyond that (the collapse, a foot high on a roof)
+    // the rod gives: it is drawn out or shortened just enough to stay in its barrel and short of the barrel's pin
+    const d = Math.hypot(V.y, V.z), la = r.pistLen[i], lb = r.pistLen[i + 1];
+    b.scale.y = lb > 0 ? (d > la + lb - 0.12 ? (d - la + 0.12) / lb : d < lb + 0.04 ? Math.max(0.2, (d - 0.04) / lb) : 1) : 1;
+    b.parent!.worldToLocal(V.setFromMatrixPosition(a.matrixWorld)).sub(b.position);
+    b.rotation.set(Math.atan2(-V.z, -V.y), 0, 0);
+  }
 }
 
 // ---------- towers ----------
@@ -636,6 +721,12 @@ export function makeTowerRig(root: O3, type: TowerType): TowerRig {
       const m = o as THREE.Mesh;
       if (!m.isMesh || glow) return;
       for (const mat of Array.isArray(m.material) ? m.material : [m.material]) if (mat.name.startsWith('glow')) { glow = mat as THREE.MeshStandardMaterial; break; }
+    });
+    // (the view may have merged the barrel's parts into a skinned mesh of their own on the root, tagged 'barrel')
+    if (!glow) root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || glow || !(' ' + o.userData.tag + ' ').includes(' barrel ') || Array.isArray(m.material)) return;
+      if (m.material.name.startsWith('glow')) glow = m.material as THREE.MeshStandardMaterial;
     });
   }
   return {

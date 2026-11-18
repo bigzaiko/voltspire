@@ -6,20 +6,25 @@ import { glowTexture, POOL_GEO } from './tex.ts';
 import { FX_LAYER } from './world.ts';
 
 const UP = new THREE.Vector3(0, 1, 0);
-const v1 = new THREE.Vector3();
+const v1 = new THREE.Vector3(), v2 = new THREE.Vector3();
+const M4 = new THREE.Matrix4(), Q4 = new THREE.Quaternion();
 const c1 = new THREE.Color();
 const BEAM_GEO = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true).translate(0, 0.5, 0);
 
 interface Timed { mesh: THREE.Mesh; color: THREE.Color; tint: THREE.Color; life: number; max: number; r0: number; r1: number }
 
 // View-angle based glow: bright along the axis the camera looks through, fading to nothing at the
-// silhouette, with a near-white core. Gives slim beams a hot centre without a second mesh.
+// silhouette, with a hot core. Gives slim beams a hot centre without a second mesh.
+// The core is a paler shade of the beam's own colour, not white, and the whole is rolled off before it is
+// tone mapped: a hot beam stays pink, red or violet under the bloom instead of burning out to the same white.
 const GLOW_VERT = `varying vec3 vN; varying vec3 vV;
   void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.0); vN = normalMatrix * normal; vV = -mv.xyz; gl_Position = projectionMatrix * mv; }`;
 const GLOW_FRAG = `uniform vec3 color; uniform float power; uniform float core; varying vec3 vN; varying vec3 vV;
   void main(){ float c = clamp(abs(dot(normalize(vN), normalize(vV))), 1e-4, 1.0);
     float peak = max(max(color.r, color.g), color.b);
-    vec3 col = color * pow(c, power) + vec3(1.0, 0.95, 0.88) * peak * core * pow(c, power * 4.0);
+    vec3 hot = mix(color, vec3(1.0, 0.95, 0.88) * peak, 0.42);
+    vec3 col = color * pow(c, power) + hot * core * pow(c, power * 4.0);
+    col /= 1.0 + 0.3 * max(col.r, max(col.g, col.b));
     gl_FragColor = vec4(col, 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -29,6 +34,12 @@ const glowMat = (power: number, core: number) => new THREE.ShaderMaterial({
   vertexShader: GLOW_VERT, fragmentShader: GLOW_FRAG, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false,
 });
 
+/** A projectile that glows of its own (a turret bolt, a mortar shell): the same hot-cored glow as the beams, in its colour. */
+export function boltMat(color: number, gain: number, core = 0.9, power = 1.5) {
+  const m = glowMat(power, core);
+  (m.uniforms.color.value as THREE.Color).setHex(color).multiplyScalar(gain);
+  return m;
+}
 /** A beam the caller keeps and places every frame (a Lance holding its target). Dispose its material when done. */
 export function makeBeam(): THREE.Mesh {
   const m = new THREE.Mesh(BEAM_GEO, glowMat(1.8, 0.7));
@@ -81,28 +92,247 @@ export const fireMat = () => new THREE.ShaderMaterial({
 });
 /**
  * A target reticle on a unit quad (PlaneGeometry(2, 2), facing the camera): a ring that fills clockwise with `fill`,
- * a fine inner ring, a centre pip and `ticks` bracket marks outside the ring that turn with `spin` and fade with `mark`.
+ * a fine inner ring, a centre pip (both go with the uniform `inner` at 0, for a ring round something of its own; `thin` at 1 draws finer lines for a large one) and `ticks` bracket
+ * marks outside the ring that turn with `spin` and fade with `mark`.
  */
 export const reticleMat = (ticks = 4, depthTest = true) => new THREE.ShaderMaterial({
-  uniforms: { color: { value: new THREE.Color() }, fill: { value: 1 }, gain: { value: 1 }, mark: { value: 0 }, spin: { value: 0 }, ticks: { value: ticks } },
+  uniforms: { color: { value: new THREE.Color() }, fill: { value: 1 }, gain: { value: 1 }, mark: { value: 0 }, spin: { value: 0 }, ticks: { value: ticks }, inner: { value: 1 }, thin: { value: 0 } },
   vertexShader: UV_VERT,
-  fragmentShader: `uniform vec3 color; uniform float fill, gain, mark, spin, ticks; varying vec2 vUv;
+  fragmentShader: `uniform vec3 color; uniform float fill, gain, mark, spin, ticks, inner, thin; varying vec2 vUv;
     void main(){
       vec2 p = vUv * 2.0 - 1.0; float r = length(p) * 1.25, w = fwidth(r) * 1.2;
       float ang = atan(p.x, p.y);
       float a = fract(ang / 6.2831853);
-      float band = smoothstep(0.76 - w, 0.76, r) * (1.0 - smoothstep(0.9, 0.9 + w, r));
+      float band = smoothstep(0.76 + 0.08 * thin - w, 0.76 + 0.08 * thin, r) * (1.0 - smoothstep(0.9, 0.9 + w, r));
       float v = band * mix(0.1, 1.0, step(a, fill));
-      v += smoothstep(0.5 - w, 0.5, r) * (1.0 - smoothstep(0.535, 0.535 + w, r)) * (0.16 + 0.5 * mark);
-      v += (1.0 - smoothstep(0.1, 0.1 + w, r)) * (0.25 + 0.75 * mark);
+      v += smoothstep(0.5 - w, 0.5, r) * (1.0 - smoothstep(0.535, 0.535 + w, r)) * (0.16 + 0.5 * mark) * inner;
+      v += (1.0 - smoothstep(0.1, 0.1 + w, r)) * (0.25 + 0.75 * mark) * inner;
       // bracket marks: short bars pointing at the centre
       float t = abs(fract((ang + spin) / 6.2831853 * ticks) - 0.5) * 2.0;
-      v += mark * step(0.86, t) * smoothstep(0.97 - w, 0.97, r) * (1.0 - smoothstep(1.2, 1.2 + w, r));
+      v += mark * step(0.86 + 0.07 * thin, t) * smoothstep(0.97 - w, 0.97, r) * (1.0 - smoothstep(1.2 - 0.08 * thin, 1.2 - 0.08 * thin + w, r));
       gl_FragColor = vec4(color * v * gain, 1.0);
       #include <tonemapping_fragment>
       #include <colorspace_fragment>
     }`,
   blending: THREE.AdditiveBlending, depthWrite: false, depthTest, transparent: true, fog: false, side: THREE.DoubleSide,
+});
+
+// ---------- ice ----------
+const ICE_NOISE = `
+  float ih(vec3 p){ p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+  float vn3(vec3 p){ vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(ih(i), ih(i + vec3(1,0,0)), f.x), mix(ih(i + vec3(0,1,0)), ih(i + vec3(1,1,0)), f.x), f.y),
+               mix(mix(ih(i + vec3(0,0,1)), ih(i + vec3(1,0,1)), f.x), mix(ih(i + vec3(0,1,1)), ih(i + vec3(1,1,1)), f.x), f.y), f.z); }`;
+// what a facet of ice shows: the cold sky in its mirror, a pale rim where it turns away, one hard glint
+const ICE_SHADE = `
+  vec3 iceShade(vec3 n, vec3 v, float front, out float fres, out float spec){
+    float ndv = clamp(dot(n, v), 0.0, 1.0);
+    fres = pow(1.0 - ndv, 2.6);
+    vec3 r = reflect(-v, n);
+    float sky = smoothstep(-0.35, 0.8, r.y);
+    spec = pow(max(dot(n, normalize(vec3(-0.35, 0.8, 0.5) + v)), 0.0), 56.0) * front;
+    vec3 c = mix(vec3(0.045, 0.2, 0.37), vec3(0.3, 0.62, 0.88), sky * 0.75 + 0.1);
+    return mix(c, vec3(0.74, 0.92, 1.0), fres);
+  }`;
+/**
+ * The shell a Flash Freeze leaves round a machine: a lump of ice that hugs the hull with crystals driven through it.
+ * One geometry for all of them; the instance's seed turns it and gives every crystal its own length, so no two match.
+ * aShard = the crystal's axis and its number (0 = the lump).
+ */
+function iceGeometry() {
+  const pos: number[] = [], nor: number[] = [], sh: number[] = [];
+  let rs = 20240613;
+  const rnd = () => (rs = (rs * 16807) % 2147483647) / 2147483647;
+  const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3(), N = new THREE.Vector3(), M = new THREE.Vector3(), X = new THREE.Vector3();
+  // a triangle whose flat normal points away from the axis of its crystal (or from the centre, for the lump)
+  const tri = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, ax: THREE.Vector3 | null, id: number) => {
+    N.copy(b).sub(a).cross(X.copy(c).sub(a)).normalize();
+    M.copy(a).add(b).add(c).multiplyScalar(1 / 3);
+    if (ax) M.addScaledVector(ax, -M.dot(ax));
+    const flip = N.dot(M) < 0;
+    if (flip) N.negate();
+    for (const q of flip ? [a, c, b] : [a, b, c]) { pos.push(q.x, q.y, q.z); nor.push(N.x, N.y, N.z); sh.push(ax ? ax.x : 0, ax ? ax.y : 0, ax ? ax.z : 0, id); }
+  };
+  // the lump: a knocked-about icosphere
+  const ico = new THREE.IcosahedronGeometry(1, 1), ip = ico.attributes.position;
+  const jit = (v: THREE.Vector3) => { const h = Math.sin(v.x * 12.9898 + v.y * 78.233 + v.z * 37.719) * 43758.5453; return v.multiplyScalar(0.72 + 0.22 * (h - Math.floor(h))); };
+  for (let i = 0; i < ip.count; i += 3) tri(jit(A.fromBufferAttribute(ip, i)).clone(), jit(B.fromBufferAttribute(ip, i + 1)).clone(), jit(C.fromBufferAttribute(ip, i + 2)).clone(), null, 0);
+  ico.dispose();
+  // the crystals: a few standing up out of the top, most leaning out of the flanks, two low down
+  const EL = [1.2, 0.85, 0.62, 0.45, 0.3, 0.2, 0.02, -0.1];
+  for (let k = 0; k < EL.length; k++) {
+    const az = (k * 2.39996) + rnd() * 0.7, el = EL[k] + (rnd() - 0.5) * 0.2, sides = rnd() < 0.5 ? 5 : 6;
+    const ax = new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az));
+    const u = new THREE.Vector3(0, 1, 0).cross(ax); if (u.lengthSq() < 0.01) u.set(1, 0, 0); u.normalize();
+    const w = new THREE.Vector3().crossVectors(ax, u);
+    const L = 0.92 + rnd() * 0.24, w0 = 0.27 + rnd() * 0.15, t1 = 0.3, t2 = L * (0.6 + rnd() * 0.14), ph = rnd() * 6.28;
+    const ring = (t: number, r: number) => Array.from({ length: sides }, (_, i) => { const a = ph + (i / sides) * 6.2832, rr = r * (0.82 + 0.36 * rnd()); return new THREE.Vector3().copy(ax).multiplyScalar(t).addScaledVector(u, Math.cos(a) * rr).addScaledVector(w, Math.sin(a) * rr); });
+    const r1 = ring(t1, w0 * 0.8), r2 = ring(t2, w0), tail = ax.clone().multiplyScalar(0.05);
+    const tip = ax.clone().multiplyScalar(L).addScaledVector(u, (rnd() - 0.5) * w0 * 0.5).addScaledVector(w, (rnd() - 0.5) * w0 * 0.5);
+    for (let i = 0; i < sides; i++) {
+      const j = (i + 1) % sides;
+      tri(tail, r1[i], r1[j], ax, k + 1);
+      tri(r1[i], r2[i], r2[j], ax, k + 1); tri(r1[i], r2[j], r1[j], ax, k + 1);
+      tri(r2[i], tip, r2[j], ax, k + 1);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('aShard', new THREE.Float32BufferAttribute(sh, 4));
+  return g;
+}
+/**
+ * Every ice shell on the board in one instanced draw (drawn twice: far faces, then near ones, so the far wall of the
+ * shell shows through the near one). Per frame: begin(), add() for each frozen machine, end().
+ */
+export class IceField {
+  mesh: THREE.InstancedMesh;
+  private state: THREE.InstancedBufferAttribute;
+  private n = 0;
+  private m4 = new THREE.Matrix4(); private q = new THREE.Quaternion(); private e = new THREE.Euler(); private p = new THREE.Vector3(); private s = new THREE.Vector3();
+  constructor(private cap = 96) {
+    const g = iceGeometry();
+    this.state = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4);
+    this.state.setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute('aState', this.state);
+    const mat = new THREE.ShaderMaterial({
+      vertexShader: `attribute vec4 aShard; attribute vec4 aState; varying vec3 vN, vV, vP; varying vec4 vS;
+        void main(){
+          vec3 p = position;
+          // every crystal has its own length, and they are driven out one after another as the shell forms
+          float h = fract(sin(aShard.w * 12.9898 + aState.x * 78.233) * 43758.5453);
+          // (round a big machine the crystals stay short: at its size long ones would stand over the towers; such a shell is marked by a seed above 90)
+          float k = mix(0.78, mix(1.24, 0.9, step(90.0, aState.x)), h) * smoothstep(0.0, 1.0, aState.z * 1.5 - h * 0.5);
+          if (aShard.w > 0.5) p += aShard.xyz * dot(p, aShard.xyz) * (k - 1.0);
+          else p *= 0.55 + 0.45 * smoothstep(0.0, 0.6, aState.z);
+          vP = p; vS = aState;
+          vec4 mv = modelViewMatrix * instanceMatrix * vec4(p, 1.0);
+          vN = normalMatrix * mat3(instanceMatrix) * normal; vV = -mv.xyz;
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `varying vec3 vN, vV, vP; varying vec4 vS;
+        ${ICE_NOISE}
+        ${ICE_SHADE}
+        vec3 h33(vec3 p){ p = fract(p * vec3(0.1031, 0.1030, 0.0973)); p += dot(p, p.yxz + 33.33); return fract((p.xxy + p.yxx) * p.zyx); }
+        // distance to the nearest and second nearest cell point: their difference is small along the cell walls (the cracks)
+        vec2 cells(vec3 p){ vec3 i = floor(p), f = fract(p); float d1 = 9.0, d2 = 9.0;
+          for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) {
+            vec3 g = vec3(float(x), float(y), float(z)), d = g + h33(i + g) - f; float dd = dot(d, d);
+            if (dd < d1) { d2 = d1; d1 = dd; } else if (dd < d2) d2 = dd; }
+          return sqrt(vec2(d1, d2)); }
+        void main(){
+          float front = gl_FrontFacing ? 1.0 : 0.0;
+          vec3 n = normalize(vN) * (front * 2.0 - 1.0), v = normalize(vV);
+          float fres, spec;
+          vec3 col = iceShade(n, v, front, fres, spec);
+          // what is inside: frozen-in cloud, seen displaced through each facet as if the facet bent the light
+          vec3 q = vP * 2.5 + n * 0.6 + vS.x;
+          float fr = vn3(q) * 0.62 + vn3(q * 2.7 + 4.0) * 0.38;
+          float cloud = smoothstep(0.42, 0.8, fr), vein = smoothstep(0.06, 0.0, abs(fr - 0.5));
+          col += vec3(0.62, 0.84, 1.0) * (cloud * 0.26 + vein * 0.16);
+          float a = mix(0.1, 0.84, fres) + cloud * 0.17 + vein * 0.1;
+          // the far wall, seen through the shell: deeper blue, fainter
+          if (front < 0.5) { col *= vec3(0.42, 0.7, 1.0); a = a * 0.45 + 0.04; }
+          col += vec3(0.7, 0.78, 0.85) * spec; a += spec * 0.5;
+          // the freeze is running out: cracks start in a few places and run through the whole shell
+          if (vS.y > 0.004) {
+            // (the cell walls are bent by noise so the net does not read as a honeycomb: hairlines with a faint bruise of frost along them)
+            vec3 cp = vP * 1.75 + vS.x * 3.0; cp += (vec3(vn3(cp * 1.9), vn3(cp * 1.9 + 11.0), vn3(cp * 1.9 + 23.0)) - 0.5) * 0.32;
+            vec2 w = cells(cp);
+            float m = vn3(vP * 1.2 + vS.x * 5.0), rev = smoothstep(vS.y * 1.3, vS.y * 1.3 - 0.16, m);
+            float dw = w.y - w.x, line = (1.0 - smoothstep(0.0, 0.02 + 0.022 * vS.y, dw)) * rev;
+            float bruise = (1.0 - smoothstep(0.0, 0.2, dw)) * rev * 0.22;
+            col = mix(col, vec3(0.8, 0.93, 1.02), max(line, bruise)); a = max(a, max(line * 0.95, a + bruise * 0.5));
+            a += rev * 0.12 * vS.y; col += vec3(0.5, 0.7, 0.9) * rev * 0.1 * vS.y;
+          }
+          col += vec3(0.75, 0.92, 1.0) * vS.w;
+          gl_FragColor = vec4(col, clamp(a + vS.w * 0.5, 0.0, 1.0));
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+      transparent: true, depthWrite: false, side: THREE.DoubleSide, fog: false,
+    });
+    this.mesh = new THREE.InstancedMesh(g, mat, cap);
+    this.mesh.count = 0; this.mesh.frustumCulled = false; this.mesh.layers.set(FX_LAYER); this.mesh.renderOrder = 2;
+  }
+  begin() { this.n = 0; }
+  /** seed 0..40 per machine, crack 0..1 how far the cracks have run, grow 0..1 as the shell forms, flash 0..1 its first frost-white instant */
+  add(x: number, y: number, z: number, rx: number, ry: number, yaw: number, seed: number, crack: number, grow: number, flash: number) {
+    if (this.n >= this.cap) return;
+    const i = this.n++, a = this.state.array as Float32Array;
+    this.m4.compose(this.p.set(x, y, z), this.q.setFromEuler(this.e.set(Math.sin(seed * 3.1) * 0.22, yaw + seed, Math.cos(seed * 5.3) * 0.22, 'YXZ')), this.s.set(rx, ry, rx));
+    this.mesh.setMatrixAt(i, this.m4);
+    a[i * 4] = seed; a[i * 4 + 1] = crack; a[i * 4 + 2] = grow; a[i * 4 + 3] = flash;
+  }
+  end() {
+    this.mesh.count = this.n; this.mesh.visible = this.n > 0;
+    if (this.n) { this.mesh.instanceMatrix.needsUpdate = true; this.state.needsUpdate = true; }
+  }
+}
+/** A splinter of ice: a long irregular sliver, flat faced. */
+function shardGeometry() {
+  const top = [0, 0.62, 0], bot = [0.05, -0.38, 0.03], mid = [[0.2, 0.02, 0.04], [-0.07, 0.1, 0.17], [-0.15, -0.06, -0.12], [0.06, -0.02, -0.16]];
+  const pos: number[] = [], nor: number[] = [], a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  const tri = (p: number[], q: number[], r: number[]) => {
+    a.fromArray(p); b.fromArray(q); c.fromArray(r);
+    const n = b.clone().sub(a).cross(c.clone().sub(a)).normalize(), flip = n.dot(a.clone().add(b).add(c)) < 0;
+    if (flip) n.negate();
+    for (const v of flip ? [p, r, q] : [p, q, r]) { pos.push(v[0], v[1], v[2]); nor.push(n.x, n.y, n.z); }
+  };
+  for (let i = 0; i < 4; i++) { tri(top, mid[i], mid[(i + 1) % 4]); tri(bot, mid[(i + 1) % 4], mid[i]); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  return g;
+}
+
+/**
+ * The power node on top of a tower, on a unit quad that faces the camera: a glass ball whose charge stands in it like a
+ * liquid (fill 0..1), lit from inside in the tower's colour. ready 0..1 = fully charged: the whole ball burns and breathes.
+ * dead 0..1 = offline: the glass goes dull. The ball's radius is 0.8 of the quad's half width.
+ */
+export const orbMat = (clock: { value: number }) => new THREE.ShaderMaterial({
+  uniforms: { time: clock, color: { value: new THREE.Color() }, fill: { value: 0 }, ready: { value: 0 }, flash: { value: 0 }, dead: { value: 0 }, seed: { value: Math.random() * 40 } },
+  vertexShader: UV_VERT,
+  fragmentShader: `uniform vec3 color; uniform float time, fill, ready, flash, dead, seed; varying vec2 vUv;
+    void main(){
+      vec2 p = (vUv * 2.0 - 1.0) / 0.8; float r = length(p), w = fwidth(r) * 1.3;
+      float disc = 1.0 - smoothstep(1.0 - w, 1.0, r);
+      float z = sqrt(max(0.0, 1.0 - r * r));
+      float fres = pow(1.0 - z, 2.4);
+      // the charge: it stands in the ball up to its level, with a slow swell on its surface
+      float lvl = mix(-1.02, 1.02, fill);
+      float y = p.y - (0.045 * sin(p.x * 5.0 + time * 2.4 + seed) + 0.025 * sin(p.x * 11.0 - time * 3.3 + seed)) * (1.0 - ready);
+      float inl = smoothstep(lvl + 0.035, lvl - 0.035, y) * step(0.004, fill);
+      float sw = 0.5 + 0.5 * sin(p.x * 4.0 + sin(p.y * 5.0 + time * 1.3 + seed) * 2.0 + time * 0.9);
+      float beat = 0.5 + 0.5 * sin(time * 4.2 + seed);
+      vec3 hue = color / max(max(color.r, max(color.g, color.b)), 0.001);
+      vec3 liquid = hue * (0.3 + 0.2 * sw) * (0.32 + 0.78 * z * z) * (1.0 + ready * (0.35 + 0.2 * beat));
+      // a hot heart when it is full: lighter, never white, so the tower's colour carries
+      liquid += mix(hue, vec3(1.0), 0.3) * ready * (0.16 + 0.14 * beat) * pow(z, 4.0);
+      vec3 glass = hue * 0.035 + vec3(0.012, 0.014, 0.018);
+      vec3 col = mix(glass, liquid, inl);
+      // the surface of the charge: a bright line across the ball
+      float men = exp(-pow((y - lvl) / 0.05, 2.0)) * step(0.004, fill) * (1.0 - ready);
+      col += hue * men * 0.75 * (0.4 + 0.6 * z);
+      col = mix(col, vec3(0.05, 0.035, 0.03) + hue * 0.05 * inl, dead * 0.8);
+      // the glass: a fine bright rim in the reticle's line weight, a window glint high on one side, a faint bounce below
+      float rim = smoothstep(0.9 - w, 0.955, r) * disc;
+      col += hue * (fres * 0.3 + rim * (0.5 + 0.5 * ready)) * (1.0 - 0.6 * dead);
+      vec2 g1 = p - vec2(-0.36, 0.42), g2 = p - vec2(0.3, -0.5);
+      float glint = exp(-dot(g1 * vec2(1.0, 1.5), g1 * vec2(1.0, 1.5)) * 26.0) * 0.85 + exp(-dot(g2, g2) * 14.0) * 0.1;
+      col += vec3(1.0) * glint * (1.0 - 0.5 * dead);
+      col += hue * flash * (0.4 + 0.55 * z);
+      // premultiplied: the dark glass hides what is behind it, the light adds on top
+      float a = disc * (0.78 + 0.22 * max(inl, fres));
+      // a breath of light just outside the glass when it is full
+      float halo = (1.0 - disc) * exp(-(r - 1.0) * 11.0) * (ready * (0.16 + 0.12 * beat) + flash * 0.4);
+      gl_FragColor = vec4(col * disc + hue * halo, a);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
+  blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+  depthWrite: false, transparent: true, fog: false, side: THREE.DoubleSide,
 });
 
 export class Fx {
@@ -130,6 +360,7 @@ export class Fx {
   private slife = new Float32Array(this.SN);
   private smax = new Float32Array(this.SN);
   private ssz = new Float32Array(this.SN);
+  private salpha = new Float32Array(this.SN).fill(1);
   private shead = 0; private sactive = 0;
   private smoke_: THREE.Points;
   private smat: THREE.ShaderMaterial;
@@ -139,6 +370,16 @@ export class Fx {
   private scorches: Timed[] = [];
   private embers: Timed[] = [];
   private bi = 0; private ri = 0; private fi = 0; private si = 0; private ei = 0;
+  // splinters of ice: one instanced mesh, flown on the CPU
+  private HN = 512;
+  private hpos = new Float32Array(this.HN * 3);
+  private hvel = new Float32Array(this.HN * 3);
+  private haxis = new Float32Array(this.HN * 3);
+  private hdat = new Float32Array(this.HN * 5); // angle, turn rate, size, life, max life
+  private hgy = new Float32Array(this.HN);
+  private hfade: THREE.InstancedBufferAttribute;
+  private hhead = 0; private hactive = 0;
+  private shards: THREE.InstancedMesh;
 
   constructor() {
     const g = new THREE.BufferGeometry();
@@ -201,8 +442,26 @@ export class Fx {
     const ring = new THREE.RingGeometry(0.968, 1, 96);
     ring.rotateX(-Math.PI / 2);
     mk(ring, 70, this.rings, basic({ blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
-    mk(new THREE.SphereGeometry(1, 16, 12), 40, this.flashes, () => glowMat(2.6, 0.5));
-    this.group.add(this.smoke_, this.points);
+    mk(new THREE.SphereGeometry(1, 16, 12), 40, this.flashes, () => glowMat(2.6, 0.34));
+    const hg = shardGeometry();
+    this.hfade = new THREE.InstancedBufferAttribute(new Float32Array(this.HN), 1);
+    this.hfade.setUsage(THREE.DynamicDrawUsage);
+    hg.setAttribute('aFade', this.hfade);
+    this.shards = new THREE.InstancedMesh(hg, new THREE.ShaderMaterial({
+      vertexShader: `attribute float aFade; varying vec3 vN, vV; varying float vF;
+        void main(){ vec4 mv = modelViewMatrix * instanceMatrix * vec4(position, 1.0); vN = normalMatrix * mat3(instanceMatrix) * normal; vV = -mv.xyz; vF = aFade; gl_Position = projectionMatrix * mv; }`,
+      fragmentShader: `varying vec3 vN, vV; varying float vF;
+        ${ICE_SHADE}
+        void main(){ float fres, spec; vec3 col = iceShade(normalize(vN), normalize(vV), 1.0, fres, spec);
+          col += vec3(1.5, 1.6, 1.7) * spec + vec3(0.2, 0.3, 0.4) * vF;
+          gl_FragColor = vec4(col, clamp(0.5 + 0.5 * fres + spec, 0.0, 1.0) * min(1.0, vF * 3.0));
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+      transparent: true, depthWrite: false, fog: false,
+    }), this.HN);
+    this.shards.count = 0; this.shards.visible = false; this.shards.frustumCulled = false; this.shards.renderOrder = 2;
+    this.group.add(this.smoke_, this.shards, this.points);
     this.group.traverse((o) => o.layers.set(FX_LAYER));
   }
 
@@ -234,6 +493,7 @@ export class Fx {
       this.slife[i] = this.smax[i] = 1.3 + Math.random() * 1.5;
       this.ssz[i] = size * (0.7 + Math.random() * 0.7);
       this.sdat[j + 2] = 0.6 + Math.random() * 0.6;
+      this.salpha[i] = 1;
     }
     this.sactive = this.SN;
   }
@@ -246,7 +506,44 @@ export class Fx {
     this.slife[i] = this.smax[i] = life;
     this.ssz[i] = size;
     this.sdat[j + 2] = 0.7 + Math.random() * 0.5;
+    this.salpha[i] = 1;
     this.sactive = this.SN;
+  }
+  /** Cold mist: pale, thin, hugging the deck (what is left in the air when ice breaks). */
+  mist(x: number, y: number, z: number, size: number, life = 1.1, alpha = 0.45) {
+    const i = this.shead; this.shead = (this.shead + 1) % this.SN;
+    const j = i * 3;
+    this.spos[j] = x; this.spos[j + 1] = y; this.spos[j + 2] = z;
+    this.svel[j] = (Math.random() - 0.5) * 1.1; this.svel[j + 1] = 0.12 + Math.random() * 0.25; this.svel[j + 2] = (Math.random() - 0.5) * 1.1;
+    this.slife[i] = this.smax[i] = life * (0.8 + Math.random() * 0.4);
+    this.ssz[i] = size;
+    this.sdat[j + 2] = 2.6 + Math.random() * 0.5;
+    this.salpha[i] = alpha;
+    this.sactive = this.SN;
+  }
+  /** One splinter of ice, tumbling; it bounces once or twice on the deck at gy and melts away. */
+  shard(x: number, y: number, z: number, vx: number, vy: number, vz: number, size: number, life: number, gy = 0) {
+    const i = this.hhead; this.hhead = (this.hhead + 1) % this.HN;
+    const j = i * 3, k = i * 5;
+    this.hpos[j] = x; this.hpos[j + 1] = y; this.hpos[j + 2] = z;
+    this.hvel[j] = vx; this.hvel[j + 1] = vy; this.hvel[j + 2] = vz;
+    v1.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+    this.haxis[j] = v1.x; this.haxis[j + 1] = v1.y; this.haxis[j + 2] = v1.z;
+    this.hdat[k] = Math.random() * 6.28; this.hdat[k + 1] = (Math.random() < 0.5 ? -1 : 1) * (5 + Math.random() * 12); this.hdat[k + 2] = size; this.hdat[k + 3] = this.hdat[k + 4] = life;
+    this.hgy[i] = gy;
+    this.hactive = this.HN;
+  }
+  /** An ice shell of radius r bursts: splinters thrown outward, a puff of cold mist, a few frost sparks. gy = deck height under it. */
+  shatter(x: number, y: number, z: number, r: number, gy = 0) {
+    const n = Math.max(7, Math.min(18, Math.round(5 + r * 10)));
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, up = Math.random() * 0.9 - 0.1, c = Math.sqrt(Math.max(0, 1 - up * up)), dx = Math.cos(a) * c, dz = Math.sin(a) * c, sp = 1.6 + Math.random() * 3.2;
+      this.shard(x + dx * r * 0.7, y + up * r * 0.7, z + dz * r * 0.7, dx * sp, up * sp + 1.6 + Math.random() * 2.2, dz * sp, r * (i < 3 ? 0.3 + Math.random() * 0.16 : 0.1 + Math.random() * 0.14), 0.75 + Math.random() * 0.6, gy);
+    }
+    this.mist(x, y, z, r * 1.7, 0.9, 0.8);
+    for (let i = 0; i < 2; i++) this.mist(x + (Math.random() - 0.5) * r * 1.4, gy + 0.2, z + (Math.random() - 0.5) * r * 1.4, r * 2.1, 1.6, 0.55);
+    this.burst(x, y, z, 12, 2.6 + r, 0xbfe6ff, 0.5, 0.13, 6);
+    if (r > 0.85) this.ring(x, gy + 0.1, z, r * 2.2, 0x9fd4f0, 0.4, 0.3, 0.7);
   }
   /** Sparks thrown in a cone round a direction (what an arrow knocks out of the far side of a hull). */
   spray(x: number, y: number, z: number, dx: number, dy: number, dz: number, n: number, speed: number, color: number, life = 0.35, size = 0.2, spread = 0.4) {
@@ -272,6 +569,12 @@ export class Fx {
     const e = this.embers[this.ei]; this.ei = (this.ei + 1) % this.embers.length;
     e.mesh.position.set(x, gy + 0.05 + this.ei * 0.0006, z); e.mesh.scale.setScalar(r * 0.95);
     e.color.setHex(color).lerp(c1.setHex(0xff5a14), 0.55); e.life = e.max = 0.9; e.mesh.visible = true;
+  }
+  /** Rime on the deck: a pale cold bloom that stays a moment where the cold struck. gy = deck height. */
+  frost(x: number, z: number, r: number, life = 1.4, gy = 0, gain = 0.5) {
+    const e = this.embers[this.ei]; this.ei = (this.ei + 1) % this.embers.length;
+    e.mesh.position.set(x, gy + 0.05 + this.ei * 0.0006, z); e.mesh.scale.setScalar(r);
+    e.color.setHex(0x6fb8e8).multiplyScalar(gain); e.life = e.max = life; e.mesh.visible = true;
   }
   beam(ax: number, ay: number, az: number, bx: number, by: number, bz: number, color: number, width = 0.12, life = 0.2) {
     const b = this.beams[this.bi]; this.bi = (this.bi + 1) % this.beams.length;
@@ -351,7 +654,7 @@ export class Fx {
     g.attributes.position.needsUpdate = true; g.attributes.color.needsUpdate = true; g.attributes.size.needsUpdate = true;
 
     if (this.sactive > 0) {
-      const { spos, svel, sdat, slife, smax, ssz } = this;
+      const { spos, svel, sdat, slife, smax, ssz, salpha } = this;
       let alive = 0;
       for (let i = 0; i < this.SN; i++) {
         const j = i * 3;
@@ -361,13 +664,34 @@ export class Fx {
         svel[j] *= 1 - 0.8 * dt; svel[j + 2] *= 1 - 0.8 * dt;
         spos[j] += svel[j] * dt; spos[j + 1] += svel[j + 1] * dt; spos[j + 2] += svel[j + 2] * dt;
         sdat[j] = ssz[i] * (0.7 + age * 2.1);
-        sdat[j + 1] = Math.min(1, age * 7) * f * f * 0.5;
+        sdat[j + 1] = Math.min(1, age * 7) * f * f * 0.5 * salpha[i];
       }
       this.sactive = alive;
       const sg = this.smoke_.geometry;
       sg.attributes.position.needsUpdate = true; sg.attributes.dat.needsUpdate = true;
     }
     this.smoke_.visible = this.sactive > 0;
+
+    if (this.hactive > 0) {
+      const { hpos, hvel, haxis, hdat, hgy } = this, fade = this.hfade.array as Float32Array;
+      let n = 0;
+      for (let i = 0; i < this.HN; i++) {
+        const k = i * 5;
+        if (hdat[k + 3] <= 0) continue;
+        hdat[k + 3] -= dt;
+        const j = i * 3, f = Math.max(0, hdat[k + 3] / hdat[k + 4]);
+        hvel[j + 1] -= 13 * dt;
+        hpos[j] += hvel[j] * dt; hpos[j + 1] += hvel[j + 1] * dt; hpos[j + 2] += hvel[j + 2] * dt;
+        const floor = hgy[i] + hdat[k + 2] * 0.2;
+        if (hpos[j + 1] < floor && hvel[j + 1] < 0) { hpos[j + 1] = floor; hvel[j + 1] *= -0.38; hvel[j] *= 0.55; hvel[j + 2] *= 0.55; hdat[k + 1] *= 0.5; }
+        hdat[k] += hdat[k + 1] * dt;
+        M4.compose(v1.set(hpos[j], hpos[j + 1], hpos[j + 2]), Q4.setFromAxisAngle(v2.set(haxis[j], haxis[j + 1], haxis[j + 2]), hdat[k]), v2.setScalar(hdat[k + 2] * (0.35 + 0.65 * Math.min(1, f * 2.5))));
+        this.shards.setMatrixAt(n, M4); fade[n] = f; n++;
+      }
+      this.hactive = n; this.shards.count = n;
+      if (n) { this.shards.instanceMatrix.needsUpdate = true; this.hfade.needsUpdate = true; }
+    }
+    this.shards.visible = this.hactive > 0;
 
     for (const b of this.beams) {
       if (!b.mesh.visible) continue;
@@ -390,7 +714,7 @@ export class Fx {
       r.life -= dt;
       if (r.life <= 0) { r.mesh.visible = false; continue; }
       const f = r.life / r.max;
-      r.tint.copy(r.color).multiplyScalar(f * 1.5);
+      r.tint.copy(r.color).multiplyScalar(f * 1.25);
       r.mesh.scale.setScalar(r.r0 + (r.r1 - r.r0) * (1 - f));
     }
     for (const s of this.scorches) {

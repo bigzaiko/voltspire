@@ -12,16 +12,16 @@
 // and tunnels are built here too. The supply connectors come from Factory.links(): a scanner arch over a belt where a tower
 // or building draws from it (it flashes on every take), a glass branch from a pipe into its consumer, a drop cable from a
 // pole to what it powers. Between waves the factory stands still, so nothing moves here either; the status lamps then show
-// the supply diagnosis (Sim.diag), and the placement previews show what a pole or tunnel would connect to.
+// the supply diagnosis (Sim.diag). What a pole or tunnel would connect to is drawn by the cues (cues.ts), from the selection kept here.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { FACS, ITEMS, FLUIDS, FLUID_TYPES, ORE_TYPES, ORES, ITEM_TYPES, GW, GH, cellX, cellZ, MAKES, needsOf } from './data.ts';
+import { FACS, ITEMS, FLUIDS, FLUID_TYPES, ORE_TYPES, ORES, ITEM_TYPES, GW, GH, cellX, cellZ, MAKES } from './data.ts';
 import type { FacType, ItemType } from './data.ts';
 import { FX_LAYER } from './world.ts';
-import { HEX_SIZE, neighbor, hexDist, lineDir, disc, inBoard } from './hex.ts';
+import { HEX_SIZE, neighbor, hexDist, lineDir, inBoard, worldToCell } from './hex.ts';
 import type { Sim, Ev } from './sim.ts';
 import type { Fac, Factory, BeltItem, Diag } from './factory.ts';
-import { BELT_SPEED, POLE_REACH, SUPPLY, TUNNEL_REACH, pipeLike, turns } from './factory.ts';
+import { BELT_SPEED, TUNNEL_REACH, pipeLike, turns, facKey } from './factory.ts';
 
 const TAU = Math.PI * 2;
 /** World heading of each hex direction (HEX_DIRS: east, then clockwise on screen, 60 degrees apart). */
@@ -39,8 +39,6 @@ function geo(key: string, make: () => THREE.BufferGeometry) {
   return g;
 }
 const G_HEXF = new THREE.CircleGeometry(HEX_SIZE * 0.9, 6, Math.PI / 6).rotateX(-Math.PI / 2);
-/** A deposit chunk: a rough low-poly lump (built once the helpers below exist). */
-let G_ROCK: THREE.BufferGeometry | null = null;
 const G_CHEV = (() => {
   // a flat chevron pointing along +z
   const s = new THREE.Shape();
@@ -49,7 +47,7 @@ const G_CHEV = (() => {
   return new THREE.ShapeGeometry(s).rotateX(-Math.PI / 2).rotateY(Math.PI);
 })();
 const G_LAMP = new THREE.SphereGeometry(0.1, 8, 6);
-const MAX_ITEMS = 900, MAX_ROCKS = GW * GH * 3;
+const MAX_ITEMS = 900, MAX_HL = 360;
 
 const mats = new Map<string, THREE.MeshStandardMaterial>();
 /** A shared lit material: hull grey, a painted colour, or a glowing one. */
@@ -71,7 +69,7 @@ const POLE_Y = 3.1, POLE_ARM = 0.4, GEN_Y = 1.6;
 /** Working-light strength per model, against the shared glow_work tuning (large lit faces are turned down so they do not bloom out). */
 /** Seconds a Depot's glint lasts. */
 const GLINT_T = 0.7;
-const WORK_GLOW: Partial<Record<FacType, number>> = { press: 0.45, works: 0.7, smelter: 0.75, cells: 0.6, missiles: 0.6 };
+const WORK_GLOW: Partial<Record<FacType, number>> = { press: 0.45, works: 0.7, smelter: 0.75, cells: 0.6, missiles: 0.6, splitter: 0.5, tunnel: 0.6, ptunnel: 0.6 };
 
 /**
  * The pumpjack's linkage in the model (Blender y forward, z up; three.js rotation.x turns the same way): the beam rocks
@@ -264,6 +262,8 @@ function runGeo(xa: number, xb: number, dropA: number, dropB: number): THREE.Buf
 }
 /** Splitter stubs: from the edge in to the hub (a belt bringing items), and from the hub out to the edge (a belt taking them). */
 const SPLIT_IN = () => runGeo(1, 0.4, 0, 0), SPLIT_OUT = () => runGeo(-0.4, -1, 0, 0);
+/** The same against the modelled splitter: its table's flats stand 0.727 from the middle, and its corner posts cap the rails. */
+const SPLIT_IN_M = () => runGeo(1, 0.72, 0, 0), SPLIT_OUT_M = () => runGeo(-0.72, -1, 0, 0);
 /** Belt Tunnel ramps: down from the back edge into the portal (entrance), up out of it to the front edge (exit). */
 const RAMP_DROP = 0.16;
 const RAMP_IN = () => runGeo(1, -0.3, 0, RAMP_DROP), RAMP_OUT = () => runGeo(0.3, -1, RAMP_DROP, 0);
@@ -297,50 +297,288 @@ function treadTexture(): THREE.Texture {
   return t;
 }
 
+// ---------- deposits ----------
+// Each deposit tile is a Blender model (tools/blender/models_deposits.py, public/models/dep_<kind>.glb): one of four
+// bodies per kind (slate boulders with nodules of steel-blue iron ore, a copper lode with nuggets and malachite, a jagged
+// coal seam with what the miners left, a burst deck plate with an old wellhead round a tar pool) and low rubble round the
+// tile's rim, on a soft stain of what the ore sheds on the deck. The models carry no textures: albedo and ambient
+// occlusion are vertex colours, and the ore, veins, rust, patina, dust and tar are drawn by the material from two more
+// per-vertex values (see depMat). Everything is instanced; a tile's pieces are seeded by the tile (turned, mirrored,
+// scaled) and rise with it while the map assembles (see FacView.poseDeps).
+/** 0..1 from a position and a seed */
+const hash3 = (x: number, y: number, z: number, s: number) => { const h = Math.sin(x * 127.1 + y * 311.7 + z * 74.7 + s * 17.3) * 43758.5453; return h - Math.floor(h); };
+/** The deposit kinds' model files, and the colour each is lit in when hovered (the ore's own hue). */
+const DEP_FILE: Record<string, string> = { iron_ore: 'dep_iron', copper_ore: 'dep_copper', coal: 'dep_coal', oil: 'dep_oil' };
+const DEP_ACCENT: Record<string, number> = { iron_ore: 0x5f97ee, copper_ore: 0xf07c2e, coal: 0xc7ad86, oil: 0x8b55f2 };
+const DEP_VARIANTS = 4;
+/** How much larger than modelled each kind's body is drawn (the models fit a circle of 0.78; a tile is 1.0 to its flats). */
+const DEP_SCALE: Record<string, number> = { iron_ore: 1.05, copper_ore: 1.05, coal: 1.12, oil: 1 };
+/** The oil pool's surface height (as modelled) and how far from the middle its bubbles rise. */
+const POOL_Y = 0.034, BUBBLE_R = 0.27;
+
 /**
- * A deposit's mark on the deck, white so each tile tints it with its ore colour: a mottled stain of blotches and veins that
- * fades out before the tile edge, inside a thin rim that keeps the deposit's outline readable at play zoom. The oil version
- * is a blobby pool, dense in the middle, for a glossy material.
+ * A deposit's mark on the deck: what the ore sheds on the plates round it (rock dust and rust, verdigris, coal dust,
+ * creeping oil) and the cracks the rock drove through them. It has no outline: it thins out in lobes before the tile's
+ * edge, so it lies on the deck like dirt and not like a label.
  */
-function oreTexture(oil: boolean): THREE.Texture {
+function stainTexture(kind: string): THREE.Texture {
   const S = 256, c = document.createElement('canvas');
   c.width = c.height = S;
   const g = c.getContext('2d')!, m = S / 2;
-  let seed = oil ? 7 : 3;
+  let seed = 3 + kind.length * 7;
   const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
-  // the geometry's uv maps the hex's circumradius to the canvas half-width; corners point along +-v
-  const hex = (r: number) => { g.beginPath(); for (let i = 0; i < 6; i++) { const a = Math.PI / 6 + (i * Math.PI) / 3; g.lineTo(m + Math.cos(a) * r, m + Math.sin(a) * r); } g.closePath(); };
-  const blob = (x: number, y: number, r: number, a: number, v = 255) => {
-    const gr = g.createRadialGradient(x, y, 0, x, y, r);
-    gr.addColorStop(0, `rgba(${v},${v},${v},${a})`); gr.addColorStop(1, `rgba(${v},${v},${v},0)`);
-    g.fillStyle = gr; g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill();
+  // the geometry's uv maps the hex's circumradius to the canvas half-width, so the flats lie at 0.866 m
+  const blobOn = (q: CanvasRenderingContext2D, x: number, y: number, r: number, rgb: string, a: number, core = 0) => {
+    const gr = q.createRadialGradient(x, y, r * core, x, y, r);
+    gr.addColorStop(0, `rgba(${rgb},${a})`); gr.addColorStop(1, `rgba(${rgb},0)`);
+    q.fillStyle = gr; q.beginPath(); q.arc(x, y, r, 0, TAU); q.fill();
   };
-  g.save(); hex(m * 0.95); g.clip();
-  if (oil) {
-    // a stained ground in the field's colour, and on it a dark pool (the map darkens the tint there) that the gloss shows off
-    blob(m, m, m * 1.05, 0.62);
-    for (let i = 0; i < 16; i++) { const a = rnd() * TAU, d = rnd() * m * 0.42; blob(m + Math.cos(a) * d, m + Math.sin(a) * d, m * (0.26 + rnd() * 0.22), 0.9, 120); }
-    blob(m, m, m * 0.5, 0.85, 96);
+  const blob = (x: number, y: number, r: number, rgb: string, a: number) => blobOn(g, x, y, r, rgb, a);
+  /** n blobs scattered within a share of the tile */
+  const blobs = (n: number, reach: number, r0: number, r1: number, rgb: string, a0: number, a1: number, from = 0) => {
+    for (let i = 0; i < n; i++) { const a = rnd() * TAU, d = (from + (1 - from) * Math.sqrt(rnd())) * m * reach; blob(m + Math.cos(a) * d, m + Math.sin(a) * d, r0 + rnd() * (r1 - r0), rgb, a0 + rnd() * (a1 - a0)); }
+  };
+  /** n wandering lines from a ring round the middle outward, thinning as they go, some of them forking */
+  const creep = (n: number, from: number, steps: number, len: number, w: number, style: string, wobble = 1.1, fork = 0) => {
+    g.strokeStyle = style; g.lineCap = 'round'; g.lineJoin = 'round';
+    const run = (a: number, x: number, y: number, k0: number) => {
+      for (let k = k0; k < steps; k++) {
+        const x0 = x, y0 = y;
+        a += (rnd() - 0.5) * wobble; x += Math.cos(a) * len; y += Math.sin(a) * len;
+        g.lineWidth = Math.max(0.6, w * (1 - k / steps)); g.beginPath(); g.moveTo(x0, y0); g.lineTo(x, y); g.stroke();
+        if (fork && rnd() < fork) run(a + (rnd() < 0.5 ? -0.9 : 0.9), x, y, k + 2);
+      }
+    };
+    for (let v = 0; v < n; v++) { const a = (v / n) * TAU + rnd() * 0.6; run(a, m + Math.cos(a) * m * from, m + Math.sin(a) * m * from, 0); }
+  };
+  const specks = (n: number, r0: number, r1: number, s0: number, s1: number, rgb: string, a0: number, a1: number) => {
+    for (let i = 0; i < n; i++) { const a = rnd() * TAU, d = (r0 + (r1 - r0) * Math.sqrt(rnd())) * m; g.fillStyle = `rgba(${rgb},${a0 + rnd() * (a1 - a0)})`; g.beginPath(); g.arc(m + Math.cos(a) * d, m + Math.sin(a) * d, s0 + rnd() * (s1 - s0), 0, TAU); g.fill(); }
+  };
+  if (kind === 'iron_ore') {
+    blob(m, m, m * 0.84, '40,43,52', 0.85);                       // slate dust, darker than the deck
+    blobs(30, 0.66, 10, 26, '58,63,76', 0.2, 0.45);
+    blobs(22, 0.7, 8, 22, '128,50,20', 0.3, 0.6, 0.25);          // rust washed out of the ore
+    creep(6, 0.2, 9, 10, 1.5, 'rgba(8,8,11,0.85)', 0.9, 0.2);    // the deck cracked round the rock
+    creep(7, 0.3, 6, 9, 2.6, 'rgba(112,48,22,0.4)');
+    specks(46, 0.3, 0.8, 0.7, 1.7, '120,156,220', 0.35, 0.75);   // grains of the ore
+  } else if (kind === 'copper_ore') {
+    blob(m, m, m * 0.84, '150,92,56', 0.75);
+    blobs(30, 0.66, 10, 26, '205,112,54', 0.2, 0.5);
+    blobs(26, 0.7, 7, 22, '52,170,128', 0.3, 0.7, 0.25);
+    creep(6, 0.2, 9, 10, 1.5, 'rgba(14,10,9,0.8)', 0.9, 0.2);
+    creep(5, 0.35, 5, 9, 2.2, 'rgba(70,170,130,0.5)');
+    specks(50, 0.3, 0.8, 0.7, 1.8, '240,150,80', 0.3, 0.7);
+  } else if (kind === 'coal') {
+    blob(m, m, m * 0.86, '8,8,8', 0.95);                         // the dust lies thick and wide
+    blobs(40, 0.7, 14, 34, '5,5,5', 0.5, 0.85);
+    specks(300, 0.1, 0.84, 0.8, 2.6, '4,4,4', 0.5, 0.9);
+    specks(40, 0.3, 0.8, 0.8, 2.0, '120,124,134', 0.25, 0.5);    // glints of the bright coal in it
+    blobs(8, 0.6, 5, 12, '110,96,78', 0.1, 0.2, 0.3);
   } else {
-    blob(m, m, m * 0.98, 0.42);
-    for (let i = 0; i < 46; i++) { const a = rnd() * TAU, d = Math.sqrt(rnd()) * m * 0.8; blob(m + Math.cos(a) * d, m + Math.sin(a) * d, 6 + rnd() * 24, 0.25 + rnd() * 0.45); }
-    // veins: short random walks
-    g.strokeStyle = 'rgba(255,255,255,0.75)'; g.lineCap = 'round';
-    for (let v = 0; v < 7; v++) {
-      let a = rnd() * TAU, d = rnd() * m * 0.5, x = m + Math.cos(a) * d, y = m + Math.sin(a) * d;
-      g.lineWidth = 1.5 + rnd() * 2.5; g.beginPath(); g.moveTo(x, y);
-      a = rnd() * TAU;
-      for (let k = 0; k < 6; k++) { a += (rnd() - 0.5) * 1.3; x += Math.cos(a) * 12; y += Math.sin(a) * 12; g.lineTo(x, y); }
-      g.stroke();
+    blob(m, m, m * 0.7, '8,6,12', 0.95);
+    blobs(16, 0.5, 16, 34, '6,5,10', 0.6, 0.9);
+    creep(12, 0.4, 9, 9, 10, 'rgba(7,5,11,0.92)', 0.8, 0.15);    // the tar creeping out along the plate seams
+    creep(8, 0.5, 8, 8, 4, 'rgba(7,5,11,0.85)', 1.3);
+    specks(40, 0.55, 0.84, 1, 4.5, '7,5,11', 0.7, 0.9);
+    // the film the light oil leaves round the tar: thin rainbow bands
+    g.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 22; i++) {
+      const a0 = rnd() * TAU, r = (0.5 + rnd() * 0.3) * m, len = 0.4 + rnd() * 0.9;
+      g.strokeStyle = `hsla(${Math.floor(rnd() * 360)},90%,58%,${0.1 + rnd() * 0.14})`; g.lineWidth = 2 + rnd() * 4; g.lineCap = 'round';
+      g.beginPath(); g.ellipse(m + (rnd() - 0.5) * 14, m + (rnd() - 0.5) * 14, r, r * (0.8 + rnd() * 0.3), rnd() * TAU, a0, a0 + len); g.stroke();
     }
+    g.globalCompositeOperation = 'source-over';
   }
-  g.restore();
-  // the rim
-  hex(m * 0.93); g.strokeStyle = `rgba(255,255,255,${oil ? 0.7 : 0.62})`; g.lineWidth = 4; g.stroke();
+  // thin it out towards the edge: a soft core and lobes of its own, nothing past the flats
+  const mc = document.createElement('canvas'); mc.width = mc.height = S;
+  const q = mc.getContext('2d')!;
+  const wide = kind === 'coal' ? 1 : kind === 'oil' ? 0.94 : 0.9;
+  blobOn(q, m, m, m * 0.74 * wide, '255,255,255', 1, 0.55);
+  for (let i = 0; i < 22; i++) { const a = rnd() * TAU, r = (0.13 + rnd() * 0.13) * m, d = Math.min((0.42 + rnd() * 0.3) * wide * m, 0.85 * m - r); blobOn(q, m + Math.cos(a) * d, m + Math.sin(a) * d, r, '255,255,255', 0.75 + rnd() * 0.25, 0.3); }
+  g.globalCompositeOperation = 'destination-in'; g.drawImage(mc, 0, 0); g.globalCompositeOperation = 'source-over';
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
   return t;
 }
+/** The stain's material. Dust has no shine at all (the deck's own sheen under the lamps would wash a dark stain out), so
+ *  it is drawn matte; the oil is wet and mirrors the sky. */
+function stainMat(kind: string): THREE.Material {
+  const o = { color: 0xffffff, map: stainTexture(kind), transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 };
+  return kind === 'oil' ? new THREE.MeshStandardMaterial({ ...o, roughness: 0.16, metalness: 0.1 }) : new THREE.MeshLambertMaterial(o);
+}
+
+/** Value noise for the deposit materials (3D and 1D), cheap enough for every deposit pixel. */
+const DEP_NOISE = `
+float dH(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+float dN(vec3 x) {
+  vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(dH(i), dH(i + vec3(1, 0, 0)), f.x), mix(dH(i + vec3(0, 1, 0)), dH(i + vec3(1, 1, 0)), f.x), f.y),
+             mix(mix(dH(i + vec3(0, 0, 1)), dH(i + vec3(1, 0, 1)), f.x), mix(dH(i + vec3(0, 1, 1)), dH(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+float dR(float i) { return fract(sin(i * 127.1 + 3.7) * 43758.5453); }
+float dN1(float x) { float i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f); return mix(dR(i), dR(i + 1.0), f); }
+`;
+/**
+ * What every deposit material starts from. dp: the point in the model's own space (the detail sticks to the rock), ds and
+ * dm: the kind's two values (see the model file), da: rock and its weathering dw (da up to 0.5) or a hard surface and how
+ * metallic it is, dmet (da from 0.75). The three noise octaves fade out as they get smaller than a pixel, so nothing
+ * shimmers at play zoom. dshade: how dark the vertex colour is against the kind's usual tone (the baked occlusion), for
+ * colours the material paints over it.
+ */
+const depHead = (ref: number) => `
+  vec3 dp = vDepP; float ds = vDepU.x, dm = 1.0 - vDepU.y, da = vColor.a;
+  float dfw = length(fwidth(dp));
+  float f1 = 1.0 - smoothstep(0.03, 0.09, dfw), f2 = 1.0 - smoothstep(0.012, 0.035, dfw), f3 = 1.0 - smoothstep(0.004, 0.012, dfw);
+  float n1 = mix(0.5, dN(dp * 7.0), f1), n2 = mix(0.5, dN(dp * 23.0), f2), n3 = mix(0.5, dN(dp * 61.0), f3);
+  float grain = n1 * 0.45 + n2 * 0.33 + n3 * 0.22, n0 = dN(dp * 2.3 + 5.0);
+  float dhard = smoothstep(0.58, 0.7, da), dsoft = 1.0 - dhard;
+  float dw = clamp(da * 2.0, 0.0, 1.0) * dsoft, dmet = clamp((da - 0.75) * 4.0, 0.0, 1.0);
+  float dshade = clamp(dot(vColor.rgb, vec3(0.3333)) * ${ref.toFixed(1)}, 0.3, 1.25);
+  float depRough = 0.9, depMetal = 0.0, depH = grain;
+`;
+/** The hard surfaces of every kind (deck plate, steel, timber, paint): the vertex colour, worn, with the kind's grime on it
+ *  (dm; col, rough: what the grime is). Yellow paint is striped black. */
+const depHard = (col: string, rough: number) => `
+  { vec3 hc = vColor.rgb * (0.76 + 0.48 * grain);
+    float haz = step(vColor.b * 7.0, vColor.g) * step(0.5, fract((dp.x + dp.z) * 5.5));
+    hc = mix(hc, vec3(0.012), haz * 0.9);
+    float gr = dhard * smoothstep(0.4, 0.6, dm * (0.55 + 0.9 * n1) + 0.15 * (n2 - 0.5));
+    diffuseColor.rgb = mix(mix(diffuseColor.rgb, hc, dhard), vec3(${col}), gr);
+    depRough = mix(mix(depRough, mix(0.84, 0.4, dmet), dhard), ${rough.toFixed(2)}, gr);
+    depMetal = mix(depMetal, dmet * 0.9, dhard) * (1.0 - gr);
+    depH = mix(depH, grain * 0.6, dhard) * (1.0 - gr); }
+`;
+const DEP_GLSL: Record<string, string> = {
+  // iron: dull slate; the ore in it is steel-blue metal: nodules (ds = 1), a break studded with it (ds about 0.6) with a
+  // halo of rust round every grain, thin veins everywhere; rust (dw) runs down the flanks in streaks
+  iron_ore: depHead(15) + `
+  float cell = dN(dp * 12.0 + 2.0) + 0.3 * (n2 - 0.5);
+  float orf = smoothstep(0.3, 0.5, ds), nod = smoothstep(0.8, 0.95, ds);
+  float vq = dot(dp, vec3(0.62, 0.48, -0.62)) * 2.2 + 1.1 * n0 + 0.35 * dN(dp * 3.7 + 3.0) + 0.1 * (n1 - 0.5);
+  float vein = (1.0 - smoothstep(0.012, 0.035, abs(fract(vq) - 0.5))) * smoothstep(0.5, 0.62, dN(dp * 1.7 + 11.0)) * (0.4 + 0.6 * dm) * f2;
+  float ore = dsoft * clamp(max(nod, max(orf * smoothstep(0.66, 0.74, cell), vein * 0.55)), 0.0, 1.0);
+  diffuseColor.rgb *= 1.0 + dsoft * (1.0 - nod) * (1.1 * (grain - 0.5) + 0.35 * (n0 - 0.5) + 0.45 * (dN(dp * 4.6 + 9.0) - 0.5));
+  float streak = dN(vec3(dp.x * 9.0, dp.y * 2.2, dp.z * 9.0));
+  float rust = smoothstep(0.52, 0.8, dw * (0.45 + 1.1 * streak) + 0.12 * (n3 - 0.5));
+  rust = max(rust, orf * (1.0 - nod) * smoothstep(0.5, 0.62, cell) * 0.85) * (1.0 - 0.75 * ore) * dsoft;
+  diffuseColor.rgb = mix(diffuseColor.rgb, mix(vec3(0.2, 0.38, 0.8), vColor.rgb, nod) * (0.8 + 0.4 * n3), ore);
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.2, 0.075, 0.032) * (0.55 + 0.9 * n2) * dshade, rust * 0.85);
+  depRough = mix(mix(0.96, mix(0.5, 0.44, nod), ore), 0.97, rust); depMetal = ore * mix(0.5, 0.75, nod) * (1.0 - rust);
+  depH = grain * mix(2.2, 0.5, nod) - 0.3 * ore;
+` + depHard('0.2, 0.07, 0.025', 0.95),
+  // copper: warm veins of metal through the rock, thick on the break (ds about 0.6), native copper (ds = 1), and the patina
+  // (dw) from a dark teal film to a pale malachite crust where it is thickest
+  copper_ore: depHead(9) + `
+  float vq = dot(dp, vec3(0.55, 0.6, 0.58)) * 3.0 + 0.55 * n0 + 0.12 * (n1 - 0.5), rg = abs(fract(vq) - 0.5);
+  float orf = smoothstep(0.3, 0.5, ds), nat = dsoft * smoothstep(0.8, 0.95, ds);
+  float vein = (1.0 - smoothstep(0.014, 0.04, rg)) * smoothstep(0.45, 0.6, dN(dp * 1.7 + 4.0)) * (0.4 + 0.6 * dm) * f2;
+  vein = max(vein, orf * max(1.0 - smoothstep(0.05, 0.11, rg), smoothstep(0.52, 0.62, dN(dp * 13.0) + 0.25 * (n2 - 0.5))));
+  vein *= dsoft * (1.0 - nat);
+  diffuseColor.rgb *= 1.0 + 0.8 * (grain - 0.5) * (1.0 - 0.6 * nat) * dsoft;
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.72, 0.27, 0.07) * (0.7 + 0.7 * n3) * dshade, vein);
+  float pm = dsoft * smoothstep(0.42, 0.62, dw * (0.6 + 0.8 * n1) + 0.2 * (n2 - 0.5));
+  vec3 patC = mix(vec3(0.02, 0.15, 0.12), mix(vec3(0.04, 0.4, 0.25), vec3(0.3, 0.7, 0.52), n3 * dw), smoothstep(0.35, 0.95, dw * (0.5 + n2)));
+  diffuseColor.rgb = mix(diffuseColor.rgb, patC * min(dshade, 1.0), pm * 0.92);
+  depRough = mix(mix(mix(0.9, 0.4, vein), 0.3 + 0.2 * n2, nat), 0.92, pm); depMetal = max(vein, nat * 0.7) * (1.0 - pm);
+  depH = grain * (1.0 - 0.5 * nat) + 0.3 * pm * n2;
+` + depHard('0.05, 0.1, 0.08', 0.9),
+  // coal: dull black, and about every second break a bright cleavage face (dm): glassy, grey like graphite, with fine
+  // ridges along the seam (ds) that draw the highlight out; matte dust (dw) lying on top
+  coal: depHead(80) + `
+  float sw = ds + 0.012 * (n1 - 0.5);
+  float b1 = mix(0.5, dN1(sw * 55.0), f2);
+  float dust = dsoft * smoothstep(0.3, 0.75, dw * (0.6 + 0.9 * n1) + 0.25 * (n3 - 0.5));
+  float gl = dsoft * smoothstep(0.4, 0.7, dm) * (1.0 - dust);
+  diffuseColor.rgb *= 1.0 + 0.6 * (grain - 0.5) * dsoft;
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.03, 0.027, 0.025) * (0.7 + 0.6 * n2) * dshade, dust * 0.85);
+  depRough = mix(mix(0.9, 0.16 + 0.14 * b1, gl), 0.97, dust); depMetal = 0.45 * gl;
+  depH = grain * 0.6 + 0.4 * b1 * (0.25 + 0.75 * gl) * (0.4 + 1.2 * n0) * (1.0 - dust);
+` + depHard('0.012, 0.011, 0.01', 0.95),
+  // oil: all of it hard surface (worn deck plate, rusty pipework, paint); the grime is tar creeping up from the pool
+  oil: depHead(9) + depHard('0.006, 0.005, 0.008', 0.07),
+};
+/**
+ * A deposit kind's material: vertex-coloured, with the kind's detail drawn in the shader (see DEP_GLSL) and a fine bump.
+ * Drawn two-sided with the normal left as modelled, so a mirrored instance (whose faces wind the other way) is lit like
+ * any other; the bodies are closed, their insides never show.
+ */
+function depMat(kind: string): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.9, metalness: 0, envMapIntensity: 1.15, side: THREE.DoubleSide });
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = 'varying vec3 vDepP;\nvarying vec2 vDepU;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vDepP = position; vDepU = uv;');
+    sh.fragmentShader = 'varying vec3 vDepP;\nvarying vec2 vDepU;\n' + DEP_NOISE + sh.fragmentShader
+      .replace('#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin.replace('gl_FrontFacing ? 1.0 : - 1.0', '1.0'))
+      .replace('#include <color_fragment>', '#include <color_fragment>\n' + DEP_GLSL[kind])
+      .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = depRough;')
+      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = depMetal;')
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        { vec3 bq = -vViewPosition, bx = dFdx(bq), by = dFdy(bq);
+          float hx = dFdx(depH), hy = dFdy(depH);
+          vec3 r1 = cross(by, normal), r2 = cross(normal, bx); float det = dot(bx, r1);
+          normal = normalize(abs(det) * normal - 0.022 * sign(det) * (hx * r1 + hy * r2)); }`);
+  };
+  m.customProgramCacheKey = () => 'dep9_' + kind;
+  return m;
+}
+/**
+ * The oil pool: nearly black and mirror-glossy, with slow rings running out from the middle and a cross swell (they bend the
+ * normal), a thin-film sheen in drifting patches whose colours shift with the view angle and swirl slowly over the
+ * surface, and a brighter band of that film round the rim, where the light oil gathers.
+ */
+function oilMat(t: { value: number }): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ color: 0x060509, roughness: 0.05, metalness: 0.1, envMapIntensity: 1.8 });
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uTime = t;
+    sh.vertexShader = 'varying vec3 vOilW;\nvarying vec2 vOilC;\n' + sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
+      vec4 oilW = vec4(transformed, 1.0);
+      vec4 oilC = vec4(0.0, 0.0, 0.0, 1.0);
+      #ifdef USE_INSTANCING
+      oilW = instanceMatrix * oilW; oilC = instanceMatrix * oilC;
+      #endif
+      vOilW = (modelMatrix * oilW).xyz; vOilC = (modelMatrix * oilC).xz;`);
+    sh.fragmentShader = 'uniform float uTime;\nvarying vec3 vOilW;\nvarying vec2 vOilC;\n' + DEP_NOISE + sh.fragmentShader
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        vec2 oq = vOilW.xz - vOilC; float od = length(oq) + 1e-4;
+        vec2 og = (oq / od) * cos(od * 34.0 - uTime * 2.2) * 0.08 * exp(-od * 2.5);
+        og += 0.035 * vec2(sin(vOilW.z * 7.0 + uTime * 0.9), cos(vOilW.x * 6.0 - uTime * 0.7));
+        normal = normalize(normal - (viewMatrix * vec4(og.x, 0.0, og.y, 0.0)).xyz);`)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        float ofr = pow(1.0 - clamp(abs(dot(normal, normalize(vViewPosition))), 0.0, 1.0), 2.0);
+        vec3 ow = vec3(vOilW.xz * 2.4, uTime * 0.05);
+        float osw = dN(ow + 1.7 * vec3(dN(ow * 1.9 + 4.0), dN(ow * 1.9 - 7.0), 0.0));
+        float oth = ofr * 1.6 + od * 0.9 + 1.5 * osw + 0.05 * uTime;
+        vec3 film = 0.5 + 0.5 * cos(6.2831 * (vec3(0.0, 0.33, 0.67) + oth));
+        float opatch = smoothstep(0.38, 0.62, dN(vec3(vOilW.xz * 1.5 + 9.0, uTime * 0.035)));
+        float oin = smoothstep(0.64, 0.4, od);
+        float orim = smoothstep(0.4, 0.52, od + 0.08 * (osw - 0.5)) * smoothstep(0.63, 0.55, od);
+        float orip = pow(0.5 + 0.5 * cos(od * 34.0 - uTime * 2.2), 4.0) * exp(-od * 3.0);
+        totalEmissiveRadiance += (film * (0.03 + 0.08 * opatch + 0.1 * ofr) + vec3(0.13, 0.13, 0.17) * (0.12 + pow(ofr, 2.0)) + vec3(0.09, 0.08, 0.12) * orip) * oin
+          + mix(vec3(0.5), film, 0.85) * orim * (0.1 + 0.08 * opatch);`);
+  };
+  m.customProgramCacheKey = () => 'oilpool5';
+  return m;
+}
+/** One instanced batch of deposit pieces: each piece's resting matrix, its tile, its delay in the build-up, and what it stays
+ *  visible under (0: nothing, 1: a mine or pumpjack, 2: any building). */
+class DepBatch {
+  mesh: THREE.InstancedMesh; n = 0; cap: number;
+  rest: Float32Array; tile: Int32Array; del: Float32Array; keep: Uint8Array;
+  constructor(g: THREE.BufferGeometry, m: THREE.Material, cap: number, shadow: boolean) {
+    this.cap = cap;
+    this.mesh = new THREE.InstancedMesh(g, m, cap);
+    this.mesh.count = 0; this.mesh.frustumCulled = false; this.mesh.castShadow = shadow; this.mesh.receiveShadow = true;
+    this.rest = new Float32Array(cap * 16); this.tile = new Int32Array(cap); this.del = new Float32Array(cap); this.keep = new Uint8Array(cap);
+  }
+  add(M: THREE.Matrix4, c: THREE.Color, tile: number, del: number, keep: number) {
+    if (this.n >= this.cap) return;
+    const i = this.n++;
+    M.toArray(this.rest, i * 16); this.mesh.setMatrixAt(i, M); this.mesh.setColorAt(i, c);
+    this.tile[i] = tile; this.del[i] = del; this.keep[i] = keep;
+  }
+}
+/** Overshooting ease (about 9% over) for the pieces popping up. */
+const backOut = (k: number) => { const q = k - 1; return 1 + 2.6 * q * q * q + 1.6 * q * q; };
+const sat01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 // ---------- items ----------
 /** Bake jitter into a polyhedron so it reads as a rough chunk; the same corner moves the same way on every face. */
@@ -462,8 +700,8 @@ const tubeZ = (r: number, len: number, seg = 12) => lying(new THREE.CylinderGeom
  * Pipe geometry for a side mask: [glass tube, fluid core inside it, fittings (steel), valve wheel (paint)]. A Pipe Tunnel
  * (shaft) gets the same arms running into a capped shaft that takes the pipe underground.
  */
-function pipeGeo(mask: number, valve: boolean, shaft = false): THREE.BufferGeometry[] {
-  const key = (shaft ? 'shaft' : 'pipe') + mask + +valve;
+function pipeGeo(mask: number, valve: boolean, shaft = false, model = false): THREE.BufferGeometry[] {
+  const key = (shaft ? (model ? 'shaftm' : 'shaft') : 'pipe') + mask + +valve;
   const have = geos.get(key + 'b');
   if (have) return [have, geos.get(key + 'k')!, geos.get(key + 'f')!, geos.get(key + 'v')!];
   const sides: number[] = [];
@@ -485,7 +723,13 @@ function pipeGeo(mask: number, valve: boolean, shaft = false): THREE.BufferGeome
     for (const r of [0, Math.PI / 2]) V.push(new THREE.BoxGeometry(0.17, 0.014, 0.014).rotateY(r + 0.4).translate(x, y + 0.12, z));
   };
   const n = sides.length;
-  if (shaft) {
+  if (shaft && model) {
+    // the modelled shaft (fac_ptunnel) brings the steelwork: here only the glass arms into its ports, the flanges at the tile
+    // edges, and the sight glass on its cap with the fluid in it
+    B.push(new THREE.CylinderGeometry(0.17, 0.17, 0.16, 16).translate(0, 0.68, 0));
+    K.push(new THREE.CylinderGeometry(0.13, 0.13, 0.15, 12).translate(0, 0.675, 0));
+    for (const d of sides) { arm(d, 0.29, 1); flange(d, 0.95); }
+  } else if (shaft) {
     // the shaft: a steel collar on a dark plinth with a cap; each arm runs into its side and a glass well in the cap shows
     // the fluid going down
     F.push(new THREE.CylinderGeometry(HEX_SIZE * 0.5, HEX_SIZE * 0.56, 0.06, 6).rotateY(Math.PI / 6).translate(0, 0.03, 0));
@@ -538,7 +782,7 @@ function pipeGeo(mask: number, valve: boolean, shaft = false): THREE.BufferGeome
       wheel(0, PY + h / 2, 0);
     }
   }
-  const out = [merge(B), merge(K), merge(F), V.length ? merge(V) : new THREE.BufferGeometry()];
+  const out = [merge(B), merge(K), F.length ? merge(F) : new THREE.BufferGeometry(), V.length ? merge(V) : new THREE.BufferGeometry()];
   ['b', 'k', 'f', 'v'].forEach((s, i) => geos.set(key + s, out[i]));
   return out;
 }
@@ -572,8 +816,12 @@ function glassMat(): THREE.MeshStandardMaterial {
 }
 
 // ---------- splitters and tunnels ----------
-/** Types built here from plain shapes even when a model file exists. */
-const DRAWN_HERE: ReadonlySet<FacType> = new Set<FacType>(['belt', 'pipe', 'splitter', 'tunnel', 'ptunnel']);
+/** Types built here from plain shapes even when a model file exists. (The Belt Splitter, Belt Tunnel and Pipe Tunnel have
+ *  models, which fromModel completes with the belt and pipe parts drawn here: stubs, ramps, glass arms; without the file
+ *  they fall back to the plain shapes like every other building.) */
+const DRAWN_HERE: ReadonlySet<FacType> = new Set<FacType>(['belt', 'pipe']);
+/** The model name of each building type ('fac_' + type), made once. */
+const MODEL_KEY = Object.fromEntries(Object.keys(FACS).map((t) => [t, 'fac_' + t])) as Record<FacType, string>;
 const VOID = new THREE.MeshBasicMaterial({ color: 0x060505 });
 type PortalPart = 'hood' | 'trim' | 'void' | 'glow';
 /**
@@ -604,12 +852,12 @@ function portalGeo(s: number): [THREE.BufferGeometry, PortalPart][] {
   return parts.map((p) => { const m = merge(G[p]); geos.set(key + p, m); return [m, p]; });
 }
 /** Where the power wires meet a pole (the insulator on the side facing x) or a generator (its terminal). */
-function wireEnd(q: Fac, x: number): [number, number, number] {
+export function wireEnd(q: Fac, x: number): [number, number, number] {
   return q.type === 'pole' ? [q.x + (x >= q.x ? POLE_ARM : -POLE_ARM), POLE_Y, q.z] : [q.x, GEN_Y, q.z];
 }
 /** The tunnel a new one at (cx, cz) would pair with (as Factory.pairTunnels does): for a belt tunnel the nearest unpaired one
  *  facing the same way ahead (or behind), for a pipe tunnel the nearest unpaired one in a straight line, within TUNNEL_REACH. */
-function tunnelMate(F: Factory, type: FacType, cx: number, cz: number, dir: number): Fac | undefined {
+export function tunnelMate(F: Factory, type: FacType, cx: number, cz: number, dir: number): Fac | undefined {
   if (type === 'tunnel') {
     for (const d of [dir, (dir + 3) % 6]) {
       let c: [number, number] = [cx, cz];
@@ -637,7 +885,7 @@ const SC_W = 0.53, SC_H = 0.48, SC_D = 0.3;
 const ARM_Y = 0.5, SOCK_Y = 0.78, TAKER_IN = 0.66;
 /** Seconds a scanner's light flashes for a take, and an item token takes down the chute. */
 const FLASH_T = 0.45, TOKEN_T = 0.32;
-const MAX_LINKS = 512, MAX_TOKENS = 64, MAX_DASH = 900, MAX_MARK = 96, MAX_LVL = 256;
+const MAX_LINKS = 512, MAX_TOKENS = 64, MAX_MARK = 96, MAX_LVL = 256;
 const SCAN_AMBER = new THREE.Color(0xf2a54a), SOCK_GREEN = new THREE.Color(0x9ccf6a);
 /** The scanner's body: a housing the belt runs through (an airport scanner), with a frame round both openings and strips of
  *  curtain hanging in them that the items push through. */
@@ -697,6 +945,8 @@ interface FVis {
   ph: number; spd: number;
   /** status lamp materials (recoloured), working lights (dimmed while idle), and materials this building owns (disposed with it) */
   lamps: THREE.MeshStandardMaterial[]; glows: Glow[]; own: THREE.Material[];
+  /** the colour and intensity last given to the status lamps (-1: not yet), so an unchanged lamp is not written every frame */
+  lampC: number; lampI: number;
   /** belts: the ribbon (only the ghost has a mesh of its own: placed belts are drawn instanced, see syncBelts), its entry side
    *  and shape (k = exit - entry), and its end drums */
   belt: THREE.Mesh | null; e: number; k: number; caps: number;
@@ -708,6 +958,9 @@ interface FVis {
   stubs: number[] | null;
   /** a belt tunnel: whether it was built as the exit end */
   ex: boolean;
+  /** a modelled splitter: its turntable and the kerbs that close each side (hidden where a belt joins); a modelled belt
+   *  tunnel: how brightly its mouth flares (an item passing through) */
+  turn: THREE.Object3D | null; gates: (THREE.Object3D | undefined)[] | null; flare: number;
   /** pipes and pipe tunnels: the four meshes (glass, core, fittings, valve), the side mask they were built for, the fluid state they show (see animate) */
   pipe: THREE.Mesh[]; mask: number; fluidKey: number;
 }
@@ -718,9 +971,20 @@ export class FacView {
   private models: () => Record<string, THREE.Object3D>;
   private vis = new Map<number, FVis>();
   private frame = 0;
-  private ores: THREE.InstancedMesh; private pools: THREE.InstancedMesh; private rocks: THREE.InstancedMesh;
-  /** each deposit chunk's tile and its matrix (chunks on a built tile are hidden: they would poke through a belt) */
-  private rockTile = new Int32Array(MAX_ROCKS); private rockM = new Float32Array(MAX_ROCKS * 16); private zero = new THREE.Matrix4().makeScale(0, 0, 0);
+  /** deposits: the stain decals, and (made once the models are loaded, see depModels) each kind's bodies, rim rubble and the
+   *  oil pool (see DepBatch); the oil pools' bubbles, what covers each tile (0 nothing, 1 a building, 2 a mine or pumpjack:
+   *  pieces on a built tile are hidden, they would poke through it), and whether the pieces have to be posed again (build-up
+   *  running or just over, buildings changed) */
+  private deps: DepBatch[] = []; private depB: Record<string, DepBatch> = {}; private depReady = false;
+  private bubbles: THREE.InstancedMesh; private oilTiles: number[] = []; private oilT = { value: 0 };
+  private cover = new Uint8Array(GW * GH); private depPose = true; private depIntro = false;
+  private tileX = new Float32Array(GW * GH); private tileZ = new Float32Array(GW * GH);
+  /** the hovered deposit patch: the tile, its outline (a bright line and a fading light curtain on the patch's border), tile rings */
+  private hlKey = -1; private hlEdge: THREE.InstancedMesh; private hlCurtain: THREE.InstancedMesh; private hlRing: THREE.InstancedMesh; private hlFill: THREE.InstancedMesh;
+  private hlMats: THREE.MeshBasicMaterial[] = [];
+  private zero = new THREE.Matrix4().makeScale(0, 0, 0);
+  /** the build-up as handed to sync (null when the deck stands): the connectors and items follow it too (see revealPass) */
+  private rv: ((x: number, z: number) => number) | null = null; private rvWas = false;
   private items = new THREE.Group();
   private itemMeshes: Record<Shape, { mesh: THREE.InstancedMesh; tint: boolean }[]>;
   private itemN: Record<Shape, number>;
@@ -746,6 +1010,12 @@ export class FacView {
   /** the side each item came in by (items on a belt with several feeders, and in a splitter) */
   private inSide = new WeakMap<BeltItem, number>();
   private run = 0; private lastT = -1; private layout = -1;
+  /** the belt items stand as the last syncItems() put them (time stands still and the layout has not changed since) */
+  private itemsStill = false;
+  /** this frame's dt and time for animate(), and the place and heading of the next item for putItem() (x, y, z, tx, tz) */
+  private aDt = 0; private aTime = 0; private ip = new Float64Array(5);
+  /** the factory's rev when the wires were last checked */
+  private wireRev = -1;
   /** whether the factory runs this frame (it stands still between waves: nothing moves on the belts, machines idle) */
   private live = true;
   private pipeFit = mat(0x77706a, 'dark'); private pipeValve = new THREE.MeshStandardMaterial({ color: 0x9a2f1e, roughness: 0.45, metalness: 0.4 });
@@ -761,32 +1031,45 @@ export class FacView {
   private nScan = 0; private chuteA = new Float32Array(MAX_LINKS * 3); private chuteB = new Float32Array(MAX_LINKS * 3); private flash = new Float32Array(MAX_LINKS);
   /** takers ('t' + id / 'f' + id) to their belt links, to light the right scanner on a 'take' */
   private takers = new Map<string, number[]>(); private scanAt = new Float32Array(MAX_LINKS * 2);
+  /** takers to their sockets (belt chute ends and power drops), each socket's flare (see flashTaker) and whether it is a power socket */
+  private sockOf = new Map<string, number[]>(); private sockFlash = new Float32Array(MAX_LINKS * 2); private sockPower = new Uint8Array(MAX_LINKS * 2);
   /** per pipe branch: the pipe it hangs on and the fluid state it shows */
   private brFrom = new Int32Array(MAX_LINKS); private brKey = new Int32Array(MAX_LINKS); private nBranch = 0;
   /** items sliding down a chute after a take: link, age, colour */
   private tokens: THREE.InstancedMesh; private tokL = new Int16Array(MAX_TOKENS); private tokT = new Float32Array(MAX_TOKENS); private tokC = new Int32Array(MAX_TOKENS); private nTok = 0;
-  /** placement and selection previews: tile fills, tile rings and dashes (wires to be, tunnel pairs) */
-  private pvFill: THREE.InstancedMesh; private pvRing: THREE.InstancedMesh; private pvDash: THREE.InstancedMesh;
-  private pvGhost: { type: FacType; cx: number; cz: number; dir: number } | null = null; private pvSel: { cx: number; cz: number } | null = null;
-  private pvKey = ''; private pvRev = -1;
+  /** the selected building's tile (the cues draw what it connects to: a pole's reach, a tunnel's partner) */
+  private pvSel: { cx: number; cz: number } | null = null;
+  /** per model name and level: the top of its meshes (see modelTop) */
+  private tops = new Map<string, number>();
   /** level marks on upgraded buildings */
   private band: THREE.InstancedMesh; private pips: THREE.InstancedMesh; private lvlKey = -1;
 
   constructor(scene: THREE.Scene, models: () => Record<string, THREE.Object3D> = () => ({})) {
     this.models = models;
     scene.add(this.group);
-    // deposits: a mottled stain in the ore's colour with a thin rim (it marks the tile without painting over the deck), a glossy
-    // pool for oil, and chunks of ore and rock lying on it
-    const stain = oreTexture(false), pool = oreTexture(true);
-    const decal = (map: THREE.Texture, rough: number, metal: number) => new THREE.MeshStandardMaterial({ color: 0xffffff, map, roughness: rough, metalness: metal, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
-    this.ores = new THREE.InstancedMesh(G_HEXF, decal(stain, 0.8, 0.25), GW * GH);
-    this.pools = new THREE.InstancedMesh(G_HEXF, decal(pool, 0.1, 0.15), GW * GH);
-    G_ROCK ??= flat(rough(new THREE.DodecahedronGeometry(0.2, 0), 0.3, 11));
-    this.rocks = new THREE.InstancedMesh(G_ROCK, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.62, metalness: 0.35 }), MAX_ROCKS);
-    for (const m of [this.ores, this.pools, this.rocks]) { m.count = 0; m.frustumCulled = false; this.group.add(m); }
-    this.rocks.castShadow = true; this.rocks.receiveShadow = true; this.ores.receiveShadow = this.pools.receiveShadow = true;
-    // (the stains are see-through decals: kept out of the AO pre-pass, which would draw them as solid surfaces)
-    this.ores.layers.set(FX_LAYER); this.pools.layers.set(FX_LAYER);
+    // deposits: the stain decals now (they need no model), the modelled pieces when the models are there (see depModels)
+    const T = (GW * GH) >> 1;
+    for (const k of ORE_TYPES) {
+      const b = this.depBatch('stain_' + k, G_HEXF, stainMat(k), false);
+      // (the stains are see-through decals: kept out of the AO pre-pass, which would draw them as solid surfaces)
+      b.mesh.layers.set(FX_LAYER);
+    }
+    this.bubbles = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 10, 5, 0, TAU, 0, Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x0a090d, roughness: 0.04, metalness: 0.2, envMapIntensity: 1.6 }), T * 3);
+    this.bubbles.count = 0; this.bubbles.frustumCulled = false;
+    this.group.add(this.bubbles);
+    for (let i = 0; i < GW * GH; i++) { this.tileX[i] = cellX(i % GW, Math.floor(i / GW)); this.tileZ[i] = cellZ(Math.floor(i / GW)); }
+    // the hover highlight: additive, in the ore's colour, drawn over the deck (not in the AO pass)
+    const add = (o: number, vcol = false) => { const m = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: o, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, vertexColors: vcol }); this.hlMats.push(m); return m; };
+    const hl = (g: THREE.BufferGeometry, m: THREE.Material, n: number) => { const o = new THREE.InstancedMesh(g, m, n); o.count = 0; o.frustumCulled = false; o.layers.set(FX_LAYER); o.renderOrder = 3; o.setColorAt(0, this.C.setHex(0xffffff)); scene.add(o); return o; };
+    this.hlEdge = hl(G_BOX(), add(0.95), MAX_HL);
+    this.hlCurtain = hl(geo('hlCurtain', () => {
+      const g = new THREE.PlaneGeometry(1, 1, 1, 4).translate(0, 0.5, 0), p = g.getAttribute('position'), c = new Float32Array(p.count * 3);
+      for (let i = 0; i < p.count; i++) { const k = Math.pow(1 - (p.getY(i)), 2.2); c.set([k, k, k], i * 3); }
+      g.setAttribute('color', new THREE.BufferAttribute(c, 3));
+      return g;
+    }), add(0.55, true), MAX_HL);
+    this.hlRing = hl(G_HEX_RING(), add(0.5), MAX_MARK);
+    this.hlFill = hl(G_HEXF, add(0.2), MAX_MARK);
     // items: one instanced mesh per part of each shape
     const parts = itemParts();
     this.itemMeshes = {} as typeof this.itemMeshes; this.itemN = {} as typeof this.itemN;
@@ -843,11 +1126,6 @@ export class FacView {
     this.drops.frustumCulled = false; this.drops.castShadow = true;
     this.group.add(this.drops);
     this.tokens = inst(new THREE.OctahedronGeometry(0.075, 0), lit(), MAX_TOKENS, false, true);
-    const see = (o: number) => new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: o, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 });
-    this.pvFill = inst(G_HEXF, see(0.11), MAX_MARK, false, true, scene);
-    this.pvRing = inst(G_HEX_RING(), see(0.9), MAX_MARK, false, true, scene);
-    this.pvDash = inst(G_BOX(), see(0.85), MAX_DASH, false, true, scene);
-    for (const m of [this.pvFill, this.pvRing, this.pvDash]) { m.layers.set(FX_LAYER); m.renderOrder = 4; }
     this.band = inst(G_BAND(), new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide }), MAX_LVL, false, true);
     this.pips = inst(G_PIP(), lit(), MAX_LVL * 3, false, true);
   }
@@ -855,43 +1133,16 @@ export class FacView {
   setSim(sim: Sim | null) {
     this.sim = sim;
     for (const v of this.vis.values()) this.drop(v);
-    this.vis.clear(); this.wireKey = -1; this.sparks.length = 0; this.glint.count = 0; this.layout = -1; this.lastT = -1;
+    this.vis.clear(); this.wireKey = -1; this.itemsStill = false; this.sparks.length = 0; this.glint.count = 0; this.layout = -1; this.lastT = -1;
     for (const s of SHAPES) for (const p of this.itemMeshes[s]) p.mesh.count = 0;
-    this.ores.count = 0; this.pools.count = 0; this.rocks.count = 0;
+    for (const b of this.deps) { b.n = 0; b.mesh.count = 0; }
+    this.oilTiles.length = 0; this.bubbles.count = 0; this.cover.fill(0); this.depPose = true; this.hlKey = -2; this.setOreHover(0, 0, false);
     for (const b of this.beltBatches.values()) { b.n = 0; b.body.count = 0; b.light.count = 0; }
     this.beltDirty = true; this.nets = null; this.linkRef = null; this.linkLayout = -1; this.lvlKey = -1; this.nTok = 0; this.tokens.count = 0;
-    this.pvGhost = null; this.pvSel = null; this.pvKey = '';
+    this.pvSel = null;
     this.setGhost(null);
-    this.syncPreview();
     if (!sim) { this.clearLinks(); this.band.count = this.pips.count = 0; return; }
-    // deposits: a stain (or for oil a pool) turned at random so neighbouring tiles do not repeat, and a cluster of chunks on it
-    const ore = sim.factory.ore;
-    let n = 0, np = 0, r = 0, seed = 1;
-    const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
-    for (let i = 0; i < GW * GH; i++) {
-      if (!ore[i]) continue;
-      const cx = i % GW, cz = Math.floor(i / GW), x = cellX(cx, cz), z = cellZ(cz), o = ORE_TYPES[ore[i] - 1], c = ORES[o].color;
-      this.M.makeRotationY(Math.floor(rnd() * 6) * (Math.PI / 3)).setPosition(x, 0.03, z);
-      if (o === 'oil') { this.pools.setMatrixAt(np, this.M); this.pools.setColorAt(np, this.C.setHex(c)); np++; }
-      else { this.ores.setMatrixAt(n, this.M); this.ores.setColorAt(n, this.C.setHex(c).multiplyScalar(o === 'coal' ? 0.95 : 0.85)); n++; }
-      // chunks: ore-coloured lumps among dark matrix rock (coal: all glossy black); oil only has a few seeps
-      const k = o === 'oil' ? 0 : 5, a0 = rnd() * TAU;
-      for (let j = 0; j < k && r < MAX_ROCKS; j++) {
-        const a = a0 + j * 2.4 + rnd() * 0.6, d = 0.12 + rnd() * 0.5, big = j < 2, s = big ? 0.85 + rnd() * 0.45 : 0.4 + rnd() * 0.35;
-        this.P.set(x + Math.cos(a) * d, 0.03 + s * 0.04, z + Math.sin(a) * d);
-        this.Q.setFromEuler(this.E.set(rnd() * 3, rnd() * 3, rnd() * 3));
-        this.S.set(s, s * (0.55 + rnd() * 0.25), s * (0.8 + rnd() * 0.4));
-        this.M.compose(this.P, this.Q, this.S);
-        this.rocks.setMatrixAt(r, this.M); this.M.toArray(this.rockM, r * 16); this.rockTile[r] = i;
-        if (o === 'coal') this.C.setHex(0x1b1917).multiplyScalar(0.8 + rnd() * 0.5);
-        else if (j % 3 === 2) this.C.setHex(0x3b3631).multiplyScalar(0.8 + rnd() * 0.4);
-        else this.C.setHex(c).multiplyScalar(1.05 + rnd() * 0.35);
-        this.rocks.setColorAt(r, this.C);
-        r++;
-      }
-    }
-    this.ores.count = n; this.pools.count = np; this.rocks.count = r;
-    for (const m of [this.ores, this.pools, this.rocks]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
+    this.buildDeps(sim);
   }
 
   handle(evs: Ev[]) {
@@ -913,12 +1164,24 @@ export class FacView {
     this.tokL[k] = i; this.tokT[k] = 0; this.tokC[k] = ITEMS[it]?.color ?? 0xffffff;
   }
 
-  /** The ghost of a factory building where it would go (null hides it), with what it would connect to (see syncPreview). */
+  /** A supply route has just reached a tower or building ('t' + id / 'f' + id): its sockets flare, and (item: true) the
+   *  scanners it draws from flash as for a take. */
+  flashTaker(key: string, item: boolean) {
+    for (const i of this.sockOf.get(key) || []) if (!!this.sockPower[i] !== item) this.sockFlash[i] = 1;
+    if (item) for (const i of this.takers.get(key) || []) this.flash[i] = 1;
+  }
+  /** The point at p (0 entry edge .. 1 exit edge) on a placed belt's path, in world x / z; false when it runs straight. */
+  beltPoint(f: Fac, p: number, out: { x: number; z: number }): boolean {
+    const v = this.vis.get(f.id);
+    if (!v || v.k < 0 || f.type !== 'belt') { out.x = f.x + DX[f.dir] * (2 * p - 1); out.z = f.z + DZ[f.dir] * (2 * p - 1); return true; }
+    const P = PATHS[v.k], pt = pathAt(P, p, this.pt), c = DX[v.e], s = DZ[v.e];
+    out.x = f.x + pt.x * c - pt.z * s; out.z = f.z + pt.x * s + pt.z * c;
+    return P.straight;
+  }
+
+  /** The ghost of a factory building where it would go (null hides it); what it would connect to is the cues' (CueView.setTool). */
   setGhost(type: FacType | null, cx = 0, cz = 0, dir = 0, ok = true) {
     this.ghost.visible = !!type && ok;
-    const g = this.pvGhost;
-    if (!type || !ok) { if (g) { this.pvGhost = null; this.syncPreview(); } }
-    else if (!g || g.type !== type || g.cx !== cx || g.cz !== cz || g.dir !== dir) { this.pvGhost = { type, cx, cz, dir }; this.syncPreview(); }
     if (!type) return;
     const key = type + ':' + dir + ':' + (this.modelOf(type) ? 'm' : 's');
     if (key !== this.ghostKey) {
@@ -941,95 +1204,38 @@ export class FacView {
     }
     this.ghost.position.set(cellX(cx, cz), 0, cellZ(cz));
   }
-  /** The factory building selected on a tile (on false clears it): a pole or generator shows its reach and what it powers, a tunnel its partner. */
-  setSelected(cx: number, cz: number, on: boolean) {
-    const s = this.pvSel;
-    if (!on) { if (s) { this.pvSel = null; this.syncPreview(); } return; }
-    if (!s || s.cx !== cx || s.cz !== cz) { this.pvSel = { cx, cz }; this.syncPreview(); }
-  }
-
+  /** The factory building selected on a tile (on false clears it): the cues show a pole's or generator's reach and what it powers, a tunnel's partner. */
+  setSelected(cx: number, cz: number, on: boolean) { this.pvSel = on ? { cx, cz } : null; }
+  /** The tile of the selected building, or null. */
+  selectedCell(): { cx: number; cz: number } | null { return this.pvSel; }
   /**
-   * Placement and selection previews, worked out again when the ghost moves, the selection changes or the layout does:
-   *  - a pole or generator: the tiles it powers (SUPPLY), dashed wires to every pole or generator it joins (POLE_REACH), and
-   *    a ring on each building or tower it powers (for a placed one: what it does power, with a dashed drop to each);
-   *  - a belt or pipe tunnel: a dashed line on the deck to the end it pairs with and a ring there, or (no partner) faint
-   *    rings on the tiles a partner could stand on.
+   * The top of a loaded model in its own units ('tower_pulse', 'fac_mine', ...): the highest point of its meshes, the parts
+   * of a higher level than `lvl` and the power node's emblem left out. 0 when the model is not loaded.
    */
-  private syncPreview() {
-    const sim = this.sim, g = this.pvGhost, s = this.pvSel;
-    const F = sim?.factory, sel = s && F ? F.facAt(s.cx, s.cz) : undefined;
-    const key = !F ? '' : g ? `g${g.type}:${g.cx}:${g.cz}:${g.dir}` : sel ? `s${sel.id}` : '';
-    if (key === this.pvKey && (!F || F.rev === this.pvRev)) return;
-    this.pvKey = key; this.pvRev = F ? F.rev : -1;
-    let nf = 0, nr = 0, nd = 0;
-    const fill = (cx: number, cz: number, c: number) => {
-      if (nf >= MAX_MARK || !inBoard(cx, cz)) return;
-      this.M.makeTranslation(cellX(cx, cz), 0.05, cellZ(cz)); this.pvFill.setMatrixAt(nf, this.M); this.pvFill.setColorAt(nf++, this.C.setHex(c));
-    };
-    const ring = (x: number, z: number, c: number, sc = 1) => {
-      if (nr >= MAX_MARK) return;
-      this.M.makeScale(sc, 1, sc).setPosition(x, 0.07, z); this.pvRing.setMatrixAt(nr, this.M); this.pvRing.setColorAt(nr++, this.C.setHex(c));
-    };
-    /** a dashed line from a to b, sagging by `sag` in the middle (0 for a line on the deck) */
-    const dash = (ax: number, ay: number, az: number, bx: number, by: number, bz: number, sag: number, c: number, w = 0.06) => {
-      const len = Math.hypot(bx - ax, by - ay, bz - az), n = Math.max(1, Math.round(len / 0.36));
-      for (let i = 0; i < n && nd < MAX_DASH; i++) {
-        const k0 = (i + 0.15) / n, k1 = (i + 0.85) / n;
-        const p0 = this.V1.set(ax + (bx - ax) * k0, ay + (by - ay) * k0 - 4 * k0 * (1 - k0) * sag, az + (bz - az) * k0);
-        const p1 = this.V2.set(ax + (bx - ax) * k1, ay + (by - ay) * k1 - 4 * k1 * (1 - k1) * sag, az + (bz - az) * k1);
-        const d = this.P.subVectors(p1, p0), l = d.length();
-        this.Q.setFromUnitVectors(this.Z, d.multiplyScalar(1 / Math.max(1e-6, l)));
-        this.M.compose(p0.add(p1).multiplyScalar(0.5), this.Q, this.S.set(w, w, l));
-        this.pvDash.setMatrixAt(nd, this.M); this.pvDash.setColorAt(nd++, this.C.setHex(c));
-      }
-    };
-    if (F && sim && (g || sel)) {
-      const type = g ? g.type : sel!.type, cx = g ? g.cx : sel!.cx, cz = g ? g.cz : sel!.cz, x = cellX(cx, cz), z = cellZ(cz);
-      const GREEN = 0x9ccf6a, AMBER = 0xf2a54a;
-      if (type === 'pole' || type === 'generator') {
-        for (const [tx, tz] of disc(cx, cz, SUPPLY)) fill(tx, tz, GREEN);
-        const top = type === 'pole' ? POLE_Y : GEN_Y;
-        if (g) {
-          // the wires it would get, and what it would power
-          for (const q of F.facs) {
-            if ((q.type !== 'pole' && q.type !== 'generator') || hexDist(q.cx, q.cz, cx, cz) > POLE_REACH || (q.cx === cx && q.cz === cz)) continue;
-            const [qx, qy, qz] = wireEnd(q, x);
-            dash(x + (type === 'pole' ? (qx >= x ? POLE_ARM : -POLE_ARM) : 0), top, z, qx, qy, qz, Math.hypot(qx - x, qz - z) * 0.045, GREEN, 0.05);
-          }
-          for (const q of F.facs) if (FACS[q.type].power && hexDist(q.cx, q.cz, cx, cz) <= SUPPLY) ring(q.x, q.z, GREEN);
-          for (const t of sim.towers) if (needsOf(t).power && hexDist(t.cx, t.cz, cx, cz) <= SUPPLY) ring(t.x, t.z, GREEN);
-        } else {
-          for (const l of F.links()) {
-            if (l.kind !== 'power' || l.from !== sel!.id) continue;
-            ring(l.tx, l.tz, GREEN);
-            dash(l.x, top + 0.1, l.z, l.tx, SOCK_Y + 0.4, l.tz, 0, GREEN, 0.045);
-          }
-        }
-        ring(x, z, GREEN, 1.08);
-      } else if (type === 'tunnel' || type === 'ptunnel') {
-        let mate: Fac | undefined;
-        if (sel) mate = sel.pair ? F.facById(sel.pair) : undefined;
-        else mate = tunnelMate(F, type, cx, cz, g!.dir);
-        if (mate) {
-          dash(x, 0.09, z, mate.x, 0.09, mate.z, 0, GREEN, 0.09);
-          ring(mate.x, mate.z, GREEN);
-        } else {
-          // no partner: where one could go
-          const dirs = type === 'tunnel' ? [g ? g.dir : sel!.dir] : [0, 1, 2, 3, 4, 5];
-          for (const d of dirs) {
-            let c: [number, number] = [cx, cz];
-            for (let k = 1; k <= TUNNEL_REACH; k++) { c = neighbor(c[0], c[1], d); if (inBoard(c[0], c[1])) ring(cellX(c[0], c[1]), cellZ(c[1]), AMBER, k === TUNNEL_REACH ? 0.8 : 0.55); }
-          }
-        }
-      }
-    }
-    this.pvFill.count = nf; this.pvRing.count = nr; this.pvDash.count = nd;
-    for (const m of [this.pvFill, this.pvRing, this.pvDash]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
+  modelTop(name: string, lvl = 1): number {
+    const key = name + ':' + lvl, hit = this.tops.get(key);
+    if (hit !== undefined) return hit;
+    const m = this.models()[name];
+    if (!m || !m.children.length) return 0;
+    let top = 0;
+    const box = new THREE.Box3();
+    m.updateWorldMatrix(true, true);
+    const inv = this.M.copy(m.matrixWorld).invert(), L = new THREE.Matrix4();
+    m.traverse((o) => {
+      const me = o as THREE.Mesh;
+      if (!me.isMesh) return;
+      for (let p: THREE.Object3D | null = o; p && p !== m; p = p.parent) { const l = /^lvl([23])(_|$)/.exec(p.name); if (p.name === 'node' || (l && +l[1] > lvl)) return; }
+      if (!me.geometry.boundingBox) me.geometry.computeBoundingBox();
+      box.copy(me.geometry.boundingBox!).applyMatrix4(L.multiplyMatrices(inv, me.matrixWorld));
+      top = Math.max(top, box.max.y);
+    });
+    this.tops.set(key, top);
+    return top;
   }
 
   /** The loaded model for a building type, or null (not loaded yet, or the file is missing: then an empty stand-in). */
   private modelOf(type: FacType): THREE.Object3D | null {
-    const m = this.models()['fac_' + type];
+    const m = this.models()[MODEL_KEY[type]];
     return m && m.children.length ? m : null;
   }
   private drop(v: FVis) {
@@ -1041,8 +1247,8 @@ export class FacView {
   private build(type: FacType, dir: number, ghost = false, exit = false): FVis {
     const g = new THREE.Group();
     const v: FVis = {
-      obj: g, type, seen: 0, dir, model: false, spin: null, arm: null, armX: false, work: null, workY: 0, pitman: null, crank: null, ph: Math.random() * TAU, spd: 0, lamps: [], glows: [], own: [],
-      belt: null, e: -1, k: -1, caps: -1, feeds: null, stubs: null, ex: exit, pipe: [], mask: -1, fluidKey: -1,
+      obj: g, type, seen: 0, dir, model: false, spin: null, arm: null, armX: false, work: null, workY: 0, pitman: null, crank: null, ph: Math.random() * TAU, spd: 0, lamps: [], lampC: -1, lampI: -1, glows: [], own: [],
+      belt: null, e: -1, k: -1, caps: -1, feeds: null, stubs: null, ex: exit, turn: null, gates: null, flare: 0, pipe: [], mask: -1, fluidKey: -1,
     };
     const src = DRAWN_HERE.has(type) ? null : this.modelOf(type);
     if (src) this.fromModel(v, src, ghost);
@@ -1079,6 +1285,33 @@ export class FacView {
     v.pitman = m.getObjectByName('pitman') || null; v.crank = m.getObjectByName('crank') || null;
     v.work = m.getObjectByName('work') || null;
     if (v.work) v.workY = v.work.position.y;
+    switch (v.type) {
+      case 'splitter': {
+        v.turn = m.getObjectByName('turn') || null;
+        v.gates = [0, 1, 2, 3, 4, 5].map((d) => m.getObjectByName('gate' + d));
+        break;
+      }
+      case 'tunnel': {
+        // the model is the entrance, its items running toward its front (+z): turned to the tunnel's way, and half round for
+        // the exit; the roof chevrons of the other end are hidden, the black inside is unlit, and the ramp is the belts' own
+        m.rotation.y = yawOf(v.dir) + (v.ex ? Math.PI : 0);
+        const hide = m.getObjectByName(v.ex ? 'arrow_in' : 'arrow_out');
+        if (hide) hide.visible = false;
+        if (!ghost) m.traverse((o) => { const mesh = o as THREE.Mesh; if (mesh.isMesh && (mesh.material as THREE.Material).name === 'void') { mesh.material = VOID; mesh.castShadow = false; } });
+        const holder = new THREE.Group(); holder.rotation.y = (-((v.dir + 3) % 6) * Math.PI) / 3; v.obj.add(holder);
+        const ramp = new THREE.Mesh(v.ex ? RAMP_OUT() : RAMP_IN(), this.beltMats);
+        ramp.castShadow = true; ramp.receiveShadow = true; holder.add(ramp);
+        break;
+      }
+      case 'ptunnel': this.pipeParts(v); break;
+    }
+  }
+  /** The four meshes of a pipe or pipe tunnel: glass (no shadow: it is clear), the fluid core, steel fittings, the valve;
+   *  shaped by shapePipe once the neighbours are known. */
+  private pipeParts(v: FVis) {
+    const ms = [this.glass, this.coreMat(0, false), this.pipeFit, this.pipeValve];
+    for (let i = 0; i < 4; i++) { const o = new THREE.Mesh(G_HEXF, ms[i]); o.castShadow = i >= 2; o.receiveShadow = i !== 0; if (i === 0) o.layers.set(FX_LAYER); v.obj.add(o); v.pipe.push(o); }
+    v.pipe[1].visible = false;
   }
 
   /** A building from plain shapes (no model file). Geometry is cached, so nothing here needs freeing but the lights. */
@@ -1107,10 +1340,7 @@ export class FacView {
         break;
       }
       case 'pipe': case 'ptunnel': {
-        // glass (no shadow: it is clear), the fluid core, steel fittings, the valve; shaped by shapePipe once the neighbours are known
-        const ms = [this.glass, this.coreMat(0, false), this.pipeFit, this.pipeValve];
-        for (let i = 0; i < 4; i++) { const o = new THREE.Mesh(G_HEXF, ms[i]); o.castShadow = i >= 2; o.receiveShadow = i !== 0; if (i === 0) o.layers.set(FX_LAYER); g.add(o); v.pipe.push(o); }
-        v.pipe[1].visible = false;
+        this.pipeParts(v);
         break;
       }
       case 'splitter': {
@@ -1251,9 +1481,9 @@ export class FacView {
   }
   private shapePipe(v: FVis, mask: number, cx: number, cz: number) {
     v.mask = mask;
-    const gs = pipeGeo(mask, (cx * 2 + cz * 3) % 4 === 1, v.type === 'ptunnel');
+    const gs = pipeGeo(mask, (cx * 2 + cz * 3) % 4 === 1, v.type === 'ptunnel', v.model);
     for (let i = 0; i < 4; i++) v.pipe[i].geometry = gs[i];
-    v.pipe[3].visible = !!gs[3].getAttribute('position');
+    for (const i of [2, 3]) v.pipe[i].visible = !!gs[i].getAttribute('position');
   }
 
   /** A number that changes when any building comes, goes or turns (the belt shapes depend on their neighbours). */
@@ -1328,7 +1558,9 @@ export class FacView {
       if (!v) continue;
       const sc = v.obj.scale.x;
       if (fc.type === 'splitter') {
-        if (v.stubs) for (const s of v.stubs) { const d = s & 7, out = s >= 8; this.putBelt(out ? SPLIT_OUT() : SPLIT_IN(), fc, out ? (d + 3) % 6 : d, sc); }
+        if (v.stubs) for (const s of v.stubs) { const d = s & 7, out = s >= 8; this.putBelt(out ? (v.model ? SPLIT_OUT_M() : SPLIT_OUT()) : v.model ? SPLIT_IN_M() : SPLIT_IN(), fc, out ? (d + 3) % 6 : d, sc); }
+        // (the model's kerb closes every side no belt joins)
+        if (v.gates) for (let d = 0; d < 6; d++) { const gt = v.gates[d]; if (gt) gt.visible = !v.stubs || !v.stubs.some((s) => (s & 7) === d); }
         continue;
       }
       if (fc.type !== 'belt' || v.k < 0) continue;
@@ -1356,12 +1588,171 @@ export class FacView {
     b.n++;
   }
 
-  private coverRocks(F: Factory) {
-    for (let r = 0; r < this.rocks.count; r++) {
-      if (F.at[this.rockTile[r]]) this.rocks.setMatrixAt(r, this.zero);
-      else { this.M.fromArray(this.rockM, r * 16); this.rocks.setMatrixAt(r, this.M); }
+  /** A deposit batch under a key, with room for every tile that can carry ore. */
+  private depBatch(key: string, g: THREE.BufferGeometry, m: THREE.Material, shadow: boolean) {
+    const b = new DepBatch(g, m, (GW * GH) >> 1, shadow);
+    this.depB[key] = b; this.deps.push(b); this.group.add(b.mesh);
+    return b;
+  }
+  /** The modelled pieces, once the deposit models are loaded: per kind its bodies ('v0'..) and rim rubble, and the oil pool. */
+  private depModels() {
+    if (this.depReady) return true;
+    const models = this.models(), geo = (file: string, node: string) => { const o = models[file]?.getObjectByName(node) as THREE.Mesh | undefined; return o && o.isMesh && o.geometry.getAttribute('color') ? o.geometry : null; };
+    if (!ORE_TYPES.every((k) => geo(DEP_FILE[k], 'v0') && geo(DEP_FILE[k], 'rim'))) return false;
+    for (const k of ORE_TYPES) {
+      const m = depMat(k);
+      for (let v = 0; v < DEP_VARIANTS; v++) this.depBatch(k + v, geo(DEP_FILE[k], 'v' + v) || geo(DEP_FILE[k], 'v0')!, m, true);
+      this.depBatch(k + '_rim', geo(DEP_FILE[k], 'rim')!, m, false);
     }
-    this.rocks.instanceMatrix.needsUpdate = true;
+    const pool = geo(DEP_FILE.oil, 'pool');
+    if (pool) this.depBatch('pool', pool, oilMat(this.oilT), false);
+    return (this.depReady = true);
+  }
+
+  /** The deposit pieces for the map's ore, seeded per tile: which body, turned and scaled how, and a shade of its own. */
+  private buildDeps(sim: Sim) {
+    const ore = sim.factory.ore, M = this.M, P = this.P, Q = this.Q, S = this.S, C = this.C, b = this.depB, up = this.V1.set(0, 1, 0);
+    const ready = this.depModels();
+    for (let i = 0; i < GW * GH; i++) {
+      if (!ore[i]) continue;
+      const o = ORE_TYPES[ore[i] - 1], x = this.tileX[i], z = this.tileZ[i], oil = o === 'oil';
+      let seed = (Math.imul(i + 1, 0x9e3779b1) ^ Math.imul(ore[i], 0x85ebca6b)) | 0;
+      const rnd = () => { seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+      // the stain (keeps the tile readable from far away); it stays under every building
+      M.makeRotationY(Math.floor(rnd() * 6) * (Math.PI / 3)).setPosition(x, 0.03, z);
+      b['stain_' + o].add(M, C.setScalar(0.92 + rnd() * 0.16), i, 0.25, 2);
+      if (!ready) continue;
+      // the body: any angle, a little larger or smaller, squatter or taller (the oil plates keep their proportions)
+      // (mirrored on every second tile: see depMat)
+      const v = Math.floor(rnd() * DEP_VARIANTS), yaw = rnd() * TAU, sc = (0.9 + rnd() * 0.18) * DEP_SCALE[o], sy = oil ? sc : sc * (0.88 + rnd() * 0.3), sh = 0.9 + rnd() * 0.2, mir = rnd() < 0.5 ? -1 : 1;
+      M.compose(P.set(x, 0, z), Q.setFromAxisAngle(up, yaw), S.set(sc * mir, sy, sc));
+      b[o + v].add(M, C.setRGB(sh * (0.97 + rnd() * 0.06), sh, sh * (0.97 + rnd() * 0.06)), i, 0.5, 0);
+      // the rubble round the rim (it stays round a mine or pumpjack): laid out for the hex, so turned by sixths only
+      M.compose(P, Q.setFromAxisAngle(up, Math.floor(rnd() * 6) * (Math.PI / 3)), S.set(rnd() < 0.5 ? -1 : 1, 0.9 + rnd() * 0.3, 1));
+      b[o + '_rim'].add(M, C.setScalar(0.9 + rnd() * 0.2), i, 0.72, 1);
+      if (oil) {
+        // the tar pool between the plates (with bubbles, see animBubbles)
+        if (b.pool) { M.compose(P, Q.setFromAxisAngle(up, rnd() * TAU), S.set(1, 1, 1)); b.pool.add(M, C.setScalar(1), i, 0.4, 0); }
+        this.oilTiles.push(i);
+      }
+    }
+    for (const bt of this.deps) { bt.mesh.count = bt.n; bt.mesh.instanceMatrix.needsUpdate = true; if (bt.mesh.instanceColor) bt.mesh.instanceColor.needsUpdate = true; }
+    this.depPose = true;
+  }
+
+  /** What stands on each deposit tile (pieces under a building are hidden; a mine or pumpjack keeps the rubble round its rim). */
+  private coverDeps(F: Factory) {
+    const ore = F.ore;
+    for (let i = 0; i < GW * GH; i++) {
+      if (!ore[i]) continue;
+      const fc = F.at[i] ? F.facAt(i % GW, Math.floor(i / GW)) : undefined, c = !fc ? 0 : fc.type === 'mine' || fc.type === 'pump' ? 2 : 1;
+      if (c !== this.cover[i]) { this.cover[i] = c; this.depPose = true; }
+    }
+  }
+
+  /** Pose the deposit pieces: at rest, hidden under buildings, or rising with their deck tile while the map assembles (each
+   *  piece a little after the tile and after the one before, scaling up from below with a small overshoot). */
+  private poseDeps(reveal: ((x: number, z: number) => number) | null) {
+    for (const bt of this.deps) {
+      const a = bt.mesh.instanceMatrix.array as Float32Array, R = bt.rest;
+      for (let i = 0; i < bt.n; i++) {
+        const t = bt.tile[i], o = i * 16, cv = this.cover[t];
+        let s = 1, dy = 0;
+        if (cv && bt.keep[i] < (cv === 2 ? 1 : 2)) s = 0;
+        else if (reveal) {
+          const d = bt.del[i], k = sat01((reveal(this.tileX[t], this.tileZ[t]) - d) / (0.985 - d));
+          s = k <= 0 ? 0 : backOut(k); dy = (k - 1) * 0.25;
+        }
+        if (s === 1) { for (let j = 0; j < 16; j++) a[o + j] = R[o + j]; continue; }
+        for (let j = 0; j < 12; j++) a[o + j] = R[o + j] * s;
+        a[o + 12] = R[o + 12]; a[o + 13] = R[o + 13] * s + (s > 0 ? dy : 0); a[o + 14] = R[o + 14]; a[o + 15] = 1;
+      }
+      bt.mesh.instanceMatrix.needsUpdate = true;
+    }
+  }
+
+  /** Bubbles on the oil pools: each grows slowly at a spot of its own and pops, then the next one rises elsewhere. */
+  private animBubbles(time: number, hide: boolean) {
+    let n = 0;
+    const cap = this.bubbles.instanceMatrix.count;
+    if (!hide) for (const t of this.oilTiles) {
+      if (this.cover[t]) continue;
+      for (let b = 0; b < 3 && n < cap; b++) {
+        const ph = time * (0.28 + 0.09 * b) + t * 0.618 + b * 0.37, cyc = Math.floor(ph), u = ph - cyc;
+        if (u > 0.82) continue; // popped: gone until the next one
+        const a = hash3(t, b, cyc, 1) * TAU, r = Math.sqrt(hash3(t, b, cyc, 2)) * BUBBLE_R, g = u / 0.82;
+        const sc = (0.022 + 0.04 * hash3(t, b, cyc, 3)) * Math.sqrt(g) * (g > 0.92 ? 1 + (g - 0.92) * 3 : 1);
+        this.M.makeScale(sc, sc * 0.75, sc).setPosition(this.tileX[t] + Math.cos(a) * r, POOL_Y, this.tileZ[t] + Math.sin(a) * r);
+        this.bubbles.setMatrixAt(n++, this.M);
+      }
+    }
+    if (n || this.bubbles.count) { this.bubbles.count = n; this.bubbles.instanceMatrix.needsUpdate = true; }
+  }
+
+  /**
+   * Highlight the deposit under the pointer (cx, cz: grid cell) and its whole connected patch of the same kind: a thin line
+   * in the ore's colour round the patch with a light curtain fading up from it, a ring on each of its tiles (brightest on the
+   * hovered one). on = false (or a tile without ore) clears it.
+   */
+  setOreHover(cx: number, cz: number, on: boolean) {
+    const ore = this.sim?.factory.ore, i = cz * GW + cx;
+    const key = on && ore && inBoard(cx, cz) && ore[i] ? i : -1;
+    if (key === this.hlKey) return;
+    this.hlKey = key;
+    if (key < 0 || !ore) { this.hlEdge.count = this.hlCurtain.count = this.hlRing.count = this.hlFill.count = 0; return; }
+    // the kind's own colour, saturated (a pale one blooms to white and says nothing about the ore)
+    const k = ore[i], col = new THREE.Color(DEP_ACCENT[ORE_TYPES[k - 1]]);
+    // the patch: flood fill over neighbours of the same kind
+    const patch = new Set<number>([i]), q = [i];
+    while (q.length) {
+      const t = q.pop()!;
+      for (let d = 0; d < 6; d++) {
+        const [nx, nz] = neighbor(t % GW, Math.floor(t / GW), d), j = nz * GW + nx;
+        if (inBoard(nx, nz) && ore[j] === k && !patch.has(j)) { patch.add(j); q.push(j); }
+      }
+    }
+    let ne = 0, nr = 0;
+    const M = this.M, up = this.V1.set(0, 1, 0);
+    for (const t of patch) {
+      const tx = t % GW, tz = Math.floor(t / GW), x = this.tileX[t], z = this.tileZ[t];
+      if (nr < MAX_MARK) {
+        M.makeTranslation(x, 0.045, z); this.hlRing.setMatrixAt(nr, M); this.hlFill.setMatrixAt(nr, M);
+        this.hlFill.setColorAt(nr, this.C.copy(col).multiplyScalar(t === i ? 1 : 0.55));
+        this.hlRing.setColorAt(nr++, this.C.copy(col).multiplyScalar(t === i ? 1 : 0.38));
+      }
+      for (let d = 0; d < 6 && ne < MAX_HL; d++) {
+        const [nx, nz] = neighbor(tx, tz, d);
+        if (inBoard(nx, nz) && patch.has(nz * GW + nx)) continue;
+        // the border between this tile and the outside neighbour: half way to its centre, across the line between them
+        const dx = cellX(nx, nz) - x, dz = cellZ(nz) - z;
+        this.Q.setFromAxisAngle(up, Math.atan2(dx, dz));
+        M.compose(this.P.set(x + dx / 2, 0.05, z + dz / 2), this.Q, this.S.set(HEX_SIZE + 0.05, 0.03, 0.1));
+        this.hlEdge.setMatrixAt(ne, M); this.hlEdge.setColorAt(ne, col);
+        M.compose(this.P.set(x + dx / 2, 0.02, z + dz / 2), this.Q, this.S.set(HEX_SIZE, 0.75, 1));
+        this.hlCurtain.setMatrixAt(ne, M); this.hlCurtain.setColorAt(ne++, col);
+      }
+    }
+    this.hlEdge.count = this.hlCurtain.count = ne; this.hlRing.count = this.hlFill.count = nr;
+    for (const m of [this.hlEdge, this.hlCurtain, this.hlRing, this.hlFill]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
+  }
+
+  /** While the deck assembles: scale each instance of a mesh (rebuilt this frame) about its tile's centre by that tile's reveal. */
+  private revealInst(m: THREE.InstancedMesh, rv: (x: number, z: number) => number) {
+    if (!m.count) return;
+    const a = m.instanceMatrix.array as Float32Array;
+    for (let i = 0; i < m.count; i++) {
+      const o = i * 16, x = a[o + 12], z = a[o + 14], [cx, cz] = worldToCell(x, z), px = cellX(cx, cz), pz = cellZ(cz), s = rv(px, pz);
+      if (s >= 1) continue;
+      for (let j = 0; j < 12; j++) a[o + j] *= s;
+      a[o + 12] = px + (x - px) * s; a[o + 13] *= s; a[o + 14] = pz + (z - pz) * s;
+    }
+    m.instanceMatrix.needsUpdate = true;
+  }
+  /** A cable end on fc while the deck assembles: moved with fc's scale about its foot (null while fc is still too small). */
+  private rvEnd(p: [number, number, number], x: number, z: number): [number, number, number] | null {
+    if (!this.rv) return p;
+    const s = this.rv(x, z);
+    return s < 0.03 ? null : [x + (p[0] - x) * s, p[1] * s, z + (p[2] - z) * s];
   }
 
   sync(dt: number, time: number, reveal: ((x: number, z: number) => number) | null) {
@@ -1371,11 +1762,17 @@ export class FacView {
     // between waves the factory stands still: items freeze on the belts and the machines idle (the lamps show the diagnosis)
     this.live = !sim.planning;
     const dg = this.live ? null : sim.diag();
-    // while the deck assembles, the deposits, the items and the connectors wait for their tiles (the buildings grow with them)
-    this.ores.visible = this.pools.visible = this.rocks.visible = this.items.visible = this.wires.visible = !reveal;
-    for (const m of [this.scan, this.scanLight, this.chute, this.chuteLight, this.sock, this.sockLight, this.branch, this.branchCore, this.branchFit, this.drops, this.tokens, this.band, this.pips]) m.visible = !reveal;
+    // while the deck assembles, everything here comes in with its tile: the buildings and belts grow with it, the deposits
+    // rise out of it (poseDeps), and the items, cables, connectors and level marks are rebuilt every frame and scaled with
+    // their tiles (revealPass); one more rebuild when it ends leaves them all at rest
+    this.rv = reveal;
+    if (reveal || this.rvWas) { this.linkRef = null; this.lvlKey = -1; this.wireKey = -1; }
+    this.rvWas = !!reveal;
     let added = false, lk = 0;
-    for (const fc of F.facs) {
+    const facs = F.facs;
+    this.aDt = dt; this.aTime = time; // (read by animate(): numbers handed to a call are boxed, one per call per building)
+    for (let n = 0; n < facs.length; n++) {
+      const fc = facs[n];
       let v = this.vis.get(fc.id);
       // a model that has loaded since, or a tunnel that turned or became the other end: built again
       if (v && ((!v.model && !DRAWN_HERE.has(fc.type) && this.modelOf(fc.type)) || (fc.type === 'tunnel' && (v.ex !== fc.exit || v.dir !== fc.dir)))) {
@@ -1392,12 +1789,13 @@ export class FacView {
       if (fc.lvl > 1) lk = (Math.imul(lk, 31) + fc.id * 4 + fc.lvl) | 0;
       if (reveal) v.obj.scale.setScalar(Math.max(0.001, reveal(fc.x, fc.z)));
       else if (v.obj.scale.x !== 1) v.obj.scale.setScalar(1);
-      this.animate(fc, v, dt, time, dg);
+      this.animate(fc, v, dg);
     }
-    for (const [id, v] of this.vis) if (v.seen !== f) { this.drop(v); this.vis.delete(id); }
+    // (every building has its entry now: only when there are more entries than buildings has one gone)
+    if (this.vis.size > facs.length) for (const [id, v] of this.vis) if (v.seen !== f) { this.drop(v); this.vis.delete(id); }
     const lay = this.layoutKey(F);
     // (any change redraws the belt batches: a belt that was removed changes no other belt's shape, but its instance has to go)
-    if (lay !== this.layout || added || F.pipeNets !== this.nets) { this.layout = lay; this.nets = F.pipeNets; this.layoutBelts(F); this.coverRocks(F); this.beltDirty = true; }
+    if (lay !== this.layout || added || F.pipeNets !== this.nets) { this.layout = lay; this.nets = F.pipeNets; this.layoutBelts(F); this.coverDeps(F); this.beltDirty = true; this.itemsStill = false; }
     this.syncBelts(F, !!reveal);
     // the tread and the fluid pulses run with the sim clock at the belt speed, and only while the factory does
     const st = sim.time;
@@ -1407,12 +1805,24 @@ export class FacView {
     }
     this.lastT = st;
     this.tread.offset.y = -((this.run * BELT_REP) % 1);
-    this.syncItems(F);
+    // (while time stands still nothing on the belts moves: the items stay where the last pass put them until the layout changes)
+    if (this.live || reveal || !this.itemsStill) { this.syncItems(F); this.itemsStill = !this.live && !reveal; }
     this.syncWires(F);
     this.syncLinks(F);
     this.animLinks(F, dt);
     this.syncLevels(F, (lk ^ this.layout) | 0);
-    if (this.pvKey && F.rev !== this.pvRev) this.syncPreview();
+    if (reveal) {
+      for (const s of SHAPES) for (const p of this.itemMeshes[s]) this.revealInst(p.mesh, reveal);
+      for (const m of [this.scan, this.scanLight, this.chute, this.chuteLight, this.sock, this.sockLight, this.branch, this.branchCore, this.branchFit, this.band, this.pips]) this.revealInst(m, reveal);
+    }
+    // deposits: posed while they rise (and once more when the deck stands or buildings change), the oil bubbles, the hover glow
+    if (reveal || this.depPose || this.depIntro) { this.poseDeps(reveal); this.depPose = false; this.depIntro = !!reveal; }
+    this.oilT.value = time;
+    this.animBubbles(time, !!reveal);
+    if (this.hlKey >= 0) {
+      const w = 0.5 + 0.5 * Math.sin(time * 3.6);
+      this.hlMats[0].opacity = 0.75 + 0.25 * w; this.hlMats[1].opacity = 0.34 + 0.22 * w; this.hlMats[2].opacity = 0.4 + 0.25 * w; this.hlMats[3].opacity = 0.14 + 0.1 * w;
+    }
     // a Frame arriving at a Depot: a short glint
     for (let i = this.sparks.length - 1; i >= 0; i--) { if ((this.sparks[i].t += dt) > GLINT_T) this.sparks.splice(i, 1); }
     let gn = 0;
@@ -1446,11 +1856,19 @@ export class FacView {
   }
   /** One item into its instanced meshes, at (x, y, z) heading (tx, tz). */
   private putItem(it: ItemType, x: number, y: number, z: number, tx: number, tz: number) {
-    const sh = SHAPE_OF[it], n = this.itemN[sh], M = this.M;
+    const q = this.ip;
+    q[0] = x; q[1] = y; q[2] = z; q[3] = tx; q[4] = tz;
+    this.putIp(it);
+  }
+  /** putItem() with the place and heading already in this.ip (the per-item path: no numbers boxed for the call). */
+  private putIp(it: ItemType) {
+    const sh = SHAPE_OF[it], n = this.itemN[sh], M = this.M, q = this.ip;
     if (n >= MAX_ITEMS) return;
-    M.makeRotationY(Math.atan2(tx, tz)).scale(this.S.setScalar(ITEM_SCALE[sh]));
-    M.setPosition(x, y, z);
-    for (const p of this.itemMeshes[sh]) {
+    M.makeRotationY(Math.atan2(q[3], q[4])).scale(this.S.setScalar(ITEM_SCALE[sh]));
+    M.setPosition(q[0], q[1], q[2]);
+    const ps = this.itemMeshes[sh];
+    for (let i = 0; i < ps.length; i++) {
+      const p = ps[i];
       p.mesh.setMatrixAt(n, M);
       if (p.tint) p.mesh.setColorAt(n, this.C.setHex(it === 'coal' ? COAL_TINT : ITEMS[it].color));
     }
@@ -1465,9 +1883,10 @@ export class FacView {
   /** Belt items: placed on their belt's path, turned along it, one instanced mesh per part of each shape; also the items in
    *  splitters and near the portals of tunnels (underground they are not drawn). */
   private syncItems(F: Factory) {
-    const N = this.itemN, pt = this.pt;
-    for (const s of SHAPES) N[s] = 0;
-    for (const fc of F.facs) {
+    const N = this.itemN, pt = this.pt, facs = F.facs;
+    for (let i = 0; i < SHAPES.length; i++) N[SHAPES[i]] = 0;
+    for (let n = 0; n < facs.length; n++) {
+      const fc = facs[n];
       if (!fc.items.length) continue;
       const v = this.vis.get(fc.id);
       if (!v) continue;
@@ -1494,11 +1913,13 @@ export class FacView {
       const P = PATHS[v.k], c = DX[v.e], s = DZ[v.e], fd = v.feeds;
       if (fd) this.trackFeeds(F, fc.items, fd, v.e);
       const ax = DX[fc.dir], az = DZ[fc.dir];
-      for (const it of fc.items) {
-        const side = fd ? this.inSide.get(it) ?? v.e : v.e;
+      for (let i = 0; i < fc.items.length; i++) {
+        const it = fc.items[i], side = fd ? this.inSide.get(it) ?? v.e : v.e;
         if (side === v.e) {
           pathAt(P, it.p, pt);
-          this.putItem(it.it, fc.x + pt.x * c - pt.z * s, Y_SURF, fc.z + pt.x * s + pt.z * c, pt.tx * c - pt.tz * s, pt.tx * s + pt.tz * c);
+          const q = this.ip;
+          q[0] = fc.x + pt.x * c - pt.z * s; q[1] = Y_SURF; q[2] = fc.z + pt.x * s + pt.z * c; q[3] = pt.tx * c - pt.tz * s; q[4] = pt.tx * s + pt.tz * c;
+          this.putIp(it.it);
         } else {
           // in from a side: a quadratic curve from that edge's midpoint (down the inlet stub) through the tile centre and out
           // along the belt, hopping over the main belt's rail where it crosses it
@@ -1523,6 +1944,8 @@ export class FacView {
 
   /** Power lines: a sagging wire between each pair of linked poles, from insulator to insulator. */
   private syncWires(F: Factory) {
+    if (F.rev === this.wireRev && this.wireKey !== -1) return; // (wires only change with the layout)
+    this.wireRev = F.rev;
     let h = F.wires.length;
     for (const w of F.wires) h = Math.imul(h ^ (w[0] * 65599 + w[1]), 16777619);
     if (h === this.wireKey) return;
@@ -1531,7 +1954,8 @@ export class FacView {
     for (const [a, b] of F.wires) {
       const A = F.facById(a), B = F.facById(b);
       if (!A || !B) continue;
-      parts.push(cable(wireEnd(A, B.x), wireEnd(B, A.x), 0.045, 0.024));
+      const ea = this.rvEnd(wireEnd(A, B.x), A.x, A.z), eb = this.rvEnd(wireEnd(B, A.x), B.x, B.z);
+      if (ea && eb) parts.push(cable(ea, eb, 0.045, 0.024));
     }
     this.wires.geometry.dispose();
     this.wires.geometry = parts.length ? mergeGeometries(parts)! : new THREE.BufferGeometry();
@@ -1540,7 +1964,7 @@ export class FacView {
 
   private clearLinks() {
     for (const m of [this.scan, this.scanLight, this.chute, this.chuteLight, this.sock, this.sockLight, this.branch, this.branchCore, this.branchFit]) m.count = 0;
-    this.nScan = 0; this.nBranch = 0; this.takers.clear();
+    this.nScan = 0; this.nBranch = 0; this.takers.clear(); this.sockOf.clear();
     this.nTok = 0; this.tokens.count = 0; // (a token in flight holds a link index of the old layout)
     this.drops.geometry.dispose(); this.drops.geometry = new THREE.BufferGeometry();
   }
@@ -1558,8 +1982,11 @@ export class FacView {
     this.clearLinks();
     let ns = 0, nk = 0, nb = 0;
     const pt = this.pt, M = this.M, cables: THREE.BufferGeometry[] = [];
-    const socket = (x: number, y: number, z: number, fx: number, fz: number, c: THREE.Color) => {
+    const socket = (x: number, y: number, z: number, fx: number, fz: number, c: THREE.Color, to: string) => {
       M.compose(this.P.set(x, y, z), this.Q.setFromAxisAngle(this.S.set(0, 1, 0), Math.atan2(fx, fz)), this.S.set(1, 1, 1));
+      this.sockFlash[nk] = 0; this.sockPower[nk] = c === SOCK_GREEN ? 1 : 0;
+      const sl = this.sockOf.get(to);
+      if (sl) sl.push(nk); else this.sockOf.set(to, [nk]);
       this.sock.setMatrixAt(nk, M); this.sockLight.setMatrixAt(nk, M); this.sockLight.setColorAt(nk++, c);
     };
     for (const l of links) {
@@ -1589,7 +2016,7 @@ export class FacView {
         M.compose(A, this.Q, this.S.set(1, 1, Math.max(0.01, len)));
         this.chute.setMatrixAt(ns, M); this.chuteLight.setMatrixAt(ns, M); this.chuteLight.setColorAt(ns, this.C.copy(SCAN_AMBER).multiplyScalar(0.45));
         this.chuteA.set([sx, SC_H - 0.12, sz], ns * 3); this.chuteB.set([ex, ARM_Y, ez], ns * 3);
-        socket(ex, ARM_Y, ez, sx - ex, sz - ez, SCAN_AMBER);
+        socket(ex, ARM_Y, ez, sx - ex, sz - ez, SCAN_AMBER, l.to);
         this.scanAt[ns * 2] = f.x; this.scanAt[ns * 2 + 1] = f.z; this.flash[ns] = 0;
         const tl = this.takers.get(l.to);
         if (tl) tl.push(ns); else this.takers.set(l.to, [ns]);
@@ -1605,8 +2032,9 @@ export class FacView {
         if (!f || nk >= MAX_LINKS * 2) continue;
         const w = wireEnd(f, l.tx), dl = Math.hypot(w[0] - l.tx, w[2] - l.tz) || 1;
         const ex = l.tx + ((w[0] - l.tx) / dl) * TAKER_IN, ez = l.tz + ((w[2] - l.tz) / dl) * TAKER_IN;
-        socket(ex, SOCK_Y, ez, w[0] - ex, w[2] - ez, SOCK_GREEN);
-        cables.push(cable(w, [ex, SOCK_Y + 0.04, ez], 0.07, 0.017));
+        socket(ex, SOCK_Y, ez, w[0] - ex, w[2] - ez, SOCK_GREEN, l.to);
+        const ca = this.rvEnd(w, f.x, f.z), cb = this.rvEnd([ex, SOCK_Y + 0.04, ez], l.tx, l.tz);
+        if (ca && cb) cables.push(cable(ca, cb, 0.07, 0.017));
       }
     }
     this.nScan = ns; this.nBranch = nb;
@@ -1628,6 +2056,16 @@ export class FacView {
       lit = true;
     }
     if (lit) for (const m of [this.scanLight, this.chuteLight]) if (m.instanceColor) m.instanceColor.needsUpdate = true;
+    // sockets flaring as a supply route reaches them (see flashTaker)
+    let slit = false;
+    for (let i = 0; i < this.sock.count; i++) {
+      const k = this.sockFlash[i];
+      if (k <= 0) continue;
+      this.sockFlash[i] = Math.max(0, k - dt / 0.9);
+      this.sockLight.setColorAt(i, this.C.copy(this.sockPower[i] ? SOCK_GREEN : SCAN_AMBER).multiplyScalar(1 + 5 * k * k));
+      slit = true;
+    }
+    if (slit && this.sockLight.instanceColor) this.sockLight.instanceColor.needsUpdate = true;
     // tokens: the item's colour, a little arc from the scanner to the taker
     let n = this.nTok;
     for (let i = 0; i < n; i++) {
@@ -1673,20 +2111,22 @@ export class FacView {
     for (const m of [this.band, this.pips]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
   }
 
-  private animate(fc: Fac, v: FVis, dt: number, time: number, dg: Map<string, Diag> | null) {
+  private animate(fc: Fac, v: FVis, dg: Map<string, Diag> | null) {
+    const dt = this.aDt, time = this.aTime;
     const sim = this.sim!, on = fc.state === 'ok' && this.live;
     if (v.lamps.length) {
       // while time stands still the lamp shows the diagnosis: green if it will get all it needs, red (blinking) if not
-      const d = dg && dg.get('f' + fc.id), good = d ? d.ok : fc.state === 'ok';
+      const d = dg && dg.get(facKey(fc.id)), good = d ? d.ok : fc.state === 'ok';
       const c = d ? (d.ok ? LAMP.ok : LAMP.bad) : fc.state === 'ok' ? LAMP.ok : fc.state === 'nopower' || fc.state === 'nofuel' || fc.state === 'nodeposit' || fc.state === 'empty' ? LAMP.bad : LAMP.warn;
       const i = good ? 1.8 : 1.2 + 0.8 * Math.sin(time * 6 + fc.id);
-      for (const m of v.lamps) { m.emissive.setHex(c); m.color.setHex(c).multiplyScalar(0.25); m.emissiveIntensity = i; }
+      if (c !== v.lampC) { v.lampC = c; for (let k = 0; k < v.lamps.length; k++) { const m = v.lamps[k]; m.emissive.setHex(c); m.color.setHex(c).multiplyScalar(0.25); } }
+      if (i !== v.lampI) { v.lampI = i; for (let k = 0; k < v.lamps.length; k++) v.lamps[k].emissiveIntensity = i; }
     }
     // working lights: lit (and flickering for the hot ones) while the building works, nearly dark while it idles
     if (v.glows.length) {
-      const k = fc.type === 'splitter' ? (this.live ? 1 : 0.5) : !on ? 0.1 : fc.type === 'smelter' ? 1 + 0.3 * Math.sin(time * 13 + fc.id) : fc.type === 'generator' ? 1 + 0.3 * Math.sin(time * 11 + fc.id)
+      const k = fc.type === 'splitter' ? (this.live ? 1 : 0.5) : fc.type === 'tunnel' ? (this.live ? 0.7 : 0.4) + 1.2 * v.flare : fc.type === 'ptunnel' ? (v.fluidKey > 0 ? 1 : 0.3) : !on ? 0.1 : fc.type === 'smelter' ? 1 + 0.3 * Math.sin(time * 13 + fc.id) : fc.type === 'generator' ? 1 + 0.3 * Math.sin(time * 11 + fc.id)
         : fc.type === 'press' || fc.type === 'cells' || fc.type === 'missiles' ? 1 + 0.25 * Math.sin(time * 8 + fc.id) : fc.type === 'refinery' ? 1 + 0.25 * Math.sin(time * 5) : 1;
-      for (const g of v.glows) g.m.emissiveIntensity = g.i0 * k;
+      for (let n = 0; n < v.glows.length; n++) { const g = v.glows[n]; g.m.emissiveIntensity = g.i0 * k; }
     }
     // machines spin up over about a second and run down when they stop, instead of snapping
     v.spd += ((on ? 1 : 0) - v.spd) * Math.min(1, dt * 1.6);
@@ -1700,8 +2140,9 @@ export class FacView {
       case 'generator': if (v.spin) v.spin.rotation.y += dt * (0.5 + 13.5 * v.spd); break;
       case 'refinery': if (v.spin) v.spin.rotation.y += dt * (0.3 + 7.7 * v.spd); break;
       case 'splitter': {
-        // the diverter swings round to the side the next item goes to
+        // the diverter swings round to the side the next item goes to (the model's turntable keeps turning under it)
         if (!v.spin || !this.live) break;
+        if (v.turn) v.turn.rotation.y += dt * 1.3;
         let d = yawOf(fc.rr % 6) - v.spin.rotation.y;
         d -= Math.round(d / TAU) * TAU;
         v.spin.rotation.y += d * Math.min(1, dt * 9);
@@ -1714,11 +2155,24 @@ export class FacView {
         else v.arm.rotation.z = Math.sin(v.ph) * 0.32;
         break;
       }
+      case 'tunnel': {
+        // the mouth lights flare while an item runs through the portal (the entrance holds the items of both ends)
+        if (!v.glows.length) break;
+        const e = fc.exit ? sim.factory.facById(fc.pair) : fc, o = fc.exit && e ? hexDist(e.cx, e.cz, fc.cx, fc.cz) - 1 + PORTAL_OUT : PORTAL_IN;
+        let hit = 0;
+        if (e && this.live) for (const it of e.items) if (Math.abs(it.p - o) < 0.22) { hit = 1; break; }
+        v.flare += (hit - v.flare) * Math.min(1, dt * (hit ? 14 : 5));
+        break;
+      }
       case 'pipe': case 'ptunnel': {
         // the network's fluid and how full it is pick a shared core material (the side mask is set with the layout, see layoutBelts)
         const net = sim.factory.pipeNets[fc.net], fill = net && net.cap > 0 ? net.amt / net.cap : 0;
         const key = net && net.fluid && fill > 0.005 ? (FLUID_TYPES.indexOf(net.fluid) + 1) * 16 + Math.round(fill * 10) : 0;
-        if (key !== v.fluidKey && v.pipe.length) { v.fluidKey = key; v.pipe[1].visible = key > 0; if (key) v.pipe[1].material = this.coreMat(key, fc.type === 'ptunnel'); }
+        if (key !== v.fluidKey && v.pipe.length) {
+          v.fluidKey = key; v.pipe[1].visible = key > 0; if (key) v.pipe[1].material = this.coreMat(key, fc.type === 'ptunnel');
+          // (a modelled shaft: the light down in its pit takes the fluid's colour)
+          for (const g of v.glows) { g.m.emissive.setHex(key ? FLUIDS[FLUID_TYPES[(key >> 4) - 1]].color : 0xf2a54a); g.m.color.copy(g.m.emissive).multiplyScalar(0.25); }
+        }
         break;
       }
     }
@@ -1741,3 +2195,17 @@ function cable(a: [number, number, number], b: [number, number, number], sag: nu
 /** The colour that stands for an item in the HUD. */
 export const itemCss = (it: ItemType) => '#' + ITEMS[it].color.toString(16).padStart(6, '0');
 export const ALL_ITEMS = ITEM_TYPES;
+
+/** Heights and offsets of the things a supply route runs along (see cues.ts). */
+export const ROUTE_GEOM = { POLE_Y, POLE_ARM, GEN_Y, PIPE_Y: PY + PR, RAIL_Y: Y_RAIL, ARM_Y, SOCK_Y, TAKER_IN };
+/** The belt item shapes as one plain geometry each (position and normal only), for the holograms of what a tower or building lacks. */
+export function holoGeos(): Partial<Record<ItemType, THREE.BufferGeometry>> {
+  const parts = itemParts(), out: Partial<Record<ItemType, THREE.BufferGeometry>> = {}, mats = new Set<THREE.Material>();
+  for (const it of ITEM_TYPES) {
+    const ps = parts[SHAPE_OF[it]];
+    out[it] = mergeGeometries(ps.map((q) => strip(q.geo.index ? q.geo.toNonIndexed() : q.geo.clone())))!;
+  }
+  for (const s of SHAPES) for (const q of parts[s]) { q.geo.dispose(); mats.add(q.mat); }
+  for (const m of mats) m.dispose();
+  return out;
+}

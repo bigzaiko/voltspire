@@ -1,5 +1,5 @@
 import puppeteer from 'puppeteer-core';
-const b = await puppeteer.launch({ executablePath: '/usr/bin/chromium', headless: true, args: ['--no-sandbox', '--mute-audio', '--use-gl=angle', '--use-angle=gl', '--ignore-gpu-blocklist'], protocolTimeout: 60000, defaultViewport: { width: 1280, height: 720 } });
+const b = await puppeteer.launch({ executablePath: '/usr/bin/chromium', headless: true, args: ['--no-sandbox', '--mute-audio', '--headless=new', '--use-gl=angle', '--use-angle=gl', '--enable-gpu', '--ignore-gpu-blocklist'], protocolTimeout: 60000, defaultViewport: { width: 1280, height: 720 } });
 const open = async () => { const p = await b.newPage(); p.on('pageerror', (e) => console.log('[pageerror]', e.message)); p.on('console', (m) => { if (m.type() === 'error') console.log('[console]', m.text()); }); await p.goto('http://localhost:5184/play.html'); await p.waitForFunction(() => document.getElementById('loading').classList.contains('hidden'), { timeout: 60000 }); return p; };
 const A = await open(), B = await open();
 const T = (p, id) => p.evaluate((id) => document.getElementById(id).textContent, id);

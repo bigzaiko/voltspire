@@ -2,7 +2,7 @@
 import { DEFAULT_MAP } from './map.ts';
 import type { MapDef, LanePoint } from './map.ts';
 import { route } from './hex.ts';
-import { generateMap } from './mapgen.ts';
+import { generateMap, WORDS } from './mapgen.ts';
 
 // Directions: east, south-east, south-west, west, north-west, north-east.
 const E = 0, SE = 1, SW = 2, W = 3, NW = 4, NE = 5;
@@ -82,5 +82,17 @@ const PICKS: [number, number][] = [
 /** How many of MAPS are hand-made; the rest are the picked generated ones. */
 export const HANDMADE = MAPS.length;
 for (const [tier, seed] of PICKS) MAPS.push(generateMap(seed, tier));
+// (the generator names a sector after one of WORDS, so thirty picks repeat some: a repeat takes the next place name not yet in the
+// list, so every pre-made map reads differently and not only by its sector code. A map made from the same seed elsewhere keeps its own name.)
+{
+  const used = new Set<string>(), word = (n: string) => WORDS.find((w) => n.endsWith(' ' + w));
+  for (const m of MAPS.slice(HANDMADE)) {
+    const w = word(m.name);
+    if (w && used.has(w)) {
+      const k = WORDS.indexOf(w), next = [...WORDS.slice(k + 1), ...WORDS.slice(0, k)].find((o) => !used.has(o));
+      if (next) { m.name = (m.name.slice(0, -w.length) + next).slice(0, 28); used.add(next); }
+    } else if (w) used.add(w);
+  }
+}
 
 export const mapById = (id: unknown) => MAPS.find((m) => m.id === id);

@@ -118,6 +118,11 @@ export interface Diag { ok: boolean; missing: string[]; from: string[] }
  */
 export interface Link { kind: 'belt' | 'pipe' | 'power'; from: number; x: number; z: number; tx: number; tz: number; to: string }
 
+const TKEYS: string[] = [], FKEYS: string[] = [];
+/** The diagnosis key of a tower ('t' + id) and of a building ('f' + id), made once per id: no new string per lookup every frame. */
+export const towerKey = (id: number): string => TKEYS[id] ?? (TKEYS[id] = 't' + id);
+export const facKey = (id: number): string => FKEYS[id] ?? (FKEYS[id] = 'f' + id);
+
 /** Buildings that face a way (belts and belt tunnels: R turns them). */
 export const turns = (t: FacType) => t === 'belt' || t === 'tunnel';
 /** Pipes and pipe tunnels: both are part of a pipe network. */
@@ -125,7 +130,16 @@ export const pipeLike = (t: FacType) => t === 'pipe' || t === 'ptunnel';
 /** Belts, splitters and belt tunnels: they move items, nothing takes from them but towers and buildings. */
 const conveyor = (t: FacType) => t === 'belt' || t === 'splitter' || t === 'tunnel';
 const idx = (cx: number, cz: number) => (Number.isInteger(cx) && Number.isInteger(cz) && cx >= 0 && cz >= 0 && cx < GW && cz < GH ? cz * GW + cx : -1);
+/** The tile index of every tile's six neighbours, -1 off the grid: NB[i * 6 + d] = idx(...neighbor(cx, cz, d)) (no arrays on the hot paths). */
+const NB = (() => {
+  const a = new Int32Array(GW * GH * 6);
+  for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) for (let d = 0; d < 6; d++) { const [x, z] = neighbor(cx, cz, d); a[(cz * GW + cx) * 6 + d] = idx(x, z); }
+  return a;
+})();
+/** The tile index next to a building (or tower) on side d (0..5), -1 off the grid. */
+const nb = (f: { cx: number; cz: number }, d: number) => NB[(f.cz * GW + f.cx) * 6 + d];
 const BIT = Object.fromEntries(ITEM_TYPES.map((t, i) => [t, 1 << i])) as Record<ItemType, number>;
+const ITEM_IDX = Object.fromEntries(ITEM_TYPES.map((t, i) => [t, i])) as Record<ItemType, number>;
 const FLUID_IN: Partial<Record<FacType, FluidType>> = { refinery: 'crude', cells: 'crude', missiles: 'petrol' };
 const FLUID_OUT: Partial<Record<FacType, FluidType>> = { pump: 'crude', refinery: 'petrol' };
 const spd = (f: Fac) => FAC_LVL_SPEED[Math.max(0, Math.min(FAC_LVL_SPEED.length - 1, f.lvl - 1))];
@@ -138,86 +152,13 @@ function wantsOf(type: FacType): number {
   if (r) for (const k in r.inp) m |= BIT[k as ItemType];
   return m;
 }
+/** A recipe's inputs as a flat list (item, count, item, count, ...) in the order of MAKES, for the work step. */
+const RECIPE_IN = Object.fromEntries(Object.entries(MAKES).map(([t, r]) => [t, Object.entries(r!.inp).flat()])) as Partial<Record<FacType, (ItemType | number)[]>>;
 const WANTS = Object.fromEntries(Object.keys(FACS).map((t) => [t, wantsOf(t as FacType)])) as Record<FacType, number>;
 const fluidName = (f: FluidType) => FLUIDS[f].name.toLowerCase();
 
-function mulberry(seed: number) {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-function hashStr(s: string) { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193); return h >>> 0; }
-
-/**
- * Deposits for a map: patches of iron, copper and coal in every stretch of free deck that roads do not cut off (belts only
- * cross a road through a tunnel), and oil in the larger ones (at least one oil field per map). Deterministic: the same map gives the same
- * deposits. Tiles right beside a road are left free where possible, they are the best places for towers.
- * Returns one value per tile: 0 none, else 1 + the index in ORE_TYPES.
- */
-export function makeDeposits(grid: ArrayLike<number>, key: string): Uint8Array {
-  const ore = new Uint8Array(GW * GH), r = mulberry(hashStr(key) ^ 0x0de905);
-  const free = (i: number) => i >= 0 && grid[i] === 0 && ore[i] === 0;
-  // tiles next to a road
-  const nearRoad = new Uint8Array(GW * GH);
-  for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) {
-    if (grid[cz * GW + cx] !== 1) continue;
-    for (let d = 0; d < 6; d++) { const [nx, nz] = neighbor(cx, cz, d), j = idx(nx, nz); if (j >= 0) nearRoad[j] = 1; }
-  }
-  // regions of free deck
-  const reg = new Int32Array(GW * GH).fill(-1), regions: number[][] = [];
-  for (let i = 0; i < GW * GH; i++) {
-    if (grid[i] !== 0 || reg[i] >= 0) continue;
-    const list = [i]; reg[i] = regions.length;
-    for (let k = 0; k < list.length; k++) {
-      const cx = list[k] % GW, cz = Math.floor(list[k] / GW);
-      for (let d = 0; d < 6; d++) { const [nx, nz] = neighbor(cx, cz, d), j = idx(nx, nz); if (j >= 0 && grid[j] === 0 && reg[j] < 0) { reg[j] = regions.length; list.push(j); } }
-    }
-    regions.push(list);
-  }
-  // one step back from the road: close enough for a short belt to a turret, and it leaves the roadside tiles free
-  const second = new Uint8Array(GW * GH);
-  for (let i = 0; i < GW * GH; i++) {
-    if (grid[i] !== 0 || nearRoad[i]) continue;
-    const cx = i % GW, cz = Math.floor(i / GW);
-    for (let d = 0; d < 6; d++) { const [nx, nz] = neighbor(cx, cz, d), j = idx(nx, nz); if (j >= 0 && nearRoad[j]) second[i] = 1; }
-  }
-  const patch = (cells: number[], type: number, size: number, close = false) => {
-    // a seed tile away from the road if there is one (`close`: one step back from it), then grow over free tiles
-    const near = close ? cells.filter((i) => free(i) && second[i]) : [];
-    const away = near.length ? near : cells.filter((i) => free(i) && !nearRoad[i]), pool = away.length ? away : cells.filter(free);
-    if (!pool.length) return false;
-    const start = pool[Math.floor(r() * pool.length * 0.999)], got = [start];
-    ore[start] = type;
-    for (let k = 0; k < got.length && got.length < size; k++) {
-      const cx = got[k] % GW, cz = Math.floor(got[k] / GW), o = Math.floor(r() * 6);
-      for (let d = 0; d < 6 && got.length < size; d++) {
-        const [nx, nz] = neighbor(cx, cz, d + o), j = idx(nx, nz);
-        if (free(j) && (!nearRoad[j] || r() < 0.25)) { ore[j] = type; got.push(j); }
-      }
-    }
-    return true;
-  };
-  const T = (o: OreType) => ORE_TYPES.indexOf(o) + 1;
-  const order = regions.map((_, i) => i).sort((a, b) => regions[b].length - regions[a].length);
-  let oil = false;
-  for (const ri of order) {
-    const cells = regions[ri], n = cells.length;
-    if (n < 10) continue;
-    // (the first iron patch lies close to the road: the first turrets are fed straight from a mine)
-    patch(cells, T('iron_ore'), 5, true);
-    patch(cells, T('coal'), 4);
-    patch(cells, T('copper_ore'), 4);
-    if (n >= 45) { patch(cells, T('iron_ore'), 4); patch(cells, T('coal'), 3); }
-    if (n >= 70) patch(cells, T('copper_ore'), 3);
-    if (n >= 40 || !oil) { if (patch(cells, T('oil'), 3)) oil = true; }
-  }
-  return ore;
-}
+// Deposits are laid out by deposits.ts (with the supply crates, region by region); re-exported here for older callers.
+export { makeDeposits } from './deposits.ts';
 
 function newFac(id: number, type: FacType, cx: number, cz: number, dir: number, spent: number, ore: OreType | null): Fac {
   return {
@@ -258,6 +199,8 @@ export class Factory {
   /** per belt id: the tiles beside it that hold something that takes items, and per conveyor the items its line still leads to a taker for */
   private taps = new Map<number, number[]>();
   private want = new Map<number, number>();
+  /** glutRoute() per conveyor id * 64 + item index (cleared with every rebuild) */
+  private glutRoutes = new Map<number, { convs: Fac[]; takers: number[] }>();
   /** per belt or tunnel entrance id: the producer that loaded it last, and the producers waiting to load it (with the step they last tried) */
   private lastLoad = new Map<number, number>();
   private loadWait = new Map<number, Map<number, number>>();
@@ -265,7 +208,7 @@ export class Factory {
   /** per building / tower key ('f' + id, 't' + id): the pipe networks it hangs on, and the pole or generator that powers it */
   private pipeOf = new Map<string, PipeNet[]>();
   private powerBy = new Map<string, Fac>();
-  private diagKey = ''; private diagMap = new Map<string, Diag>();
+  private diagRev = -1; private diagCrates = -1; private diagMap = new Map<string, Diag>();
   private linkRev = -1; private linkList: Link[] = [];
   private host: FacHost;
 
@@ -328,11 +271,12 @@ export class Factory {
   sync() {
     if (this.dirty) this.rebuild();
     const m = this.host.mods;
-    for (const net of this.powerNets) {
+    for (let n = 0; n < this.powerNets.length; n++) {
+      const net = this.powerNets[n], nodes = net.nodes, cons = net.cons, towers = net.towers;
       let pot = 0, full = 0;
-      for (const g of net.nodes) if (g.type === 'generator') pot += GEN_POWER * m.gen * spd(g);
-      for (const f of net.cons) full += FACS[f.type].power || 0;
-      for (const t of net.towers) full += needsOf(t).power || 0;
+      for (let i = 0; i < nodes.length; i++) if (nodes[i].type === 'generator') pot += GEN_POWER * m.gen * spd(nodes[i]);
+      for (let i = 0; i < cons.length; i++) full += FACS[cons[i].type].power || 0;
+      for (let i = 0; i < towers.length; i++) full += needsOf(towers[i]).power || 0;
       net.potential = pot; net.full = full;
     }
   }
@@ -346,7 +290,7 @@ export class Factory {
     return it ? BIT[it] : 0;
   }
   /** True if belt b points at tile (cx, cz). */
-  private pointsAt(b: Fac, cx: number, cz: number) { const [x, z] = neighbor(b.cx, b.cz, b.dir); return x === cx && z === cz; }
+  private pointsAt(b: Fac, cx: number, cz: number) { const j = nb(b, b.dir); return j >= 0 && j === cz * GW + cx; }
   /** True if a tunnel is an entrance items may be fed into from tile (cx, cz): paired, and that tile is not the one in front of it. */
   private entranceFrom(q: Fac, cx: number, cz: number) { return q.type === 'tunnel' && q.pair > 0 && !q.exit && !this.pointsAt(q, cx, cz); }
   /** The items a conveyor's line still leads to a taker for: what stands beside a belt and beside everything after it. */
@@ -373,7 +317,7 @@ export class Factory {
   }
   /** What the tile in front of a belt (or tunnel exit) leads to. */
   private wantAhead(b: Fac, seen: Set<number>): number {
-    const [nx, nz] = neighbor(b.cx, b.cz, b.dir), j = idx(nx, nz), q = this.facAtI(j);
+    const j = nb(b, b.dir), q = this.facAtI(j);
     if (j < 0) return 0;
     if (!q) return this.wantsAt(j);
     if (q.type === 'belt') return this.pointsAt(q, b.cx, b.cz) ? 0 : this.wantOf(q, seen);
@@ -383,7 +327,7 @@ export class Factory {
   }
   /** What one side of a splitter leads to: a belt or tunnel leading away, or a taker beside it. */
   private wantSide(s: Fac, d: number, seen: Set<number>): number {
-    const [nx, nz] = neighbor(s.cx, s.cz, d), j = idx(nx, nz), q = this.facAtI(j);
+    const j = nb(s, d), q = this.facAtI(j);
     if (j < 0) return 0;
     if (!q) return this.wantsAt(j);
     if (q.type === 'belt') return this.pointsAt(q, s.cx, s.cz) ? 0 : this.wantOf(q, seen);
@@ -437,12 +381,12 @@ export class Factory {
     for (const t of this.host.towers) this.towerAt.set(t.cz * GW + t.cx, t);
     this.pairTunnels();
     // belts: who stands beside each one, and what every line is good for
-    this.taps.clear(); this.want.clear(); this.lastLoad.clear(); this.loadWait.clear();
+    this.taps.clear(); this.want.clear(); this.lastLoad.clear(); this.loadWait.clear(); this.glutRoutes.clear();
     for (const b of this.facs) {
       if (b.type !== 'belt') continue;
       const list: number[] = [];
       for (let d = 0; d < 6; d++) {
-        const [nx, nz] = neighbor(b.cx, b.cz, d), j = idx(nx, nz);
+        const j = nb(b, d);
         if (j >= 0 && this.wantsAt(j)) list.push(j);
       }
       this.taps.set(b.id, list);
@@ -471,7 +415,7 @@ export class Factory {
       for (let k = 0; k < net.pipes.length; k++) {
         const p = net.pipes[k];
         for (let d = 0; d < 6; d++) {
-          const [nx, nz] = neighbor(p.cx, p.cz, d), q = this.facAt(nx, nz);
+          const q = this.facAtI(nb(p, d));
           if (q && pipeLike(q.type) && q.net < 0) { q.net = net.id; net.pipes.push(q); }
         }
         const o = p.type === 'ptunnel' && p.pair ? this.byId.get(p.pair) : undefined;
@@ -484,7 +428,7 @@ export class Factory {
       net.amt = Math.min(net.amt, net.cap);
       const att = new Set<number>(), atTw = new Set<number>();
       for (const p of net.pipes) for (let d = 0; d < 6; d++) {
-        const [nx, nz] = neighbor(p.cx, p.cz, d), j = idx(nx, nz);
+        const j = nb(p, d);
         if (j < 0) continue;
         const q = this.facAtI(j);
         if (q && !pipeLike(q.type) && !att.has(q.id) && (FLUID_OUT[q.type] || FLUID_IN[q.type])) {
@@ -563,7 +507,7 @@ export class Factory {
     if (this.dirty) this.rebuild();
     let m = 0;
     for (let d = 0; d < 6; d++) {
-      const [nx, nz] = neighbor(f.cx, f.cz, d), j = idx(nx, nz);
+      const j = nb(f, d);
       if (j < 0) continue;
       const q = this.facAtI(j);
       if (q && (pipeLike(q.type) || FLUID_OUT[q.type] || FLUID_IN[q.type])) m |= 1 << d;
@@ -639,8 +583,23 @@ export class Factory {
   private glut(c: Fac, it: ItemType): boolean {
     const bit = BIT[it];
     if (!((this.want.get(c.id) || 0) & ~bit)) return false; // a line for this item alone keeps its queue
-    const seen = new Set<number>([c.id]), list = [c], takers = new Set<number>();
+    // the conveyors and takers a line reaches only change with the layout: worked out once per rebuild (see glutRoute)
+    const key = c.id * 64 + ITEM_IDX[it];
+    let r = this.glutRoutes.get(key);
+    if (!r) this.glutRoutes.set(key, (r = this.glutRoute(c, it)));
+    let need = 0;
+    for (let k = 0; k < r.takers.length; k++) need += this.need(r.takers[k], it);
     let carried = 0;
+    for (let k = 0; k < r.convs.length; k++) {
+      const items = r.convs[k].items;
+      for (let i = 0; i < items.length; i++) if (items[i].it === it) carried++;
+    }
+    return carried >= need;
+  }
+  /** The conveyors (at most 400) a line from conveyor c carries an item along, and the tiles beside them that take it. */
+  private glutRoute(c: Fac, it: ItemType): { convs: Fac[]; takers: number[] } {
+    const bit = BIT[it];
+    const seen = new Set<number>([c.id]), list = [c], takers = new Set<number>();
     const next = (from: Fac, j: number) => {
       const q = this.facAtI(j);
       if (!q) { if (this.wantsAt(j) & bit) takers.add(j); return; }
@@ -648,23 +607,21 @@ export class Factory {
       const on = q.type === 'belt' ? !this.pointsAt(q, from.cx, from.cz) : q.type === 'splitter' ? from.type !== 'splitter' : this.entranceFrom(q, from.cx, from.cz);
       if (on && (this.want.get(q.id) || 0) & bit && !seen.has(q.id)) { seen.add(q.id); list.push(q); }
     };
-    for (let k = 0; k < list.length && k < 400; k++) {
+    let k = 0;
+    for (; k < list.length && k < 400; k++) {
       const q = list[k];
-      for (const x of q.items) if (x.it === it) carried++;
       if (q.type === 'belt') {
         for (const j of this.taps.get(q.id) || []) if (this.wantsAt(j) & bit) takers.add(j);
-        const [nx, nz] = neighbor(q.cx, q.cz, q.dir), j = idx(nx, nz);
+        const j = nb(q, q.dir);
         if (j >= 0) next(q, j);
       } else if (q.type === 'tunnel') {
         const e = q.pair && !q.exit ? this.byId.get(q.pair) : undefined;
         if (!e) continue;
-        const [nx, nz] = neighbor(e.cx, e.cz, e.dir), j = idx(nx, nz);
+        const j = nb(e, e.dir);
         if (j >= 0) next(e, j);
-      } else for (let d = 0; d < 6; d++) { const [nx, nz] = neighbor(q.cx, q.cz, d), j = idx(nx, nz); if (j >= 0) next(q, j); }
+      } else for (let d = 0; d < 6; d++) { const j = nb(q, d); if (j >= 0) next(q, j); }
     }
-    let need = 0;
-    for (const j of takers) need += this.need(j, it);
-    return carried >= need;
+    return { convs: list.slice(0, k), takers: [...takers] };
   }
   /**
    * Producers that load the same belt take turns: one that loaded it last waits while another has been waiting for a slot
@@ -672,7 +629,7 @@ export class Factory {
    */
   private turn(b: Fac, f: Fac): boolean {
     const w = this.loadWait.get(b.id);
-    if (w && this.lastLoad.get(b.id) === f.id) for (const [id, t] of w) if (id !== f.id && t >= this.ticks - 1) return false;
+    if (w && this.lastLoad.get(b.id) === f.id) for (const id of w.keys()) if (id !== f.id && w.get(id)! >= this.ticks - 1) return false; // (keys: no [id, t] pair per entry)
     return true;
   }
   private waitFor(b: Fac, f: Fac) { let w = this.loadWait.get(b.id); if (!w) this.loadWait.set(b.id, (w = new Map())); w.set(f.id, this.ticks); }
@@ -680,7 +637,7 @@ export class Factory {
   private push(f: Fac, it: ItemType): boolean {
     const bit = BIT[it], crate = f.type === 'crate';
     for (let k = 0; k < 6; k++) {
-      const d = (f.rr + k) % 6, [nx, nz] = neighbor(f.cx, f.cz, d), j = idx(nx, nz);
+      const d = (f.rr + k) % 6, j = nb(f, d);
       if (j < 0) continue;
       const q = this.facAtI(j);
       let ok = false;
@@ -695,7 +652,7 @@ export class Factory {
   }
   /** Move the head item of a belt (or a tunnel exit, `from`) onto the tile in front: a belt, a splitter, a tunnel entrance; out of a tunnel also straight to a taker. */
   private passOn(from: Fac, it: BeltItem): boolean {
-    const [nx, nz] = neighbor(from.cx, from.cz, from.dir), j = idx(nx, nz);
+    const j = nb(from, from.dir);
     if (j < 0) return false;
     const q = this.facAtI(j);
     if (q && q.type === 'belt') return !this.pointsAt(q, from.cx, from.cz) && this.onBelt(q, it.it, it.c); // (two belts pointing at each other do not trade)
@@ -719,7 +676,7 @@ export class Factory {
         const it = b.items[i];
         if (it.p < TAP_AT) break;
         let took = false;
-        for (const j of taps) if (this.take(b, j, it)) { took = true; break; }
+        for (let k = 0; k < taps.length; k++) if (this.take(b, taps[k], it)) { took = true; break; }
         if (took) { b.items.splice(i, 1); break; }
       }
     }
@@ -732,7 +689,7 @@ export class Factory {
     if (this.unwanted(b, head.it)) { b.items.shift(); return; }
     // the end of the line: the item waits for a taker beside the tile. If the building it waits at is starved of something
     // else and can never take this one (its stock of it is full), the item is tipped off the end so the line cannot lock up.
-    const [nx, nz] = neighbor(b.cx, b.cz, b.dir), q = this.facAt(nx, nz);
+    const q = this.facAtI(nb(b, b.dir));
     if (q && (WANTS[q.type] & BIT[head.it]) && (q.state === 'noinput' || q.state === 'nofuel') && this.room(q, head.it) <= 0) b.items.shift();
   }
   /** A tunnel entrance: items travel underground at belt speed to the exit, then on from the exit like off a belt end. */
@@ -759,7 +716,7 @@ export class Factory {
       const it = s.items[i], bit = BIT[it.it];
       if (it.p < 0.5) break;
       for (let k = 0; k < 6; k++) {
-        const d = (s.rr + k) % 6, [nx, nz] = neighbor(s.cx, s.cz, d), j = idx(nx, nz);
+        const d = (s.rr + k) % 6, j = nb(s, d);
         if (j < 0) continue;
         const q = this.facAtI(j);
         let ok = false;
@@ -774,31 +731,52 @@ export class Factory {
   step(dt: number) {
     this.sync();
     this.ticks++;
-    const m = this.host.mods;
-    // power: what the generators can give against what is asked of them
-    for (const net of this.powerNets) {
+    // (indexed loops, no iterators or arrays: this runs every step of the game)
+    this.stepPower(dt);
+    this.stepFluids();
+    this.stepWork(dt);
+    // items move: buildings hand on their output, belts, splitters and tunnels carry theirs on
+    const facs = this.facs;
+    for (let i = 0; i < facs.length; i++) { const f = facs[i]; if (f.out.length && this.push(f, f.out[0])) f.out.shift(); }
+    for (let i = 0; i < facs.length; i++) {
+      const f = facs[i];
+      if (f.type === 'belt') this.stepBelt(f, dt);
+      else if (f.type === 'splitter') this.stepSplitter(f, dt);
+      else if (f.type === 'tunnel') this.stepTunnel(f, dt);
+    }
+  }
+  /** Power: what the generators can give against what is asked of them. */
+  private stepPower(dt: number) {
+    const m = this.host.mods, nets = this.powerNets;
+    for (let n = 0; n < nets.length; n++) {
+      const net = nets[n], nodes = net.nodes, cons = net.cons, towers = net.towers;
       let cap = 0, demand = 0;
-      for (const g of net.nodes) if (g.type === 'generator' && (g.fuel > 0 || (g.inv.coal || 0) > 0)) cap += GEN_POWER * m.gen * spd(g);
-      for (const f of net.cons) if (f.busy || (f.type === 'pump' && f.tout < TANK)) demand += FACS[f.type].power || 0;
-      for (const t of net.towers) demand += needsOf(t).power || 0;
+      for (let i = 0; i < nodes.length; i++) { const g = nodes[i]; if (g.type === 'generator' && (g.fuel > 0 || (g.inv.coal || 0) > 0)) cap += GEN_POWER * m.gen * spd(g); }
+      for (let i = 0; i < cons.length; i++) { const f = cons[i]; if (f.busy || (f.type === 'pump' && f.tout < TANK)) demand += FACS[f.type].power || 0; }
+      for (let i = 0; i < towers.length; i++) demand += needsOf(towers[i]).power || 0;
       net.cap = cap; net.demand = demand;
       net.sat = cap <= 0 ? 0 : demand <= 0 ? 1 : Math.min(1, cap / demand);
       const load = cap > 0 ? Math.min(1, demand / cap) : 0;
-      for (const g of net.nodes) {
+      for (let i = 0; i < nodes.length; i++) {
+        const g = nodes[i];
         if (g.type !== 'generator') continue;
         g.gen = 0;
         if (g.fuel <= 0 && (g.inv.coal || 0) > 0) { g.inv.coal!--; g.fuel += COAL_SECONDS; }
         // (a bigger generator burns its coal faster: a level buys power, not fuel)
         if (g.fuel > 0) { g.fuel -= dt * load * spd(g); g.gen = GEN_POWER * m.gen * spd(g) * load; g.state = load > 0 ? 'ok' : 'idle'; } else g.state = 'nofuel';
       }
-      for (const f of net.cons) f.pwr = net.sat;
-      for (const t of net.towers) t.pwr = net.sat;
+      for (let i = 0; i < cons.length; i++) cons[i].pwr = net.sat;
+      for (let i = 0; i < towers.length; i++) towers[i].pwr = net.sat;
     }
-
-    // fluids: producers fill their networks, consumers draw from them; neighbours trade directly too
-    for (const net of this.pipeNets) {
+  }
+  /** Fluids: producers fill their networks, consumers draw from them; neighbours trade directly too. */
+  private stepFluids() {
+    const nets = this.pipeNets;
+    for (let n = 0; n < nets.length; n++) {
+      const net = nets[n], prod = net.prod, cons = net.cons, towers = net.towers;
       if (!net.forced && net.amt <= 0.001) { net.fluid = null; net.amt = 0; }
-      for (const p of net.prod) {
+      for (let i = 0; i < prod.length; i++) {
+        const p = prod[i];
         const fl = FLUID_OUT[p.type]!;
         if (net.fluid && net.fluid !== fl) continue;
         const n = Math.min(p.tout, net.cap - net.amt);
@@ -807,27 +785,30 @@ export class Factory {
       if (!net.fluid) continue;
       // shared out in proportion to the room in each tank, so when the producers cannot keep up nobody runs dry first
       let room = 0;
-      for (const c of net.cons) if (FLUID_IN[c.type] === net.fluid) room += Math.max(0, TANK - c.tin);
-      for (const t of net.towers) if (needsOf(t).fluid === net.fluid) room += Math.max(0, TOWER_TANK - t.tank);
+      for (let i = 0; i < cons.length; i++) { const c = cons[i]; if (FLUID_IN[c.type] === net.fluid) room += Math.max(0, TANK - c.tin); }
+      for (let i = 0; i < towers.length; i++) { const t = towers[i]; if (needsOf(t).fluid === net.fluid) room += Math.max(0, TOWER_TANK - t.tank); }
       if (room <= 0 || net.amt <= 0) continue;
       const share = Math.min(1, net.amt / room);
-      for (const c of net.cons) {
+      for (let i = 0; i < cons.length; i++) {
+        const c = cons[i];
         if (FLUID_IN[c.type] !== net.fluid) continue;
         const n = Math.max(0, TANK - c.tin) * share;
         c.tin += n; net.amt -= n;
       }
-      for (const t of net.towers) {
+      for (let i = 0; i < towers.length; i++) {
+        const t = towers[i];
         if (needsOf(t).fluid !== net.fluid) continue;
         const n = Math.max(0, TOWER_TANK - t.tank) * share;
         t.tank += n; net.amt -= n;
       }
       net.amt = Math.max(0, net.amt);
     }
-    for (const p of this.facs) {
-      const fl = FLUID_OUT[p.type];
+    const facs = this.facs;
+    for (let i = 0; i < facs.length; i++) {
+      const p = facs[i], fl = FLUID_OUT[p.type];
       if (!fl || p.tout <= 0) continue;
       for (let d = 0; d < 6 && p.tout > 0; d++) {
-        const [nx, nz] = neighbor(p.cx, p.cz, d), j = idx(nx, nz);
+        const j = nb(p, d);
         if (j < 0) continue;
         const q = this.facAtI(j);
         if (q && !pipeLike(q.type) && FLUID_IN[q.type] === fl) { const n = Math.min(p.tout, TANK - q.tin); q.tin += n; p.tout -= n; continue; }
@@ -835,10 +816,12 @@ export class Factory {
         if (t && needsOf(t).fluid === fl) { const n = Math.min(p.tout, TOWER_TANK - t.tank); if (n > 0) { t.tank += n; p.tout -= n; } }
       }
     }
-
-    // buildings at work
-    for (const f of this.facs) {
-      const k = spd(f);
+  }
+  /** Buildings at work. */
+  private stepWork(dt: number) {
+    const m = this.host.mods, facs = this.facs;
+    for (let i = 0; i < facs.length; i++) {
+      const f = facs[i], k = spd(f);
       switch (f.type) {
         case 'mine': {
           if (!f.ore || f.ore === 'oil') { f.state = 'nodeposit'; break; }
@@ -875,10 +858,11 @@ export class Factory {
           if (!f.busy) {
             if (r.out && f.out.length >= OUT_CAP) { f.state = 'full'; break; }
             let ok = true;
-            for (const key in r.inp) if ((f.inv[key as ItemType] || 0) < r.inp[key as ItemType]!) ok = false;
+            const inp = RECIPE_IN[f.type]!;
+            for (let q = 0; q < inp.length; q += 2) if ((f.inv[inp[q] as ItemType] || 0) < (inp[q + 1] as number)) ok = false;
             if (r.fluid && f.tin < r.fluid[1]) ok = false;
             if (!ok) { f.state = 'noinput'; break; }
-            for (const key in r.inp) f.inv[key as ItemType]! -= r.inp[key as ItemType]!;
+            for (let q = 0; q < inp.length; q += 2) f.inv[inp[q] as ItemType]! -= inp[q + 1] as number;
             if (r.fluid) f.tin -= r.fluid[1];
             f.busy = true; f.prog = 0;
           }
@@ -917,13 +901,6 @@ export class Factory {
         case 'tunnel': f.state = f.pair ? (f.items.length ? 'ok' : 'idle') : 'noinput'; break;
       }
     }
-    // items move: buildings hand on their output, belts, splitters and tunnels carry theirs on
-    for (const f of this.facs) if (f.out.length && this.push(f, f.out[0])) f.out.shift();
-    for (const f of this.facs) {
-      if (f.type === 'belt') this.stepBelt(f, dt);
-      else if (f.type === 'splitter') this.stepSplitter(f, dt);
-      else if (f.type === 'tunnel') this.stepTunnel(f, dt);
-    }
   }
 
   // ---------- what will reach what (while time stands still) ----------
@@ -953,14 +930,14 @@ export class Factory {
       if (!b) continue;
       const name = [FACS[f.type].name + ' (by belt)'];
       for (let d = 0; d < 6; d++) {
-        const [nx, nz] = neighbor(f.cx, f.cz, d), q = this.facAt(nx, nz);
+        const q = this.facAtI(nb(f, d));
         if (q && (q.type === 'belt' || this.entranceFrom(q, f.cx, f.cz))) add(q, b & (this.want.get(q.id) || 0), () => name);
       }
     }
     for (let k = 0; k < queue.length && k < 20000; k++) {
       const c = queue[k], b = bits.get(c.id) || 0, from = (it: ItemType) => src.get(c.id)!.get(it) || [];
       const ahead = (e: Fac) => {
-        const [nx, nz] = neighbor(e.cx, e.cz, e.dir), q = this.facAt(nx, nz);
+        const q = this.facAtI(nb(e, e.dir));
         if (!q) return;
         if (q.type === 'belt' && !this.pointsAt(q, e.cx, e.cz)) add(q, b, from);
         else if (q.type === 'splitter') add(q, b, from);
@@ -970,7 +947,7 @@ export class Factory {
       else if (c.type === 'tunnel' && c.pair && !c.exit) { const e = this.byId.get(c.pair)!; add(e, b, from); }
       else if (c.type === 'tunnel' && c.exit) ahead(c);
       else if (c.type === 'splitter') for (let d = 0; d < 6; d++) {
-        const [nx, nz] = neighbor(c.cx, c.cz, d), q = this.facAt(nx, nz);
+        const q = this.facAtI(nb(c, d));
         if (q && (q.type === 'belt' ? !this.pointsAt(q, c.cx, c.cz) : this.entranceFrom(q, c.cx, c.cz))) add(q, b & (this.want.get(q.id) || 0), from);
       }
     }
@@ -989,7 +966,7 @@ export class Factory {
       }
     };
     for (let d = 0; d < 6; d++) {
-      const [nx, nz] = neighbor(cx, cz, d), q = this.facAt(nx, nz);
+      const q = this.facAtI(NB[(cz * GW + cx) * 6 + d]);
       if (!q) continue;
       const via = (it: ItemType) => cr.src.get(q.id)?.get(it) || [];
       if (q.type === 'belt' || q.type === 'splitter' || (q.type === 'tunnel' && q.exit && this.pointsAt(q, cx, cz))) add(cr.bits.get(q.id) || 0, via);
@@ -1000,7 +977,7 @@ export class Factory {
   /** Who will take an item a producer on tile (cx, cz) makes: a neighbour that needs it, or a belt or tunnel beside it whose line wants it. */
   private taker(f: Fac, bit: number): boolean {
     for (let d = 0; d < 6; d++) {
-      const [nx, nz] = neighbor(f.cx, f.cz, d), j = idx(nx, nz), q = this.facAtI(j);
+      const j = nb(f, d), q = this.facAtI(j);
       if (j < 0) continue;
       if (q && (q.type === 'belt' || this.entranceFrom(q, f.cx, f.cz))) { if ((this.want.get(q.id) || 0) & bit) return true; }
       else if ((!q || !conveyor(q.type)) && this.wantsAt(j) & bit) return true;
@@ -1010,7 +987,7 @@ export class Factory {
   /** Who will take a fluid a producer makes: a neighbour that draws it, or a pipe network it feeds with a consumer of it. */
   private fluidTaker(f: Fac, fl: FluidType): boolean {
     for (let d = 0; d < 6; d++) {
-      const [nx, nz] = neighbor(f.cx, f.cz, d), j = idx(nx, nz), q = this.facAtI(j);
+      const j = nb(f, d), q = this.facAtI(j);
       if (j < 0) continue;
       if (q && !pipeLike(q.type) && FLUID_IN[q.type] === fl) return true;
       const t = this.towerAt.get(j);
@@ -1035,17 +1012,16 @@ export class Factory {
   diagnose(): Map<string, Diag> {
     this.sync();
     let crates = 0;
-    for (const f of this.facs) if (f.type === 'crate' && f.left > 0) crates++;
-    const key = this.rev + ':' + crates;
-    if (key === this.diagKey) return this.diagMap;
-    this.diagKey = key;
+    for (let i = 0; i < this.facs.length; i++) { const f = this.facs[i]; if (f.type === 'crate' && f.left > 0) crates++; }
+    if (this.rev === this.diagRev && crates === this.diagCrates) return this.diagMap;
+    this.diagRev = this.rev; this.diagCrates = crates;
     // fixed point: what every producer will make, which generators get coal, which fluid producers work
     const out = new Map<number, number>(), fluidOk = new Set<number>();
     let gens = new Set<number>(), cr = this.carry(out);
     const powered = (key: string) => { const n = this.powerBy.get(key); return !!n && this.powerNets[n.net].nodes.some((g) => g.type === 'generator' && gens.has(g.id)); };
     const fluidFor = (key: string, cx: number, cz: number, fl: FluidType): string | null => {
       for (let d = 0; d < 6; d++) {
-        const [nx, nz] = neighbor(cx, cz, d), q = this.facAt(nx, nz);
+        const q = this.facAtI(NB[(cz * GW + cx) * 6 + d]);
         if (q && FLUID_OUT[q.type] === fl && fluidOk.has(q.id)) return FACS[q.type].name;
       }
       for (const n of this.pipeOf.get(key) || []) {
@@ -1093,7 +1069,8 @@ export class Factory {
     }
     // the diagnosis itself
     const res = new Map<string, Diag>();
-    const report = (key: string, missing: string[], from: Set<string>) => res.set(key, { ok: !missing.length, missing, from: [...from] });
+    // (a supplier right beside it is named once: "Supply Crate", not also "Supply Crate (by belt)" for a belt it drops onto that runs past)
+    const report = (key: string, missing: string[], from: Set<string>) => res.set(key, { ok: !missing.length, missing, from: [...from].filter((n) => !n.endsWith(' (by belt)') || !from.has(n.slice(0, -10))) });
     const power = (key: string, missing: string[], from: Set<string>) => {
       if (powered(key)) from.add(FACS[this.powerBy.get(key)!.type].name); else missing.push('power');
     };
@@ -1190,25 +1167,25 @@ export class Factory {
           // (not where the belt before this one already runs past the same taker with the same items)
           let dup = false;
           for (let d = 0; d < 6 && !dup; d++) {
-            const [nx, nz] = neighbor(b.cx, b.cz, d), u = this.facAt(nx, nz);
+            const u = this.facAtI(nb(b, d));
             if (u && u.type === 'belt' && this.pointsAt(u, b.cx, b.cz) && (this.taps.get(u.id) || []).includes(j) && fits(j, cr.bits.get(u.id) || 0)) dup = true;
           }
           if (!dup) link('belt', b, j);
         }
       } else if (b.type === 'splitter') {
         for (let d = 0; d < 6; d++) {
-          const [nx, nz] = neighbor(b.cx, b.cz, d), j = idx(nx, nz), q = this.facAtI(j);
+          const j = nb(b, d), q = this.facAtI(j);
           if (j >= 0 && !(q && conveyor(q.type)) && fits(j, bits)) link('belt', b, j);
         }
       } else if (b.type === 'tunnel' && b.exit) {
-        const e = this.byId.get(b.pair), [nx, nz] = neighbor(b.cx, b.cz, b.dir), j = idx(nx, nz);
+        const e = this.byId.get(b.pair), j = nb(b, b.dir);
         if (e && j >= 0 && fits(j, cr.bits.get(e.id) || 0)) link('belt', b, j);
       }
     }
     for (const net of this.pipeNets) {
       const done = new Set<string>();
       for (const p of net.pipes) for (let d = 0; d < 6; d++) {
-        const [nx, nz] = neighbor(p.cx, p.cz, d), j = idx(nx, nz);
+        const j = nb(p, d);
         if (j < 0) continue;
         const q = this.facAtI(j), t = q ? undefined : this.towerAt.get(j);
         const fl = q ? (pipeLike(q.type) ? undefined : FLUID_IN[q.type]) : t && needsOf(t).fluid;

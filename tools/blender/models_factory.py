@@ -5,7 +5,7 @@ import importlib
 import traceback
 
 FACTORY = []
-for _name in ('fac_extract', 'fac_process', 'fac_make', 'fac_power', 'fac_extra'):
+for _name in ('fac_extract', 'fac_process', 'fac_make', 'fac_power', 'fac_extra', 'fac_transit'):
     try:
         _mod = importlib.import_module(_name)
         importlib.reload(_mod)

@@ -9,7 +9,7 @@ const base = process.argv[3] || 'http://localhost:5184';
 mkdirSync(out, { recursive: true });
 const browser = await puppeteer.launch({
   executablePath: process.env.CHROMIUM || '/usr/bin/chromium', headless: true, protocolTimeout: 90000,
-  args: ['--no-sandbox', '--hide-scrollbars', '--mute-audio', '--use-gl=angle', '--use-angle=gl', '--ignore-gpu-blocklist'],
+  args: ['--no-sandbox', '--hide-scrollbars', '--mute-audio', '--headless=new', '--use-gl=angle', '--use-angle=gl', '--enable-gpu', '--ignore-gpu-blocklist'],
   defaultViewport: { width: 1600, height: 900 },
 });
 const errors = [];

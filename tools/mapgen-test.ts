@@ -6,6 +6,8 @@ import { GameMap, validateMap, sanitizeMap, encodeMap, decodeMap } from '../src/
 import type { MapDef, LanePoint } from '../src/game/map.ts';
 import { generateMap, generateMapEx, fallbackMap, mapStats, MIN_FREE } from '../src/game/mapgen.ts';
 import { MAPS, mapById, HANDMADE } from '../src/game/maps.ts';
+import { checkResources, makeDeposits, mapResources, oreLayout, layoutOre, autoOre, oreKey, startGrid, planCrates, oreVal, BELT_REACH } from '../src/game/deposits.ts';
+import { ORE_TYPES } from '../src/game/data.ts';
 
 const SEEDS = +(process.argv[2] || 400) || 400;
 const NOPLAY = process.argv.includes('--noplay');
@@ -177,6 +179,10 @@ function check(def: MapDef, tier: number, seed: number): string[] {
   if (!rt || JSON.stringify(rt) !== JSON.stringify(def)) bad.push('sanitizeMap round trip differs');
   const viaCode = decodeMap(encodeMap(def));
   if (!viaCode || JSON.stringify(viaCode.lanes) !== JSON.stringify(def.lanes) || JSON.stringify(viaCode.blocked) !== JSON.stringify(def.blocked)) bad.push('share code round trip differs');
+  // --- resources: the automatic deposits pass the validator ---
+  const rc = checkResources(def);
+  if (!rc.ok) bad.push('resources: ' + rc.problems.join(' / '));
+  resChecked++;
   return bad;
 }
 
@@ -205,6 +211,7 @@ function ascii(def: MapDef): string {
 
 // ------------------------------------------------------------------ run
 let fail = 0;
+let resChecked = 0;
 const report = (m: string) => { fail++; if (fail <= 40) console.log('FAIL', m); };
 const sum = [1, 2, 3].map(() => ({ n: 0, attempts: 0, fallback: 0, lanes: [0, 0, 0, 0], cross: [0, 0, 0, 0, 0], len: 0, lenMin: 1e9, lenMax: 0, free: 0, freeMin: 1e9, gold: 0, goldMin: 1e9, goldMax: 0, maxL: [0, 0, 0, 0], edges: [0, 0, 0, 0], turns: 0, shapes: new Set<string>(), self: 0, ms: 0, msMax: 0, names: new Set<string>(), axis: [0, 0, 0], axes: [0, 0, 0, 0], hairpins: 0, bends: 0, longest: 0 }));
 for (let tier = 1; tier <= 3; tier++) {
@@ -291,6 +298,90 @@ for (const m of MAPS) {
   }
   if (mapStats(m).crossings.length !== bridges) report(`map ${m.id}: mapStats bridge count`);
   if ((m.id === 'overpass' || m.id === 'highline') && !bridges) report(`map ${m.id} should show a bridge`);
+  // resources: every pre-made map (hand-made and curated) passes the validator
+  const rc = checkResources(m);
+  if (!rc.ok) report(`map ${m.id}: resources: ${rc.problems.join(' / ')}`);
+  resChecked++;
+}
+
+// ---------- resources: independent checks of the rules, the ore field's round trip and determinism ----------
+{
+  const T = ORE_TYPES.map(oreVal);
+  /** steps over free deck (no crates) from a set of tiles: an independent BFS */
+  const bfs = (g: Uint8Array, crate: Set<number>, from: number[]) => {
+    const D = new Map<number, number>(), q = [...from];
+    for (const i of from) D.set(i, 0);
+    for (let k = 0; k < q.length; k++) for (const [x, z] of neighbors(q[k] % GW, (q[k] / GW) | 0)) {
+      const j = z * GW + x;
+      if (!inBoard(x, z) || g[j] !== 0 || crate.has(j) || D.has(j)) continue;
+      D.set(j, D.get(q[k])! + 1); q.push(j);
+    }
+    return D;
+  };
+  let samples = 0, rules = 0;
+  const pool: MapDef[] = [...MAPS];
+  for (let t = 1; t <= 3; t++) for (let s = 1; s <= 80; s++) pool.push(generateMap(s * 7 + t, t));
+  for (const def of pool) {
+    const res = mapResources(new GameMap(def)), g = res.grid, ore = res.ore, crate = new Set(res.crates.map((c) => c.cz * GW + c.cx));
+    samples++;
+    // deposits only on free deck, never on a crate; every kind present
+    for (let i = 0; i < ore.length; i++) if (ore[i] && (g[i] !== 0 || crate.has(i))) { report(`${def.id}: deposit on a taken tile ${i % GW},${(i / GW) | 0}`); break; }
+    for (const v of T) if (!ore.includes(v)) report(`${def.id}: no ${ORE_TYPES[v - 1]}`);
+    // every iron crate: some free roadside tile within 2 on its side (by walking: a spiral's region wraps round its road), and iron within BELT_REACH steps of one of them
+    for (const c of res.crates) {
+      if (c.it !== 'iron_ore') continue;
+      const own = bfs(g, crate, [...neighbors(c.cx, c.cz)].filter(([x, z]) => inBoard(x, z) && g[z * GW + x] === 0 && !crate.has(z * GW + x)).map(([x, z]) => z * GW + x));
+      const spots = disc(c.cx, c.cz, 2).map(([x, z]) => z * GW + x).filter((j) => (own.get(j) ?? 9) <= 1 && !ore[j] && neighbors(j % GW, (j / GW) | 0).some(([x, z]) => inBoard(x, z) && g[z * GW + x] === 1));
+      const D = bfs(g, crate, spots);
+      const near = [...D].some(([j, d]) => d <= BELT_REACH && ore[j] === oreVal('iron_ore'));
+      const coal = [...own.keys()].some((j) => ore[j] === oreVal('coal'));
+      if (!spots.length || !near || !coal) report(`${def.id}: crate at ${c.cx},${c.cz}: ${spots.length} turret tiles, iron near ${near}, coal on its side ${coal}`);
+      rules++;
+    }
+    // deterministic: the same map, rebuilt from its data, gives the same deposits and crates
+    const again = mapResources(new GameMap(JSON.parse(JSON.stringify(def))));
+    if (again.ore.join() !== ore.join() || JSON.stringify(again.crates) !== JSON.stringify(res.crates)) report(`${def.id}: resources not deterministic`);
+    // the rules do not care about the name (renaming a map in the editor keeps its deposits)
+    if (oreKey({ ...def, name: 'Renamed', id: 'other' }) !== oreKey(def)) report(`${def.id}: the deposit key depends on the name`);
+    // the ore field round trip: grid -> field -> grid, through sanitizeMap and a share code; a map that carries it uses it
+    const field = oreLayout(ore);
+    if (layoutOre(field).join() !== ore.join()) report(`${def.id}: oreLayout / layoutOre do not round-trip`);
+    const own = { ...def, ore: field };
+    const s1 = sanitizeMap(JSON.parse(JSON.stringify(own))), s2 = decodeMap(encodeMap(own));
+    if (!s1 || JSON.stringify(s1.ore) !== JSON.stringify(field)) report(`${def.id}: sanitizeMap changes the ore field`);
+    if (!s2 || JSON.stringify(s2.ore) !== JSON.stringify(field)) report(`${def.id}: the share code loses the ore field`);
+    if (mapResources(new GameMap(own)).ore.join() !== ore.join() || mapResources(new GameMap(own)).auto) report(`${def.id}: a map's own ore field is not what the run uses`);
+    if (JSON.stringify(autoOre(own)) !== JSON.stringify(field)) report(`${def.id}: autoOre differs from the automatic layout`);
+    if (!checkResources(own).ok) report(`${def.id}: its automatic layout, saved as its own, fails the validator`);
+  }
+  // an empty own layout is kept (it means "no deposits"), and the validator says what is missing
+  const bare = { ...MAPS[0], ore: {} };
+  const sb = sanitizeMap(JSON.parse(JSON.stringify(bare)));
+  if (!sb || !sb.ore || Object.keys(sb.ore).length || mapResources(new GameMap(sb)).ore.some((v) => v)) report('an empty ore field does not survive as "no deposits"');
+  const cb = checkResources(sb!);
+  if (cb.ok || cb.problems.filter((p) => /has no (iron|copper|coal|oil) deposit/.test(p)).length !== 4) report(`empty ore field: validator says ${cb.problems.join(' / ')}`);
+  // untrusted ore fields: junk, off-board, on roads, under towers, duplicates are dropped; other fields left alone
+  const m0 = MAPS[0], g0 = startGrid(new GameMap(m0)), road = g0.indexOf(1), crates0 = planCrates(new GameMap(m0), g0);
+  const free0 = [...g0.keys()].filter((i) => g0[i] === 0).slice(0, 3);
+  const junk = sanitizeMap({ ...m0, ore: { iron_ore: [[free0[0] % GW, (free0[0] / GW) | 0], [99, 2], [-1, 0], [1.5, 2], 'x', [road % GW, (road / GW) | 0]], coal: [[free0[0] % GW, (free0[0] / GW) | 0], [free0[1] % GW, (free0[1] / GW) | 0]], gold: [[1, 1]], __proto__: { x: 1 } } });
+  if (!junk || JSON.stringify(junk.ore) !== JSON.stringify({ iron_ore: [[free0[0] % GW, (free0[0] / GW) | 0]], coal: [[free0[1] % GW, (free0[1] / GW) | 0]] })) report(`untrusted ore field: ${JSON.stringify(junk?.ore)}`);
+  if (sanitizeMap({ ...m0, ore: 'x' })?.ore !== undefined || sanitizeMap({ ...m0, ore: [1] })?.ore !== undefined) report('a non-object ore field is not dropped');
+  // a layout that had tiles but lost every one (an ore kind this build does not know, every tile on a road) falls back to the automatic one
+  for (const lost of [{ foo: [[1, 1]] }, { iron_ore: [[road % GW, (road / GW) | 0]] }]) {
+    const sl = sanitizeMap({ ...m0, ore: lost });
+    if (!sl || sl.ore !== undefined || !mapResources(new GameMap(sl)).auto || !checkResources(sl).ok) report(`an ore field that lost all its tiles (${JSON.stringify(lost)}) does not fall back to the automatic layout: ${JSON.stringify(sl?.ore)}`);
+  }
+  // a deposit on a crate's tile: the run leaves it out, the validator flags it
+  const onCrate = { ...m0, ore: { ...autoOre(m0), oil: [...(autoOre(m0).oil || []), [crates0[0].cx, crates0[0].cz] as [number, number]] } };
+  const rc0 = checkResources(onCrate);
+  if (rc0.ok || !rc0.problems.some((p) => p.includes("supply crate's tile")) || mapResources(new GameMap(onCrate)).ore[crates0[0].cz * GW + crates0[0].cx]) report('a deposit on a crate tile is not caught');
+  // a map whose only iron near a crate is wiped fails the validator, and says which crate
+  const noIron = { ...m0, ore: { ...autoOre(m0), iron_ore: [] } };
+  if (checkResources(noIron).ok || !checkResources(noIron).problems.some((p) => p.startsWith('No iron within'))) report('missing iron near a crate is not caught');
+  // makeDeposits: deterministic per key, and the key matters
+  const k1 = makeDeposits(g0, 'a', crates0, 2, m0.core).join(), k2 = makeDeposits(g0, 'a', crates0, 2, m0.core).join(), k3 = makeDeposits(g0, 'b', crates0, 2, m0.core).join();
+  if (k1 !== k2 || k1 === k3) report('makeDeposits is not deterministic per key');
+  console.log(`\n=== resources ===\n  validator passed on ${resChecked} maps (${MAPS.length} pre-made, the rest generated); independent rule checks on ${samples} maps, ${rules} iron crates`);
 }
 
 console.log(`\n=== ${SEEDS} seeds x 3 tiers ===`);
@@ -343,5 +434,11 @@ if (!NOPLAY) {
   } catch (e) { console.log('  playtest skipped, the simulation is not loadable right now:', String(e).split('\n')[0]); }
 }
 
+// the pre-made list reads apart: no two maps share a name or a place name (the generator's names repeat over thirty picks)
+{
+  const place = (n: string) => n.replace(/^Sector \S+ /, '');
+  const dup = MAPS.map((m) => place(m.name)).filter((w, i, a) => a.indexOf(w) !== i);
+  if (dup.length || MAPS.some((m) => !m.name || m.name.length > 28)) report(`pre-made map names repeat: ${dup.join(', ')}`);
+}
 console.log(fail ? `\n${fail} FAILED` : '\nall map generator checks passed');
 process.exit(fail ? 1 : 0);

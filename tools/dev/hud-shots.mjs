@@ -1,5 +1,5 @@
 // Captures of the menus and HUD states that are hard to reach by hand: the map picker, the Music sheet,
-// the Titan bar, the Overlink, jammed and stunned towers, and the F3 diagnostics.
+// the Titan bar, its landing and walk with the towers stunned, a jammed tower, and the F3 diagnostics.
 //   node tools/dev/hud-shots.mjs <outDir> [baseUrl]
 import puppeteer from 'puppeteer-core';
 import { mkdirSync } from 'node:fs';
@@ -10,7 +10,7 @@ const base = process.argv[3] || 'http://localhost:5183';
 mkdirSync(out, { recursive: true });
 const browser = await puppeteer.launch({
   executablePath: process.env.CHROMIUM || '/usr/bin/chromium', headless: true, protocolTimeout: 120000,
-  args: ['--no-sandbox', '--hide-scrollbars', '--mute-audio', '--use-gl=angle', '--use-angle=gl', '--ignore-gpu-blocklist'],
+  args: ['--no-sandbox', '--hide-scrollbars', '--mute-audio', '--headless=new', '--use-gl=angle', '--use-angle=gl', '--enable-gpu', '--ignore-gpu-blocklist'],
   defaultViewport: { width: 1600, height: 900 },
 });
 const errors = [];
@@ -59,7 +59,7 @@ for (const [w, h] of [[1600, 900], [1280, 720], [1920, 1080]]) {
   await p.close();
 }
 
-// 3. a run: Titan warning, landing, Overlink, a jammed tower, the diagnostics
+// 3. a run: Titan warning, landing and walk (towers stunned), a jammed tower, the diagnostics
 {
   const p = await open();
   await p.evaluate(() => { window.__dbg.startGame('solo'); });
@@ -69,7 +69,7 @@ for (const [w, h] of [[1600, 900], [1280, 720], [1920, 1080]]) {
     s.gold = 5000;
     for (const [t, cx, cz] of [['pulse', 10, 8], ['pulse', 12, 11], ['arc', 14, 7]]) for (let d = 0; d < 6 && !s.build(t, cx + d, cz); d++);
     s.titan.phase = 'warn'; s.titan.wave = s.wave + 2; s.titan.danger = 0.62;
-    const t = s.towers.find((x) => x.type !== 'spire');
+    const t = s.towers[0];
     if (t) t.jam = 30;
   });
   await p.mouse.click(800, 450);
@@ -80,11 +80,9 @@ for (const [w, h] of [[1600, 900], [1280, 720], [1920, 1080]]) {
   await snap(p, 'titan-warn-jam', 1300);
   await p.evaluate(() => { const s = window.__dbg.sim; s.titanLeap(0); });
   await snap(p, 'titan-landing', 1200);
-  await snap(p, 'titan-overlink', 3400);
-  const state = await p.evaluate(() => { const s = window.__dbg.sim; return { phase: s.titan.phase, overlink: s.overlink, stunned: s.towers.filter((t) => t.stun > 0).length, ult: document.getElementById('ult-label').textContent, bar: document.getElementById('titan-label').textContent, tutor: document.getElementById('tutor-text').textContent }; });
+  await snap(p, 'titan-walk', 3400);
+  const state = await p.evaluate(() => { const s = window.__dbg.sim; return { phase: s.titan.phase, stunned: s.towers.filter((t) => t.stun > 0).length, bar: document.getElementById('titan-label').textContent }; });
   console.log('after the landing:', JSON.stringify(state));
-  await p.keyboard.press('Space');
-  await snap(p, 'titan-uplink', 1800);
   await p.close();
 }
 

@@ -20,6 +20,7 @@ import { MAPS } from '../src/game/maps.ts';
 import { sanitizeMap, validateMap, encodeMap, decodeMap } from '../src/game/map.ts';
 import { makeDeposits, MINE_TIME, OUT_CAP, TOWER_STOCK, TANK, TOWER_TANK, SUPPLY, COAL_SMELTS, SMELT_TIME, CRATE_TIME, BELT_SPEED, TUNNEL_REACH, SPLIT_CAP, PUMP_RATE } from '../src/game/factory.ts';
 import type { Fac } from '../src/game/factory.ts';
+import { checkResources, BELT_REACH } from '../src/game/deposits.ts';
 /** Switchback with its first diagonal raised to level 2. */
 const hill: MapDef = { ...MAPS[0], id: 'hill', towers: [], lanes: [MAPS[0].lanes[0].map((p, i) => (i === 1 || i === 2 ? [p[0], p[1], 2] : p))] };
 let fail = 0;
@@ -678,7 +679,7 @@ const bare: MapDef = { ...MAPS[0], towers: [] };
     const count = (evs: Ev[], k: string, id?: number) => evs.filter((e) => e.k === k && (id === undefined || e.id === id)).length;
     const dT = ENEMIES.titan;
     ok(ENEMY_SCALE.titan === 1 && dT.r === 3.2 && dT.y === 9
-      && TITAN_LAND === 2.5 && TITAN_STUN === 6 && TITAN_WINDUP === 4 && TITAN_STRIKE_EVERY === 5 && TITAN_STRIKE === 0.4 && TITAN_SLOW === 0.4 && TITAN_SURVIVAL === 22 && TITAN_AGAIN === 12 && TITAN_SMASH[0] === 20 && TITAN_SMASH[1] === 40 && TITAN_LEAD === 5
+      && TITAN_LAND === 2.5 && TITAN_STUN === 7 && TITAN_WINDUP === 4 && TITAN_STRIKE_EVERY === 5 && TITAN_STRIKE === 0.4 && TITAN_SLOW === 0.4 && TITAN_SURVIVAL === 22 && TITAN_AGAIN === 12 && TITAN_SMASH[0] === 20 && TITAN_SMASH[1] === 40 && TITAN_LEAD === 5
       && TITAN_PHASES.join() === 'none,far,warn,landing,walk,dead' && !WAVE_POOL.includes('titan'), 'Titan data follows the contract');
     /** Start the Titan's wave and (unless `leap` is set) run to just after the impact. Returns the Titan. */
     const land = (s: Sim, leap = false, evs?: Ev[]): Enemy => {
@@ -967,6 +968,32 @@ ok(!sv.won, 'survival never "wins"'); console.log('survival reached wave', sv.wa
     }
     const g = new Sim({ seed: 1, map: bare }).map.grid;
     ok(makeDeposits(g, 'x').every((v, i, a) => v === makeDeposits(g, 'x')[i] && (v === 0 || g[i] === 0)) && a2s(makeDeposits(g, 'x')) !== a2s(makeDeposits(g, 'y')), 'makeDeposits is deterministic per key, and the key matters');
+    // the rules (deposits.ts): crates first, then iron within a short belt of every crate of iron ore on its own side of
+    // the road; a run uses the map's own ore field when it has one; the validator passes on every pre-made map
+    for (const m of MAPS) {
+      const s = new Sim({ seed: 3, map: m }), rc = checkResources(m), ore = s.factory.ore;
+      ok(rc.ok && a2s(rc.ore) === a2s(ore) && crates(s).map((f) => `${f.cx},${f.cz},${f.hold}`).join(';') === rc.crates.map((c) => `${c.cx},${c.cz},${c.it}`).join(';'),
+        `${m.id}: the run starts with the crates and deposits the validator checked, and they pass (${rc.problems.join(' / ') || 'ok'})`);
+      // the tutorial's complaint: the first turret's crate and its nearest iron on the same side of the road, within a short belt
+      for (const c of crates(s).filter((f) => f.hold === 'iron_ore')) {
+        const seen = new Map<number, number>(), q: number[] = [];
+        // (from the tiles right beside the crate: a turret there is fed by it, and they are on its side of the road)
+        for (let dd = 0; dd < 6; dd++) { const [x, z] = neighbor(c.cx, c.cz, dd); if (inBoard(x, z) && s.grid[at(x, z)] === 0) { seen.set(at(x, z), 0); q.push(at(x, z)); } }
+        let near = 99;
+        for (let k = 0; k < q.length; k++) {
+          const i = q[k], d = seen.get(i)!;
+          if (ore[i] === T('iron_ore')) near = Math.min(near, d);
+          if (d >= BELT_REACH + 1) continue;
+          for (let dd = 0; dd < 6; dd++) { const [x, z] = neighbor(i % GW, Math.floor(i / GW), dd); if (inBoard(x, z) && s.grid[at(x, z)] === 0 && !seen.has(at(x, z))) { seen.set(at(x, z), d + 1); q.push(at(x, z)); } }
+        }
+        ok(near <= BELT_REACH + 1, `${m.id}: the iron ore crate at ${c.cx},${c.cz} has iron ${near} steps from a tile beside it, no road between`);
+      }
+    }
+    const own = { ...MAPS[0], ore: { iron_ore: [[0, 0], [1, 0]], copper_ore: [[2, 0]], coal: [[3, 0]], oil: [[4, 0]] } } as MapDef;
+    const so = new Sim({ seed: 1, map: sanitizeMap(JSON.parse(JSON.stringify(own)))! }).factory.ore;
+    ok(so.filter((v) => v).length === 5 && so[at(0, 0)] === T('iron_ore') && so[at(4, 0)] === T('oil'), 'a map with its own ore field starts with exactly those deposits');
+    const back = decodeMap(encodeMap(own));
+    ok(!!back && JSON.stringify(back.ore) === JSON.stringify(own.ore), 'the ore field survives a share code');
   }
   {
     // supply crates: every run that needs a factory starts with iron ore beside its roads; trickier maps bring a later tower's ammunition too
@@ -1016,6 +1043,18 @@ ok(!sv.won, 'survival never "wins"'); console.log('survival reached wave', sv.wa
     const t2 = q.build('pulse', ...go([c2.cx, c2.cz], d, 3))!;
     step(q, 8);
     ok(!!t2 && t2.stock === TOWER_STOCK && c2.left < CRATE_STOCK.iron_ore!, `with a turret at the end of the belt the crate feeds it (${t2.stock})`);
+    // a turret beside a crate, with a belt beside both pointing away: the panel names the crate once (audit: "Supply Crate (by belt), Supply Crate")
+    {
+      const r = fac({}, true), c3 = crates(r).find((f) => f.hold === 'iron_ore')!, free = (p: [number, number]) => inBoard(p[0], p[1]) && r.grid[at(p[0], p[1])] === 0;
+      const k = [0, 1, 2, 3, 4, 5].find((k) => free(go([c3.cx, c3.cz], k)) && free(go([c3.cx, c3.cz], (k + 1) % 6)) && free(go([c3.cx, c3.cz], (k + 1) % 6, 2)));
+      if (k === undefined) ok(false, 'room beside a crate for a turret and a belt');
+      else {
+        const k2 = (k + 1) % 6, tw = r.build('pulse', ...go([c3.cx, c3.cz], k))!;
+        r.buildFac('belt', ...go([c3.cx, c3.cz], k2), k2); r.buildFac('belt', ...go([c3.cx, c3.cz], k2, 2), k2);
+        const from = r.diag().get('t' + tw.id)?.from || [];
+        ok(!!tw && from.filter((n) => n.startsWith('Supply Crate')).length === 1, `a crate right beside a turret is named once in its supply (${from.join(', ')})`);
+      }
+    }
   }
   {
     // supply: a new Pulse Turret is empty and dry; with ore in stock it fires 9 shots an item and runs dry again; a mine right beside it feeds it

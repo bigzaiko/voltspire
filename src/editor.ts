@@ -2,14 +2,16 @@
 // scenery and starting towers, set starting conditions, then save / share / test-play the result.
 // DOM is built with createElement + textContent only; anything read from storage or a share code goes
 // through sanitizeMap / decodeMap. The styles (editor.css) are linked from play.html.
-import { GW, GH, TOWERS, TOWER_TYPES } from './game/data.ts';
-import type { TowerType } from './game/data.ts';
+import { GW, GH, TOWERS, TOWER_TYPES, ORES, ORE_TYPES, ITEMS } from './game/data.ts';
+import type { TowerType, OreType } from './game/data.ts';
 import { CELL, HEX_SIZE, cellX, cellZ, worldToCell, neighbor, hexDist, lineDir, lineCells, disc, inBoard } from './game/hex.ts';
-import { GameMap, validateMap, sanitizeMap, encodeMap, decodeMap } from './game/map.ts';
-import type { MapDef, LanePoint } from './game/map.ts';
+import { GameMap, validateMap, sanitizeMap, encodeMap, decodeMap, MAX_ORE } from './game/map.ts';
+import type { MapDef, LanePoint, OreLayout } from './game/map.ts';
+import { checkResources, autoOre } from './game/deposits.ts';
+import type { ResourceCheck } from './game/deposits.ts';
 import { MAPS } from './game/maps.ts';
 import { generateMap } from './game/mapgen.ts';
-import { drawMap, drawRoads, hexPath, outlinePath, boardCells } from './game/mapdraw.ts';
+import { drawMap, drawRoads, drawDeposits, hexPath, outlinePath, boardCells, ORE_INK } from './game/mapdraw.ts';
 import type { Proj } from './game/mapdraw.ts';
 
 export interface EditorHost { play(def: MapDef): void; close(): void; sound(name: string): void }
@@ -35,8 +37,12 @@ interface Draft {
   name: string; tier: number; gold: number; lives: number; core: Pt;
   lanes: RP[][]; // always 3 entries, possibly empty
   blocked: Set<number>; towers: Map<number, TowerType>;
+  /** the map's own deposits by tile, or null: laid out by the rules when the run starts (see deposits.ts) */
+  ore: Map<number, OreType> | null;
 }
-type Tool = 'r0' | 'r1' | 'r2' | 'level' | 'core' | 'block' | 'erase' | 'tower';
+type Tool = 'r0' | 'r1' | 'r2' | 'level' | 'core' | 'block' | 'erase' | 'tower' | 'ore';
+/** What the Resources tool paints: a deposit kind, or nothing (the eraser). */
+type Brush = OreType | 'none';
 
 const M = 2; // tiles of spawn margin drawn around the board
 const PAD = 0.5; // world units of air around the margin
@@ -55,9 +61,10 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 const idx = (cx: number, cz: number) => cz * GW + cx;
 const same = (a: ArrayLike<number>, b: ArrayLike<number>) => a[0] === b[0] && a[1] === b[1];
 const cellKey = (cx: number, cz: number) => (cz + 16) * 128 + cx + 16;
+const neighbors6 = (cx: number, cz: number): Pt[] => [0, 1, 2, 3, 4, 5].map((dd) => neighbor(cx, cz, dd));
 
 function blankDraft(): Draft {
-  return { name: 'Untitled sector', tier: 2, gold: 220, lives: 20, core: [22, 10], lanes: [[], [], []], blocked: new Set(), towers: new Map() };
+  return { name: 'Untitled sector', tier: 2, gold: 220, lives: 20, core: [22, 10], lanes: [[], [], []], blocked: new Set(), towers: new Map(), ore: null };
 }
 function draftFrom(def: MapDef): Draft {
   const d = blankDraft();
@@ -78,9 +85,17 @@ function draftFrom(def: MapDef): Draft {
     const k = idx(t.cx, t.cz);
     if (!d.blocked.has(k) && !d.towers.has(k)) d.towers.set(k, t.t); // the game skips towers on scenery and duplicate cells
   }
+  if (def.ore) {
+    d.ore = new Map();
+    for (const o of ORE_TYPES) for (const p of def.ore[o] || []) {
+      if (!Array.isArray(p) || !Number.isInteger(p[0]) || !Number.isInteger(p[1]) || !inBoard(p[0], p[1]) || d.ore.size >= MAX_ORE) continue;
+      const k = idx(p[0], p[1]);
+      if (!d.ore.has(k)) d.ore.set(k, o);
+    }
+  }
   return d;
 }
-const hasContent = (d: Draft) => d.lanes.some((l) => l.length > 0) || d.blocked.size > 0 || d.towers.size > 0;
+const hasContent = (d: Draft) => d.lanes.some((l) => l.length > 0) || d.blocked.size > 0 || d.towers.size > 0 || !!d.ore?.size;
 // Same character set sanitizeMap keeps in names, so the name on screen is always the name that gets stored.
 const NAME_BAD = /[^\p{L}\p{M}\p{N} .,'!?·:()\-]/gu;
 const filterName = (v: string) => v.replace(NAME_BAD, '').slice(0, 28);
@@ -95,7 +110,7 @@ function storeDraft(d: Draft): void {
   clearTimeout(draftTimer); draftTimer = 0;
   try {
     if (!hasContent(d)) { localStorage.removeItem(DRAFT_KEY); return; }
-    localStorage.setItem(DRAFT_KEY, JSON.stringify({ name: d.name, tier: d.tier, gold: d.gold, lives: d.lives, core: d.core, lanes: d.lanes, blocked: [...d.blocked], towers: [...d.towers] }));
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ name: d.name, tier: d.tier, gold: d.gold, lives: d.lives, core: d.core, lanes: d.lanes, blocked: [...d.blocked], towers: [...d.towers], ore: d.ore ? [...d.ore] : null }));
   } catch { /* storage unavailable: the draft still lives for this visit */ }
 }
 /** The stored draft, or null. Storage is outside input like any other: shapes are checked here, values are clamped by draftFrom. */
@@ -114,9 +129,17 @@ function readDraft(): Draft | null {
     for (const t of (Array.isArray(o.towers) ? o.towers : []).slice(0, MAX_TOWERS)) {
       if (Array.isArray(t) && tile(t[0]) && typeof t[1] === 'string' && (TOWER_TYPES as readonly string[]).includes(t[1])) towers.push({ t: t[1] as TowerType, cx: t[0] % GW, cz: Math.floor(t[0] / GW) });
     }
+    let ore: OreLayout | undefined;
+    if (Array.isArray(o.ore)) {
+      ore = {};
+      for (const e of o.ore.slice(0, MAX_ORE)) {
+        if (!Array.isArray(e) || !tile(e[0]) || !(ORE_TYPES as readonly unknown[]).includes(e[1])) continue;
+        (ore[e[1] as OreType] || (ore[e[1] as OreType] = [])).push([e[0] % GW, Math.floor(e[0] / GW)]);
+      }
+    }
     const d = draftFrom({
       id: 'draft', name: typeof o.name === 'string' ? filterName(o.name) : '', desc: '', tier: num(o.tier) ? o.tier : 2,
-      lanes, core: [o.core[0], o.core[1]], gold: num(o.gold) ? o.gold : 220, lives: num(o.lives) ? o.lives : 20, towers, blocked,
+      lanes, core: [o.core[0], o.core[1]], gold: num(o.gold) ? o.gold : 220, lives: num(o.lives) ? o.lives : 20, towers, blocked, ...(ore ? { ore } : {}),
     });
     if (!d.name.trim()) d.name = 'Untitled sector';
     return hasContent(d) ? d : null;
@@ -128,14 +151,26 @@ function shown(l: RP[], core: Pt): RP[] {
   if (!linked(l, core) || !l[l.length - 1][2]) return l;
   return l.map((p, k) => (k === l.length - 1 ? [p[0], p[1], 0] : p));
 }
-/** `occ` (road/core tiles) hides scenery and towers that are currently covered; they stay in the draft. */
+/** The draft's own deposits as an ore field (tiles under a road, the core, scenery or a tower left out), or undefined. */
+function oreOf(d: Draft, occ?: Uint8Array): OreLayout | undefined {
+  if (!d.ore) return undefined;
+  const out: OreLayout = {};
+  for (const o of ORE_TYPES) {
+    const list = [...d.ore].filter(([k, v]) => v === o && (!occ || !occ[k]) && !d.blocked.has(k) && !d.towers.has(k)).map(([k]) => k).sort((a, b) => a - b);
+    if (list.length) out[o] = list.map((k) => [k % GW, Math.floor(k / GW)] as Pt);
+  }
+  return out;
+}
+/** `occ` (road/core tiles) hides scenery, towers and deposits that are currently covered; they stay in the draft. */
 function draftToDef(d: Draft, lanes: RP[][], occ?: Uint8Array): MapDef {
+  const ore = oreOf(d, occ);
   return {
     id: 'custom-' + slug(d.name), name: d.name.trim() || 'Custom map', desc: 'Custom map', tier: d.tier,
     lanes: lanes.map((l) => l.map((p, k) => (p[2] && k < l.length - 1 ? [p[0], p[1], p[2]] : [p[0], p[1]]) as LanePoint)),
     core: [d.core[0], d.core[1]], gold: d.gold, lives: d.lives,
     towers: [...d.towers].filter(([k]) => !occ || !occ[k]).map(([k, t]) => ({ t, cx: k % GW, cz: Math.floor(k / GW) })),
     blocked: [...d.blocked].filter((k) => !occ || !occ[k]).map((k) => [k % GW, Math.floor(k / GW)] as Pt),
+    ...(ore ? { ore } : {}),
   };
 }
 /** Every tile a stretch passes over, both ends included. Falls back to sampling when it leaves the hex lines. */
@@ -204,6 +239,9 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   if (!genSeed) genSeed = 1 + Math.floor(Math.random() * 999999);
   let tool: Tool = 'r0';
   let towerType: TowerType = TOWER_TYPES[0];
+  let brush: Brush = 'iron_ore';
+  let res: ResourceCheck | null = null; // the deposits and crates a run would start with, and what the validator says about them
+  let resDef: MapDef | null = null;     // the map those were worked out for
   let occ = new Uint8Array(GW * GH); // 1 = road or core
   let problem: string | null = 'x';
   let clean: MapDef | null = null;
@@ -236,6 +274,53 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     for (const [k] of d.towers) if (!occ[k]) visTowers++;
     findCrossings();
     validate(lanes);
+    checkRes(lanes);
+  }
+  /** Deposits and crates as a run on this draft would start, checked (see deposits.ts). Needs a road with a stretch. */
+  function checkRes(lanes: RP[][]) {
+    res = null; resDef = null;
+    const roads = lanes.filter((l) => l.length > 1);
+    if (!roads.length) return;
+    try {
+      resDef = clean || draftToDef(d, roads, occ);
+      res = checkResources(resDef);
+    } catch { res = null; resDef = null; }
+  }
+  /** The deposit shown on a tile: the draft's own, or the automatic one. */
+  const oreAt = (k: number): OreType | undefined => (d.ore ? d.ore.get(k) : res ? ORE_TYPES[res.ore[k] - 1] : undefined);
+  const crateAt = (k: number) => !!res && res.crates.some((c) => idx(c.cx, c.cz) === k);
+  /** The draft's own deposits, starting from the automatic layout the first time a brush touches them. */
+  function ownOre(): Map<number, OreType> {
+    if (!d.ore) {
+      d.ore = new Map();
+      if (res) for (let k = 0; k < GW * GH; k++) if (res.ore[k]) d.ore.set(k, ORE_TYPES[res.ore[k] - 1]);
+    }
+    return d.ore;
+  }
+  function paintOre(k: number, b: Brush, quiet: boolean) {
+    if (b === 'none' ? !oreAt(k) : oreAt(k) === b) return;
+    const m = ownOre();
+    if (b === 'none') m.delete(k);
+    else {
+      if (!m.has(k) && m.size >= MAX_ORE) { if (!quiet) flash(`At most ${MAX_ORE} deposit tiles.`, true); return; }
+      m.set(k, b);
+    }
+    if (!quiet) sfx(b === 'none' ? 'sell' : 'build');
+    changed();
+  }
+  /** A copy of the draft (for the changes "Restore previous draft" can undo). */
+  const copyDraft = (x: Draft): Draft => ({ ...x, core: [x.core[0], x.core[1]], lanes: x.lanes.map((l) => l.map((p) => [p[0], p[1], p[2]] as RP)), blocked: new Set(x.blocked), towers: new Map(x.towers), ore: x.ore ? new Map(x.ore) : null });
+  function autoPlace() {
+    if (!resDef) { flash('Draw a road first: the deposits are laid out around it.', true); return; }
+    const lay = autoOre({ ...resDef, ore: undefined }), nd = copyDraft(d);
+    nd.ore = new Map();
+    for (const o of ORE_TYPES) for (const [cx, cz] of lay[o] || []) nd.ore.set(idx(cx, cz), o);
+    sfx('card'); setDraft(nd, 'Resources laid out by the rules. Paint to adjust them.');
+  }
+  function clearOre() {
+    if (!d.ore) { flash('The resources are already automatic.'); return; }
+    const nd = copyDraft(d); nd.ore = null;
+    sfx('sell'); setDraft(nd, 'Resources are automatic again: the rules lay them out when the run starts.');
   }
   /** Two stretches may share a tile only with a full level between them, or next to the core where roads meet. */
   function findCrossings() {
@@ -317,8 +402,8 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   function eraseAt(cx: number, cz: number, quiet: boolean) {
     if (!inBoard(cx, cz)) return;
     const k = idx(cx, cz);
-    const a = d.blocked.delete(k), b = d.towers.delete(k); // both, never short-circuit
-    if (a || b) { if (!quiet) sfx('sell'); changed(); }
+    const a = d.blocked.delete(k), b = d.towers.delete(k), c = !!d.ore && d.ore.delete(k); // all three, never short-circuit
+    if (a || b || c) { if (!quiet) sfx('sell'); changed(); }
   }
   // ---------- levels ----------
   /** The corner the level controls act on: the one picked with the Level tool, or the last corner of the road being drawn. */
@@ -388,6 +473,11 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     if (!inBoard(cx, cz)) { if (!drag) flash('That is outside the board.', true); return; }
     const k = idx(cx, cz);
     if (occ[k]) { if (!drag) flash('Roads and the core must stay clear.', true); return; }
+    if (tool === 'ore') {
+      if (d.blocked.has(k) || d.towers.has(k)) { if (!drag) flash('Deposits lie on free deck: not under scenery or a tower.', true); return; }
+      if (crateAt(k) && brush !== 'none') { if (!drag) flash('A supply crate stands on this tile when the run starts.', true); return; }
+      paintOre(k, brush, drag); return;
+    }
     if (tool === 'block') {
       if (d.blocked.has(k)) return;
       if (d.towers.has(k)) { if (!drag) flash('There is a tower on that tile. Erase it first.', true); return; }
@@ -482,6 +572,7 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     { id: 'block', name: 'Block', key: 'B', col: '#8a7f70' },
     { id: 'erase', name: 'Erase', key: 'E', col: '#ce6b44' },
     { id: 'tower', name: 'Start tower', key: 'T', col: '#6fe0c8' },
+    { id: 'ore', name: 'Resources', key: 'R', col: ORE_INK.iron_ore.rim },
   ];
   const toolBtns = new Map<Tool, HTMLButtonElement>();
   const toolMeta = new Map<Tool, HTMLElement>();
@@ -538,10 +629,32 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     towerBtns.set(t, b); towerGrid.appendChild(b);
   }
   towerCtx.append(towerInfo, towerGrid);
+  // context: resource brush
+  const oreCtx = el('div', 'ed-ctx');
+  const oreInfo = el('p', 'small muted', '');
+  const oreGrid = el('div', 'ed-towers ed-ores');
+  oreGrid.setAttribute('role', 'radiogroup'); oreGrid.setAttribute('aria-label', 'Resource brush');
+  const BRUSHES: { id: Brush; name: string; col: string }[] = [
+    ...ORE_TYPES.map((o) => ({ id: o as Brush, name: ORES[o].name, col: ORE_INK[o].rim })),
+    { id: 'none', name: 'Eraser', col: 'transparent' },
+  ];
+  const brushBtns = new Map<Brush, HTMLButtonElement>();
+  for (const b of BRUSHES) {
+    const btn = el('button', 'ed-tw' + (b.id === 'none' ? ' eraser' : '')); btn.type = 'button';
+    btn.style.setProperty('--c', b.col);
+    btn.setAttribute('role', 'radio'); btn.setAttribute('aria-label', b.id === 'none' ? 'Eraser: remove deposits' : `Paint ${b.name.toLowerCase()}`);
+    btn.appendChild(el('i', 'ed-sw'));
+    btn.appendChild(el('span', '', b.name));
+    btn.addEventListener('click', () => { brush = b.id; sfx('click'); refresh(); draw(); });
+    brushBtns.set(b.id, btn); oreGrid.appendChild(btn);
+  }
+  const oreKeys = el('p', 'small muted ed-keys');
+  oreKeys.append(el('kbd', '', 'R'), el('span', '', 'next brush · right-click erases'));
+  oreCtx.append(oreInfo, oreGrid, oreKeys);
   const otherCtx = el('div', 'ed-ctx');
   const otherInfo = el('p', 'small muted', '');
   otherCtx.appendChild(otherInfo);
-  toolsPanel.append(roadCtx, levelCtx, towerCtx, otherCtx);
+  toolsPanel.append(roadCtx, levelCtx, towerCtx, oreCtx, otherCtx);
 
   // stage (centre)
   const centre = el('div', 'ed-centre');
@@ -593,6 +706,28 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   }
   const tierBtns = tierSeg(props, 'Complexity', 'Complexity tier', TIER_NAMES.map((n, i) => `${i + 1} ${n}`), (v) => { d.tier = v; sfx('click'); changed(); });
 
+  // resources: automatic or hand-placed, the count per kind, and what the validator says
+  const resPanel = el('div', 'panel ed-res');
+  const resHead = el('h3', '', 'Resources');
+  const resMode = el('p', 'small muted ed-resmode', '');
+  const resCounts = el('div', 'ed-rescounts');
+  const resCount = new Map<OreType, HTMLElement>();
+  for (const o of ORE_TYPES) {
+    const c = el('span', 'ed-rescount');
+    c.style.setProperty('--c', ORE_INK[o].rim);
+    c.title = ORES[o].name;
+    c.appendChild(el('i', 'ed-sw'));
+    const n = el('b', '', '0'); c.appendChild(n); resCount.set(o, n);
+    resCounts.appendChild(c);
+  }
+  const resBtns = el('div', 'ed-pair');
+  const autoBtn = button('btn small ghost', 'Auto-place', () => autoPlace(), 'Auto-place resources by the rules (they can then be painted)');
+  const clearOreBtn = button('btn small ghost', 'Clear to automatic', () => clearOre(), 'Drop the hand-placed resources: the rules lay them out when the run starts');
+  resBtns.append(autoBtn, clearOreBtn);
+  const resList = el('ul', 'ed-reslist');
+  resList.setAttribute('aria-live', 'polite');
+  resPanel.append(resHead, resMode, resCounts, resBtns, resList);
+
   const start = el('div', 'panel');
   start.appendChild(el('h3', '', 'Start from'));
   const tplRow = el('div', 'ed-seg wrap');
@@ -641,7 +776,7 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
   shareMsg.setAttribute('role', 'status'); shareMsg.setAttribute('aria-live', 'polite');
   share.append(copyBtn, outTa, inTa, importBtn, shareMsg);
 
-  side.append(props, start, gen, savedPanel, share);
+  side.append(props, resPanel, start, gen, savedPanel, share);
   body.append(toolsPanel, centre, side);
   root.append(head, body);
 
@@ -666,13 +801,16 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     if (tool === 'level') return 'Click a corner to pick it, click again to step its level. Click a road tile to add a corner. Right-click lowers.';
     if (tool === 'core') return 'Click or drag to move the core (seven tiles). Every road has to end within two tiles of it.';
     if (tool === 'block') return 'Click or drag to paint scenery that cannot be built on. Right-click erases.';
-    if (tool === 'erase') return 'Click or drag to remove blocked tiles and starting towers.';
+    if (tool === 'erase') return 'Click or drag to remove blocked tiles, starting towers and hand-placed deposits.';
+    if (tool === 'ore') return brush === 'none' ? 'Click or drag to remove deposits. The first stroke turns the automatic layout into your own.'
+      : `Click or drag to paint ${ORES[brush].name.toLowerCase()} on free deck. Right-click erases. R picks the next brush.`;
     return 'Click a free tile to place the selected tower. Right-click erases.';
   }
   function cancelDelete() { if (confirmDelete !== -1) { confirmDelete = -1; renderSaved(); } }
   function setTool(t: Tool) {
     cancelDelete();
     if (tool === 'tower' && t === 'tower') towerType = TOWER_TYPES[(TOWER_TYPES.indexOf(towerType) + 1) % TOWER_TYPES.length];
+    if (tool === 'ore' && t === 'ore') brush = BRUSHES[(BRUSHES.findIndex((b) => b.id === brush) + 1) % BRUSHES.length].id;
     if (laneOf(t) >= 0) lastLane = laneOf(t);
     // coming from a road tool, the Level tool starts on the corner that was just placed
     if (t === 'level' && laneOf(tool) >= 0 && d.lanes[laneOf(tool)].length) sel = { l: laneOf(tool), i: d.lanes[laneOf(tool)].length - 1 };
@@ -791,11 +929,17 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     toolMeta.get('level')!.classList.toggle('warn', clashes.length > 0);
     toolMeta.get('block')!.textContent = visBlocked ? String(visBlocked) : '';
     toolMeta.get('tower')!.textContent = visTowers ? String(visTowers) : '';
+    const issues = res ? res.problems.length : 0;
+    // (the label is long: the count alone, as "! 2", with the words in the tooltip)
+    toolMeta.get('ore')!.textContent = issues ? `! ${issues}` : d.ore ? 'own' : 'auto';
+    toolMeta.get('ore')!.title = issues ? `${issues} resource issue${issues > 1 ? 's' : ''}` : '';
+    toolMeta.get('ore')!.classList.toggle('warn', issues > 0);
     const li = laneOf(tool);
     roadCtx.classList.toggle('hidden', li < 0);
     levelCtx.classList.toggle('hidden', li < 0 && tool !== 'level');
     towerCtx.classList.toggle('hidden', tool !== 'tower');
-    otherCtx.classList.toggle('hidden', li >= 0 || tool === 'tower' || tool === 'level');
+    oreCtx.classList.toggle('hidden', tool !== 'ore');
+    otherCtx.classList.toggle('hidden', li >= 0 || tool === 'tower' || tool === 'level' || tool === 'ore');
     if (li >= 0) {
       const n = d.lanes[li].length;
       roadInfo.textContent = n ? `Road ${li + 1}: ${n} of ${MAX_PTS} corners.` : `Road ${li + 1} is empty${li ? ' (optional)' : ''}. Start outside the board.`;
@@ -811,10 +955,24 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     lowerBtn.disabled = !t || fixed || lv <= 0; raiseBtn.disabled = !t || fixed || lv >= MAX_LEVEL;
     removeBtn.classList.toggle('hidden', tool !== 'level');
     removeBtn.disabled = !canRemove(t);
-    towerInfo.textContent = `Built when the run starts, fully stocked (${visTowers}/${MAX_TOWERS}). Iron, copper, coal and oil deposits are laid out on the free deck when the run starts. Press T to cycle.`;
+    towerInfo.textContent = `Built when the run starts, fully stocked (${visTowers}/${MAX_TOWERS}). Press T to cycle.`;
+    for (const [b, btn] of brushBtns) { btn.classList.toggle('on', b === brush); btn.setAttribute('aria-checked', String(b === brush)); }
+    oreInfo.textContent = d.ore ? 'Your own deposits: they go into the map as painted.' : 'Automatic: the rules lay these out when the run starts. Painting makes them your own.';
+    // the resources panel
+    const counts = new Map<OreType, number>(ORE_TYPES.map((o) => [o, 0]));
+    if (res) for (let k = 0; k < GW * GH; k++) if (res.ore[k]) { const o = ORE_TYPES[res.ore[k] - 1]; counts.set(o, counts.get(o)! + 1); }
+    for (const [o, n] of resCount) n.textContent = String(counts.get(o));
+    const crates = res ? res.crates.length : 0;
+    resMode.textContent = !res ? 'Laid out once a road is drawn.'
+      : (d.ore ? 'Hand-placed' : 'Automatic, by the rules') + ` · ${crates} supply crate${crates === 1 ? '' : 's'}`;
+    resHead.classList.toggle('warn', issues > 0);
+    autoBtn.disabled = !resDef; clearOreBtn.disabled = !d.ore;
+    resList.replaceChildren();
+    if (res && !issues) resList.appendChild(el('li', 'ok', 'Every crate has iron within a short belt, coal on its side of the road, and the map has all four kinds.'));
+    if (res) res.problems.forEach((msg) => resList.appendChild(el('li', 'bad', msg)));
     for (const [tt, b] of towerBtns) { b.classList.toggle('on', tt === towerType); b.setAttribute('aria-checked', String(tt === towerType)); }
     otherInfo.textContent = tool === 'core' ? 'The core is what the machines are after. It fills seven tiles and keeps one tile from the border.'
-      : tool === 'block' ? `Scenery tiles: ${visBlocked} of ${MAX_BLOCKED}.` : 'Removes scenery and starting towers. Roads are edited with their own tool.';
+      : tool === 'block' ? `Scenery tiles: ${visBlocked} of ${MAX_BLOCKED}.` : 'Removes scenery, starting towers and hand-placed deposits. Roads are edited with their own tool.';
     tierBtns.forEach((b, i) => { b.classList.toggle('on', d.tier === i + 1); b.setAttribute('aria-checked', String(d.tier === i + 1)); });
     genTierBtns.forEach((b, i) => { b.classList.toggle('on', genTier === i + 1); b.setAttribute('aria-checked', String(genTier === i + 1)); });
     if (!hint.classList.contains('flash')) hint.textContent = toolHint();
@@ -883,6 +1041,10 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
       g.beginPath(); tile(cx, cz, 0.9); g.fillStyle = '#3a3029'; g.fill();
       g.beginPath(); hexPath(g, X(cx, cz), Z(cz) - s * 0.05, R * 0.62); g.fillStyle = '#4c4037'; g.fill();
     }
+    // deposits: the draft's own, or (lighter, dashed rims) what the rules lay out
+    let oreGrid: Uint8Array | null = res ? res.ore : null;
+    if (!oreGrid && d.ore) { oreGrid = new Uint8Array(GW * GH); for (const [k, o] of d.ore) if (!occ[k] && !d.blocked.has(k) && !d.towers.has(k)) oreGrid[k] = ORE_TYPES.indexOf(o) + 1; }
+    if (oreGrid) drawDeposits(g, P, oreGrid, true, !d.ore);
     g.beginPath(); outlinePath(g, P, boardCells(), inBoard);
     g.strokeStyle = 'rgba(227,220,146,0.45)'; g.lineWidth = 1.5; g.stroke();
     // core
@@ -971,6 +1133,29 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
       g.globalAlpha = 1;
     };
     for (const [k, t] of d.towers) if (!occ[k]) tower(k % GW, Math.floor(k / GW), t, 1);
+    // supply crates the run starts with: a sand-coloured box with a band in the colour of what it holds
+    if (res) for (const c of res.crates) {
+      const x = X(c.cx, c.cz), z = Z(c.cz), w = s * 0.6, col = hex(ITEMS[c.it].color);
+      if (tool === 'ore') {
+        // its turret tiles: free deck beside the road within two tiles (deposits never go there)
+        for (const [tx, tz] of disc(c.cx, c.cz, 2)) {
+          const k = idx(tx, tz);
+          if (!free(tx, tz) || d.blocked.has(k) || d.towers.has(k) || (tx === c.cx && tz === c.cz) || !neighbors6(tx, tz).some(([nx, nz]) => inBoard(nx, nz) && occ[idx(nx, nz)])) continue;
+          g.beginPath(); tile(tx, tz, 0.8); g.setLineDash([2, 3]); g.strokeStyle = 'rgba(216,195,143,0.55)'; g.lineWidth = 1; g.stroke(); g.setLineDash([]);
+        }
+      }
+      g.save(); g.translate(x, z); g.rotate(-0.12);
+      g.fillStyle = 'rgba(8,7,6,0.6)'; g.fillRect(-w / 2 + 1.5, -w / 2 + 2, w, w);
+      g.fillStyle = '#c9a66b'; g.fillRect(-w / 2, -w / 2, w, w);
+      g.fillStyle = '#e4c88f'; g.fillRect(-w / 2, -w / 2, w, w * 0.18);
+      g.fillStyle = col; g.fillRect(-w / 2, -w * 0.09, w, w * 0.2);
+      g.strokeStyle = '#3b2a17'; g.lineWidth = 1.2; g.strokeRect(-w / 2, -w / 2, w, w);
+      g.beginPath(); g.moveTo(-w / 2, -w / 2); g.lineTo(w / 2, w / 2); g.moveTo(w / 2, -w / 2); g.lineTo(-w / 2, w / 2);
+      g.strokeStyle = 'rgba(59,42,23,0.45)'; g.lineWidth = 1; g.stroke();
+      g.restore();
+    }
+    // what the resource check complains about
+    if (res) for (const a of res.at) if (a) { ring(a[0], a[1], '#0c0a09', 1.08, 5); ring(a[0], a[1], '#ff7a4a', 1.08, 2); }
     // hover / tool preview
     if (hover) {
       const [hx, hz] = hover;
@@ -1014,6 +1199,12 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
         g.strokeStyle = '#efe9d6'; g.lineWidth = 2; g.stroke();
       } else if (tool === 'erase') {
         if (inBoard(hx, hz)) ring(hx, hz, '#ce6b44');
+      } else if (tool === 'ore') {
+        if (inBoard(hx, hz)) {
+          const k = idx(hx, hz), ok = free(hx, hz) && !d.blocked.has(k) && !d.towers.has(k) && (brush === 'none' || !crateAt(k));
+          if (ok && brush !== 'none') { g.globalAlpha = 0.55; g.beginPath(); tile(hx, hz, 0.9); g.fillStyle = ORE_INK[brush].rim; g.fill(); g.globalAlpha = 1; }
+          ring(hx, hz, !ok ? '#ce6b44' : brush === 'none' ? '#efe9d6' : ORE_INK[brush].hi);
+        }
       } else if (inBoard(hx, hz)) {
         const k = idx(hx, hz);
         const ok = free(hx, hz) && (tool === 'block' ? !d.towers.has(k) : !d.blocked.has(k));
@@ -1049,11 +1240,12 @@ export function openEditor(root: HTMLElement, host: EditorHost, initial?: MapDef
     else if (tool === 'level') {
       const hit = pickRoad(p[0], p[1]);
       if (hit && !hit.insert) { sel = { l: hit.l, i: hit.i }; lastLane = hit.l; setLevel(levelAt(sel) - 1); refresh(); }
-    } else eraseAt(p[0], p[1], false);
+    } else if (tool === 'ore') { if (inBoard(p[0], p[1]) && !occ[idx(p[0], p[1])]) paintOre(idx(p[0], p[1]), 'none', false); }
+    else eraseAt(p[0], p[1], false);
   }
   // Painting tools act as soon as the pointer goes down. Tools that place one thing (a corner, a level, a tower)
   // act when it comes up, so on a touch screen you can slide to the right tile and see the preview first.
-  const paints = () => tool === 'block' || tool === 'erase' || tool === 'core';
+  const paints = () => tool === 'block' || tool === 'erase' || tool === 'core' || tool === 'ore';
   let downId = -1;
   canvas.addEventListener('contextmenu', (e) => e.preventDefault(), sig);
   canvas.addEventListener('pointerdown', (e) => {

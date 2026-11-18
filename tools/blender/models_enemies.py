@@ -718,14 +718,15 @@ def enemy_mite():
 # ------------------------------------------------------------------ 16. titan
 def enemy_titan():
     """Titan: a strider fifteen units tall. A compact hull rides high on a yoke between two hip hubs; a fore and an aft leg
-    leave each hub, climb to a knee above the hull's belly and come down far outside the road. A segmented neck carries a
+    leave each hub, reach out and up to a knee beside the hull and come down on a near-upright shin far outside the road
+    (the knee never closes below a quarter turn in the walk, see titan_leg()). A segmented neck carries a
     long armoured head whose eye sits on the head's own pivot, so it stays put however the head turns.
     Weak points at the game's coordinates (glTF): weak_1 eye (0, 13.4, 2.2), weak_2 reactor on the tail (0, 10.2, -2.0),
     weak_3 / weak_4 the hip hubs (+-2.4, 6.4, 0).
     Rig: body > neck_1 > neck_2 > head, body > leg_1..4 > _upper > _lower > _foot > _toe (1-2 left front, rear;
     3-4 right front, rear)."""
     m = Model('enemy_titan', {'hull': ('#171a22', 0.6, 0.45), 'paint': ('#3d3958', 0.35, 0.55), 'trim': ('#5d6470', 0.65, 0.42),
-                              'glow_main': '#8fd0ff', 'glow_weak': '#8a7dff', 'glow_reactor': '#8a7dff'})
+                              'steel': ('#9aa6b8', 0.9, 0.28), 'glow_main': '#8fd0ff', 'glow_weak': '#8a7dff', 'glow_reactor': '#8a7dff'})
     HY = -0.25
     b = m.joint('body', (0, 0, 9.6))
     # hull
@@ -762,37 +763,9 @@ def enemy_titan():
         b.torus(0.92, 0.06, 'glow_main', segs=16, rsegs=4, rot=RIGHT, at=(2.62, 0, 6.4))
     weak_big(m, 'weak_3', (2.4, 0, 6.4), 0.66, b)
     weak_big(m, 'weak_4', (-2.4, 0, 6.4), 0.66, b)
-    # legs
-    Hh, K, A, F = (0.95, 0, 6.4), (3.1, 0, 10.6), (5.4, 0, 1.5), (5.7, 0, 0.3)
+    # legs: see titan_leg()
     for i, (s, ang) in enumerate(((1, -55), (1, 55), (-1, 235), (-1, 125))):
-        Fm = T(at=(s * 2.4, 0, 0)) @ rotz(ang)
-        root, up, lo, ft, toe = radial_leg(m, str(i + 1), b, Fm, (Hh, K, A, F))
-        with b.frames(Fm):
-            b.sphere(0.48, 'trim', segs=8, rings=5, at=Hh)
-        with up.frames(Fm):
-            up.limb(Hh, K, 0.46, 0.40, 'hull', segs=6, power=3, up=(0, 0, 1))
-            up.prism(slab([(0.72, 7.15), (2.25, 10.24), (2.75, 11.25), (3.45, 11.3)], 0.2), 0.86, 'paint', bevel=0.04,
-                     plane='xz')
-            up.rod((1.5, 0, 6.6), (2.75, 0, 9.3), 0.1, 'trim', segs=6)
-            up.cyl(0.62, 1.0, 'trim', segs=12, bevel=0.05, o='c', rot=(90, 0, 0), at=K)
-            for y in (-0.51, 0.51):
-                up.cyl(0.26, 0.04, 'glow_main', segs=8, o='c', rot=(90, 0, 0), at=(K[0], y, K[2]))
-        with lo.frames(Fm):
-            lo.prism([(2.7, 10.75), (3.45, 11.0), (5.78, 1.95), (5.5, 1.3), (5.05, 1.55), (3.25, 9.2)], 0.66, 'hull',
-                     bevel=0.06, plane='xz')
-            lo.prism(slab([(3.3, 11.25), (3.79, 10.23), (5.72, 2.73)], 0.16), 0.8, 'paint', bevel=0.03, plane='xz')
-            lo.prism(slab([(5.50, 3.6), (4.15, 8.85)], 0.05), 0.16, 'glow_main', plane='xz')
-            lo.rod((3.0, 0, 9.5), (4.25, 0, 5.9), 0.1, 'trim', segs=6)
-            lo.cyl(0.42, 0.84, 'trim', segs=10, bevel=0.04, o='c', rot=(90, 0, 0), at=A)
-        with ft.frames(Fm):
-            ft.limb(A, F, 0.34, 0.28, 'hull', segs=6, power=3, up=(0, 0, 1))
-            ft.prism(slab([(5.62, 1.55), (5.95, 0.55)], 0.1), 0.7, 'paint', bevel=0.03, plane='xz')
-        with toe.frames(Fm):
-            toe.prism([(4.95, 0.0), (5.05, 0.42), (5.6, 0.72), (6.15, 0.55), (6.6, 0.0)], 1.25, 'hull', bevel=0.07,
-                      plane='xz')
-            for y in (-0.42, 0.0, 0.42):
-                toe.prism([(6.35, 0.0), (6.45, 0.4), (7.15, 0.0)], 0.3, 'trim', plane='xz', at=(0, y, 0))
-            toe.prism([(5.05, 0.0), (4.98, 0.34), (4.45, 0.0)], 0.4, 'trim', plane='xz')
+        titan_leg(m, b, str(i + 1), T(at=(s * 2.4, 0, 0)) @ rotz(ang))
     # reactor on the tail: weak_2
     W2 = (0, 2.0, 10.2)
     with b.frames(T(at=W2, rot=(-50, 0, 0))):
@@ -840,6 +813,171 @@ def enemy_titan():
         h.sphere(0.09, 'glow_main', segs=6, rings=4, at=(0.6, -5.2, 14.12))
     weak_big(m, 'weak_1', E, 0.74, h)
     return m
+
+
+def along(p0, p1):
+    """Frame in a leg plane (x outward, z up, y = hinge): origin p0, local +X along p0 -> p1, local +Y the hinge,
+    local +Z square to the segment in the plane (the thigh's top, the shin's outer face). Author with plane='xz'."""
+    dx, dz = p1[0] - p0[0], p1[2] - p0[2]
+    l = math.hypot(dx, dz)
+    dx, dz = dx / l, dz / l
+    mm = Matrix(((dx, 0, -dz, p0[0]), (0, 1, 0, p0[1]), (dz, 0, dx, p0[2]), (0, 0, 0, 1)))
+    return mm
+
+
+def seg_pt(J, a, s, t):
+    """Point of a leg segment in the leg plane: the segment hangs on the pin J at the angle a (rad, 0 = straight down,
+    positive outward); s along it, t square to it (the same axes as along())."""
+    return (J[0] + s * math.sin(a) + t * math.cos(a), 0, J[2] - s * math.cos(a) + t * math.sin(a))
+
+
+def piston(m, name, pa, pb, na, nb, Fm, hinge, rb=0.2, rr=0.1, rng=None):
+    """Hydraulic cylinder between two parts of a leg. pa, pb: its two pins in the leg plane frame Fm. Creates the bones
+    pist_<name>_a (barrel, child of na, pivot pa) and pist_<name>_b (rod, child of nb, pivot pb); the game aims each at
+    the other's pin every frame, so the rod slides in and out of the barrel. rng: the shortest and the longest distance
+    between the pins over everything the joint does in the game: barrel and rod are cut so that the rod never leaves the
+    barrel at the longest and neither runs through the other's pin at the shortest."""
+    rest = dist(pa, pb)
+    lo, hi = rng or (rest * 0.85, rest * 1.15)
+    fb, fr = (lo - 1.7 * rb) / rest, (lo - 0.6 * rb) / rest
+    if (fb + fr) * rest < hi + 0.15 or lo > rest or hi < rest:
+        print(f'[piston] {name}: rest {rest:.2f} range {lo:.2f}..{hi:.2f} barrel {fb * rest:.2f} rod {fr * rest:.2f}   <-- DOES NOT TELESCOPE')
+    elif name[0] == '1':
+        print(f'[piston] {name}: rest {rest:.2f} range {lo:.2f}..{hi:.2f} barrel {fb * rest:.2f} rod {fr * rest:.2f}')
+    wa, wb = tuple(Fm @ Vector(pa)), tuple(Fm @ Vector(pb))
+    a = m.bone(f'pist_{name}_a', wa, wb, parent=na, hinge=hinge)
+    r = m.bone(f'pist_{name}_b', wb, wa, parent=nb, hinge=hinge)
+    with a.frames(Fm):
+        a.rod(pa, lerp(pa, pb, fb), rb, 'hull', segs=7)
+        a.rod(lerp(pa, pb, fb - 0.1), lerp(pa, pb, fb + 0.015), rb * 1.22, 'trim', segs=7)
+        a.cyl(rb * 1.25, rb * 2.6, 'trim', segs=6, o='c', rot=(90, 0, 0), at=pa)
+    with r.frames(Fm):
+        r.rod(pb, lerp(pb, pa, fr), rr, 'steel', segs=5)
+        r.cyl(rb * 1.1, rb * 2.2, 'trim', segs=6, o='c', rot=(90, 0, 0), at=pb)
+    return a, r
+
+
+def titan_leg(m, b, tag, Fm):
+    """One leg of the Titan in its leg plane Fm (origin = the hip hub on the ground plane, +X away from it, +Z up).
+    The chain is a machine, every part hung on the pin it turns about:
+      body          slew ring under the hip, on an arm from the hub
+      leg_<n>       turntable (yaw) with the two cheeks that carry the hip pin
+      _upper        thigh: box girder up to the knee fork, a hydraulic cylinder in the trough on its back, the lug of the
+                    hip cylinder under it and an armoured kneecap over the outside of the joint
+      _lower        shin: heavy at the knee and slim at the ankle, armoured on its outer face; its horn above the
+                    knee is the crank the thigh's cylinder pulls on
+      _foot         tarsus between the ankle pin and the ball the pad swivels on
+      _toe          the pad: sole, three claws ahead, a spur behind (kept flat on the ground by the game)
+    Three cylinders work the joints: hip (turntable > thigh, a boom cylinder under the thigh), knee (thigh > shin horn),
+    ankle (shin > tarsus). Proportions: the thigh and the shin differ by less than half the thigh (4.9 against 7.3), so
+    the game's leg solver stays clear of its folded end wherever the foot stands, and nothing has to slide."""
+    Hh, K, A, F = (1.5, 0, 6.4), (5.7, 0, 9.0), (6.3, 0, 1.75), (6.5, 0, 0.42)
+    hinge = tuple(Fm.to_3x3() @ Vector((0, 1, 0)))
+    root, up, lo, ft, toe = radial_leg(m, tag, b, Fm, (Hh, K, A, F))
+    L1, L2, L3 = dist(Hh, K), dist(K, A), dist(A, F)
+    AU, AL, AF = along(Hh, K), along(K, A), along(A, F)
+    Y = (90, 0, 0)
+    PH, TH = (2.45, 0, 5.8), (3.6, -0.95)        # hip cylinder: its pin between the cheeks, its pin under the thigh (along, square)
+    # --- body: the slew ring the leg turns on, and its arm from the hub
+    with b.frames(Fm):
+        b.prism([(0.05, 6.0), (0.05, 5.3), (0.8, 4.95), (1.6, 4.9), (1.6, 5.15), (0.9, 5.45), (0.45, 6.0)], 0.76, 'hull',
+                bevel=0.05, plane='xz')
+        b.prism(slab([(0.15, 6.08), (0.5, 6.08), (0.95, 5.53), (1.3, 5.38)], 0.1), 0.56, 'paint', bevel=0.02, plane='xz')
+        b.cyl(0.95, 0.4, 'trim', segs=12, bevel=0.06, at=(Hh[0], 0, 4.98))
+        b.ring(0.84, 0.08, 0.07, 'glow_main', segs=12, at=(Hh[0], 0, 5.41))
+    # --- turntable + cheeks + hip pin (yaws with the leg)
+    with root.frames(Fm):
+        root.cyl(0.8, 0.26, 'paint', segs=12, bevel=0.04, at=(Hh[0], 0, 5.44))
+        for y in (-0.56, 0.56):
+            root.prism([(0.98, 5.68), (0.95, 6.45), (1.2, 6.95), (1.8, 6.95), (2.05, 6.5), (2.75, 5.95), (2.7, 5.68)], 0.18,
+                       'hull', bevel=0.03, plane='xz', at=(0, y, 0))
+            root.cyl(0.44, 0.08, 'trim', segs=8, o='c', rot=Y, at=(Hh[0], y * 1.2, Hh[2]))
+            root.cyl(0.22, 0.05, 'glow_main', segs=8, o='c', rot=Y, at=(Hh[0], y * 1.3, Hh[2]))
+        root.cyl(0.3, 1.3, 'trim', segs=8, o='c', rot=Y, at=Hh)
+        root.box((0.5, 0.9, 0.3), 'hull', bevel=0.04, at=(1.05, 0, 5.85))
+    # --- thigh
+    with up.frames(Fm @ AU):
+        up.cyl(0.5, 0.9, 'trim', segs=12, bevel=0.04, o='c', rot=Y)
+        up.prism([(-0.25, -0.36), (0.35, -0.56), (L1 - 1.1, -0.5), (L1 - 0.35, -0.66), (L1 + 0.2, -0.3), (L1 + 0.1, 0.3),
+                  (L1 - 0.7, 0.46), (0.5, 0.46), (-0.15, 0.3)], 0.62, 'hull', bevel=0.05, plane='xz')
+        for y in (-0.35, 0.35):
+            up.prism([(0.75, -0.4), (L1 - 1.35, -0.36), (L1 - 1.0, 0.28), (0.95, 0.34)], 0.1, 'paint', plane='xz', at=(0, y, 0))
+            up.box((1.7, 0.03, 0.1), 'glow_main', bevel=0, at=(L1 * 0.46, y * 1.17, -0.04))
+            # the two rails of the trough the knee cylinder lies in
+            up.prism(slab([(0.25, 0.56), (0.9, 0.86), (L1 - 1.5, 0.86), (L1 - 0.5, 0.6)], 0.34), 0.22, 'paint', bevel=0.03,
+                     plane='xz', at=(0, y * 1.2, 0))
+            # knee fork
+            up.cyl(0.74, 0.18, 'trim', segs=12, bevel=0.03, o='c', rot=Y, at=(L1, y * 1.6, 0))
+            up.cyl(0.3, 0.05, 'glow_main', segs=8, o='c', rot=Y, at=(L1, y * 1.9, 0))
+            up.prism([(L1 - 1.3, -0.5), (L1 - 0.2, -0.72), (L1 - 0.1, 0.4), (L1 - 1.2, 0.44)], 0.16, 'hull', plane='xz', at=(0, y * 1.6, 0))
+        up.cyl(0.26, 1.34, 'trim', segs=8, o='c', rot=Y, at=(L1, 0, 0))
+        # kneecap: an armoured shell over the outside of the joint, in the one arc neither the shin nor its horn sweeps
+        arc = lambda r, a0, a1, n=4: [(L1 + r * math.cos(math.radians(a0 + (a1 - a0) * i / n)),
+                                       r * math.sin(math.radians(a0 + (a1 - a0) * i / n))) for i in range(n + 1)]
+        up.prism(slab(arc(1.06, -34, 8), 0.2), 1.62, 'paint', bevel=0.04, plane='xz')
+        up.prism(slab(arc(1.19, -30, 4, 3), 0.07), 0.36, 'trim', plane='xz')
+        for y in (-0.6, 0.6):
+            up.prism(slab(arc(1.18, -22, -4, 1), 0.05), 0.07, 'glow_main', plane='xz', at=(0, y, 0))
+        up.prism([(TH[0] - 0.55, -0.45), (TH[0] - 0.3, TH[1] - 0.2), (TH[0] + 0.3, TH[1] - 0.2), (TH[0] + 0.6, -0.45)], 0.5,
+                 'trim', bevel=0.04, plane='xz')                                                  # lug of the hip cylinder
+        up.box((0.5, 0.5, 0.3), 'trim', bevel=0.04, at=(1.0, 0, 0.56))                          # lug of the knee cylinder
+        # hose down the flank from the hip to the knee
+        up.tube([(0.5, 0.42, -0.2), (1.2, 0.5, -0.5), (L1 - 1.6, 0.5, -0.46), (L1 - 0.9, 0.44, -0.1)], 0.06, 'steel',
+                segs=4)
+    # --- shin
+    with lo.frames(Fm @ AL):
+        lo.cyl(0.62, 0.78, 'trim', segs=12, bevel=0.04, o='c', rot=Y)
+        lo.prism([(-0.5, -0.3), (0.3, -0.88), (2.5, -0.84), (3.5, -0.46), (L2 - 0.5, -0.32), (L2 + 0.15, -0.26),
+                  (L2 + 0.2, 0.26), (L2 - 0.6, 0.36), (1.3, 0.56), (0.2, 0.6), (-1.35, 0.42), (-1.4, 0.12)], 0.58, 'hull',
+                 bevel=0.05, plane='xz')
+        lo.cyl(0.2, 0.7, 'trim', segs=8, o='c', rot=Y, at=(-1.15, 0, 0.27))                      # pin on the horn
+        lo.prism(slab([(0.85, 0.66), (1.7, 0.86), (4.6, 0.66), (L2 - 0.9, 0.5)], 0.18), 0.86, 'paint', bevel=0.04,
+                 plane='xz')
+        lo.prism(slab([(2.0, 0.84), (L2 - 1.8, 0.6)], 0.05), 0.16, 'glow_main', plane='xz', at=(0, 0, 0.03))
+        for y in (-0.31, 0.31):
+            lo.prism([(0.55, -0.72), (2.4, -0.7), (3.1, -0.36), (3.0, 0.3), (0.9, 0.36)], 0.1, 'paint', plane='xz', at=(0, y, 0))
+            lo.box((0.9, 0.03, 0.1), 'glow_main', bevel=0, at=(1.75, y * 1.2, -0.32), rot=(0, 4, 0))
+            lo.cyl(0.5, 0.14, 'trim', segs=10, bevel=0.03, o='c', rot=Y, at=(L2, y * 1.36, 0))  # ankle fork
+            lo.prism([(L2 - 1.2, -0.3), (L2, -0.44), (L2 + 0.1, 0.36), (L2 - 1.2, 0.34)], 0.14, 'hull', plane='xz', at=(0, y * 1.36, 0))
+            lo.rod((3.4, y * 0.6, -0.5), (L2 - 1.3, y * 0.6, -0.36), 0.06, 'steel', segs=4)       # tendon rods
+        lo.cyl(0.2, 1.0, 'trim', segs=8, o='c', rot=Y, at=(L2, 0, 0))
+        lo.box((0.4, 0.44, 0.3), 'trim', bevel=0.04, at=(L2 - 2.5, 0, -0.5))                     # lug of the ankle cylinder
+    # --- tarsus
+    with ft.frames(Fm @ AF):
+        ft.cyl(0.4, 0.68, 'trim', segs=10, bevel=0.03, o='c', rot=Y)
+        ft.prism([(-0.15, -0.38), (0.2, -0.95), (0.55, -0.92), (L3 - 0.1, -0.3), (L3 - 0.1, 0.3), (0.0, 0.42)], 0.56,
+                 'hull', bevel=0.05, plane='xz')
+        ft.prism(slab([(0.1, 0.5), (L3 - 0.25, 0.4)], 0.12), 0.7, 'paint', bevel=0.03, plane='xz')
+        ft.sphere(0.42, 'trim', segs=10, rings=6, at=(L3, 0, 0))
+    # --- pad
+    with toe.frames(Fm):
+        toe.ring(0.54, 0.16, 0.34, 'trim', segs=10, at=(F[0], 0, 0.36))
+        toe.prism([(4.85, -0.75), (4.7, 0), (4.85, 0.75), (6.3, 1.02), (6.8, 0.6), (6.8, -0.6), (6.3, -1.02)], 0.3, 'hull',
+                  bevel=0.06, at=(0, 0, 0.15))
+        toe.prism([(5.0, -0.6), (4.9, 0), (5.0, 0.6), (5.25, 0.82), (5.25, -0.82)], 0.07, 'paint', at=(0, 0, 0.33))
+        with toe.frames([T(at=(F[0], 0, 0)) @ rotz(a) for a in (-34, 0, 34)]):
+            toe.prism([(0.7, 0.0), (0.66, 0.44), (1.0, 0.66), (1.5, 0.56), (2.0, 0.0)], 0.44, 'hull', bevel=0.05, plane='xz')
+            toe.prism([(1.55, 0.0), (1.56, 0.4), (2.3, 0.0)], 0.3, 'trim', plane='xz')
+            toe.prism(slab([(0.7, 0.5), (1.02, 0.72), (1.5, 0.62)], 0.08), 0.52, 'paint', plane='xz')
+            toe.cyl(0.17, 0.56, 'trim', segs=5, o='c', rot=Y, at=(0.86, 0, 0.5))
+            toe.rod((0.42, 0, 0.72), (1.2, 0, 0.7), 0.06, 'steel', segs=4)
+        with toe.frames(T(at=(F[0], 0, 0)) @ rotz(180)):
+            toe.prism([(0.6, 0.0), (0.6, 0.42), (0.95, 0.5), (1.55, 0.0)], 0.5, 'hull', bevel=0.05, plane='xz')
+            toe.prism([(1.2, 0.0), (1.22, 0.3), (1.8, 0.0)], 0.3, 'trim', plane='xz')
+    # --- hydraulics. Each is cut for the whole travel of its joint in the game (see GAITS.titan and solveLeg in anim.ts):
+    # thigh 1.36..3.33 rad from straight down, knee folded by 1.15..2.72 rad, tarsus -0.62..0.62 rad against the shin
+    # (the widest of it out in the district, where it climbs over roofs; on the deck it uses about two thirds)
+    a1, a2, a3 = (math.atan2(q[0] - p[0], p[2] - q[2]) for p, q in ((Hh, K), (K, A), (A, F)))
+    sweep = lambda lo_, hi_: [lo_ + (hi_ - lo_) * i / 24 for i in range(25)]
+    span = lambda pa, f, angs: (lambda d: (min(d), max(d)))([dist(pa, f(a)) for a in angs])
+    hp, kp, ap = PH, seg_pt(Hh, a1, 1.0, 0.7), seg_pt(K, a2, L2 - 2.5, -0.6)
+    piston(m, f'{tag}h', hp, seg_pt(Hh, a1, *TH), root, up, Fm, hinge, rb=0.24, rr=0.12,
+           rng=span(hp, lambda a: seg_pt(Hh, a, *TH), sweep(1.36, 3.33)))
+    piston(m, f'{tag}k', kp, seg_pt(K, a2, -1.15, 0.27), up, lo, Fm, hinge, rb=0.24, rr=0.12,
+           rng=span(kp, lambda k: seg_pt(K, a1 - k, -1.15, 0.27), sweep(1.15, 2.72)))
+    piston(m, f'{tag}a', ap, seg_pt(A, a3, 0.36, -0.82), lo, ft, Fm, hinge, rb=0.16, rr=0.08,
+           rng=span(ap, lambda f: seg_pt(A, a2 - f, 0.36, -0.82), sweep(-0.62, 0.62)))
+    return root, up, lo, ft, toe
 
 
 def weak_big(m, name, at, r, parent):

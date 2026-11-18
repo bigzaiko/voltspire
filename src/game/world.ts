@@ -757,6 +757,18 @@ function skyline(haze: THREE.Color, warm: THREE.Color) {
       push(x, y1, z, 0.004, 0.004, 0.5, 0, 1, 0); push(x1, y1, z1, 0.004, 0.004, 0.5, 0, 1, 0); push(x0, y1, z0, 0.004, 0.004, 0.5, 0, 1, 0);
     }
   };
+  /** A lit band or lamp block that is part of the tower's own mesh (so it comes down with it): a hex ring of unlit faces
+   *  with a lid, in the colour given. Its uv of -1 tells the shader to take the vertex colour as light. */
+  const glowBand = (R: number, h: number, x: number, y0: number, z: number, rot: number, cr: number, cg: number, cb: number) => {
+    const y1 = y0 + h, put = (px: number, py: number, pz: number, k: number) => { pos.push(px, py, pz); uv.push(-1, -1); col.push(cr * k, cg * k, cb * k); };
+    for (let i = 0; i < 6; i++) {
+      const a0 = rot + (i * Math.PI) / 3, a1 = a0 + Math.PI / 3;
+      const x0 = x + Math.cos(a0) * R, z0 = z + Math.sin(a0) * R, x1 = x + Math.cos(a1) * R, z1 = z + Math.sin(a1) * R;
+      put(x0, y0, z0, 1); put(x1, y1, z1, 1); put(x1, y0, z1, 1);
+      put(x0, y0, z0, 1); put(x0, y1, z0, 1); put(x1, y1, z1, 1);
+      put(x, y1, z, 0.6); put(x1, y1, z1, 0.6); put(x0, y1, z0, 0.6);
+    }
+  };
   const lamp = (g: THREE.BufferGeometry, cr: number, cg: number, cb: number) => {
     const o = g.index ? g.toNonIndexed() : g, ca = new Float32Array(o.attributes.position.count * 3);
     for (let k = 0; k < ca.length; k += 3) { ca[k] = cr; ca[k + 1] = cg; ca[k + 2] = cb; }
@@ -830,7 +842,18 @@ function skyline(haze: THREE.Color, warm: THREE.Color) {
     const R = RC * (low ? 0.99 : 0.55 + rnd() * 0.44);
     const h = low ? 4 + Math.round(rnd() * 4) * 2.5 : d < 90 ? 9 + rnd() * 18 + n * 10 + (d - 56) * 0.3 : 22 + rnd() * rnd() * 90 + (d - 90) * 0.28 + n * 22;
     const start = pos.length / 3, lamps = lights.length;
-    const top = tower(x + (low ? 0 : (rnd() - 0.5) * 2), z + (low ? 0 : (rnd() - 0.5) * 2), R, h, Math.PI / 2);
+    const tx = x + (low ? 0 : (rnd() - 0.5) * 2), tz = z + (low ? 0 : (rnd() - 0.5) * 2);
+    const top = tower(tx, tz, R, h, Math.PI / 2);
+    // street-level life, seen from above (the menu's orbit looks down on the district's feet): a lit arcade round some
+    // towers' feet, a lit parapet and a warning lamp on some terraces. (hash2, not rnd: the lattice stays as it was)
+    const k1 = hash2(c * 3.1 + 2, row * 5.3 + 1), k2 = hash2(c * 7.7 + 5, row * 1.9 + 8);
+    if (low) {
+      if (k1 < 0.55) glowBand(R + 0.06, 0.22, tx, h - 0.3, tz, Math.PI / 2, 0.75, 0.42, 0.2);
+      if (k2 < 0.6) { const a = Math.PI / 2 + Math.floor(k2 * 10) * Math.PI / 3; glowBand(0.3, 0.9, tx + Math.cos(a) * R * 0.8, h, tz + Math.sin(a) * R * 0.8, 0, 2.4, 0.32, 0.12); }
+    } else if (d < 170) {
+      if (k1 < 0.4) glowBand(R + 0.1, 0.7, tx, BASE + 1.0, tz, Math.PI / 2, 0.6, 0.32, 0.15);
+      else if (k1 > 0.82) glowBand(R + 0.08, 0.3, tx, BASE + 6 + k2 * 10, tz, Math.PI / 2, 0.5, 0.62, 0.8);
+    }
     // (a tower that carries a lamp stays up: its light is not part of this mesh)
     towers.set(cityKey(c, row), { x, z, top, start, count: pos.length / 3 - start, ok: lights.length === lamps, fall: 0, lean: rnd() * 6.283 });
   }
@@ -850,15 +873,28 @@ function skyline(haze: THREE.Color, warm: THREE.Color) {
       void main(){ vUv = uv; vC = color; vW = position; vec4 mv = modelViewMatrix * vec4(position, 1.0); vDepth = -mv.z; gl_Position = projectionMatrix * mv; }`,
     fragmentShader: `uniform sampler2D map; uniform sampler2D emissiveMap; uniform float glow; uniform vec3 haze, warm, warmDir;
       varying vec2 vUv; varying vec3 vC; varying vec3 vW; varying float vDepth;
+      float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
       void main(){
         vec3 lit = texture2D(emissiveMap, vUv).rgb * glow;
-        vec3 c = texture2D(map, vUv).rgb * vC + lit;
+        // lit floors: short runs of windows, more of them toward the street
+        vec2 cell = vUv * ${FACADE}.0, id = floor(cell), fr = fract(cell);
+        vec2 lot = floor(vW.xz / 13.0 + 0.5);
+        float low = exp(-max(vW.y + 3.0, 0.0) * 0.07);
+        float floorOn = step(h21(vec2(id.y, lot.x * 7.0 + lot.y * 13.0)), 0.035 + 0.2 * low);
+        float runOn = step(0.45, h21(vec2(floor(id.x / 5.0) + lot.y, id.y * 3.0 + lot.x)));
+        float pane = step(0.18, fr.x) * step(fr.x, 0.82) * step(0.24, fr.y) * step(fr.y, 0.76) * step(0.3, h21(id + lot));
+        float tone = h21(id * 1.7 + lot);
+        lit += mix(vec3(1.0, 0.62, 0.3), vec3(1.0, 0.86, 0.62), tone) * (floorOn * runOn * pane * (0.35 + 0.65 * tone) * glow * 0.6);
+        float lampK = step(vUv.x, -0.5); // a light band: the vertex colour is the light
+        lit = mix(lit, vC, lampK);
+        vec3 c = mix(texture2D(map, vUv).rgb * vC, vec3(0.0), lampK) + lit;
         float f = 1.0 - exp(-vDepth * vDepth * 0.000085);
         float mist = exp(-max(vW.y + 3.0, 0.0) * 0.05) * smoothstep(40.0, 150.0, vDepth) * 0.6;
         float az = max(0.0, dot(normalize(vW.xz), normalize(warmDir.xz)));
         vec3 air = haze * 1.1 + warm * (0.1 + 0.4 * az * az) * (0.4 + mist);
         c = mix(c, air, clamp(max(f, mist), 0.0, 0.96));
         c += lit * 0.25 * f; // windows carry a little through the haze
+        c += warm * exp(-max(vW.y + 3.0, 0.0) * 0.17) * (0.3 - 0.16 * f); // the streets' sodium light on the towers' feet
         gl_FragColor = vec4(c, 1.0);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
@@ -868,7 +904,9 @@ function skyline(haze: THREE.Color, warm: THREE.Color) {
   cg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   cg.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   cg.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-  g.add(new THREE.Mesh(cg, mat));
+  // (kept out of the ambient-occlusion pass: its pre-pass draws with a normal material, and this mesh has no normals, so
+  // every tower came out as a flat black slab wherever the camera looked down on the district, as the menu does)
+  g.add(noAO(new THREE.Mesh(cg, mat)));
   g.add(noAO(new THREE.Mesh(mergeGeometries(lights), new THREE.MeshBasicMaterial({ vertexColors: true }))));
   // wrecking: a tower comes down by squashing its own vertices toward the ground, leaning as it goes
   const attr = cg.getAttribute('position') as THREE.BufferAttribute, live = attr.array as Float32Array, rest = live.slice();

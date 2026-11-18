@@ -77,7 +77,18 @@ export class Post {
       const mask = camera.layers.mask;
       camera.layers.disable(fxLayer);
       const bg = scene.background; scene.background = null;
-      try { baseRender(...args); } finally { camera.layers.mask = mask; scene.background = bg; }
+      // the shadow map was drawn by the main pass this frame: re-drawing it here doubled every caster's draw call
+      const sm = renderer.shadowMap, su = sm.autoUpdate; sm.autoUpdate = false;
+      // the main pass has brought every world matrix up to date this frame: walking the whole scene graph again is pure cost
+      const mu = scene.matrixWorldAutoUpdate; scene.matrixWorldAutoUpdate = false;
+      try { baseRender(...args); } finally { camera.layers.mask = mask; scene.background = bg; sm.autoUpdate = su; scene.matrixWorldAutoUpdate = mu; }
+    };
+    // GTAO hides points and lines for its normal pass by walking the WHOLE scene, hidden pools included; only what is
+    // visible can be drawn, so walking the visible part hides exactly the same objects
+    const vis = ao as unknown as { _overrideVisibility: () => void; _visibilityCache: THREE.Object3D[] };
+    vis._overrideVisibility = () => {
+      const cache = vis._visibilityCache;
+      scene.traverseVisible((o) => { if ((o as THREE.Points).isPoints || (o as THREE.Line).isLine || (o as { isLine2?: boolean }).isLine2) { o.visible = false; cache.push(o); } });
     };
     this.ao = ao;
     this.composer.addPass(ao);

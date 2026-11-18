@@ -226,7 +226,8 @@ export const ENEMIES: Record<EnemyType, EnemyDef> = {
   drone: { name: 'Drone', hp: 22, speed: 3.8, bounty: 4, xp: 2, r: 0.55, y: 2.4, armor: 0, shield: 0, leak: 1, cost: 1.2, from: 4, fly: true, scale: 1 },
   shield: { name: 'Aegis', hp: 55, speed: 2.5, bounty: 9, xp: 5, r: 0.7, y: 0.8, armor: 0, shield: 55, leak: 2, cost: 3, from: 6, scale: 1 },
   brute: { name: 'Brute', hp: 175, speed: 1.9, bounty: 13, xp: 8, r: 0.95, y: 1.1, armor: 3, shield: 0, leak: 3, cost: 5, from: 8, scale: 1 },
-  boss: { name: 'Colossus', hp: 1200, speed: 1.3, bounty: 160, xp: 50, r: 1.6, y: 1.4, armor: 4, shield: 0, leak: 6, cost: 30, from: 5, scale: 1 },
+  // Colossus: armour 4 floored the starter Pulse bolts (35% got through); it lost a point of armour and kept its 1200 health, so the challenge stays.
+  boss: { name: 'Colossus', hp: 1200, speed: 1.3, bounty: 160, xp: 50, r: 1.6, y: 1.4, armor: 3, shield: 0, leak: 6, cost: 30, from: 5, scale: 1 },
   // Gyre: a machine riding inside one large armoured wheel, a mini-boss that rolls in on its own (see gyreCount). `speed` is its pace at full spin (see WHEEL_GUARD below).
   wheel: { name: 'Gyre', hp: 520, speed: 4.2, bounty: 55, xp: 24, r: 1.4, y: 1.5, armor: 0, shield: 0, leak: 4, cost: 16, from: 8, scale: 1 },
   // Broodcarrier: sturdy and slow. It walks the road and lets swarms of mites loose on the towers beside it (see BROOD_* below).
@@ -289,7 +290,7 @@ export const JAM_LINGER = 0.4;
  * TITAN_SMASH: seconds between the buildings it wrecks while it roams the district (lowest, highest).
  */
 export const TITAN_LAND = 2.5;
-export const TITAN_STUN = 6;
+export const TITAN_STUN = 7;
 export const TITAN_WINDUP = 4;
 export const TITAN_STRIKE_EVERY = 5;
 export const TITAN_STRIKE = 0.4;
@@ -338,8 +339,9 @@ export const TUNE = {
   bounty: 0.92, clear0: 13.8, clear1: 2.76,
   /** tower damage and xp from kills (the knobs of the balance pass), and how often rare and epic cards are offered next to common ones (weight 10) */
   tdmg: 0.92, xp: 0.92, rare: 4.25, epic: 1.7,
-  /** Titan: health at the wave it arrives on, per unit of waveHpMul (see titanHp() in sim.ts), share of ordinary tower damage that gets through its hull, and how much harder tower specials hit it */
-  titan: 800, titanTower: 0.35, titanSpec: 1,
+  /** Titan: health at the wave it arrives on, per unit of waveHpMul (see titanHp() in sim.ts), share of ordinary tower damage that gets through its hull, and how much harder tower specials hit it.
+   *  The boss pass raised titan from 800 to 1050 (the finale has to out-tough a wave-20 Colossus pair). */
+  titan: 1050, titanTower: 0.35, titanSpec: 1,
   /** enemy health scales with (mean road length / mapLen)^mapPow · (road in reach of the best tiles / mapCov)^mapCovPow, see mapEase() in sim.ts.
    *  starter: extra factor for the first map (Switchback), which new players learn on and which plays harder than its shape suggests */
   mapLen: 105, mapPow: 0.2, mapCov: 39.8, mapCovPow: 0.64, starter: 0.78,

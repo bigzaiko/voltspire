@@ -16,7 +16,9 @@ import { broodCap } from './data.ts';
 import { GameMap, DEFAULT_MAP, diffById } from './map.ts';
 import type { MapDef, Difficulty, PathOut } from './map.ts';
 import { hexDist, neighbor } from './hex.ts';
-import { Factory, makeDeposits, TOWER_STOCK, TOWER_TANK } from './factory.ts';
+import { Factory, TOWER_STOCK, TOWER_TANK, towerKey } from './factory.ts';
+import { mapResources } from './deposits.ts';
+import type { CrateSpot } from './deposits.ts';
 import type { Fac, Diag } from './factory.ts';
 export { LINK_RANGE, WALL_HALF, FIRE_RING, SING_COLOR, BREACH_TIME, BREACH_TIME_BOSS, TITAN_LAND, TITAN_STUN, TITAN_WINDUP, TITAN_STRIKE_EVERY };
 /** How far from the end of its road an enemy stops to attack the core (plus 0.6 of its radius). */
@@ -234,6 +236,11 @@ function newEnemy(id: number, type: EnemyType): Enemy {
   };
 }
 
+/** The diagnosis of a free run (no supply): always empty, one shared map. */
+const NO_DIAG: Map<string, Diag> = new Map();
+const anyGone = (l: { life: number }[]) => { for (let i = 0; i < l.length; i++) if (!(l[i].life > 0)) return true; return false; };
+const anyDead = (l: Enemy[]) => { for (let i = 0; i < l.length; i++) if (!l[i].alive) return true; return false; };
+
 export class Sim {
   opts: SimOpts;
   time = 0; wave = 0; lives = 20; maxLives = 20; gold = 220; level = 1; xp = 0; xpNext = xpNeed(1);
@@ -289,10 +296,12 @@ export class Sim {
     this.gold = Math.round(this.map.def.gold * START_GOLD_MUL);
     // (getters: a co-op replica swaps its tower list and event queue for new arrays)
     const self = this; // eslint-disable-line @typescript-eslint/no-this-alias
+    // crates first, then the deposits around them (the map's own deposits if it has some): see deposits.ts
+    const res = mapResources(this.map);
     this.factory = new Factory({
       get grid() { return self.grid; }, get mods() { return self.mods; }, get towers() { return self.towers; }, get events() { return self.events; },
       addMats: (n) => { this.mats += n; },
-    }, makeDeposits(this.grid, this.map.def.id + '|' + this.map.def.name));
+    }, res.ore);
     this.lives = this.maxLives = Math.max(1, Math.round(this.map.def.lives * this.diff.lives));
     this.endless = this.opts.survival;
     this.winWave = this.diff.waves;
@@ -320,7 +329,7 @@ export class Sim {
       this.towers.push(tw);
     }
     if (this.opts.free) for (const f of FAC_TYPES) this.facs.add(f);
-    else this.placeCrates();
+    else this.placeCrates(res.crates);
     this.recomputeBuffs();
     for (let i = 0; i < this.opts.players; i++) this.players.push({ pending: [], kills: 0 });
     this.planWave(1);
@@ -360,7 +369,7 @@ export class Sim {
    */
   get planning() { return this.cleared && !this.over && !this.queue.length && !this.titanBusy && !this.enemies.some((e) => e.type !== 'mite'); }
   /** The factory's supply diagnosis (see Factory.diagnose): 'f' + fac id and 't' + tower id. Empty in free runs. */
-  diag(): Map<string, Diag> { return this.opts.free ? new Map() : this.factory.diagnose(); }
+  diag(): Map<string, Diag> { return this.opts.free ? NO_DIAG : this.factory.diagnose(); }
   /** The Titan's health when it lands: sized by the enemy health of its wave, the difficulty and the number of players. Towers only hurt it at TUNE.titanTower, their specials at full strength. */
   titanHp() {
     return TUNE.titan * waveHpMul(this.titan.wave) * Math.sqrt(this.diff.hp) * this.mapMul * (1 + 0.75 * (this.players.length - 1)) * Math.pow(TITAN_TOUGHER, this.titanN);
@@ -434,38 +443,16 @@ export class Sim {
   // ---------- the factory ----------
   /**
    * Supply crates: every run starts with a few crates of ammunition beside the roads, so the first towers can fire before
-   * any mine runs. Each road gets a crate of iron ore (the Pulse Turret's ammunition) on a free tile beside it with room
-   * for towers around it; a single road gets two. Trickier maps also bring one crate of a later tower's ammunition, and
-   * that tower (with the Generator and Pole it needs for power) is open from the start: a different opening per map.
+   * any mine runs (where they go: planCrates in deposits.ts, worked out before the deposits so these never clash). Trickier
+   * maps also bring one crate of a later tower's ammunition, and that tower (with the Generator and Pole it needs for power)
+   * is open from the start: a different opening per map.
    */
-  private placeCrates() {
-    const F = this.factory, lanes = this.map.lanes;
-    const roadside = (cx: number, cz: number) => { for (let d = 0; d < 6; d++) { const [nx, nz] = neighbor(cx, cz, d); if (nx >= 0 && nz >= 0 && nx < GW && nz < GH && this.grid[nz * GW + nx] === 1) return true; } return false; };
-    const room = (cx: number, cz: number) => { let n = 0; for (let d = 0; d < 6; d++) { const [nx, nz] = neighbor(cx, cz, d); if (nx >= 0 && nz >= 0 && nx < GW && nz < GH && this.grid[nz * GW + nx] === 0) n++; } return n; };
-    const put = (lane: number, frac: number, it: ItemType) => {
-      const L = lanes[lane];
-      this.map.pos(lane, L.len * frac, tmp);
-      let best = -1, bd = Infinity;
-      for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) {
-        const i = cz * GW + cx;
-        if (this.grid[i] !== 0 || F.ore[i] || !roadside(cx, cz) || room(cx, cz) < 3) continue;
-        // (not right beside another crate: each one is the start of a little outpost of its own)
-        if (F.facs.some((f) => f.type === 'crate' && hexDist(f.cx, f.cz, cx, cz) < 4)) continue;
-        const d = Math.hypot(cellX(cx, cz) - tmp.x, cellZ(cz) - tmp.z);
-        if (d < bd) { bd = d; best = i; }
-      }
-      if (best >= 0) F.placeCrate(best % GW, Math.floor(best / GW), it, CRATE_STOCK[it] || 10);
-    };
-    if (lanes.length === 1) { put(0, 0.3, 'iron_ore'); put(0, 0.65, 'iron_ore'); }
-    else for (let l = 0; l < Math.min(3, lanes.length); l++) put(l, 0.5, 'iron_ore');
-    if ((this.map.def.tier || 1) >= 2) {
-      let h = 0;
-      for (const ch of this.map.def.id + this.map.def.name) h = (Math.imul(h, 31) + ch.charCodeAt(0)) >>> 0;
-      const it: ItemType = h % 2 ? 'copper' : 'shell';
-      put(lanes.length - 1, 0.78, it);
-      if (F.facs.some((f) => f.type === 'crate' && f.hold === it)) {
-        for (const t of TOWER_TYPES) if (TOWERS[t].needs.item === it) { this.unlocked.add(t); if (TOWERS[t].needs.power) { this.facs.add('generator'); this.facs.add('pole'); } }
-      }
+  private placeCrates(spots: CrateSpot[]) {
+    const F = this.factory;
+    for (const c of spots) F.placeCrate(c.cx, c.cz, c.it, CRATE_STOCK[c.it] || 10);
+    for (const it of ['copper', 'shell'] as ItemType[]) {
+      if (!F.facs.some((f) => f.type === 'crate' && f.hold === it)) continue;
+      for (const t of TOWER_TYPES) if (TOWERS[t].needs.item === it) { this.unlocked.add(t); if (TOWERS[t].needs.power) { this.facs.add('generator'); this.facs.add('pole'); } }
     }
   }
 
@@ -535,7 +522,7 @@ export class Sim {
     if (!n.item || t.ammo > 0 || t.stock > 0 || (n.power && t.pwr < 0.05) || (n.fluid && t.tank < FUEL_PER_TICK)) return false;
     // the diagnosis only says the item can reach it: a tower that has had nothing for a long while (its line is jammed, or the
     // towers before it on the belt take everything) is dry all the same
-    return t.starve < WAIT_GRACE && !!this.diag().get('t' + t.id)?.ok;
+    return t.starve < WAIT_GRACE && !!this.diag().get(towerKey(t.id))?.ok;
   }
   /** Spend one shot of a tower's ammunition. False (and nothing spent) when it has none left. */
   private useAmmo(t: Tower, n = 1): boolean {
@@ -1065,11 +1052,15 @@ export class Sim {
       if (!last && this.autoWaves && !(this.holdFirst && this.wave === 0)) { this.nextWaveIn -= dt; if (this.nextWaveIn <= 0) this.startWave(); }
     }
 
-    // zones
-    for (const z of this.zones) {
+    // zones (indexed loops over the array as it stands, like for-of, without an iterator per loop every step)
+    const zones = this.zones;
+    for (let zi = 0; zi < zones.length; zi++) {
+      const z = zones[zi];
       z.life -= dt; z.tick -= dt;
       if (z.kind === 'sing') {
-        for (const e of this.enemies) {
+        const es = this.enemies;
+        for (let ei = 0; ei < es.length; ei++) {
+          const e = es[ei];
           if (!e.alive || Math.hypot(e.x - z.x, e.z - z.z) > z.r) continue;
           const boss = e.type === 'boss' || e.type === 'titan' || e.type === 'mite'; // too heavy to drag, or not on a road
           e.sing = 0.2; // held by the singularity (tracked apart from cryo/arc slows)
@@ -1093,10 +1084,12 @@ export class Sim {
       }
       this.sp = false;
     }
-    if (this.zones.length) this.zones = this.zones.filter((z) => z.life > 0);
+    if (this.zones.length && anyGone(this.zones)) this.zones = this.zones.filter((z) => z.life > 0);
 
     // enemies
-    for (const e of this.enemies) {
+    const ens = this.enemies;
+    for (let ei = 0; ei < ens.length; ei++) {
+      const e = ens[ei];
       if (!e.alive) continue;
       let v = e.speed;
       let slow = 0;
@@ -1153,13 +1146,16 @@ export class Sim {
     if (this.planning) this.factory.sync();
     else {
       this.factory.step(dt);
-      for (const t of this.towers) this.stepTower(t, dt);
+      const tws = this.towers;
+      for (let i = 0; i < tws.length; i++) this.stepTower(tws[i], dt);
     }
 
     // projectiles (the last shots of a wave still fly out)
-    for (const p of this.projs) this.stepProj(p, dt);
-    if (this.projs.length) this.projs = this.projs.filter((p) => p.life > 0);
-    this.enemies = this.enemies.filter((e) => e.alive);
+    const ps = this.projs;
+    for (let i = 0; i < ps.length; i++) this.stepProj(ps[i], dt);
+    // (a new array only when something has gone: no garbage on the steps where nothing did)
+    if (this.projs.length && anyGone(this.projs)) this.projs = this.projs.filter((p) => p.life > 0);
+    if (anyDead(this.enemies)) this.enemies = this.enemies.filter((e) => e.alive);
 
   }
 
@@ -1402,9 +1398,14 @@ export class Sim {
   private pickTarget(t: Tower, range: number, minRange: number): Enemy | null {
     let best: Enemy | null = null, bv = -Infinity;
     const strongest = t.type === 'rail' || t.type === 'lance', ground = t.type === 'mortar';
-    for (const e of this.enemies) {
+    // (a squared distance well past the range rules an enemy out before the exact Math.hypot: the same picks, far fewer hypot calls)
+    const far = range * range * (1 + 1e-9) + 1e-9;
+    for (let i = 0; i < this.enemies.length; i++) {
+      const e = this.enemies[i];
       if (!e.alive || (ground && (ENEMIES[e.type].fly || e.type === 'mite'))) continue; // a mortar cannot shell a mite off a tower
-      const d = Math.hypot(e.x - t.x, e.z - t.z);
+      const dx = e.x - t.x, dz = e.z - t.z;
+      if (dx * dx + dz * dz > far) continue;
+      const d = Math.hypot(dx, dz);
       if (d > range || d < minRange) continue;
       const prog = e.dist - this.map.lanes[e.lane].len; // 0 = at the core (a mite counts as standing where its carrier let it go)
       const v = strongest ? e.hp + e.shield + prog * 0.01 : prog;

@@ -1,14 +1,17 @@
 // Three.js view of a Sim: models, the bird camera, the factory (see facview.ts), effects.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, ENEMY_SCALE, TITAN_LAND, GW, GH, cellX, cellZ, worldToCell } from './data.ts';
 import type { TowerType, EnemyType, FacType } from './data.ts';
 import { HEX_SIZE, BOARD_W, BOARD_D, HEX_CORNERS } from './hex.ts';
 import { Sim, TOWER_SCALE, NODE_R, FIRE_RING, nodePos } from './sim.ts';
 import { FacView } from './facview.ts';
+import { CueView } from './cues.ts';
+import type { CueTool } from './cues.ts';
 import type { Ev, Tower, Enemy, TitanState } from './sim.ts';
 import type { GameMap } from './map.ts';
-import { Fx, makeBeam, placeBeam, fireMat, reticleMat, FIRE_CLOCK } from './fx.ts';
+import { Fx, IceField, makeBeam, placeBeam, boltMat, fireMat, reticleMat, orbMat, FIRE_CLOCK } from './fx.ts';
 import { buildWorld, noAO, FX_LAYER } from './world.ts';
 import { Post } from './post.ts';
 import { lightPool, glowTexture, POOL_GEO } from './tex.ts';
@@ -16,12 +19,14 @@ import { makeEnemyRig, resetEnemy, updateEnemy, makeTowerRig, updateTower, tower
 import type { EnemyRig, TowerRig, TowerState } from './anim.ts';
 
 /** Factory buildings with a model file (belts and pipes are built in facview.ts). */
-const FAC_MODELS = ['mine', 'pump', 'smelter', 'refinery', 'press', 'works', 'cells', 'missiles', 'crate', 'generator', 'pole'].map((t) => 'fac_' + t);
-const MODEL_NAMES = [...TOWER_TYPES.map((t) => 'tower_' + t), ...ENEMY_TYPES.map((t) => 'enemy_' + t), 'core', 'prop_barrier', 'prop_lamp', 'prop_crate', ...FAC_MODELS];
+const FAC_MODELS = ['mine', 'pump', 'smelter', 'refinery', 'press', 'works', 'cells', 'missiles', 'crate', 'generator', 'pole', 'splitter', 'tunnel', 'ptunnel'].map((t) => 'fac_' + t);
+/** the resource deposits (see facview.ts: it instances their geometry, nothing else of them is used) */
+const DEP_MODELS = ['iron', 'copper', 'coal', 'oil'].map((t) => 'dep_' + t);
+const MODEL_NAMES = [...TOWER_TYPES.map((t) => 'tower_' + t), ...ENEMY_TYPES.map((t) => 'enemy_' + t), 'core', 'prop_barrier', 'prop_lamp', 'prop_crate', ...FAC_MODELS, ...DEP_MODELS];
 
 // Ember palette. Defenders are warm, the Static is cold.
 const SAND = 0xe3dc92, APRICOT = 0xf68b56, RUST = 0xce6b44;
-const STATIC = 0x8fd0ff, VIOLET = 0x8a7dff, FROST = 0xdff0ff;
+const STATIC = 0x8fd0ff, VIOLET = 0x8a7dff, FROST = 0xdff0ff, ICE = 0x86cdf6; // (ICE: the blue that survives the bloom, where FROST burns out to white)
 const HEAT = 0xffa24a; // hot metal sparks
 const SINGC = 0xa99cff; // a singularity is cold violet and white, whoever throws it
 const HSL = { h: 0, s: 0, l: 0 };
@@ -35,6 +40,8 @@ const ST: TowerState = { down: false, spec: false, power: 1, heat: 0 };
 const TAU = Math.PI * 2;
 const sat = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const ease = (u: number) => { u = sat(u); return u * u * (3 - 2 * u); };
+/** A prop arriving with its tile: nothing until the tile's reveal r passes d, then up to full size with a small overshoot. */
+const popIn = (r: number, d: number) => { if (r >= 1) return 1; const k = sat((r - d) / (0.985 - d)), q = k - 1; return k <= 0 ? 0 : 1 + 2.6 * q * q * q + 1.6 * q * q; };
 const damp = (cur: number, to: number, rate: number, dt: number) => cur + (to - cur) * (1 - Math.exp(-rate * dt));
 
 /** The world module's side of the bargain. Members after `update` are optional here so an older world keeps running. */
@@ -59,6 +66,10 @@ interface WorldApi {
   groundY?(x: number, z: number): number;
 }
 
+/** The power node: the scale its emblem is drawn at, and the radius of its glass ball in world units. */
+const NODE_VIEW = 0.6, ORB_R = 0.25;
+/** How long a Flash Freeze holds (the sim's e.frz starts here): the shell's cracks run by it. */
+const FREEZE = 3;
 /** Enemies are drawn no closer to the core's centre than this plus 0.6 of their radius: its plinth is in the way. */
 const CORE_STAND = 1.6;
 
@@ -71,8 +82,6 @@ const G_BAR = new THREE.PlaneGeometry(HEX_SIZE * 1.1, 0.12).rotateX(-Math.PI / 2
 const G_DISC = hexFlat(new THREE.CircleGeometry(1, 48));
 const G_RING = hexFlat(new THREE.RingGeometry(0.975, 1, 72));
 const G_SPH = new THREE.SphereGeometry(1, 16, 12);
-const G_ICE = new THREE.IcosahedronGeometry(1, 0);
-const G_OCTA = new THREE.OctahedronGeometry(1);
 const G_QUAD = new THREE.PlaneGeometry(2, 2);
 // a wall of fire in local space: x 0..1 along the wall, y 0..1 up; one upright sheet and two that lean out, so it has body from above
 const G_WALL = (() => {
@@ -113,7 +122,6 @@ const G_POD = new THREE.BoxGeometry(0.16, 0.24, 0.46);
 const G_MAST = new THREE.CylinderGeometry(0.018, 0.03, 0.7, 5);
 const M_ADD_HULL = new THREE.MeshStandardMaterial({ color: 0x2c2723, roughness: 0.5, metalness: 0.75 });
 const M_ADD_TRIM = new THREE.MeshStandardMaterial({ color: 0x70675c, roughness: 0.34, metalness: 0.9 });
-const M_ICE = new THREE.MeshStandardMaterial({ color: 0xcfeaf2, roughness: 0.25, metalness: 0.1, transparent: true, opacity: 0.42, flatShading: true, emissive: 0x3a6a80, emissiveIntensity: 0.4, depthWrite: false });
 const M_BUFF = new THREE.MeshBasicMaterial({ color: new THREE.Color(TOWERS.beacon.color).multiplyScalar(0.9), transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
 
 /** The clock of the shaders that run all the time (FIRE_CLOCK, the fire's own, stands still with the factory between waves). */
@@ -173,12 +181,15 @@ interface Glow { m: THREE.MeshStandardMaterial; i0: number }
 interface GuardVis { strips: Glow[]; rmat: THREE.MeshBasicMaterial; dmat: THREE.ShaderMaterial; parts: THREE.Mesh[]; lvl: number; surge: number; em: number }
 interface EVis {
   obj: THREE.Object3D; rig: EnemyRig; sx: number; sz: number; glow: THREE.Mesh; back: THREE.Sprite; bar: THREE.Sprite; sbar: THREE.Sprite | null; bubble: THREE.Mesh | null;
-  ice: THREE.Mesh | null; wglow: Glow[]; type: EnemyType; phase: number; seen: number; fresh: boolean; lx: number; lz: number; lgy: number; tilt: number; em: number;
+  /** seconds this machine has been in its shell of ice (below 0: it is not frozen) */
+  ice: number; wglow: Glow[]; type: EnemyType; phase: number; seen: number; fresh: boolean; lx: number; lz: number; lgy: number; tilt: number; em: number;
   /** hit flash: the meshes and their own materials, and the seconds the flash still has to run */
   meshes: THREE.Mesh[]; mats: (THREE.Material | THREE.Material[])[]; hitT: number;
   guard: GuardVis | null;
   /** Titan: its own copies of the lights that are not weak points, its health last frame, and how hard those lights stutter after a hit */
   own: Glow[]; hp0: number; dim: number;
+  /** its slot in the batch of its type (RigBatch), -1 if it draws itself */
+  slot: number;
 }
 interface TVis {
   obj: THREE.Object3D; rig: TowerRig; type: TowerType; lvl: number; grow: number; s: number; seen: number;
@@ -186,10 +197,12 @@ interface TVis {
   /** model parts shown from level 2 / 3, and the procedural add-ons used when the model has none */
   lv: THREE.Object3D[][]; addons: THREE.Object3D[];
   /** power node: emblem group (null for towers without a special), its materials, and the model's own node lights */
-  node: THREE.Group | null; core: THREE.Mesh | null; nodeMat: THREE.MeshBasicMaterial | null; ringMat: THREE.ShaderMaterial | null; halo: THREE.Sprite | null; mnode: Glow[];
+  node: THREE.Group | null; ringM: THREE.Mesh | null; orbMat: THREE.ShaderMaterial | null; ringMat: THREE.ShaderMaterial | null; halo: THREE.Sprite | null; mnode: Glow[];
   power: number; boot: number; fired: number; em: number; em2: number; tick: number; downMax: number; deny: number;
   /** jammed by mites / stunned by the Titan last frame (the lights stutter back on when either ends), and the spark clock for both */
   jam: boolean; stun: boolean; em3: number;
+  /** its slot in the batch of its type (RigBatch: hull, paint, trim of all towers of a type in one draw each), -1 while it draws itself */
+  slot: number;
   /** Firewall Pylon: heading of its emitter head, how hard its walls burn (0 none, 1 on, 2 hot), frame it was last linked, and the ring of fire it burns when it stands alone */
   wYaw: number; wTo: number; wHeat: number; wSeen: number; ring: THREE.Group | null; ringMats: THREE.Material[]; ringOn: number;
   /** lance beam, fed by sim events and kept alive between them */
@@ -262,6 +275,224 @@ function roundedPose(map: GameMap, lane: number, d: number, off: number, a: numb
   return out;
 }
 
+/**
+ * Draw-call merge for a rigid-jointed model (see anim.ts). Every part of the model hangs off a node the rig may move;
+ * instead of one draw per part and pass, all parts that share a material (and shadow flags) become ONE skinned mesh
+ * whose "bones" are those very nodes, each vertex bound with weight 1 to the node it hung from. The hierarchy, the node
+ * names and the transforms stay as they were, so the rig and every lookup by name work unchanged; the nodes only stop
+ * being meshes. Bone inverses and the bind matrix are identity: a vertex is stored in its node's own space and lands at
+ * node.matrixWorld * v, exactly where the separate mesh drew it.
+ * A node's own geometry length (anim.ts boneLen) is kept in userData.boneLen. Parts under a node that tagOf names
+ * (default: weak_ nodes, whose lights are cloned per machine) get skinned meshes of their own, userData.tag = that name
+ * (and userData.weak for 'weak'), so the view can still give them their own materials or hide them. Multi-material meshes are left alone.
+ * Clone the result with cloneRig (Object3D.clone would bind the copy to the original's nodes).
+ * `into`: where the skinned meshes go (default the root). Anywhere with the root's own world transform works: the bounding
+ * sphere is in the root's space, the drawing itself only follows the bones. Used to batch many static props, each its own
+ * bone (so each can still be scaled on its own), without their parent's per-child loops seeing the merged meshes.
+ */
+function mergeRigid(root: THREE.Object3D, margin: number, tagOf: (o: THREE.Object3D) => string = (o) => (o.name.startsWith('weak_') ? 'weak' : ''), into: THREE.Object3D = root) {
+  root.updateMatrixWorld(true);
+  const meshes: THREE.Mesh[] = [];
+  root.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh && !Array.isArray(m.material) && !(m as THREE.SkinnedMesh).isSkinnedMesh && !(m as THREE.InstancedMesh).isInstancedMesh) meshes.push(m); });
+  if (meshes.length < 2) return 0;
+  // the length of each node's own geometry along its -Y, before the parts leave it (anim.ts boneLen reads it)
+  const lenOf = (o: THREE.Object3D) => {
+    let l = 0;
+    o.traverse((m) => {
+      const g = (m as THREE.Mesh).geometry;
+      if (!g || (m !== o && m.parent !== o)) return;
+      if (!g.boundingBox) g.computeBoundingBox();
+      l = Math.max(l, -g.boundingBox!.min.y);
+    });
+    return l;
+  };
+  root.traverse((o) => { o.userData.boneLen = lenOf(o); });
+  const rootInv = new THREE.Matrix4().copy(root.matrixWorld).invert();
+  interface Part { geo: THREE.BufferGeometry; bone: THREE.Object3D; local: THREE.Matrix4 }
+  const groups = new Map<string, { mat: THREE.Material; cast: boolean; recv: boolean; tag: string; parts: Part[] }>();
+  const bones: THREE.Object3D[] = [];
+  const box = new THREE.Box3(), pb = new THREE.Box3(), M = new THREE.Matrix4();
+  for (const m of meshes) {
+    // every ancestor (or the part itself) that the view treats apart: its parts get a mesh of their own (a lvl2 part
+    // inside a barrel is both: shown by level, and lit with the barrel)
+    const tags: string[] = [];
+    for (let p: THREE.Object3D | null = m; p && p !== root; p = p.parent) { const t = tagOf(p); if (t && !tags.includes(t)) tags.push(t); }
+    const tag = tags.sort().join(' ');
+    const mat = m.material as THREE.Material;
+    const par = m.parent;
+    if (!par) continue;
+    // a plain node takes the mesh's place (same name, transform, children), so lookups by name still find it
+    const n = new THREE.Object3D();
+    n.name = m.name; n.userData = m.userData; n.position.copy(m.position); n.quaternion.copy(m.quaternion); n.scale.copy(m.scale);
+    n.rotation.order = m.rotation.order; n.visible = m.visible; n.layers.mask = m.layers.mask;
+    for (const c of [...m.children]) n.add(c);
+    par.children[par.children.indexOf(m)] = n; n.parent = par; m.parent = null;
+    n.updateMatrixWorld(true);
+    // every former mesh is a bone: the rig may move any node, leaves included (jaw, eye, orb, cells, barrels)
+    const bone: THREE.Object3D = n, local = new THREE.Matrix4();
+    if (!bones.includes(bone)) bones.push(bone);
+    const key = mat.uuid + (m.castShadow ? 'c' : '') + (m.receiveShadow ? 'r' : '') + '|' + tag;
+    let g = groups.get(key);
+    if (!g) groups.set(key, (g = { mat, cast: m.castShadow, recv: m.receiveShadow, tag, parts: [] }));
+    g.parts.push({ geo: m.geometry, bone, local });
+    if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+    box.union(pb.copy(m.geometry.boundingBox!).applyMatrix4(M.copy(rootInv).multiply(bone.matrixWorld).multiply(local)));
+  }
+  root.updateMatrixWorld(true);
+  const skeleton = new THREE.Skeleton(bones as THREE.Bone[], bones.map(() => new THREE.Matrix4()));
+  const sphere = box.getBoundingSphere(new THREE.Sphere());
+  sphere.radius *= margin;
+  let n = 0;
+  for (const g of groups.values()) {
+    const geos = g.parts.map((p) => {
+      let geo = p.geo.clone();
+      for (const k of Object.keys(geo.attributes)) if (k !== 'position' && k !== 'normal' && k !== 'color') geo.deleteAttribute(k);
+      geo.morphAttributes = {};
+      geo.applyMatrix4(p.local);
+      const cnt = geo.attributes.position.count, bi = bones.indexOf(p.bone);
+      const si = new Uint16Array(cnt * 4), sw = new Float32Array(cnt * 4);
+      for (let i = 0; i < cnt; i++) { si[i * 4] = bi; sw[i * 4] = 1; }
+      geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
+      geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4));
+      return geo;
+    });
+    // one attribute layout for all parts: what every part has; and all indexed or none
+    const keys = Object.keys(geos[0].attributes).filter((k) => geos.every((x) => x.attributes[k]));
+    const indexed = geos.every((x) => x.index);
+    const ready = geos.map((x) => { const y = indexed ? x : x.index ? x.toNonIndexed() : x; for (const k of Object.keys(y.attributes)) if (!keys.includes(k)) y.deleteAttribute(k); return y; });
+    const merged = mergeGeometries(ready, false);
+    if (!merged) continue;
+    const sm = new THREE.SkinnedMesh(merged, g.mat);
+    sm.name = 'skin_' + g.mat.name;
+    sm.castShadow = g.cast; sm.receiveShadow = g.recv; sm.userData.tag = g.tag; sm.userData.weak = hasTag(sm, 'weak');
+    sm.bind(skeleton, new THREE.Matrix4());
+    sm.boundingSphere = sphere.clone();
+    into.add(sm);
+    n++;
+  }
+  root.updateMatrixWorld(true);
+  return n;
+}
+
+/** Clone a model that may hold mergeRigid's skinned meshes: their skeletons are rebuilt on the copy's own nodes (one per source skeleton, shared like in the source). */
+function cloneRig<T extends THREE.Object3D>(src: T): T {
+  const copy = src.clone() as T;
+  const map = new Map<THREE.Object3D, THREE.Object3D>(), skins: [THREE.SkinnedMesh, THREE.SkinnedMesh][] = [];
+  const walk = (a: THREE.Object3D, b: THREE.Object3D) => {
+    map.set(a, b);
+    if ((a as THREE.SkinnedMesh).isSkinnedMesh) skins.push([a as THREE.SkinnedMesh, b as THREE.SkinnedMesh]);
+    for (let i = 0; i < a.children.length; i++) walk(a.children[i], b.children[i]);
+  };
+  walk(src, copy);
+  if (!skins.length) return copy;
+  const sks = new Map<THREE.Skeleton, THREE.Skeleton>();
+  for (const [a, b] of skins) {
+    let s = sks.get(a.skeleton);
+    if (!s) { s = new THREE.Skeleton(a.skeleton.bones.map((o) => map.get(o) as THREE.Bone), a.skeleton.boneInverses); sks.set(a.skeleton, s); }
+    b.bind(s, a.bindMatrix);
+  }
+  return copy;
+}
+
+/** A bone that is not there: it folds every vertex bound to it onto one point, so an empty slot of a RigBatch draws nothing. */
+const NO_BONE = new THREE.Object3D();
+NO_BONE.scale.setScalar(0); NO_BONE.updateMatrixWorld(true);
+/**
+ * Every visual of one machine type in one draw per material. The merged model (mergeRigid) is repeated `cap` times in one
+ * skinned mesh per material; copy k is bound to bones k * nb .. k * nb + nb - 1 of one shared skeleton, and those bones ARE
+ * the nodes of the visual that holds slot k (its rig moves them as always). A free slot is bound to NO_BONE. The visual's
+ * own skinned meshes for these materials are hidden while it holds a slot. Only materials the visual shares with the model
+ * are batched: lights the view gives each machine its own copy of (weak points, the Gyre's guard) keep their own draws.
+ * The batch is not frustum culled (it spans the board); the slots double when they run out.
+ */
+class RigBatch {
+  private meshes: THREE.SkinnedMesh[] = [];
+  private skel: THREE.Skeleton | null = null;
+  private slots: (THREE.Object3D[] | null)[] = [];
+  private nb = 0;
+  /** index (in traverse order) of the model's skinned meshes this batch draws, or null until the first visual has said */
+  private take: number[] | null = null;
+  private src: THREE.SkinnedMesh[] = [];
+  constructor(private parent: THREE.Object3D, model: THREE.Object3D) {
+    model.traverse((o) => { if ((o as THREE.SkinnedMesh).isSkinnedMesh) this.src.push(o as THREE.SkinnedMesh); });
+  }
+  private static skins(o: THREE.Object3D) { const out: THREE.SkinnedMesh[] = []; o.traverse((m) => { if ((m as THREE.SkinnedMesh).isSkinnedMesh) out.push(m as THREE.SkinnedMesh); }); return out; }
+  /** Give a visual a slot. Returns the slot, or -1 when the visual cannot be batched (then it draws itself). */
+  attach(obj: THREE.Object3D): number {
+    const own = RigBatch.skins(obj);
+    if (!own.length || own.length !== this.src.length) return -1;
+    if (!this.take) {
+      this.take = [];
+      // (tagged parts, see mergeRigid, are shown, hidden or lit per visual: they keep their own draws)
+      own.forEach((m, j) => { if (m.material === this.src[j].material && m.skeleton === own[0].skeleton && !m.userData.tag) this.take!.push(j); });
+      this.nb = own[0].skeleton.bones.length;
+    }
+    if (!this.take.length) return -1;
+    const bones = own[0].skeleton.bones;
+    if (bones.length !== this.nb) return -1;
+    let k = this.slots.indexOf(null);
+    if (k < 0) { k = this.slots.length; this.grow(Math.max(8, this.slots.length * 2)); }
+    this.slots[k] = bones;
+    const b = this.skel!.bones;
+    for (let i = 0; i < this.nb; i++) b[k * this.nb + i] = bones[i] as THREE.Bone;
+    for (const j of this.take) own[j].visible = false;
+    this.range();
+    return k;
+  }
+  /** Draw only up to the last slot in use (free slots fold to a point, but their vertices would still be shaded). */
+  private range() {
+    let n = this.slots.length;
+    while (n > 0 && !this.slots[n - 1]) n--;
+    for (let j = 0; j < this.meshes.length; j++) {
+      const m = this.meshes[j], g = this.src[this.take![j]].geometry, per = g.index ? g.index.count : g.attributes.position.count;
+      m.geometry.setDrawRange(0, n * per); m.visible = n > 0;
+    }
+  }
+  release(k: number) {
+    if (k < 0 || !this.skel || !this.slots[k]) return;
+    this.slots[k] = null;
+    const b = this.skel.bones;
+    for (let i = 0; i < this.nb; i++) b[k * this.nb + i] = NO_BONE as THREE.Bone;
+    this.range();
+  }
+  private grow(cap: number) {
+    const old = this.slots.length;
+    for (let k = old; k < cap; k++) this.slots.push(null);
+    const bones: THREE.Bone[] = [];
+    for (let k = 0; k < cap; k++) for (let i = 0; i < this.nb; i++) bones.push((this.slots[k]?.[i] ?? NO_BONE) as THREE.Bone);
+    const inv = bones.map(() => new THREE.Matrix4());
+    if (this.skel) this.skel.dispose();
+    this.skel = new THREE.Skeleton(bones, inv);
+    for (const m of this.meshes) { m.geometry.dispose(); m.removeFromParent(); }
+    this.meshes = this.take!.map((j) => {
+      const s = this.src[j], m = new THREE.SkinnedMesh(RigBatch.repeat(s.geometry, cap, this.nb), s.material);
+      m.name = 'batch_' + s.name; m.castShadow = s.castShadow; m.receiveShadow = s.receiveShadow; m.frustumCulled = false;
+      m.bind(this.skel!, new THREE.Matrix4());
+      this.parent.add(m);
+      return m;
+    });
+  }
+  /** `n` copies of a merged geometry, copy k bound to bones k * nb + its own. */
+  private static repeat(g: THREE.BufferGeometry, n: number, nb: number) {
+    const out = new THREE.BufferGeometry(), vc = g.attributes.position.count;
+    for (const [name, a] of Object.entries(g.attributes)) {
+      type Arr = { length: number; [i: number]: number; set(a: ArrayLike<number>, o: number): void };
+      const src = a.array as unknown as Arr, arr = new (src.constructor as new (n: number) => Arr)(src.length * n);
+      for (let k = 0; k < n; k++) {
+        arr.set(src, k * src.length);
+        if (name === 'skinIndex') for (let i = 0; i < src.length; i++) arr[k * src.length + i] += k * nb;
+      }
+      out.setAttribute(name, new THREE.BufferAttribute(arr as unknown as THREE.TypedArray, a.itemSize, a.normalized));
+    }
+    if (g.index) {
+      const src = g.index.array, big = vc * n > 65535, arr = big ? new Uint32Array(src.length * n) : new Uint16Array(src.length * n);
+      for (let k = 0; k < n; k++) for (let i = 0; i < src.length; i++) arr[k * src.length + i] = src[i] + k * vc;
+      out.setIndex(new THREE.BufferAttribute(arr, 1));
+    }
+    return out;
+  }
+}
+
 /** Stand-in for a model file that is missing. Same node and material names as the real ones, so rigs and tuning work. */
 function fallbackModel(name: string): THREE.Object3D {
   const g = new THREE.Group();
@@ -325,6 +556,8 @@ function fallbackModel(name: string): THREE.Object3D {
   return g;
 }
 
+/** A merged mesh (mergeRigid) that holds parts of a node of this kind. */
+const hasTag = (o: THREE.Object3D, t: string) => typeof o.userData.tag === 'string' && (' ' + o.userData.tag + ' ').includes(' ' + t + ' ');
 const isUnder = (o: THREE.Object3D, root: THREE.Object3D | null | undefined) => { for (let p: THREE.Object3D | null = o; p; p = p.parent) if (p === root) return true; return false; };
 const lvlOf = (n: string) => (/^lvl([23])(_|$)/.exec(n) || [])[1];
 
@@ -334,6 +567,8 @@ export class View {
   camera = new THREE.PerspectiveCamera(42, 1, 0.3, 1500);
   post: Post;
   fx = new Fx();
+  /** every shell of ice on the board, one draw */
+  private ice = new IceField(96);
   models: Record<string, THREE.Object3D> = {};
   sim: Sim | null = null;
   me = 0;
@@ -342,6 +577,9 @@ export class View {
   orbit = false;
   /** the factory: deposits, buildings, belts with their items, pipes and power lines */
   fac: FacView;
+  /** in-world feedback for placing things and for their supply: pulses, rings, routes, holograms (see cues.ts) */
+  cues: CueView;
+  private cueTower: CueTool | null = null; private cueFac: CueTool | null = null;
   shake = 0;
   time = 0;
   /** the clock of the fire of Firewall Pylons: it stands still between waves (sim.planning), like the belts */
@@ -351,6 +589,8 @@ export class View {
   fxOptions: FxOptions;
   private frame = 0;
   private ev = new Map<number, EVis>(); private epool: Record<string, EVis[]> = {};
+  /** the machines of a type drawn together (not the Titan: there is one, and its lights are all its own) */
+  private batches: Partial<Record<EnemyType, RigBatch>> = {};
   private tv = new Map<number, TVis>();
   private pv = new Map<number, PVis>(); private ppool: Record<string, PVis[]> = {};
   private zv = new Map<number, ZVis>();
@@ -376,6 +616,8 @@ export class View {
   private dummy = new THREE.PerspectiveCamera();
   private core = { x: 0, z: 0 };
   private scenery = new THREE.Group();
+  /** the scenery props' and the lamp posts' merged meshes (see mergeRigid: each prop is its own bone, so the reveal can still scale it alone) */
+  private sceneryDraw = new THREE.Group(); private lampDraw = new THREE.Group();
   private lamps: THREE.Object3D[] = [];
   private mapDef: unknown = null;
   private elev = false;
@@ -418,16 +660,17 @@ export class View {
 
     this.world = buildWorld(this.scene, this.renderer) as unknown as WorldApi;
     this.fxOptions = this.world.fxOptions || { impact: true, beat: true, borders: true, env: true, towers: true, intensity: 1, color: null };
-    this.scene.add(this.dyn, this.fx.group);
+    this.scene.add(this.dyn, this.fx.group, this.ice.mesh);
 
     // hp bars: sand, apricot, rust by health; cold blue for a shield; a dark strip behind them
     this.barMats = [SAND, APRICOT, RUST, STATIC, 0x14110f].map((c, i) => new THREE.SpriteMaterial({ color: c, depthWrite: false, fog: false, transparent: i === 4, opacity: i === 4 ? 0.7 : 1 }));
-    const bolt = new THREE.SphereGeometry(0.11, 8, 6); bolt.scale(1, 1, 4.2);
+    // a turret bolt: a tracer with a blunt hot head and a long tail (it flies along +z), lit like the beams
+    const bolt = new THREE.LatheGeometry([[0, 0.34], [0.07, 0.27], [0.105, 0.14], [0.09, -0.08], [0.045, -0.6], [0, -1.25]].map(([x, y]) => new THREE.Vector2(x, y)), 10).rotateX(Math.PI / 2);
     const missile = new THREE.CapsuleGeometry(0.075, 0.5, 3, 6); missile.rotateX(Math.PI / 2);
     this.projGeo = { bolt, missile, shell: new THREE.SphereGeometry(0.2, 14, 10) };
     this.projMat = {
-      bolt: new THREE.MeshBasicMaterial({ color: new THREE.Color(TOWERS.pulse.color).multiplyScalar(2.0) }),
-      shell: new THREE.MeshBasicMaterial({ color: new THREE.Color(TOWERS.mortar.color).multiplyScalar(2.2) }),
+      bolt: boltMat(TOWERS.pulse.color, 2.1, 1, 1.3),
+      shell: boltMat(TOWERS.mortar.color, 2.2, 0.8, 1.1),
       missile: new THREE.MeshBasicMaterial({ color: new THREE.Color(TOWERS.missile.color).multiplyScalar(0.7) }),
     };
 
@@ -450,6 +693,8 @@ export class View {
     this.ghostMat = new THREE.MeshStandardMaterial({ color: 0xcfc8a4, roughness: 0.75, metalness: 0.05, transparent: true, opacity: 0.62, emissive: SAND, emissiveIntensity: 0.1, envMapIntensity: 0.4 });
     this.ghost.visible = false; this.scene.add(this.ghost);
     this.fac = new FacView(this.scene, () => this.models);
+    // (a supply route reaching its taker: a few sparks in the resource's colour at the socket height, and the deck lights up round it)
+    this.cues = new CueView(this.scene, this.fac, (x, z) => this.deckY(x, z), (x, y, z, c) => { this.fx.burst(x, y + 0.6, z, 9, 2.6, c, 0.5, 0.2, -2, 1); this.pulse(x, z, 0x6fe0c8, 2.6, 0.5); });
     this.resize();
   }
 
@@ -479,7 +724,7 @@ export class View {
           mat.emissive.getHSL(HSL);
           if (name === 'prop_lamp') { mat.emissive.setHex(0xffb070); mat.color.setHex(0xffb070); mat.emissiveIntensity = 2.6; } // sodium lamps
           else if (enemy) { if (HSL.h < 0.2 || HSL.h > 0.88) { mat.emissive.setHex(STATIC); mat.color.setHex(STATIC); } } // the Static glows cold, whatever the file says
-          else if (tower && (mat.name === 'glow_main' || mat.name === 'glow_node')) { mat.emissive.setHex(TOWERS[tower].color); mat.color.setHex(TOWERS[tower].color); }
+          else if (tower && (mat.name === 'glow_main' || mat.name === 'glow_node')) { const tc = tower === 'cryo' ? ICE : TOWERS[tower].color; mat.emissive.setHex(tc); mat.color.setHex(tc); if (tower === 'cryo') mat.emissiveIntensity = 1.7; } // (the Cryo's own colour is so pale that it burns out to white: its lights are the blue of its ice)
           else if (!mat.name.startsWith('glow_bow')) mat.emissive.setHSL(HSL.h, HSL.s * 0.82, HSL.l);
           mat.color.multiplyScalar(0.25);
           return;
@@ -508,9 +753,20 @@ export class View {
           mat.envMapIntensity = 1.1;
         }
       });
+      // one skinned mesh per material instead of one mesh per part and material (the mites are instanced from the parts instead)
+      if (enemy && name !== 'enemy_mite') mergeRigid(obj, name === 'enemy_titan' ? 1.6 : 1.35);
       this.models[name] = obj;
       onProgress(++done / MODEL_NAMES.length);
     }));
+    // towers: the same merge. What is measured off the separate parts is measured first (the deck plating's size, the
+    // turret's box, the model tops the cues sit on: facview caches them); the lights the view gives each tower its own
+    // copies of (power node, rail / lance barrel) and the level parts it shows and hides keep meshes of their own
+    for (const type of TOWER_TYPES) {
+      this.metrics(type);
+      for (let l = 1; l <= 3; l++) this.fac.modelTop('tower_' + type, l);
+      const own = type === 'rail' || type === 'lance';
+      mergeRigid(this.models['tower_' + type], 1.3, (o) => { const l = lvlOf(o.name); return l ? 'lvl' + l : o.name === 'node' ? 'node' : own && (o.name === 'barrel' || o.name.startsWith('barrel_')) ? 'barrel' : ''; });
+    }
     // core + props are static scenery
     const core = this.models.core.clone();
     this.scene.add(this.scenery);
@@ -522,17 +778,28 @@ export class View {
     this.coreObj = core;
     this.scene.add(core);
     // lamp posts along the two long edges of the deck, every other one lit
-    const hx = BOARD_W / 2, hz = BOARD_D / 2;
+    const hx = BOARD_W / 2, hz = BOARD_D / 2, lampG = new THREE.Group(), dim = new Map<THREE.Material, THREE.MeshStandardMaterial>(), pools: THREE.Object3D[] = [];
     for (let i = 0; i < 12; i++) {
       for (const s of [-1, 1]) {
         const l = this.models.prop_lamp.clone();
         l.position.set(-hx + 2 + i * ((hx * 2 - 4) / 11), 0, s * (hz + 1.6)); l.rotation.y = s > 0 ? Math.PI : 0;
-        this.scene.add(l); this.lamps.push(l);
+        lampG.add(l); this.lamps.push(l);
         if (i % 2 === (s > 0 ? 0 : 1)) {
-          const pool = noAO(lightPool(4.2, 0xff9a4a, 0.3)); pool.position.set(0, 0.035, 2.0); l.add(pool); // local +z points at the deck on both sides
-        } else l.traverse((o) => { const mm = o as THREE.Mesh; if (mm.isMesh && (mm.material as THREE.Material).name.startsWith('glow')) { mm.material = (mm.material as THREE.MeshStandardMaterial).clone(); (mm.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.05; } });
+          const pool = noAO(lightPool(4.2, 0xff9a4a, 0.3)); pool.position.set(0, 0.035, 2.0); pools.push(l, pool); // local +z points at the deck on both sides
+        } else l.traverse((o) => {
+          const mm = o as THREE.Mesh;
+          if (!mm.isMesh || !(mm.material as THREE.Material).name.startsWith('glow')) return;
+          // (the dark lamps share one dimmed copy: they then merge into one draw)
+          let c = dim.get(mm.material as THREE.Material);
+          if (!c) { c = (mm.material as THREE.MeshStandardMaterial).clone(); c.emissiveIntensity = 0.05; dim.set(mm.material as THREE.Material, c); }
+          mm.material = c;
+        });
       }
     }
+    // all 24 posts in a few draws; each post stays a node of its own, scaled by the reveal like before
+    this.scene.add(lampG, this.lampDraw, this.sceneryDraw);
+    mergeRigid(lampG, 1.05, () => '', this.lampDraw);
+    for (let i = 0; i < pools.length; i += 2) pools[i].add(pools[i + 1]);
   }
 
   setSim(sim: Sim | null, me = 0) {
@@ -552,6 +819,7 @@ export class View {
     this.thunder = 0; this.swarm = 0;
     this.setGhost(null); this.setSelected(null);
     this.fac.setSim(sim);
+    this.cues.setSim(sim); this.cueTower = this.cueFac = null;
     this.hoverMark.visible = false;
     if (!sim) return;
     this.elev = sim.map.lanes.some((l) => l.ys.some((y) => y > 0));
@@ -562,6 +830,7 @@ export class View {
       this.core = sim.map.core;
       this.coreObj.position.set(this.core.x, 0, this.core.z);
       this.scenery.clear();
+      for (const o of [...this.sceneryDraw.children]) { (o as THREE.Mesh).geometry.dispose(); ((o as THREE.SkinnedMesh).skeleton)?.dispose(); o.removeFromParent(); }
       sim.map.def.blocked.forEach(([cx, cz], i) => {
         const k = (cx * 7 + cz * 13 + i) % 5;
         const add = (model: string, x: number, y: number, z: number, ry: number, s: number) => {
@@ -574,6 +843,8 @@ export class View {
         if (k === 0) add('prop_crate', x + 0.1, 1.1, z - 0.1, cz, 0.85);
         else if (k === 3) add('prop_crate', x - 0.45, -0.06, z + 0.4, cx * 0.7, 0.6);
       });
+      // the wreckage in a few draws (each prop a bone: the reveal still scales them one by one)
+      mergeRigid(this.scenery, 1.05, () => '', this.sceneryDraw);
     }
     // a fresh match assembles the deck; one that is already running (capture demo, attract) shows it finished
     if (sim.time > 5) this.world.skipIntro?.(); else this.world.startIntro?.();
@@ -655,6 +926,8 @@ export class View {
     return best;
   }
   private reveal(x: number, z: number) { return this.intro && this.world.revealAt ? ease(this.world.revealAt(x, z)) : 1; }
+  /** How far the tile at (x, z) has arrived in the opening build-up, 0..1 (1 once it is over); HUD marks follow it. */
+  revealOf(x: number, z: number) { return this.reveal(x, z); }
 
   // ---------- picking ----------
   groundPoint(clientX: number, clientY: number, out = new THREE.Vector3()) {
@@ -671,14 +944,15 @@ export class View {
 
   // ---------- markers ----------
   setGhost(type: TowerType | null, cx = 0, cz = 0, ok = true, range = 0) {
+    this.cueTower = type ? { tower: type, cx, cz, dir: 0, ok } : null; this.cues.setTool(this.cueFac || this.cueTower);
     this.ghost.visible = this.cellMark.visible = !!type;
     if (!type) { if (!this.selRing.visible) this.rangeRing.visible = false; return; }
     if (this.ghostType !== type) {
       this.ghost.clear();
-      const g = this.models['tower_' + type].clone();
+      const g = cloneRig(this.models['tower_' + type]);
       g.scale.setScalar(TOWER_SCALE);
       g.traverse((o) => {
-        if (lvlOf(o.name) || o.name === 'node') o.visible = false;
+        if (lvlOf(o.name) || o.name === 'node' || hasTag(o, 'node') || hasTag(o, 'lvl2') || hasTag(o, 'lvl3')) o.visible = false;
         const m = o as THREE.Mesh;
         if (m.isMesh) { m.material = this.ghostMat; m.castShadow = false; m.receiveShadow = false; m.layers.set(FX_LAYER); }
       });
@@ -689,6 +963,8 @@ export class View {
     this.ghost.visible = ok;
     this.cellMark.position.set(x, y + 0.045, z);
     this.cellCross.visible = !ok;
+    // (where it may go, the tile's rim is the cues' ring: green when it will be supplied, broken and rust when it will lack something)
+    this.cellEdge.visible = !ok; (this.cellFill.material as THREE.MeshBasicMaterial).opacity = ok ? 0.13 : 0.28;
     (this.cellFill.material as THREE.MeshBasicMaterial).color.setHex(ok ? SAND : RUST);
     (this.cellEdge.material as THREE.MeshBasicMaterial).color.setHex(ok ? SAND : RUST);
     this.rangeRing.visible = range > 0; this.rangeRing.position.set(x, y + 0.06, z); this.rangeRing.scale.setScalar(Math.max(0.01, range));
@@ -704,11 +980,17 @@ export class View {
   /** The placement marker for a factory building: its ghost, the tile plate, and a cross where it cannot go. */
   setFacGhost(type: FacType | null, cx = 0, cz = 0, dir = 0, ok = true) {
     this.fac.setGhost(type, cx, cz, dir, ok);
+    // (a belt tool over a belt, as at the end of a line being dragged: the cues still show where that line ends)
+    const onBelt = (type === 'belt' || type === 'pipe') && this.sim?.factory.facAt(cx, cz)?.type === type;
+    this.cueFac = type ? { fac: type, cx, cz, dir, ok: ok || !!onBelt } : null; this.cues.setTool(this.cueFac || this.cueTower);
     this.cellMark.visible = !!type;
     if (!type) return;
     const x = cellX(cx, cz), z = cellZ(cz), y = this.deckY(x, z);
     this.cellMark.position.set(x, y + 0.045, z);
+    ok = ok || !!onBelt; // (no cross on the belt or pipe just laid under the cursor: nothing is wrong there)
     this.cellCross.visible = !ok;
+    const line = type === 'belt' || type === 'pipe' || type === 'splitter' || type === 'tunnel' || type === 'ptunnel';
+    this.cellEdge.visible = !ok || line; (this.cellFill.material as THREE.MeshBasicMaterial).opacity = ok && !line ? 0.13 : 0.28;
     (this.cellFill.material as THREE.MeshBasicMaterial).color.setHex(ok ? SAND : RUST);
     (this.cellEdge.material as THREE.MeshBasicMaterial).color.setHex(ok ? SAND : RUST);
   }
@@ -722,6 +1004,8 @@ export class View {
     this.rangeRing.visible = reach > 0; this.rangeRing.position.set(x, 0.06, z); this.rangeRing.scale.setScalar(Math.max(0.01, reach));
     (this.rangeRing.material as THREE.MeshBasicMaterial).color.setHex(0x9ccf6a);
   }
+  /** Softly highlight the deposit at grid cell (cx, cz) and its connected patch of the same kind (on false clears it). */
+  setOreHover(cx: number, cz: number, on: boolean) { this.fac.setOreHover(cx, cz, on); }
   setHover(cx: number, cz: number, show: boolean) {
     this.hoverMark.visible = show;
     if (show) this.hoverMark.position.set(cellX(cx, cz), 0.05, cellZ(cz));
@@ -741,6 +1025,7 @@ export class View {
     // a special's own effects (the chain of a Thunderhead, the first missiles of a Swarm) sit in the same batch ahead of its event
     for (const e of evs) if (e.k === 'special') { if (e.t === 'arc') this.thunder = 0.2; else if (e.t === 'missile') this.swarm = 5; }
     this.fac.handle(evs);
+    this.cues.handle(evs);
     for (const e of evs) {
       switch (e.k) {
         case 'shot': {
@@ -750,25 +1035,42 @@ export class View {
           const t = sim && sim.towerById(e.id);
           if (e.t === 'missile') { fx.puff(e.x, e.y, e.z, 0.9, 0.9, 1.2); fx.burst(e.x, e.y, e.z, 5, 4, HEAT, 0.3, 0.22, 3, 1); }
           else if (e.t === 'mortar') { fx.puff(e.x, e.y + 0.3, e.z, 0.8, 1.0, 1.4); if (t && t.spec > 0) { fx.flash(e.x, e.y + 0.4, e.z, 1.3, c, 0.14); fx.burst(e.x, e.y + 0.3, e.z, 8, 7, HEAT, 0.4, 0.24, 8, 1.4); } }
-          else if (e.t === 'pulse' && t && t.spec > 0) {
-            // Bullet Storm: every shot throws a tracer and a casing
-            const sn = Math.sin(t.yaw), cs = Math.cos(t.yaw);
-            fx.beam(e.x + sn * 0.9, e.y, e.z + cs * 0.9, e.x + sn * 5.5, e.y - 0.5, e.z + cs * 5.5, c, 0.1, 0.09);
-            fx.flash(e.x + sn * 1.0, e.y, e.z + cs * 1.0, 0.55, c, 0.07);
-            fx.spark(e.x - cs * 0.3, e.y, e.z + sn * 0.3, -cs * 3 + (Math.random() - 0.5), 2.5, sn * 3 + (Math.random() - 0.5), 0.5, 0.16, HEAT, 12);
+          else if (e.t === 'pulse' && t) {
+            // muzzle: a short tongue of flame out of the barrel that fired, a spit of sparks along it
+            const sn = Math.sin(t.yaw), cs = Math.cos(t.yaw), storm = t.spec > 0;
+            fx.beam(e.x, e.y, e.z, e.x + sn * 0.85, e.y, e.z + cs * 0.85, HEAT, 0.3, 0.07);
+            fx.beam(e.x, e.y, e.z, e.x + sn * 0.5, e.y, e.z + cs * 0.5, c, 0.55, 0.05);
+            fx.spray(e.x, e.y, e.z, sn, 0, cs, 3, 9, HEAT, 0.16, 0.12, 0.22);
+            if (storm) {
+              // Bullet Storm: every shot throws a tracer and a casing, and the muzzle lights the deck under it
+              fx.beam(e.x + sn * 0.9, e.y, e.z + cs * 0.9, e.x + sn * 5.5, e.y - 0.5, e.z + cs * 5.5, c, 0.1, 0.09);
+              fx.flash(e.x + sn * 0.6, e.y, e.z + cs * 0.6, 0.6, HEAT, 0.07);
+              fx.spark(e.x - cs * 0.3, e.y, e.z + sn * 0.3, -cs * 3 + (Math.random() - 0.5), 2.5, sn * 3 + (Math.random() - 0.5), 0.5, 0.16, HEAT, 12);
+            }
           }
           break;
         }
         case 'hit':
           // a turret bolt: a couple of sparks
-          fx.burst(e.x, e.y, e.z, 3, 4, e.c, 0.2, 0.22, 6); fx.burst(e.x, e.y, e.z, 2, 5, HEAT, 0.3, 0.14, 12);
+          fx.burst(e.x, e.y, e.z, 3, 4, e.c, 0.2, 0.22, 6); fx.burst(e.x, e.y, e.z, 3, 6, HEAT, 0.3, 0.14, 12);
+          fx.flash(e.x, e.y, e.z, 0.42, e.c, 0.07);
           break;
         case 'cryo': {
           const tv = this.tv.get(e.id); if (tv) towerShot(tv.rig);
           const gy = this.deckY(e.tx, e.tz);
-          fx.beam(e.x, e.y, e.z, e.tx, e.ty, e.tz, TOWERS.cryo.color, 0.16, 0.22);
-          fx.ring(e.tx, gy + 0.1, e.tz, e.r, TOWERS.cryo.color, 0.4);
-          fx.burst(e.tx, e.ty, e.tz, 8, 3.5, FROST, 0.5, 0.2, 1);
+          // a jet of cold out of the dish: a thin hard core, a cone of freezing spray that opens toward the target
+          const dx = e.tx - e.x, dy = e.ty - e.y, dz = e.tz - e.z, L = Math.hypot(dx, dy, dz) || 1, ux = dx / L, uy = dy / L, uz = dz / L;
+          fx.beam(e.x, e.y, e.z, e.tx, e.ty, e.tz, ICE, 0.1, 0.2);
+          for (let i = 0; i < 16; i++) {
+            const u = Math.random() * 0.5, sp = L * (2.6 + Math.random() * 1.6), j = 1.4;
+            fx.spark(e.x + dx * u, e.y + dy * u, e.z + dz * u, ux * sp + (Math.random() - 0.5) * j, uy * sp + (Math.random() - 0.5) * j, uz * sp + (Math.random() - 0.5) * j, 0.2 + Math.random() * 0.14, 0.2 + Math.random() * 0.16, i % 3 ? ICE : FROST, 0, 0.5);
+          }
+          // where it lands: the air goes white, rime spreads over the deck, splinters of ice jump out of it
+          fx.ring(e.tx, gy + 0.1, e.tz, e.r, ICE, 0.45, 0.2, 0.9);
+          fx.frost(e.tx, e.tz, e.r * 1.25, 1.5, gy, 0.42);
+          fx.mist(e.tx, e.ty, e.tz, e.r * 0.9, 0.8, 0.5); fx.mist(e.tx + (Math.random() - 0.5) * e.r, gy + 0.3, e.tz + (Math.random() - 0.5) * e.r, e.r * 1.1, 1.2, 0.4);
+          fx.burst(e.tx, e.ty, e.tz, 9, 3.5, ICE, 0.5, 0.18, 1);
+          for (let i = 0; i < 4; i++) { const a = Math.random() * TAU, s = 1.5 + Math.random() * 2; fx.shard(e.tx, e.ty, e.tz, Math.cos(a) * s, 2 + Math.random() * 2, Math.sin(a) * s, 0.09 + Math.random() * 0.08, 0.6 + Math.random() * 0.3, gy); }
           break;
         }
         case 'arc': {
@@ -776,8 +1078,9 @@ export class View {
           const storm = !!e.big || this.thunder > 0, n = e.p.length;
           fx.arc(e.p, e.c, storm ? 0.2 : 0.07);
           if (storm && n >= 6) {
-            fx.arc(e.p, 0xffffff, 0.06);
-            for (let i = 3; i + 2 < n && i < 24; i += 3) { fx.flash(e.p[i], e.p[i + 1], e.p[i + 2], 1.3, e.c, 0.2); this.pulse(e.p[i], e.p[i + 2], e.c, 4, 0.6); }
+            // (the hot thread inside the bolt is a paler violet, not white: stacked over a dense pack it still reads as the Arc's colour)
+            fx.arc(e.p, C1.setHex(e.c).lerp(C2.setHex(0xffffff), 0.45).getHex(), 0.05);
+            for (let i = 3; i + 2 < n && i < 24; i += 3) { fx.flash(e.p[i], e.p[i + 1], e.p[i + 2], 0.95, e.c, 0.16); this.pulse(e.p[i], e.p[i + 2], e.c, 4, 0.6); }
           }
           break;
         }
@@ -872,7 +1175,8 @@ export class View {
           break;
         }
         case 'build': if (this.reveal(e.x, e.z) < 0.5) break; // placed before its tile has arrived (a bot at second zero)
-          fx.ring(e.x, 0.1, e.z, 2.0, e.c, 0.5); fx.burst(e.x, 0.3, e.z, 12, 4, e.c, 0.6, 0.24, -3, 1); fx.smoke(e.x, 0.2, e.z, 3, 1, 1.6, 0.35); this.pulse(e.x, e.z, e.c, 3.5, 0.6); break;
+          fx.burst(e.x, 0.3, e.z, 12, 4, e.c, 0.6, 0.24, -3, 1); // (the ring of a placement is the cues' hex pulse)
+          fx.smoke(e.x, 0.2, e.z, 3, 1, 1.6, 0.35); this.pulse(e.x, e.z, e.c, 3.5, 0.6); break;
         case 'sell': fx.burst(e.x, 0.8, e.z, 12, 5, SAND, 0.6, 0.24, 9); fx.smoke(e.x, 0.4, e.z, 3, 1.1, 1.2, 0.5); break;
         case 'lance': {
           const v = this.tv.get(e.id);
@@ -958,7 +1262,7 @@ export class View {
       for (let i = 0; i < 12; i++) { const u = Math.random(); fx.burst(x + dx * u, y + dy * u, z + dz * u, 2, 2.5, e.c, 0.45, 0.22, 0); }
       if (over) {
         // Overcharge: a white core inside the slug, shock rings and a ripple in the deck all along its path
-        fx.beam(x, y, z, e.tx, e.ty, e.tz, 0xffffff, 0.3, 1.1);
+        fx.beam(x, y, z, e.tx, e.ty, e.tz, C1.setHex(e.c).lerp(C2.setHex(0xffffff), 0.5).getHex(), 0.3, 1.1);
         fx.flash(x, y, z, 2.2, e.c, 0.3);
         for (let d = 4; d < L; d += 7) {
           const u = d / L, px = x + dx * u, pz = z + dz * u, gy = this.deckY(px, pz);
@@ -974,29 +1278,40 @@ export class View {
   /** A tower's special goes off: the node bursts, then each type does its own thing (the long ones carry on in sync). */
   private specialFx(e: Ev) {
     const fx = this.fx, sim = this.sim, t = sim && sim.towerById(e.id), v = this.tv.get(e.id);
-    const type = e.t as TowerType, c = TOWERS[type]?.color ?? SAND;
-    fx.flash(e.x, e.y, e.z, 1.5, c, 0.3);
-    fx.ring(e.x, e.y, e.z, 1.8, c, 0.4);
-    fx.burst(e.x, e.y, e.z, 18, 7, c, 0.5, 0.26, 4);
+    const type = e.t as TowerType, c = TOWERS[type]?.color ?? SAND, nc = type === 'cryo' ? ICE : c;
+    fx.flash(e.x, e.y, e.z, 1.2, nc, 0.26);
+    fx.ring(e.x, e.y, e.z, 1.8, nc, 0.4);
+    fx.burst(e.x, e.y, e.z, 18, 7, nc, 0.5, 0.26, 4);
     if (v) { v.fired = 0; towerShot(v.rig); }
     if (!t || !sim) return;
     const R = sim.range(t);
     switch (type) {
       case 'pulse': this.pulse(t.x, t.z, c, 5, 0.9); break;
       case 'cryo': {
-        // Flash Freeze: a white wall of frost out to the edge of its range
-        fx.ring(t.x, 0.14, t.z, R, FROST, 0.7, 0.15, 0.6);
-        fx.flash(t.x, 0.6, t.z, R * 0.35, c, 0.25);
-        for (let i = 0; i < 90; i++) { const a = Math.random() * TAU, s = (R / 0.5) * (0.5 + Math.random() * 0.6); fx.spark(t.x, 0.25 + Math.random() * 0.5, t.z, Math.cos(a) * s, Math.random() * 1.5, Math.sin(a) * s, 0.45 + Math.random() * 0.25, 0.3, FROST, 1); }
-        this.pulse(t.x, t.z, c, R * 1.2, 1);
+        // Flash Freeze: a wall of frost runs out over the deck to the edge of its range. Two fronts, one behind the other,
+        // fingers of rime that shoot out ahead of them, the ground left white, cold fog where the front has passed
+        fx.ring(t.x, 0.14, t.z, R, ICE, 0.6, 0.12, 1.3); fx.ring(t.x, 0.16, t.z, R * 0.94, FROST, 0.8, 0.05, 0.5);
+        fx.flash(t.x, t.h * 0.7, t.z, 2.2, ICE, 0.22);
+        for (let i = 0; i < 18; i++) {
+          const a = (i / 18) * TAU + Math.random() * 0.25, r0 = 0.7 + Math.random() * 0.5, r1 = R * (0.55 + Math.random() * 0.45), cs = Math.cos(a), sn = Math.sin(a);
+          fx.beam(t.x + cs * r0, 0.1, t.z + sn * r0, t.x + cs * r1, 0.1, t.z + sn * r1, ICE, 0.09, 0.3 + Math.random() * 0.3);
+          // (a side branch off each finger)
+          const b = a + (Math.random() < 0.5 ? 0.5 : -0.5), rb = r1 * (0.45 + Math.random() * 0.3), lb = R * (0.12 + Math.random() * 0.14);
+          fx.beam(t.x + cs * rb, 0.1, t.z + sn * rb, t.x + cs * rb + Math.cos(b) * lb, 0.1, t.z + sn * rb + Math.sin(b) * lb, ICE, 0.06, 0.35 + Math.random() * 0.25);
+        }
+        for (let i = 0; i < 7; i++) { const a = (i / 7) * TAU + Math.random(), r = R * (i ? 0.62 : 0); fx.frost(t.x + Math.cos(a) * r, t.z + Math.sin(a) * r, R * 0.62, 2.6 + Math.random() * 0.6, 0, 0.36); }
+        for (let i = 0; i < 12; i++) { const a = Math.random() * TAU, r = R * (0.35 + Math.random() * 0.6); fx.mist(t.x + Math.cos(a) * r, 0.3, t.z + Math.sin(a) * r, 2.2 + Math.random() * 1.4, 1.6 + Math.random() * 0.8, 0.34); }
+        for (let i = 0; i < 70; i++) { const a = Math.random() * TAU, s = (R / 0.5) * (0.5 + Math.random() * 0.6); fx.spark(t.x, 0.2 + Math.random() * 0.4, t.z, Math.cos(a) * s, Math.random() * 1.2, Math.sin(a) * s, 0.45 + Math.random() * 0.25, 0.22, i % 3 ? ICE : FROST, 1, 0.5); }
+        for (let i = 0; i < 10; i++) { const a = Math.random() * TAU, s = 2 + Math.random() * 3; fx.shard(t.x + Math.cos(a) * 0.7, t.h * 0.6, t.z + Math.sin(a) * 0.7, Math.cos(a) * s, 2.5 + Math.random() * 3, Math.sin(a) * s, 0.1 + Math.random() * 0.1, 0.7 + Math.random() * 0.4); }
+        this.pulse(t.x, t.z, ICE, R * 1.2, 1);
         break;
       }
       case 'arc': {
         // Thunderhead: the charge comes down out of the sky into the orb, then leaves along the chain
         const ox = (Math.random() - 0.5) * 6, oz = (Math.random() - 0.5) * 6;
         fx.arc([t.x + ox, 34, t.z + oz, t.x + ox * 0.4, 16, t.z + oz * 0.4, t.x, t.h, t.z], c, 0.3);
-        fx.arc([t.x + ox, 34, t.z + oz, t.x + ox * 0.4, 16, t.z + oz * 0.4, t.x, t.h, t.z], 0xffffff, 0.08);
-        fx.flash(t.x, t.h, t.z, 3, c, 0.3);
+        fx.arc([t.x + ox, 34, t.z + oz, t.x + ox * 0.4, 16, t.z + oz * 0.4, t.x, t.h, t.z], C1.setHex(c).lerp(C2.setHex(0xffffff), 0.5).getHex(), 0.08);
+        fx.flash(t.x, t.h, t.z, 2.2, c, 0.26);
         this.bump(0.4, t.x, t.z, true);
         this.pulse(t.x, t.z, c, 6, 1);
         break;
@@ -1005,7 +1320,7 @@ export class View {
       case 'rail': this.pulse(t.x, t.z, c, 4, 0.7); break;
       case 'beacon': fx.column(t.x, t.h, t.z, c, 16); this.pulse(t.x, t.z, c, R * 1.3, 1); break;
       case 'flame': fx.flash(t.x, t.h * 0.8, t.z, 2.4, APRICOT, 0.3); fx.burst(t.x, t.h * 0.8, t.z, 24, 7, APRICOT, 0.7, 0.3, -2, 1); this.pulse(t.x, t.z, c, 7, 1); break;
-      case 'lance': fx.star(e.x, t.h * 0.85, e.z, 1.6, 0xffffff, 6, 0.25); this.pulse(t.x, t.z, c, 4, 0.8); break;
+      case 'lance': fx.star(e.x, t.h * 0.85, e.z, 1.6, C1.setHex(c).lerp(C2.setHex(0xffffff), 0.4).getHex(), 6, 0.25); this.pulse(t.x, t.z, c, 4, 0.8); break;
       case 'missile': fx.smoke(t.x, t.h, t.z, 8, 1.2, 1.2, 2); fx.burst(t.x, t.h, t.z, 20, 8, HEAT, 0.6, 0.24, 6, 1.6); this.pulse(t.x, t.z, c, 5, 0.9); break;
       case 'gravity': this.pulse(t.x, t.z, c, 5, 0.8); break;
     }
@@ -1027,19 +1342,20 @@ export class View {
   }
 
   private makeTower(t: Tower): TVis {
-    const def = TOWERS[t.type], obj = this.models['tower_' + t.type].clone();
+    const def = TOWERS[t.type], obj = cloneRig(this.models['tower_' + t.type]);
     // every tower gets its own emissive materials: lights go out, flicker and breathe per tower
     const glows: Glow[] = [], mnode: Glow[] = [], seen = new Map<string, THREE.MeshStandardMaterial>();
     const nodeObj = obj.getObjectByName('node');
     const lv: THREE.Object3D[][] = [[], []];
     obj.traverse((o) => {
-      const l = lvlOf(o.name);
+      // (the model's parts are merged per material, see mergeRigid: a merged mesh says by its tag what it was part of)
+      const l = lvlOf(o.name) || (hasTag(o, 'lvl2') ? '2' : hasTag(o, 'lvl3') ? '3' : '');
       if (l) lv[+l - 2].push(o);
       const m = o as THREE.Mesh;
       if (!m.isMesh) return;
-      const inNode = isUnder(o, nodeObj);
+      const inNode = hasTag(o, 'node') || isUnder(o, nodeObj);
       // rail and lance barrels glow on their own (charge, heat), apart from the rest of the tower's lights
-      let own = false;
+      let own = hasTag(o, 'barrel');
       if (t.type === 'rail' || t.type === 'lance') for (let p: THREE.Object3D | null = o; p && !own; p = p.parent) own = p.name === 'barrel' || p.name.startsWith('barrel_');
       const swap = (mat: THREE.Material) => {
         if (!mat.name.startsWith('glow')) return mat;
@@ -1058,20 +1374,23 @@ export class View {
     const buff = new THREE.Mesh(G_HEX_LINE, M_BUFF); buff.scale.setScalar(1 / TOWER_SCALE); buff.position.y = 0.07; buff.layers.set(FX_LAYER); obj.add(buff);
     const v: TVis = {
       obj, rig, type: t.type, lvl: 0, grow: 0, s: -1, seen: 0, glows, acc, pad, buff, lv, addons: [],
-      node: null, core: null, nodeMat: null, ringMat: null, halo: null, mnode,
+      node: null, ringM: null, orbMat: null, ringMat: null, halo: null, mnode,
       power: 1, boot: 9, fired: 9, em: 0, em2: 0, tick: 0, downMax: 0, deny: 0, jam: false, stun: false, em3: 0,
-      wYaw: t.yaw || 0, wTo: NaN, wHeat: 0, wSeen: -9, ring: null, ringMats: [], ringOn: 0, beam: null, lnT: 0, lnX: 0, lnY: 0, lnZ: 0, lnY0: 0, lnHeat: 0, lnOver: false,
+      wYaw: t.yaw || 0, wTo: NaN, wHeat: 0, wSeen: -9, ring: null, ringMats: [], ringOn: 0, beam: null, lnT: 0, lnX: 0, lnY: 0, lnZ: 0, lnY0: 0, lnHeat: 0, lnOver: false, slot: -1,
     };
     if (def.special) {
       // power node emblem at the exact spot the sim tests (nodePos): a ring that fills with the charge round a core
       const node = new THREE.Group(), k = NODE_R / TOWER_SCALE;
       node.position.y = (t.h + 0.55) / TOWER_SCALE;
       v.ringMat = reticleMat(4);
-      const ring = new THREE.Mesh(G_QUAD, v.ringMat); ring.scale.setScalar(k * 1.2); node.add(ring);
-      if (!nodeObj) {
-        v.nodeMat = new THREE.MeshBasicMaterial({ color: def.color, fog: false });
-        v.core = new THREE.Mesh(G_OCTA, v.nodeMat); v.core.scale.setScalar(k * 0.42); node.add(v.core);
-      }
+      v.ringMat.uniforms.inner.value = 0; v.ringMat.uniforms.thin.value = 1;   // (the ring stands clear of the ball, which is its own centre)
+      const ring = new THREE.Mesh(G_QUAD, v.ringMat); ring.scale.setScalar(k * 1.7); ring.renderOrder = 4; node.add(ring); v.ringM = ring;
+      // the node itself: a glass ball with the charge standing in it, the same size on every tower (it takes the place of
+      // the model's faceted crystal, which stays in the file for the stills that are rendered from it)
+      if (nodeObj) nodeObj.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.visible = false; });
+      obj.traverse((o) => { if ((o as THREE.Mesh).isMesh && hasTag(o, 'node')) o.visible = false; });
+      v.orbMat = orbMat(SHADER_CLOCK);
+      const orb = new THREE.Mesh(G_QUAD, v.orbMat); orb.scale.setScalar(ORB_R / (0.8 * NODE_VIEW * TOWER_SCALE)); orb.renderOrder = 3; node.add(orb);
       let hm = this.haloMats.get(t.type);
       if (!hm) { hm = new THREE.SpriteMaterial({ map: glowTexture(), color: new THREE.Color(def.color).multiplyScalar(0.14), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }); this.haloMats.set(t.type, hm); }
       v.halo = new THREE.Sprite(hm); v.halo.scale.setScalar(k * 3.2); node.add(v.halo);
@@ -1086,11 +1405,12 @@ export class View {
   }
 
   private dropTower(v: TVis) {
+    if (v.slot >= 0) { this.towerBatch(v.type).release(v.slot); v.slot = -1; }
     this.dyn.remove(v.obj);
     for (const g of v.glows) g.m.dispose();
     for (const g of v.mnode) g.m.dispose();
     (v.pad.material as THREE.Material).dispose();
-    v.nodeMat?.dispose(); v.ringMat?.dispose();
+    v.orbMat?.dispose(); v.ringMat?.dispose();
     if (v.ring) { this.dyn.remove(v.ring); for (const m of v.ringMats) m.dispose(); }
     if (v.beam) { this.dyn.remove(v.beam); (v.beam.material as THREE.Material).dispose(); }
   }
@@ -1146,7 +1466,12 @@ export class View {
     const sim = this.sim!, fx = this.fx, def = TOWERS[t.type], c = def.color, off = t.down > 0, spec = t.spec > 0;
     if (v.grow < 1) v.grow = Math.min(1, v.grow + dt * 3.5);
     const s = Math.max(0.001, (1 - Math.pow(1 - v.grow, 3)) * this.reveal(t.x, t.z)) * TOWER_SCALE;
-    if (s !== v.s) { v.s = s; v.obj.scale.setScalar(s); v.obj.visible = s > 0.02; }
+    if (s !== v.s) {
+      v.s = s; v.obj.scale.setScalar(s); v.obj.visible = s > 0.02;
+      // (a tower that is not shown gives its batch slot back: the batch would still draw it)
+      if (v.obj.visible && v.slot < 0) v.slot = this.towerBatch(v.type).attach(v.obj);
+      else if (!v.obj.visible && v.slot >= 0) { this.towerBatch(v.type).release(v.slot); v.slot = -1; }
+    }
     if (v.lvl !== t.lvl) this.setLevel(v, t.lvl);
     v.buff.visible = t.buff > 0 && !off;
 
@@ -1214,8 +1539,8 @@ export class View {
       } else if (t.type === 'cryo') {
         // frost hangs low over everything in range
         v.em += dt * 60;
-        while (v.em >= 1) { v.em -= 1; const a = Math.random() * TAU, r = Math.sqrt(Math.random()) * R; fx.spark(t.x + Math.cos(a) * r, 0.15 + Math.random() * 0.5, t.z + Math.sin(a) * r, (Math.random() - 0.5) * 0.6, 0.5, (Math.random() - 0.5) * 0.6, 0.9, 0.3, FROST, -0.4); }
-        if (v.tick <= 0) { v.tick = 0.9; this.pulse(t.x, t.z, FROST, R * 1.1, 0.45); }
+        while (v.em >= 1) { v.em -= 1; const a = Math.random() * TAU, r = Math.sqrt(Math.random()) * R; fx.spark(t.x + Math.cos(a) * r, 0.15 + Math.random() * 0.5, t.z + Math.sin(a) * r, (Math.random() - 0.5) * 0.6, 0.5, (Math.random() - 0.5) * 0.6, 0.9, 0.2, Math.random() < 0.3 ? FROST : ICE, -0.4, 0.4); }
+        if (v.tick <= 0) { v.tick = 0.9; this.pulse(t.x, t.z, ICE, R * 1.1, 0.45); const a = Math.random() * TAU, r = Math.sqrt(Math.random()) * R; fx.mist(t.x + Math.cos(a) * r, 0.3, t.z + Math.sin(a) * r, 2.6, 1.8, 0.3); }
       } else if (t.type === 'beacon') {
         // Surge: waves run out to its reach, the mast throws light upward
         if (v.tick <= 0) { v.tick = 0.7; this.pulse(t.x, t.z, c, R * 1.2, 0.5); }
@@ -1238,8 +1563,8 @@ export class View {
       const h = v.lnHeat, sn = Math.sin(t.yaw), cs = Math.cos(t.yaw), ax = t.x + sn * 0.8, az = t.z + cs * 0.8;
       const flick = 1 + 0.08 * Math.sin(this.time * 70 + t.id);
       // cold: a thin line in the tower's colour. Hot: wider, brighter, the core burns white
-      const col = C1.setHex(c).lerp(C2.setHex(0xffe2c0), h * 0.7).getHex();
-      placeBeam(v.beam, ax, v.lnY0, az, v.lnX, v.lnY, v.lnZ, v.lnOver ? 0.32 * flick : (0.045 + 0.11 * h) * flick, v.lnOver ? 0xffd0b8 : col, (v.lnOver ? 1.8 : 0.6 + 1.0 * h) * flick, v.lnOver ? 1 : 0.25 + 0.75 * h);
+      const col = C1.setHex(c).lerp(C2.setHex(0xffe2c0), h * 0.4).getHex();
+      placeBeam(v.beam, ax, v.lnY0, az, v.lnX, v.lnY, v.lnZ, v.lnOver ? 0.3 * flick : (0.045 + 0.11 * h) * flick, v.lnOver ? C1.setHex(c).lerp(C2.setHex(0xffe2c0), 0.22).getHex() : col, (v.lnOver ? 1.7 : 0.6 + 1.0 * h) * flick, v.lnOver ? 1 : 0.25 + 0.75 * h);
       v.em2 += dt * (v.lnOver ? 90 : 8 + 50 * h);
       while (v.em2 >= 1) {
         v.em2 -= 1;
@@ -1337,34 +1662,35 @@ export class View {
   private syncNode(t: Tower, v: TVis, b: number) {
     const c = TOWERS[t.type].color, held = t.jam > 0 || t.stun > 0, off = t.down > 0 || held, spec = t.spec > 0, ready = t.charge >= 1 && !off && !spec;
     const beat = 0.5 + 0.5 * Math.sin(this.time * 4.2 + t.id);
-    for (const g of v.mnode) g.m.emissiveIntensity = g.i0 * (off ? 0.01 : spec ? 0.2 + 3 * Math.max(0, 1 - v.fired / 0.35) : ready ? 0.3 + 0.1 * beat : 0.03 + (0.1 + 0.2 * b) * t.charge * t.charge);
+    for (const g of v.mnode) g.m.emissiveIntensity = g.i0 * (off ? 0.01 : spec ? 0.2 + 1.8 * Math.max(0, 1 - v.fired / 0.35) : ready ? 0.3 + 0.1 * beat : 0.03 + (0.1 + 0.2 * b) * t.charge * t.charge);
     const node = v.node;
     if (!node) return;
-    // in the bird view the node only shows when there is something to see: a special ready to fire, running, or the reboot after it
-    node.visible = b > 0.02 && v.grow >= 1 && (ready || spec || t.down > 0);
+    // the ball is always there; the reticle round it only shows when there is something to say: a special ready to fire, running, or the reboot after it
+    node.visible = b > 0.02 && v.grow >= 1;
     if (!node.visible) return;
+    v.ringM!.visible = ready || spec || t.down > 0;
     node.quaternion.copy(this.camera.quaternion);
     const flash = Math.max(0, 1 - v.fired / 0.35), deny = v.deny > 0 ? v.deny / 0.45 : 0;
     node.scale.setScalar(b * (ready ? 1 + 0.07 * beat : 0.9) * (1 + 0.6 * flash));
     node.position.x = deny > 0 ? Math.sin(v.deny * 80) * 0.07 * deny : 0;
     const u = v.ringMat!.uniforms;
-    (u.color.value as THREE.Color).setHex(c);
+    (u.color.value as THREE.Color).setHex(t.type === 'cryo' ? ICE : c);
     // offline: a rust arc that drains as the reboot runs down
     if (off) v.downMax = Math.max(v.downMax, t.down); else v.downMax = 0;
     if (off) (u.color.value as THREE.Color).setHex(held ? VIOLET : RUST);
     else if (deny > 0) (u.color.value as THREE.Color).lerp(C1.setHex(0x8a8478), Math.min(1, deny * 1.5));
     u.fill.value = ready ? 1 : held ? t.charge : off ? t.down / (v.downMax || 1) : spec ? 0 : t.charge;
     const dk = deny > 0 ? (Math.sin(v.deny * 60) > 0 ? 0.3 : 0.9) : 1;
-    u.gain.value = (off ? 0.4 : spec ? 0.2 + 2.2 * flash : ready ? 0.85 + 0.3 * beat : 0.5) * dk;
+    u.gain.value = (off ? 0.4 : spec ? 0.2 + 1.5 * flash : ready ? 0.85 + 0.3 * beat : 0.5) * dk;
     u.mark.value = ready ? 1 : spec ? flash : 0;
     u.spin.value = ready ? this.time * 0.7 + t.id : 0;
-    if (v.nodeMat && v.core) {
-      if (off) v.nodeMat.color.setHex(RUST).multiplyScalar(0.22);
-      else if (spec) v.nodeMat.color.setHex(c).multiplyScalar(0.1 + 3 * flash);
-      else if (ready) v.nodeMat.color.setHex(c).multiplyScalar((0.8 + 0.15 * beat) * dk);
-      else v.nodeMat.color.setHex(c).multiplyScalar(0.14 + 0.12 * t.charge);
-      v.core.rotation.y = ready ? this.time * 1.6 : 0;
-    }
+    // the ball: the charge stands in it; full, it burns; offline it is dull glass with the reboot rising in it
+    const o = v.orbMat!.uniforms;
+    (o.color.value as THREE.Color).copy(u.color.value as THREE.Color);
+    o.fill.value = ready ? 1 : off ? (held ? t.charge : 1 - t.down / (v.downMax || 1)) : spec ? Math.max(0, 1 - v.fired / 0.5) : t.charge;
+    o.ready.value += ((ready ? dk : 0) - o.ready.value) * 0.25;
+    o.flash.value = spec ? flash : 0;
+    o.dead.value += ((off ? 1 : 0) - o.dead.value) * 0.2;
     v.halo!.visible = ready;
     if (ready) v.halo!.scale.setScalar((NODE_R / TOWER_SCALE) * (1.7 + 0.2 * beat));
   }
@@ -1372,8 +1698,8 @@ export class View {
   // ---------- enemies ----------
   private enemyVis(type: EnemyType): EVis {
     const pool = this.epool[type];
-    if (pool && pool.length) { const v = pool.pop()!; v.obj.visible = true; v.fresh = true; return v; }
-    const obj = this.models['enemy_' + type].clone();
+    if (pool && pool.length) { const v = pool.pop()!; v.obj.visible = true; v.fresh = true; this.dyn.add(v.obj); v.slot = this.batchOf(type)?.attach(v.obj) ?? -1; return v; }
+    const obj = cloneRig(this.models['enemy_' + type]);
     obj.scale.setScalar(ENEMY_SCALE[type]);
     obj.rotation.order = 'YXZ';
     const sc = ENEMY_SCALE[type];
@@ -1383,7 +1709,7 @@ export class View {
       const m = o as THREE.Mesh;
       if (m.isMesh) meshes.push(m);
       if (!m.isMesh || Array.isArray(m.material)) return;
-      let under = false;
+      let under = !!m.userData.weak;
       for (let p: THREE.Object3D | null = o; p && !under; p = p.parent) under = p.name.startsWith('weak_');
       if (!under || !m.material.name.startsWith('glow')) return;
       const c = (m.material as THREE.MeshStandardMaterial).clone(); m.material = c; wglow.push({ m: c, i0: c.emissiveIntensity });
@@ -1417,9 +1743,16 @@ export class View {
       bubble.scale.setScalar(d.r * 1.7 / sc); bubble.position.y = d.y / sc; bubble.layers.set(FX_LAYER); obj.add(bubble);
     }
     this.dyn.add(obj);
+    const slot = this.batchOf(type)?.attach(obj) ?? -1;
     // the hp bars, glow and bubble were added after the traverse: only the model's own meshes flash
-    return { obj, rig, sx: 0, sz: 0, back, bar, sbar, bubble, glow, ice: null, wglow, type, phase: Math.random() * 6.28, seen: 0, fresh: true, lx: 0, lz: 0, lgy: 0, tilt: 0, em: 0,
-      meshes, mats: meshes.map((m) => m.material), hitT: 0, guard, own, hp0: -1, dim: 0 };
+    return { obj, rig, sx: 0, sz: 0, back, bar, sbar, bubble, glow, ice: -1, wglow, type, phase: Math.random() * 6.28, seen: 0, fresh: true, lx: 0, lz: 0, lgy: 0, tilt: 0, em: 0,
+      meshes, mats: meshes.map((m) => m.material), hitT: 0, guard, own, hp0: -1, dim: 0, slot };
+  }
+  private towerBatches: Partial<Record<TowerType, RigBatch>> = {};
+  private towerBatch(type: TowerType) { return (this.towerBatches[type] ||= new RigBatch(this.dyn, this.models['tower_' + type])); }
+  private batchOf(type: EnemyType) {
+    if (type === 'titan' || type === 'mite') return null;
+    return (this.batches[type] ||= new RigBatch(this.dyn, this.models['enemy_' + type]));
   }
   /**
    * The Gyre's guard. The rim's light strips get their own material so each wheel can dim alone; on both faces of the rim
@@ -1433,7 +1766,8 @@ export class View {
       if (!c) { c = (mat as THREE.MeshStandardMaterial).clone(); own.set(mat.uuid, c); strips.push({ m: c, i0: c.emissiveIntensity }); }
       return c;
     };
-    rim.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.material = Array.isArray(m.material) ? m.material.map(swap) : swap(m.material); });
+    // (the rim's strips may sit in the model's merged skinned meshes, which hang off the root: swap them wherever they are)
+    obj.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.material = Array.isArray(m.material) ? m.material.map(swap) : swap(m.material); });
     const rmat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, side: THREE.DoubleSide });
     const dmat = guardMat(), parts: THREE.Mesh[] = [];
     for (const sd of [-1, 1]) {
@@ -1476,7 +1810,9 @@ export class View {
   }
   private poolEnemy(v: EVis) {
     if (v.hitT > 0) { v.hitT = 0; for (let i = 0; i < v.meshes.length; i++) v.meshes[i].material = v.mats[i]; }
-    v.obj.visible = false;
+    // (out of the scene graph while pooled: the renderer would bring all its nodes' matrices up to date every frame)
+    v.obj.visible = false; v.ice = -1; v.obj.removeFromParent();
+    if (v.slot >= 0) { this.batchOf(v.type)?.release(v.slot); v.slot = -1; }
     (this.epool[v.type] ||= []).push(v);
   }
 
@@ -1576,8 +1912,15 @@ export class View {
     }
 
     // frozen solid: a shell of ice. Burning: flames lick up off the hull
-    if (frozen && !v.ice) { v.ice = new THREE.Mesh(G_ICE, M_ICE); v.ice.scale.setScalar(d.r * 1.15 / sc); v.ice.position.y = (fly ? 0 : d.y) / sc; v.ice.rotation.set(v.phase, v.phase * 2, 0); v.obj.add(v.ice); }
-    if (v.ice) v.ice.visible = frozen;
+    if (frozen) {
+      // (a replica only knows that it is frozen, not for how long: there the shell just ages)
+      const left = sim.replica ? FREEZE - v.ice : e.frz;
+      if (v.ice < 0 || FREEZE - left < v.ice - 0.3) v.ice = sim.replica ? 0 : Math.max(0, FREEZE - left);
+      v.ice += dt;
+      const a = v.ice, end = Math.max(0, 1 - (FREEZE - a) / 0.4), ry = (fly ? d.r : Math.max(d.r, d.y)) * 1.12;   // (a flyer's y is its flight height, not its size)
+      this.ice.add(v.obj.position.x, y + (fly ? 0 : Math.max(d.y, ry * 0.72)), v.obj.position.z, d.r * 1.18, ry, v.obj.rotation.y + Math.sin(this.time * 70 + v.phase) * 0.035 * end,
+        v.phase * 6.3 + (d.r > 0.85 ? 100 : 0), Math.min(1, Math.max(0, (a - 0.9) / (FREEZE - 0.9))), Math.min(1, a / 0.24), Math.max(0, 1 - a / 0.2) * 0.55);
+    } else if (v.ice >= 0) { v.ice = -1; this.fx.shatter(v.obj.position.x, y + (fly ? 0 : d.y), v.obj.position.z, d.r * 1.18, gy); }
     if (e.burnT > 0) {
       v.em += dt * 14;
       while (v.em >= 1) {
@@ -1931,17 +2274,20 @@ export class View {
     for (let i = 0; i < this.later.length; i++) { const l = this.later[i]; if ((l.t -= dt) <= 1e-6) { this.later.splice(i--, 1); l.fn(); } }
     this.thunder -= dt; this.swarm -= dt;
     this.fac.sync(dt, this.time, this.intro ? (x: number, z: number) => this.reveal(x, z) : null);
+    this.cues.sync(this.time, this.intro ? (x: number, z: number) => this.reveal(x, z) : null, this.renderer.domElement.width, this.renderer.domElement.height, this.renderer.getPixelRatio());
 
     // deck assembly: the core, wreckage and lamps come in with their tiles (one last pass at full size when it ends)
     if (this.intro) {
       this.intro = this.introActive();
       if (this.coreObj) this.coreObj.scale.setScalar(Math.max(0.001, this.reveal(this.core.x, this.core.z)));
-      for (const o of this.scenery.children) o.scale.setScalar(Math.max(0.001, this.reveal(o.position.x, o.position.z)) * (o.userData.s || 1));
+      // (props wait until their tile has nearly settled, then spring up with a small overshoot, each a moment after the last)
+      this.scenery.children.forEach((o, i) => o.scale.setScalar(Math.max(0.001, popIn(this.reveal(o.position.x, o.position.z), 0.4 + (i % 3) * 0.07)) * (o.userData.s || 1)));
       const hz = BOARD_D / 2 - 1;
-      for (const l of this.lamps) l.scale.setScalar(Math.max(0.001, this.reveal(l.position.x, l.position.z > 0 ? hz : -hz)));
+      this.lamps.forEach((l, i) => l.scale.setScalar(Math.max(0.001, popIn(this.reveal(l.position.x, l.position.z > 0 ? hz : -hz), 0.35 + (i % 2) * 0.1))));
     }
 
     // enemies
+    this.ice.begin();
     for (const e of sim.enemies) {
       if (e.type === 'mite') continue;   // drawn instanced, all of them together (syncMites)
       let v = this.ev.get(e.id);
@@ -1954,7 +2300,12 @@ export class View {
       v.seen = f;
       this.syncEnemy(e, v, dt, k);
     }
-    for (const [id, v] of this.ev) if (v.seen !== f) { this.poolEnemy(v); this.ev.delete(id); }
+    for (const [id, v] of this.ev) if (v.seen !== f) {
+      // killed in its ice: the shell goes with it
+      if (v.ice >= 0) { const d = ENEMIES[v.type], p = v.obj.position; this.fx.shatter(p.x, p.y + (v.type === 'drone' ? 0 : d.y), p.z, d.r * 1.18, v.type === 'drone' ? 0 : p.y); }
+      this.poolEnemy(v); this.ev.delete(id);
+    }
+    this.ice.end();
     this.syncMites(dt, f);
     this.syncTitan(dt);
     this.syncWreck(dt);
@@ -1964,7 +2315,7 @@ export class View {
       const v = this.tv.get(t.id) || this.makeTower(t);
       v.seen = f;
       this.syncTower(t, v, dt, false);
-      this.syncNode(t, v, 0.6);
+      this.syncNode(t, v, NODE_VIEW);
     }
     for (const [id, v] of this.tv) if (v.seen !== f) { this.dropTower(v); this.tv.delete(id); }
 

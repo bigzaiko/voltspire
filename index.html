@@ -5,18 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="referrer" content="no-referrer" />
   <meta name="theme-color" content="#100e0c" />
-  <title>BEATSPIRE - Build the grid. Become the storm.</title>
-  <meta name="description" content="BEATSPIRE is a free tower defense on a hex grid for your browser, where your own factory keeps the towers firing. Mine ore, run belts, pipes and power lines, and make the ammunition. No account, no ads, no tracking." />
+  <title>BEATSPIRE - Tower defense where your factory feeds the guns</title>
+  <meta name="description" content="BEATSPIRE is a free hex-grid tower defense for your browser where every tower fires only what your own factory makes. Mine iron, copper, coal and oil, run belts, pipes and power, and hold 20 to 30 waves against the Static. No account, no ads, no tracking." />
+  <link rel="canonical" href="https://bigzaiko.github.io/beatspire/" />
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="BEATSPIRE" />
-  <meta property="og:title" content="BEATSPIRE - Build the grid. Become the storm." />
-  <meta property="og:description" content="Tower defense on a hex grid where you build the factory that feeds your towers: mines, belts, pipes, power and ammunition. Free in your browser." />
-  <meta property="og:image" content="./media/shot-factory.jpg" />
+  <meta property="og:url" content="https://bigzaiko.github.io/beatspire/" />
+  <meta property="og:title" content="BEATSPIRE - Tower defense where your factory feeds the guns" />
+  <meta property="og:description" content="Ten towers, fifteen factory buildings, one road full of machines. Mine the ore, run the belts, wire the power and make the ammunition your towers burn. Free in your browser." />
+  <meta property="og:image" content="https://bigzaiko.github.io/beatspire/media/shot-factory.jpg" />
   <meta property="og:image:width" content="1920" />
   <meta property="og:image:height" content="1080" />
-  <meta property="og:image:alt" content="A factory of mines, smelters and presses sending ammunition down conveyor belts to the towers along a road full of machines." />
+  <meta property="og:image:alt" content="Mines and curved conveyor belts carry ore to a row of firing Pulse Turrets while machines come down the road toward the glowing core." />
   <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://bigzaiko.github.io/beatspire/media/shot-factory.jpg" />
   <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <link rel="preload" href="./media/hero.jpg" as="image" fetchpriority="high" />
   <link rel="preload" href="./fonts/saira-stencil-one-400.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="./fonts/barlow-condensed-600.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="./fonts/barlow-condensed-700.woff2" as="font" type="font/woff2" crossorigin />
@@ -32,10 +36,12 @@
   <header class="nav" id="nav">
     <a class="brand" href="#top" aria-label="BEATSPIRE, back to top"><span>BEAT</span><span class="brand-b">SPIRE</span></a>
     <nav class="nav-links" aria-label="Sections">
-      <a href="#game">The game</a>
+      <a href="#game">A run</a>
+      <a href="#factory">Factory</a>
       <a href="#towers">Towers</a>
       <a href="#static">The Static</a>
-      <a href="#modes">Modes</a>
+      <a href="#modes">Maps</a>
+      <a href="#gallery">Gallery</a>
       <a href="#controls">Controls</a>
     </nav>
     <a class="btn btn-sm" href="./play.html">Play</a>
@@ -50,154 +56,185 @@
         <p class="eyebrow">Tower defense <i></i> Factory building <i></i> Free in your browser</p>
         <h1 class="wordmark"><span class="wm-a">BEAT</span><span class="wm-b">SPIRE</span></h1>
         <p class="tagline">Build the grid. Become the storm.</p>
-        <p class="pitch">Defend the last power core of Nyx-9 on a hex grid. Build towers beside the roads, then keep them firing. It starts with a mine and a turret; every new tower adds one more step: power lines, oil and pipes, smelters, presses and plants. Waves come when you call them, and between waves time stands still while you build. A run lasts 20, 25 or 30 waves depending on the difficulty.</p>
+        <p class="pitch">A hex-grid tower defense where no gun fires for free: every bolt, shell and missile is dug, smelted and carried to it by the factory you build between the roads.</p>
         <div class="cta">
           <a class="btn btn-lg" href="./play.html">Play free in your browser</a>
-          <a class="btn btn-ghost btn-lg" href="#game">How it plays</a>
+          <a class="btn btn-ghost btn-lg" href="#trailer" id="watch-trailer"><span class="tri" aria-hidden="true"></span>Watch the trailer</a>
         </div>
+        <p class="cta-note">New to factory games? <a href="./play.html">Start with the Tutorial</a>: it is the second button in the menu and takes one run.</p>
         <ul class="facts" aria-label="At a glance">
-          <li><b>10</b><span>tower types</span></li>
-          <li><b>20-30</b><span>waves per run</span></li>
+          <li><b data-fact="towers">10</b><span>towers, each with a special</span></li>
+          <li><b data-fact="facs">15</b><span>factory buildings</span></li>
+          <li><b data-fact="cards">63</b><span>upgrade cards</span></li>
+          <li><b data-fact="waves">20-30</b><span>waves per run</span></li>
           <li><b>38</b><span>maps, plus generated ones</span></li>
-          <li><b>15</b><span>factory buildings</span></li>
-          <li><b>8</b><span>items, 2 fluids, 1 power grid</span></li>
         </ul>
       </div>
     </section>
 
-    <!-- TRAILER: the recorded trailer shows the archer this version no longer has; it comes back once it is re-recorded -->
+    <!-- TRAILER -->
+    <section class="section trailer" id="trailer" aria-labelledby="h-trailer">
+      <div class="wrap">
+        <h2 class="sr" id="h-trailer">Trailer</h2>
+        <div class="frame" id="trailer-frame">
+          <video id="trailer-video" controls preload="none" playsinline width="1920" height="1080" poster="./media/poster.jpg" aria-label="BEATSPIRE trailer, 45 seconds, with sound">
+            <source src="./media/trailer.mp4" type="video/mp4" />
+          </video>
+          <div class="frame-fallback" id="trailer-fallback" hidden>
+            <p class="ff-title">Signal lost</p>
+            <p class="ff-text">The trailer did not load. The game itself is one click away.</p>
+            <a class="btn" href="./play.html">Play instead</a>
+          </div>
+          <span class="corner c-tl" aria-hidden="true"></span><span class="corner c-tr" aria-hidden="true"></span><span class="corner c-bl" aria-hidden="true"></span><span class="corner c-br" aria-hidden="true"></span>
+        </div>
+        <p class="frame-cap">45 seconds <i></i> Recorded in the game <i></i> Its own score and sound</p>
+      </div>
+    </section>
 
-    <!-- THREE BEATS -->
+    <!-- A RUN -->
     <section class="section" id="game" aria-labelledby="h-game">
       <div class="wrap">
         <header class="head">
-          <p class="kicker">The game</p>
-          <h2 id="h-game">Defend the road. Feed the guns.</h2>
-          <p class="lede">BEATSPIRE is a tower defense and a small factory game on the same board. The towers hold the road, the factory keeps them supplied, and the cards you draw decide how both of them grow.</p>
+          <p class="kicker">How a run plays</p>
+          <h2 id="h-game">Build in the calm. Hold in the storm.</h2>
+          <p class="lede">BEATSPIRE is a tower defense and a small factory game on the same board. The towers hold the road, the factory keeps them loaded, and the cards you draw decide how both of them grow.</p>
         </header>
 
         <article class="beat">
-          <figure class="beat-img"><img src="./media/shot-bird.jpg" width="1920" height="1080" loading="lazy" alt="Bird's-eye view of the grid: towers lining a glowing lane while machines march toward the core." /></figure>
+          <figure class="beat-img"><img src="./media/shot-build.jpg" srcset="./media/sm/shot-build.jpg 960w, ./media/shot-build.jpg 1920w" sizes="(max-width: 860px) 100vw, 660px" width="1920" height="1080" loading="lazy" decoding="async" alt="The build phase: a Pulse Turret ghost with its range ring beside a belt, green supply rings under the buildings, the banner Time stands still and the Call wave button." /></figure>
           <div class="beat-txt">
             <span class="num" aria-hidden="true">01</span>
-            <h3>Command view</h3>
-            <p>From above, the district is a board of hexes. Build towers on any free hex beside a road, upgrade each one twice, and sell what you no longer need. Roads can climb and cross each other on bridges. Tags over the spawn gates show what the next wave sends down each road.</p>
-            <ul class="ticks">
-              <li>You start with a few tower types and unlock the rest as blueprint cards</li>
-              <li>The stronger towers cost building materials from a Frame Works on top of credits</li>
-              <li>Waves start when you call them. Between waves time stands still: build, plan, and see what each tower will get. Auto waves is a switch</li>
-              <li>A Colossus arrives every fifth wave. Hold 20, 25 or 30 waves to win, then keep going if you like</li>
+            <h3>Time stands still while you build</h3>
+            <p>No wave starts until you call it. Between waves nothing moves and nothing is made, so there is no clock on your planning. The board tells you, before you commit, whether every tower will be fed when the shooting starts.</p>
+            <ul class="cues">
+              <li><svg class="cue cue-ok" viewBox="0 0 44 44" aria-hidden="true"><circle cx="22" cy="24" r="14" /></svg><span><b>Green ring</b> It will get everything it needs. Hold <kbd>V</kbd> to see the rings at any time between waves.</span></li>
+              <li><svg class="cue cue-bad" viewBox="0 0 44 44" aria-hidden="true"><circle cx="22" cy="28" r="12" /><path d="M22 3l6 7-6 7-6-7z" /></svg><span><b>Broken rust ring</b> It will lack something. The hologram over it shows what; its panel says what would supply it.</span></li>
+              <li><svg class="cue cue-route" viewBox="0 0 44 44" aria-hidden="true"><path class="cue-dash" d="M4 34h14l10-20h12" /><path d="M36 8h5v5M36 20h5v-5" /></svg><span><b>Route pulse</b> While you place a piece, dashes run along the route it would get, and brackets close on what it would feed or power.</span></li>
             </ul>
           </div>
         </article>
 
         <article class="beat beat-flip">
-          <figure class="beat-img"><img src="./media/shot-factory.jpg" width="1920" height="1080" loading="lazy" alt="Mines, smelters and presses beside the road, with ammunition riding a curved conveyor belt to the towers." /></figure>
+          <figure class="beat-img"><img src="./media/shot-factory.jpg" srcset="./media/sm/shot-factory.jpg 960w, ./media/shot-factory.jpg 1920w" sizes="(max-width: 860px) 100vw, 660px" width="1920" height="1080" loading="lazy" decoding="async" alt="A wave on Switchback: mines and curved belts carry ore to Pulse Turrets in a Bullet Storm, an Arc Pylon fires and firewalls burn while machines come down the road." /></figure>
           <div class="beat-txt">
             <span class="num num-hot" aria-hidden="true">02</span>
-            <h3>The factory</h3>
-            <p>A tower fires only what it is fed, and it starts empty. It keeps one item in hand and pulls the next off its belt as it fires. Supply crates on the deck feed a tower built right next to them, but a crate runs out. The Pulse Turret runs on iron ore, so the first supply line is one Mine and maybe a belt. Mines and plants work slowly; upgrade them twice to work faster.</p>
-            <p>Between waves the factory stands still with everything else. A marker over each tower and building says whether it will get what it needs when the wave starts, and its panel says what is missing.</p>
-            <p>Each blueprint card unlocks a tower together with the buildings its supply needs, a step at a time: a Generator for the Cryo Emitter and the Arc Pylon, a Pumpjack and pipes for the Firewall Pylon, a Smelter for the Railgun's copper plates, a Shell Press for the Mortar, a Cell Plant for the Lance, a Refinery and a Missile Works for the Missile Battery. At Mk3 the Pulse Turret switches to plasma shells and the Firewall Pylon to petrol.</p>
-            <ul class="skills">
-              <li><kbd>Belt</kbd><span><b>Conveyor belts</b> Drag to lay a line. Nothing needs pointing: buildings load a belt when something further down it needs what they make, and a belt feeds every tower it points at or runs past. Belts merge, and a Splitter deals items out to several lines.</span></li>
-              <li><kbd>Pipe</kbd><span><b>Pipes</b> Pumpjacks fill them with crude oil, refineries with petrol.</span></li>
-              <li><kbd>Pole</kbd><span><b>Power lines</b> Generators burn coal. Poles wire up to 5 tiles apart, also across roads, and power everything within 2 tiles.</span></li>
-              <li><kbd>Tunnel</kbd><span><b>Tunnels</b> A card that unlocks Belt and Pipe Tunnels: they pass up to 4 tiles under roads, towers and buildings.</span></li>
+            <h3>Call the wave</h3>
+            <p>Press <kbd>N</kbd> and everything starts at once: mines dig, belts roll, the Static comes through the gates. Tags over the gates have already told you what each road gets.</p>
+            <p>A tower starts empty and keeps one item in hand, pulling the next off its belt or pipe as it fires. One that runs dry stops and shows what it is missing. Kills and cleared waves pay credits; a machine that reaches the Heart stops to attack it, and you can still destroy it before it strikes.</p>
+            <ul class="ticks">
+              <li>Every tower charges a <b>special</b>. Select it and fire with <kbd>Space</kbd>; the tower reboots afterwards, so pick the moment</li>
+              <li><b>Auto waves</b> is a switch for when the factory runs itself, and <kbd>G</kbd> doubles the game speed</li>
             </ul>
           </div>
         </article>
 
         <article class="beat">
-          <figure class="beat-img"><img src="./media/shot-cards.jpg" width="1920" height="1080" loading="lazy" alt="BEATSPIRE title screen over the night skyline of Nyx-9." /></figure>
+          <figure class="beat-img"><img src="./media/shot-cards.jpg" srcset="./media/sm/shot-cards.jpg 960w, ./media/shot-cards.jpg 1920w" sizes="(max-width: 860px) 100vw, 660px" width="1920" height="1080" loading="lazy" decoding="async" alt="The Level Up screen with three cards: Overpressure Rounds, Blueprint: Lance Emitter and Deep Freeze." /></figure>
           <div class="beat-txt">
             <span class="num" aria-hidden="true">03</span>
-            <h3>Cards</h3>
-            <p>Each level you are dealt three upgrade cards and keep one. Tower blueprints open new builds, per-tower upgrades sharpen the ones you rely on, factory cards speed up your mines, belts and machines, and economy cards pay for all of it.</p>
-            <p>Every tower charges a special. Select a charged tower and fire it: a Bullet Storm, a Flash Freeze, a Thunderhead, a Barrage. The tower reboots afterwards, so pick the moment.</p>
+            <h3>Level up, pick one of three</h3>
+            <p>Each level deals you three cards out of <span data-fact="cards">63</span>. A <b>blueprint</b> unlocks a tower together with every building its supply needs, tier by tier, so each new tower adds one step to the factory you already run.</p>
+            <ul class="ticks">
+              <li><b>Tower cards</b> sharpen the towers you rely on: Twin Barrels, Chain Reaction, Armour Breaker</li>
+              <li><b>Factory cards</b> speed up mines, belts and plants, stretch every ammunition item, or unlock tunnels</li>
+              <li><b>Upgrades</b> cost credits: towers go to Mk3 (the heavy ones for building materials too), and mines, pumpjacks, plants and generators work <span data-fact="speeds">1.6 times and 2.3 times</span> as fast at Mk2 and Mk3</li>
+            </ul>
           </div>
         </article>
+
+        <article class="beat beat-flip">
+          <figure class="beat-img"><img src="./media/shot-titan.jpg" srcset="./media/sm/shot-titan.jpg 960w, ./media/shot-titan.jpg 1920w" sizes="(max-width: 860px) 100vw, 660px" width="1920" height="1080" loading="lazy" decoding="async" alt="The Titan, taller than every tower, walks the road past the factory after its landing, the city skyline behind it." /></figure>
+          <div class="beat-txt">
+            <span class="num num-hot" aria-hidden="true">04</span>
+            <h3>Then the big ones arrive</h3>
+            <p>A <b>Colossus</b> closes every fifth wave. From wave 8 a <b>Gyre</b> rolls in between them, shrugging off hits while its rim spins. And once, near the end of a campaign, the <b>Titan</b> leaps out of the city onto your gate, stuns every tower and walks for the Heart.</p>
+            <p>Hold out for <span data-fact="diffs">20 waves on Recruit, 25 on Veteran or 30 on Nightmare</span> and the district is yours. Then keep going if you like: after a win there is no last wave.</p>
+          </div>
+        </article>
+
+        <aside class="tut" aria-labelledby="h-tut">
+          <div>
+            <p class="kicker">First run</p>
+            <h3 id="h-tut">The tutorial builds your first supply line with you</h3>
+            <p>One guided run on Switchback: a turret beside a crate, the first wave, a mine, a belt, two more turrets along it, your first card, an upgrade for the Colossus, and power. You can skip it, and replay it from How to play.</p>
+          </div>
+          <a class="btn" href="./play.html">Open the game</a>
+        </aside>
+      </div>
+    </section>
+
+    <!-- FACTORY -->
+    <section class="section alt" id="factory" aria-labelledby="h-factory">
+      <div class="wrap">
+        <header class="head">
+          <p class="kicker">Supply</p>
+          <h2 id="h-factory">Nothing fires for free.</h2>
+          <p class="lede">Under the deck lie iron, copper, coal and oil. Everything a tower fires starts there and has to be dug, carried, powered and made on its way to the gun. It begins with one Mine beside one turret, and ends with a refinery feeding a missile works.</p>
+        </header>
+
+        <ol class="flow" aria-label="The supply line in six steps">
+          <li><a href="#f-deposits"><b>Deposits</b><span>Iron, copper, coal, oil</span></a></li>
+          <li><a href="#f-extract"><b>Extract</b><span>Mines and pumpjacks</span></a></li>
+          <li><a href="#f-power"><b>Power</b><span>Generators and poles</span></a></li>
+          <li><a href="#f-move"><b>Move</b><span>Belts, splitters, tunnels, pipes</span></a></li>
+          <li><a href="#f-make"><b>Make</b><span>Plates, shells, cells, missiles</span></a></li>
+          <li><a href="#f-chain"><b>Feed</b><span>Ten towers, ten chains</span></a></li>
+        </ol>
+
+        <section class="stage" id="f-deposits" aria-labelledby="h-deposits">
+          <header class="stage-head"><span class="stage-n" aria-hidden="true">01</span><h3 id="h-deposits">Four deposits on every map</h3><p>Point at a patch to see what it is. The game lays them out by rule around the roads: iron and coal within a short belt of your first supply crate, at least one patch of copper and of oil on every map, the oil far from the core.</p></header>
+          <ul class="facs facs-4" data-deposits><li class="nojs">The deposit cards are built by the page's script.</li></ul>
+        </section>
+
+        <div class="stage-pair">
+          <section class="stage" id="f-extract" aria-labelledby="h-extract">
+            <header class="stage-head"><span class="stage-n" aria-hidden="true">02</span><h3 id="h-extract">Dig it up</h3><p>Slow on purpose: one Mine keeps one Pulse Turret firing. More guns mean more mines, or better ones.</p></header>
+            <ul class="facs facs-2" data-facs="mine,pump"></ul>
+          </section>
+          <section class="stage" id="f-power" aria-labelledby="h-power">
+            <header class="stage-head"><span class="stage-n" aria-hidden="true">03</span><h3 id="h-power">Power it</h3><p>One grid per line of poles. The Power gauge shows what it needs against what it has.</p></header>
+            <ul class="facs facs-2" data-facs="generator,pole"></ul>
+          </section>
+        </div>
+
+        <section class="stage" id="f-move" aria-labelledby="h-move">
+          <header class="stage-head"><span class="stage-n" aria-hidden="true">04</span><h3 id="h-move">Move it</h3><p>Nothing has an output side and nothing needs pointing. A building hands what it makes to a neighbour that needs it, or to a belt beside it when something further down that belt needs it, so a belt never fills with things nobody wants.</p></header>
+          <ul class="facs facs-3" data-facs="belt,splitter,tunnel,pipe,ptunnel,crate"></ul>
+        </section>
+
+        <section class="stage" id="f-make" aria-labelledby="h-make">
+          <header class="stage-head"><span class="stage-n" aria-hidden="true">05</span><h3 id="h-make">Make it</h3><p>Six plants, each with one job. They arrive with the blueprint of the tower that needs them, and upgrade twice to keep up with it.</p></header>
+          <ul class="facs facs-3" data-facs="smelter,works,press,cells,refinery,missiles"></ul>
+        </section>
+
+        <section class="stage" id="f-chain" aria-labelledby="h-chain">
+          <header class="stage-head"><span class="stage-n" aria-hidden="true">06</span><h3 id="h-chain">Feed the guns</h3><p>Pick a tower to see what it lives on, from the deposit to the muzzle.</p></header>
+          <div class="chain" data-chain><p class="nojs">The supply-chain diagram is drawn by the page's script. In short: Pulse Turrets fire iron ore; Cryo, Arc and Beacon run on power; Firewall Pylons burn crude oil; Railguns fire copper plates; Mortars fire shells; Lances and Graviton Wells run on energy cells; Missile Batteries fire missile packs.</p></div>
+        </section>
       </div>
     </section>
 
     <!-- TOWERS -->
-    <section class="section alt" id="towers" aria-labelledby="h-towers">
+    <section class="section" id="towers" aria-labelledby="h-towers">
       <div class="wrap">
         <header class="head">
           <p class="kicker">Arsenal</p>
           <h2 id="h-towers">Tower roster</h2>
-          <p class="lede">Ten towers. Each upgrades through three levels, has cards of its own and charges a special you fire when it counts. The first runs on ore straight from a mine; each later one adds a step to its supply line.</p>
+          <p class="lede">Ten towers. Each upgrades to Mk3, has cards of its own and charges a special you fire when it counts. The chips say what each one draws from the factory. Hover a card, or press its play button, to see it fire.</p>
         </header>
-        <ul class="roster">
-          <li class="unit t-pulse">
-            <div class="unit-img"><img src="./media/tower_pulse.jpg" width="640" height="640" loading="lazy" alt="Pulse Turret render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Iron ore</span><span>50 cr</span></p><h3>Pulse Turret</h3><p>Rapid homing bolts. Cheap, reliable, and the backbone of every opening.</p></div>
-          </li>
-          <li class="unit t-cryo">
-            <div class="unit-img"><img src="./media/tower_cryo.jpg" width="640" height="640" loading="lazy" alt="Cryo Emitter render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Power</span><span>70 cr</span></p><h3>Cryo Emitter</h3><p>Chills a whole group and slows it, holding the column in everyone else's range.</p></div>
-          </li>
-          <li class="unit t-arc">
-            <div class="unit-img"><img src="./media/tower_arc.jpg" width="640" height="640" loading="lazy" alt="Arc Pylon render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Power</span><span>110 cr</span></p><h3>Arc Pylon</h3><p>Lightning that jumps from enemy to enemy. The tighter the pack, the better it pays.</p></div>
-          </li>
-          <li class="unit t-mortar">
-            <div class="unit-img"><img src="./media/tower_mortar.jpg" width="640" height="640" loading="lazy" alt="Plasma Mortar render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Shells + power</span><span>140 cr + 4</span></p><h3>Plasma Mortar</h3><p>Long-range area blasts over the rooftops. Cannot hit flyers or anything at its feet.</p></div>
-          </li>
-          <li class="unit t-rail">
-            <div class="unit-img"><img src="./media/tower_rail.jpg" width="640" height="640" loading="lazy" alt="Railgun render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Copper plates + power</span><span>190 cr + 3</span></p><h3>Railgun</h3><p>A slow, piercing beam with the longest reach on the grid. It picks the toughest target.</p></div>
-          </li>
-          <li class="unit t-beacon">
-            <div class="unit-img"><img src="./media/tower_beacon.jpg" width="640" height="640" loading="lazy" alt="Signal Beacon render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Power</span><span>120 cr</span></p><h3>Signal Beacon</h3><p>Fires nothing. Boosts the damage and speed of every tower standing near it.</p></div>
-          </li>
-          <li class="unit t-flame">
-            <div class="unit-img"><img src="./media/tower_flame.jpg" width="640" height="640" loading="lazy" alt="Firewall Pylon render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Crude oil</span><span>90 cr</span></p><h3>Firewall Pylon</h3><p>Build two within four tiles of each other and a wall of fire burns between them, setting alight whatever crosses it.</p></div>
-          </li>
-          <li class="unit t-lance">
-            <div class="unit-img"><img src="./media/tower_lance.jpg" width="640" height="640" loading="lazy" alt="Lance Emitter render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Cells + power</span><span>160 cr + 5</span></p><h3>Lance Emitter</h3><p>A continuous beam that burns hotter the longer it holds one target. Made for Brutes and Colossi.</p></div>
-          </li>
-          <li class="unit t-missile">
-            <div class="unit-img"><img src="./media/tower_missile.jpg" width="640" height="640" loading="lazy" alt="Missile Battery render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Missiles + power</span><span>170 cr + 6</span></p><h3>Missile Battery</h3><p>Salvos of homing missiles at up to three targets. It picks flyers first.</p></div>
-          </li>
-          <li class="unit t-gravity">
-            <div class="unit-img"><img src="./media/tower_gravity.jpg" width="640" height="640" loading="lazy" alt="Graviton Well render" /></div>
-            <div class="unit-txt"><p class="unit-tag"><span>Cells + power</span><span>120 cr + 4</span></p><h3>Graviton Well</h3><p>Deals no damage. Drags machines back along the road and slows them inside its field.</p></div>
-          </li>
-        </ul>
-        <ul class="roster-more">
-          <li class="t-flame"><b>Firewall Pylon</b><span>Crude oil</span><p>Walls of fire between linked pylons.</p></li>
-          <li class="t-lance"><b>Lance Emitter</b><span>Cells + power</span><p>A continuous beam that burns hotter the longer it holds a target.</p></li>
-          <li class="t-missile"><b>Missile Battery</b><span>Missiles + power</span><p>Salvos of homing missiles. Prefers flyers.</p></li>
-          <li class="t-gravity"><b>Graviton Well</b><span>Cells + power</span><p>Deals no damage. Drags enemies back and slows them.</p></li>
-        </ul>
+        <ul class="roster" data-roster><li class="nojs">The tower cards are built by the page's script from the game's own data.</li></ul>
       </div>
     </section>
 
     <!-- ENEMIES -->
-    <section class="section" id="static" aria-labelledby="h-static">
+    <section class="section alt" id="static" aria-labelledby="h-static">
       <div class="wrap">
         <header class="head">
           <p class="kicker kicker-hot">Threat index</p>
           <h2 id="h-static">The Static</h2>
-          <p class="lede">A machine swarm with no pilot and no off switch. It arrives in waves, and each wave is tougher than the last.</p>
+          <p class="lede">A machine swarm with no pilot and no off switch. It arrives in waves, and each wave is tougher than the last: the hull values below are each machine's base, before the wave, the difficulty and the map scale them.</p>
         </header>
-        <ul class="foes">
-          <li class="foe"><img src="./media/enemy_grunt.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Grunt</h3><p class="foe-tag">From wave 1</p><p>The line infantry of the swarm. Weak alone, never alone.</p></div></li>
-          <li class="foe"><img src="./media/enemy_runner.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Runner</h3><p class="foe-tag">From wave 2</p><p>Fragile and very fast. Slips past slow guns in packs.</p></div></li>
-          <li class="foe"><img src="./media/enemy_drone.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Drone</h3><p class="foe-tag">From wave 4 / Flying</p><p>Flies over the lane, out of reach of mortars.</p></div></li>
-          <li class="foe"><img src="./media/enemy_shield.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Aegis</h3><p class="foe-tag">From wave 6 / Shielded</p><p>Carries an energy shield you must break before the hull.</p></div></li>
-          <li class="foe"><img src="./media/enemy_brute.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Brute</h3><p class="foe-tag">From wave 8 / Armored</p><p>Slow, plated, and costs three core integrity if it gets through. Railguns with Armour Breaker cut through it.</p></div></li>
-          <li class="foe"><img src="./media/enemy_wheel.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Gyre</h3><p class="foe-tag">Mini-boss / Spin guard</p><p>A machine riding inside one armoured wheel. While the rim spins fast it shrugs off most hits; slow it, freeze it or focus your fire and the guard drops.</p></div></li>
-          <li class="foe"><img src="./media/enemy_brood.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Broodcarrier</h3><p class="foe-tag">From wave 6 / Jams towers</p><p>Walks the road and looses swarms of mites that climb the nearest tower and jam it. Cover your towers with each other, or kill the carrier first.</p></div></li>
-          <li class="foe foe-boss"><img src="./media/enemy_boss.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Colossus</h3><p class="foe-tag">Every 5th wave / Boss</p><p>A walking siege engine. Let one reach the Heart and it takes a quarter of your core with it. Save your specials for it.</p></div></li>
-          <li class="foe foe-boss"><img src="./media/enemy_titan.jpg" width="480" height="480" loading="lazy" alt="" /><div><h3>Titan</h3><p class="foe-tag">Once, near the end / Finale</p><p>Towers over the whole district. It lands on the gate, wrecks everything on the road and stuns your towers. Its hull turns most tower fire; tower specials hit it at full strength.</p></div></li>
-        </ul>
+        <ul class="foes" data-foes><li class="nojs">The machine cards are built by the page's script from the game's own data.</li></ul>
       </div>
     </section>
 
@@ -212,38 +249,78 @@
       </div>
     </section>
 
-    <!-- MULTIPLAYER -->
-    <section class="section alt" id="modes" aria-labelledby="h-modes">
+    <!-- MAPS AND MODES -->
+    <section class="section" id="modes" aria-labelledby="h-modes">
       <div class="wrap">
         <header class="head">
           <p class="kicker">Your war</p>
           <h2 id="h-modes">Pick the ground. Set the stakes.</h2>
-          <p class="lede">38 pre-made maps run from one long switchback to three roads closing on the core at once. Or let the game generate a map from a seed, with ramps and bridges. Three difficulties change how hard the Static hits, how much your core can take and how long the run is.</p>
+          <p class="lede">38 pre-made maps in three tiers run from one long switchback to three roads closing on the core at once, some climbing ramps and crossing each other on bridges. Three difficulties change how hard the Static hits, how much your core can take and how long the run is.</p>
         </header>
         <div class="modes">
           <article class="mode">
-            <p class="mode-tag">20 / 25 / 30 waves</p>
+            <p class="mode-tag"><span data-fact="waves">20-30</span> waves</p>
             <h3>Campaign</h3>
-            <p>Hold the Heart through 20 waves on Recruit, 25 on Veteran or 30 on Nightmare. After a win you can keep going with no last wave.</p>
+            <p>Hold the Heart for <span data-fact="diffs">20 waves on Recruit, 25 on Veteran or 30 on Nightmare</span>. The Titan comes once, near the end. After a win you can keep going.</p>
           </article>
           <article class="mode mode-hot">
-            <p class="mode-tag">No last wave / Score by wave</p>
+            <p class="mode-tag">No last wave</p>
             <h3>Survival</h3>
-            <p>No final wave. The machines keep getting tougher until the core falls. Starts on a generated map unless you pick another. Your best wave per map is saved in your browser.</p>
+            <p>The machines keep getting tougher until the core falls, and the Titan keeps coming back. Your best wave per map and difficulty is saved in your browser.</p>
           </article>
           <article class="mode">
-            <p class="mode-tag">Build / Save / Share</p>
-            <h3>Map editor</h3>
-            <p>Draw up to three roads on the hex grid, raise them into ramps and bridges, place the core, wreckage and starting towers, set credits and core integrity. Deposits are laid out on the free deck for you. Test it in one click, save it in your browser, and share it as a code.</p>
+            <p class="mode-tag">A map from a seed</p>
+            <h3>Generated</h3>
+            <p>Let the game draw the district: one to three roads with ramps and bridges, deposits and supply crates laid out by rule. Same seed, same map, so a good one can be passed on.</p>
           </article>
+        </div>
+
+        <article class="beat editor">
+          <figure class="beat-img"><img src="./media/shot-editor.jpg" srcset="./media/sm/shot-editor.jpg 960w, ./media/shot-editor.jpg 1920w" sizes="(max-width: 860px) 100vw, 660px" width="1920" height="1080" loading="lazy" decoding="async" alt="The map editor: the Switchback road on the hex grid with iron, copper, coal and oil deposits, supply crates and the Resources tool open." /></figure>
+          <div class="beat-txt">
+            <span class="num" aria-hidden="true">Editor</span>
+            <h3>Draw your own district</h3>
+            <p>Draw up to three roads on the hex grid, raise them into ramps and bridges, place the core, wreckage and starting towers, and set credits and core integrity. Supply crates take their places beside the roads by themselves.</p>
+            <ul class="ticks">
+              <li><b>Resources tool</b> Paint iron, copper, coal and oil yourself, or leave them automatic and let the rules lay them out</li>
+              <li><b>It checks your map</b> The editor shows the deposits and crates a run would start with, and warns when a resource is missing or the iron lies out of belt reach of a crate</li>
+              <li><b>Test, save, share</b> Play it in one click, keep it in your browser, hand it on as a code</li>
+            </ul>
+          </div>
+        </article>
+
+        <p class="soon"><b>Online co-op and 1 v 1</b> are switched off for now: the factory is not yet kept in sync between two browsers. They are coming back.</p>
+      </div>
+    </section>
+
+    <!-- GALLERY -->
+    <section class="section alt" id="gallery" aria-labelledby="h-gallery">
+      <div class="wrap">
+        <header class="head">
+          <p class="kicker">Field photographs</p>
+          <h2 id="h-gallery">From the deck</h2>
+          <p class="lede">Every picture and clip on this page is rendered by the game itself, in the browser.</p>
+        </header>
+        <ul class="shots">
+          <li class="shot-big"><a href="./media/shot-factory.jpg" aria-label="Wave 12 on Switchback: open the full screenshot"><img src="./media/shot-factory.jpg" srcset="./media/sm/shot-factory.jpg 960w, ./media/shot-factory.jpg 1920w" sizes="(max-width: 640px) 100vw, (max-width: 1080px) 100vw, 600px" width="1920" height="1080" loading="lazy" decoding="async" alt="Mines and curved belts feed a row of firing Pulse Turrets while machines come down the middle road." /><span>Wave 12 on Switchback</span></a></li>
+          <li><a href="./media/shot-colossus.jpg" aria-label="A Colossus on the west road: open the full screenshot"><img src="./media/shot-colossus.jpg" srcset="./media/sm/shot-colossus.jpg 960w, ./media/shot-colossus.jpg 1920w" sizes="(max-width: 640px) 100vw, (max-width: 1080px) 50vw, 300px" width="1920" height="1080" loading="lazy" decoding="async" alt="A Colossus pushes down the road past firewalls and turrets." /><span>A Colossus on the west road</span></a></li>
+          <li><a href="./media/shot-cryo.jpg" aria-label="Flash Freeze: open the full screenshot"><img src="./media/shot-cryo.jpg" srcset="./media/sm/shot-cryo.jpg 960w, ./media/shot-cryo.jpg 1920w" sizes="(max-width: 640px) 100vw, (max-width: 1080px) 50vw, 300px" width="1920" height="1080" loading="lazy" decoding="async" alt="A Cryo Emitter has frozen a crowd of machines into shells of ice next to the core." /><span>Flash Freeze</span></a></li>
+          <li><a href="./media/shot-build.jpg" aria-label="The build phase: open the full screenshot"><img src="./media/shot-build.jpg" srcset="./media/sm/shot-build.jpg 960w, ./media/shot-build.jpg 1920w" sizes="(max-width: 640px) 100vw, (max-width: 1080px) 50vw, 300px" width="1920" height="1080" loading="lazy" decoding="async" alt="The build phase with the HUD: supply rings on every building and the Call wave button." /><span>The build phase</span></a></li>
+          <li><a href="./media/shot-bird.jpg" aria-label="Wave 17 from above: open the full screenshot"><img src="./media/shot-bird.jpg" srcset="./media/sm/shot-bird.jpg 960w, ./media/shot-bird.jpg 1920w" sizes="(max-width: 640px) 100vw, (max-width: 1080px) 50vw, 300px" width="1920" height="1080" loading="lazy" decoding="async" alt="A late wave seen from the bird camera over the whole board and its factory." /><span>Wave 17 from above</span></a></li>
+          <li><a href="./media/shot-titan.jpg" aria-label="The Titan: open the full screenshot"><img src="./media/shot-titan.jpg" srcset="./media/sm/shot-titan.jpg 960w, ./media/shot-titan.jpg 1920w" sizes="(max-width: 640px) 100vw, (max-width: 1080px) 50vw, 300px" width="1920" height="1080" loading="lazy" decoding="async" alt="The Titan walks past the factory, the city skyline behind it." /><span>The Titan</span></a></li>
+          <li><a href="./media/shot-editor.jpg" aria-label="The map editor: open the full screenshot"><img src="./media/shot-editor.jpg" srcset="./media/sm/shot-editor.jpg 960w, ./media/shot-editor.jpg 1920w" sizes="(max-width: 640px) 100vw, (max-width: 1080px) 50vw, 300px" width="1920" height="1080" loading="lazy" decoding="async" alt="The map editor with deposits, crates and the Resources tool." /><span>The map editor</span></a></li>
+          <li><a href="./media/shot-phone.jpg" aria-label="On a phone: open the full screenshot"><img src="./media/shot-phone.jpg" srcset="./media/sm/shot-phone.jpg 960w, ./media/shot-phone.jpg 1920w" sizes="(max-width: 640px) 100vw, (max-width: 1080px) 50vw, 300px" width="1920" height="888" loading="lazy" decoding="async" alt="The game on a phone in landscape, with the touch HUD over a wave-12 battle." /><span>On a phone</span></a></li>
+          <li><a href="./media/shot-cards.jpg" aria-label="Level up: open the full screenshot"><img src="./media/shot-cards.jpg" srcset="./media/sm/shot-cards.jpg 960w, ./media/shot-cards.jpg 1920w" sizes="(max-width: 640px) 100vw, (max-width: 1080px) 50vw, 300px" width="1920" height="1080" loading="lazy" decoding="async" alt="The Level Up screen with three upgrade cards." /><span>Level up</span></a></li>
+        </ul>
+        <div class="cta cta-mid">
+          <a class="btn btn-lg" href="./play.html">Play free in your browser</a>
+          <a class="btn btn-ghost btn-lg" href="#trailer"><span class="tri" aria-hidden="true"></span>Watch the trailer</a>
         </div>
       </div>
     </section>
 
-    <!-- MULTIPLAYER: co-op and 1v1 are off until the factory is kept in sync between two browsers -->
-
     <!-- CONTROLS + SAFETY -->
-    <section class="section alt" id="controls" aria-labelledby="h-controls">
+    <section class="section" id="controls" aria-labelledby="h-controls">
       <div class="wrap split">
         <div>
           <header class="head">
@@ -251,21 +328,31 @@
             <h2 id="h-controls">Keyboard, mouse or touch</h2>
           </header>
           <div class="keys">
-            <h3>Command view</h3>
+            <h3>Build</h3>
             <dl>
-              <div><dt><kbd>1</kbd>-<kbd>0</kbd></dt><dd>Pick a tower or factory building, then click a hex to build. Hold <kbd>Shift</kbd> to keep building.</dd></div>
-              <div><dt><kbd>F</kbd></dt><dd>Switch the build bar between towers and the factory.</dd></div>
+              <div><dt><kbd>1</kbd>-<kbd>0</kbd></dt><dd>Pick a tower or factory building, then click a free hex to build. Hold <kbd>Shift</kbd> to keep building.</dd></div>
+              <div><dt><kbd>F</kbd></dt><dd>Switch the build bar between Towers and Factory.</dd></div>
               <div><dt><kbd>R</kbd></dt><dd>Turn the belt or tunnel you are placing or have selected. Drag to lay a line of belts or pipes.</dd></div>
-              <div><dt><kbd>U</kbd> <kbd>X</kbd></dt><dd>Upgrade or sell the selected tower; upgrade or remove the selected factory building.</dd></div>
-              <div><dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>Pan the camera, or drag with the right mouse button. Wheel zooms.</dd></div>
+              <div><dt><kbd>U</kbd> <kbd>X</kbd></dt><dd>Upgrade or sell what you have selected: towers, and mines, pumpjacks, plants and generators too.</dd></div>
+              <div><dt><kbd>V</kbd></dt><dd>Hold to see the green supply rings between waves. The hexagon button beside Auto waves keeps them on.</dd></div>
+            </dl>
+            <h3>Fight</h3>
+            <dl>
               <div><dt><kbd>N</kbd></dt><dd>Call the next wave. Until then, time stands still.</dd></div>
               <div><dt><kbd>Space</kbd></dt><dd>Fire the special of the selected tower when it is charged.</dd></div>
+              <div><dt><kbd>G</kbd></dt><dd>Switch the game speed between 1x and 2x.</dd></div>
               <div><dt><kbd>Esc</kbd> <kbd>P</kbd></dt><dd>Pause.</dd></div>
+            </dl>
+            <h3>Camera</h3>
+            <dl>
+              <div><dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>Pan, or drag with the right mouse button. The wheel zooms.</dd></div>
+              <div><dt><kbd>Q</kbd> <kbd>E</kbd></dt><dd>Turn the view, or drag with the middle mouse button. <kbd>Home</kbd> resets it.</dd></div>
             </dl>
             <h3>Touch and extras</h3>
             <dl>
-              <div><dt><kbd>Touch</kbd></dt><dd>Tap to build and select, drag to pan, pinch to zoom. Hold and drag to lay belts; the Turn button changes their direction.</dd></div>
-              <div><dt><kbd>Music</kbd></dt><dd>Add YouTube or Spotify links to a playlist. The built-in score goes quiet while your music plays.</dd></div>
+              <div><dt><kbd>Tap</kbd></dt><dd>Tap a building in the bar, then a hex. Hold and drag to move the preview first; a belt follows your finger, and Turn changes its direction. Tap something on the board to upgrade or sell it.</dd></div>
+              <div><dt><kbd>Drag</kbd> <kbd>Pinch</kbd></dt><dd>One finger pans. Two fingers pinch to zoom or twist to turn the view.</dd></div>
+              <div><dt><kbd>Music</kbd></dt><dd>Five built-in tracks play as a playlist. Add YouTube or Spotify links of your own and the score goes quiet while they play.</dd></div>
               <div><dt><kbd>Effects</kbd></dt><dd>Impact and beat pulses can be switched off, dimmed, recoloured or limited to tile borders, environment or towers.</dd></div>
             </dl>
           </div>
@@ -287,8 +374,9 @@
     <section class="final" aria-labelledby="h-final">
       <div class="wrap">
         <h2 id="h-final">The Heart is still beating.</h2>
-        <p>Keep it that way.</p>
+        <p>Keep it fed.</p>
         <a class="btn btn-lg" href="./play.html">Play free in your browser</a>
+        <p class="final-note">First time? Pick Tutorial in the menu.</p>
       </div>
     </section>
   </main>

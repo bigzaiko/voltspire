@@ -6,7 +6,7 @@ import puppeteer from 'puppeteer-core';
 const base = process.argv[2] || 'http://localhost:5183';
 const browser = await puppeteer.launch({
   executablePath: process.env.CHROMIUM || '/usr/bin/chromium', headless: true, protocolTimeout: 240000,
-  args: ['--no-sandbox', '--hide-scrollbars', '--mute-audio', '--use-gl=angle', '--use-angle=gl', '--ignore-gpu-blocklist'],
+  args: ['--no-sandbox', '--hide-scrollbars', '--mute-audio', '--headless=new', '--use-gl=angle', '--use-angle=gl', '--enable-gpu', '--ignore-gpu-blocklist'],
   defaultViewport: { width: 960, height: 540 },
 });
 const page = await browser.newPage();
@@ -63,7 +63,7 @@ ok(tracks.length >= 4 && tracks.every((t) => t.bpm >= 90 && t.bpm <= 110), `${tr
 const only = process.env.ONLY || '';
 const names = only === 'music' ? [] : ['shot', 'arcshot', 'mortar', 'rail', 'cryo', 'missile', 'flame', 'lance', 'gravity', 'boom', 'die', 'mitedie', 'shield', 'deflect', 'spindown', 'spinup', 'brood', 'unjam', 'special', 'down', 'up', 'build', 'sell',
   'titanSmash', 'arrow', 'bigshot', 'rain', 'sing', 'crit', 'drawfull', 'nospec', 'heroOn', 'heroOff', 'tele', 'ready', 'overlink', 'wave', 'boss', 'bossdie', 'leak', 'breach', 'clear', 'levelup', 'jam',
-  'titanLand', 'titanImpact', 'titanDie', 'win', 'lose', 'card', 'error', 'click', 'hover'];
+  'titanLand', 'titanImpact', 'titanDie', 'win', 'lose', 'card', 'error', 'click', 'take', 'mats', 'hover'];
 const table = [];
 for (const name of names) {
   const r = await render(7, [{ t: 0.5, name }], [], undefined, 0);

@@ -1,9 +1,12 @@
 // 2D map drawing shared by the map-select cards, the editor's saved list and the editor canvas.
 // Drawn like a chart-room plot: soot ground, a hex board, roads as inked lines along the hex rows,
 // spawn gates in the enemy's cold blue, the core as a bone-white bullseye on its seven tiles.
-import { GW, GH, TOWERS } from './data.ts';
+import { GW, GH, TOWERS, ORE_TYPES } from './data.ts';
+import type { OreType } from './data.ts';
 import { CELL, HEX_SIZE, BOARD_W, BOARD_D, HEX_CORNERS, cellX, cellZ, lineDir, lineCells, disc, inBoard, neighbor } from './hex.ts';
+import { GameMap } from './map.ts';
 import type { MapDef, LanePoint } from './map.ts';
+import { mapResources } from './deposits.ts';
 
 export const MAP_INK = {
   ground: '#12100d', board: '#1f1a17', grid: 'rgba(227,220,146,0.07)', edge: 'rgba(227,220,146,0.3)',
@@ -34,6 +37,86 @@ export function outlinePath(g: CanvasRenderingContext2D, p: Proj, cells: [number
       g.moveTo(x + a[0] * p.u, y + a[1] * p.u); g.lineTo(x + b[0] * p.u, y + b[1] * p.u);
     }
   }
+}
+
+/**
+ * Inks for the deposits, worked out from ORES' colours: a dark stain, the rim in the ore's own colour, the chunks and a
+ * highlight (iron blue-grey, copper rust-orange, coal near black with grey glints, oil a violet pool).
+ */
+export const ORE_INK: Record<OreType, { fill: string; rim: string; chunk: string; hi: string }> = {
+  iron_ore: { fill: '#2e3541', rim: '#8495ae', chunk: '#7d8ba1', hi: '#dbe4f0' },
+  copper_ore: { fill: '#3d2416', rim: '#c8723a', chunk: '#b9642e', hi: '#ffcf9e' },
+  coal: { fill: '#1b1917', rim: '#7d756c', chunk: '#0f0e0d', hi: '#a89f94' },
+  oil: { fill: '#1f1729', rim: '#8a68bf', chunk: '#2c2140', hi: '#d2bdf3' },
+};
+const hash = (i: number) => { let h = Math.imul(i + 0x9e37, 0x85ebca6b); h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+/**
+ * Deposits (one value per tile: 0 none, else 1 + index in ORE_TYPES): each patch a stain with a rim around its outline,
+ * and with `detail` ore chunks on every tile (oil: a glossy pool). `auto` draws them lighter with a dashed rim: laid out
+ * by the rules, not by hand.
+ */
+export function drawDeposits(g: CanvasRenderingContext2D, p: Proj, ore: ArrayLike<number>, detail = true, auto = false) {
+  const t = CELL * p.u, R = HEX_SIZE * p.u;
+  g.save();
+  g.lineJoin = 'round'; g.lineCap = 'round';
+  ORE_TYPES.forEach((o, k) => {
+    const v = k + 1, ink = ORE_INK[o], cells: [number, number][] = [];
+    for (let i = 0; i < GW * GH; i++) if (ore[i] === v) cells.push([i % GW, Math.floor(i / GW)]);
+    if (!cells.length) return;
+    const has = (cx: number, cz: number) => inBoard(cx, cz) && ore[cz * GW + cx] === v;
+    const X = (cx: number, cz: number) => p.x0 + cellX(cx, cz) * p.u, Z = (cz: number) => p.z0 + cellZ(cz) * p.u;
+    g.globalAlpha = auto ? 0.72 : 1;
+    if (!detail) {
+      g.beginPath();
+      for (const [cx, cz] of cells) hexPath(g, X(cx, cz), Z(cz), R * 0.92);
+      g.fillStyle = ink.rim; g.fill();
+      return;
+    }
+    // the stain: every tile of the kind in one path, so a patch reads as one piece
+    g.beginPath();
+    for (const [cx, cz] of cells) hexPath(g, X(cx, cz), Z(cz), R);
+    g.fillStyle = ink.fill; g.fill();
+    // a soft inner glow of the ore's colour, strongest at each tile's middle
+    for (const [cx, cz] of cells) {
+      const x = X(cx, cz), z = Z(cz), gr = g.createRadialGradient(x, z, 0, x, z, R * 0.95);
+      gr.addColorStop(0, ink.rim + '55'); gr.addColorStop(1, ink.rim + '00');
+      g.beginPath(); hexPath(g, x, z, R); g.fillStyle = gr; g.fill();
+    }
+    for (const [cx, cz] of cells) {
+      const x = X(cx, cz), z = Z(cz), i = cz * GW + cx, h = hash(i);
+      if (o === 'oil') {
+        // a glossy pool, a lit lip and a bubble
+        const rx = R * (0.48 + 0.12 * h), rz = R * (0.32 + 0.06 * hash(i * 3 + 1)), a = (h - 0.5) * 1.2;
+        g.beginPath(); g.ellipse(x, z, rx, rz, a, 0, Math.PI * 2); g.fillStyle = ink.chunk; g.fill();
+        g.strokeStyle = ink.rim; g.lineWidth = Math.max(1, t * 0.035); g.stroke();
+        g.beginPath(); g.ellipse(x - rx * 0.25, z - rz * 0.3, rx * 0.45, rz * 0.28, a, Math.PI * 1.05, Math.PI * 1.85); g.strokeStyle = ink.hi; g.globalAlpha = (auto ? 0.72 : 1) * 0.7; g.stroke();
+        g.globalAlpha = auto ? 0.72 : 1;
+        g.beginPath(); g.arc(x + rx * 0.42, z + rz * 0.1, Math.max(0.8, R * 0.07), 0, Math.PI * 2); g.strokeStyle = ink.hi; g.lineWidth = Math.max(0.8, t * 0.025); g.stroke();
+        continue;
+      }
+      // three chunks of ore, each a lumpy pentagon with a glint on its upper edge
+      for (let c = 0; c < 3; c++) {
+        const hc = hash(i * 7 + c * 131), ang = (c / 3) * Math.PI * 2 + h * 6.283, d = R * (0.24 + 0.14 * hc);
+        const cx0 = x + Math.cos(ang) * d, cz0 = z + Math.sin(ang) * d * 0.9, r = R * (c ? 0.17 + 0.07 * hash(i * 13 + c) : 0.25), rot = hc * 6.283;
+        g.beginPath();
+        for (let q = 0; q < 5; q++) {
+          const aa = rot + (q / 5) * Math.PI * 2, rr = r * (0.75 + 0.35 * hash(i * 31 + c * 7 + q));
+          if (q) g.lineTo(cx0 + Math.cos(aa) * rr, cz0 + Math.sin(aa) * rr * 0.85); else g.moveTo(cx0 + Math.cos(aa) * rr, cz0 + Math.sin(aa) * rr * 0.85);
+        }
+        g.closePath();
+        g.fillStyle = ink.chunk; g.fill();
+        g.strokeStyle = 'rgba(8,7,6,0.55)'; g.lineWidth = Math.max(0.8, t * 0.025); g.stroke();
+        g.beginPath(); g.moveTo(cx0 - r * 0.55, cz0 - r * 0.35); g.lineTo(cx0 + r * 0.25, cz0 - r * 0.62);
+        g.strokeStyle = ink.hi; g.lineWidth = Math.max(0.8, t * 0.03); g.stroke();
+      }
+    }
+    // the rim around each patch
+    g.beginPath(); outlinePath(g, p, cells, has);
+    g.strokeStyle = ink.rim; g.lineWidth = Math.max(1, t * 0.06);
+    if (auto) g.setLineDash([t * 0.16, t * 0.12]);
+    g.stroke(); g.setLineDash([]);
+  });
+  g.restore();
 }
 
 /** A piece of road on one height layer, as world x, z pairs. `ok` is false for a stretch that leaves the hex lines. */
@@ -129,6 +212,8 @@ export function drawMap(cv: HTMLCanvasElement, def: MapDef) {
   g.beginPath();
   for (const [cx, cz] of def.blocked) if (inBoard(cx, cz)) hexPath(g, X(cx, cz), Z(cz), R * 0.86);
   g.fillStyle = MAP_INK.scenery; g.fill();
+  // deposits: the map's own, or what the rules lay out when the run starts
+  try { drawDeposits(g, p, mapResources(new GameMap(def)).ore, t >= 14); } catch { /* a map the rules cannot read: no deposits drawn */ }
   // road bed, then the roads
   g.lineJoin = 'round'; g.lineCap = 'round'; g.strokeStyle = MAP_INK.bed; g.lineWidth = t * 0.9;
   for (const l of def.lanes) {

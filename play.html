@@ -51,6 +51,7 @@
         <div id="build" role="toolbar" aria-label="Build a tower"></div>
         <div id="fbuild" class="hidden" role="toolbar" aria-label="Build the factory"></div>
       </div>
+      <button id="btn-rings" class="chip" type="button" title="Supply rings: keep the green ring on everything that will be supplied (hold V to peek)" aria-label="Supply rings" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 1.6l7.3 4.2v8.4L10 18.4l-7.3-4.2V5.8z"/><path class="tick" d="M6.4 10.2l2.5 2.5 4.8-5.2"/></svg></button>
       <button id="btn-auto" class="chip" type="button" title="Start the next wave automatically after a pause" aria-pressed="false">Auto waves: off</button>
       <button id="btn-wave" class="btn small" type="button"><span id="wave-label">Call wave</span><small id="wave-timer"></small></button>
     </div>
@@ -88,6 +89,14 @@
       <p id="f-desc" class="muted small"></p>
     </div>
 
+    <div id="opanel" class="panel hidden" aria-live="polite">
+      <h3 id="o-name"></h3>
+      <p id="o-use"></p>
+      <div id="o-stats"></div>
+      <p id="o-pick"></p>
+      <p id="o-why" class="muted small"></p>
+    </div>
+
     <div id="vs" class="panel hidden">
       <h3>Rival</h3>
       <div id="vs-status">-</div>
@@ -102,7 +111,6 @@
     <!-- the Titan: danger while it approaches, its hull once it walks -->
     <div id="titan" class="hidden"><span id="titan-label">Titan</span><small id="titan-sub"></small><div class="bar big"><i id="titan-bar"></i></div></div>
 
-    <div id="marks"></div>
     <div id="intel"></div>
     <div id="hints"></div>
     <div id="announce"></div>
@@ -122,6 +130,7 @@
     <div id="toasts"></div>
     <div id="dmg"></div>
     <div id="tip" class="hidden"></div>
+    <div id="oretip" class="hidden" role="tooltip"></div>
   </div>
 
   <div id="cards" class="overlay hidden">
@@ -265,7 +274,7 @@
       <div class="help-grid">
         <div class="panel"><h3>Command view</h3>
           <p class="kbd-only">Pick a tower or a factory building from the bar (number keys; <kbd>F</kbd> switches between Towers and Factory), then click a free hex to build. <kbd>Shift</kbd> keeps building.</p>
-          <p class="kbd-only">Click something you built to upgrade (<kbd>U</kbd>) or sell (<kbd>X</kbd>) it: towers, and mines, pumpjacks, plants and generators too. The tags over the spawn gates show what the next wave sends down each road.</p>
+          <p class="kbd-only">Click something you built to upgrade <span class="nowrap">(<kbd>U</kbd>)</span> or sell <span class="nowrap">(<kbd>X</kbd>)</span> it: towers, and mines, pumpjacks, plants and generators too. The tags over the spawn gates show what the next wave sends down each road.</p>
           <p class="kbd-only"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or right-drag to pan, wheel to zoom. <kbd>Q</kbd> <kbd>E</kbd> or middle-drag turns the view, <kbd>Home</kbd> resets it.</p>
           <p class="kbd-only"><kbd>N</kbd> calls the next wave. Between waves time stands still: build, nothing is made and nothing moves until you call (or Auto waves calls for you). <kbd>G</kbd> switches the game speed, <kbd>P</kbd> or <kbd>Esc</kbd> pauses.</p>
           <p class="tap-only lead">Tap a building in the bar, then tap a hex. Hold and drag to move the preview first (a belt follows your finger). Tap something on the board to upgrade or sell it.</p>
@@ -274,16 +283,17 @@
         </div>
         <div class="panel"><h3>Supplying towers</h3>
           <p>A tower fires only what it is fed. It starts empty and keeps just one item in hand, pulling the next off its belt or pipe as it fires. Supply crates on the deck feed any tower built right next to them, but a crate runs out: every tower needs a supply line of its own in the end.</p>
-          <p>The Pulse Turret runs on iron ore: build a Mine on an iron deposit, right next to the turret or with a belt between them. A mine digs about one ore every 3 seconds, enough for one turret. <span class="kbd-only">Drag to lay a line of belts; <kbd>R</kbd> turns the belt you are placing.</span><span class="tap-only">Hold and drag to lay belts; Turn changes their direction.</span></p>
+          <p>The Pulse Turret runs on iron ore: build a Mine on an iron deposit, right next to the turret or with a belt between them (<span class="kbd-only">point at</span><span class="tap-only">tap</span> a deposit to see what it is). A mine digs about one ore every 3 seconds, enough for one turret. <span class="kbd-only">Drag to lay a line of belts; <kbd>R</kbd> turns the belt you are placing.</span><span class="tap-only">Hold and drag to lay belts; Turn changes their direction.</span></p>
           <p>Nothing needs pointing: a building hands what it makes to a neighbour that needs it, or to a belt beside it when something further down that belt needs it. Towers and buildings take what they need from a belt that points at them or runs past them, so one belt can feed a whole row of towers. A belt pointing into another merges onto it.</p>
-          <p>Between waves a red marker over a tower or building means it will lack something when the wave starts; click it to see what is missing and what supplies it. The Power gauge shows what the grids need against what they have.</p>
+          <p>Between waves a broken rust ring under a tower or building, with a hologram of the missing item over it, means it will lack something when the wave starts; <span class="kbd-only">click</span><span class="tap-only">tap</span> it to see what is missing and what supplies it. The Power gauge shows what the grids need against what they have.</p>
+          <p>While you place something, a green ring marks everything that will be supplied, dashes flow along the route the new piece would get, and brackets close on what it would feed or power. <span class="kbd-only">Hold <kbd>V</kbd> to see the green rings at any time between waves, or switch them on for good with the hexagon button beside Auto waves.</span><span class="tap-only">The hexagon button beside Auto waves keeps the green rings on between waves.</span></p>
           <p>Each blueprint card unlocks a tower together with the buildings its supply needs, one step at a time: a Generator for power, a Pumpjack and pipes for oil, a Smelter for plates, then presses and plants, and from tier 2 the Belt Splitter. The Tunnels card adds Belt and Pipe Tunnels that pass up to 4 tiles under roads, towers and buildings. Mines, pumpjacks, plants and generators upgrade twice to work faster. At Mk3 the Pulse Turret fires plasma shells and the Firewall Pylon burns petrol.</p>
         </div>
         <div class="panel"><h3>Cards, specials and the machines</h3>
           <p>Every level you pick one of three cards: tower blueprints, tower upgrades, factory upgrades or economy.</p>
           <p>Towers charge a special. Select a charged tower and press <span class="kbd-only"><kbd>Space</kbd> or </span>Fire special. The tower then reboots for a few seconds.</p>
           <p>A campaign lasts 20, 25 or 30 waves depending on the threat level. A Colossus arrives every 5th wave. Survival has no last wave. A machine that reaches the Heart stops and attacks it. Destroy it before it strikes and the core takes no damage.</p>
-          <p>Broodcarriers let mites loose that climb a tower and jam it. Late in a campaign the Titan lands and stuns every tower: its hull turns most tower fire, so save the specials for it.</p>
+          <p>Broodcarriers let mites loose that climb a tower and jam it: a violet ring crackles round its base with a mite over it, and any hit knocks them off. Late in a campaign the Titan lands and stuns every tower (a cold blue ring and a bolt until it reboots): its hull turns most tower fire, so save the specials for it.</p>
         </div>
       </div>
       <div class="menu-buttons row">
@@ -401,7 +411,7 @@
       <header class="sheet-head">
         <span class="kicker">Display</span>
         <h2>Turn your phone</h2>
-        <p>The grid needs a wide screen. Turn the phone on its side to play. A run in progress is paused.</p>
+        <p>The grid needs a wide screen. Turn the phone on its side to play. The run waits until you do.</p>
       </header>
       <div class="menu-buttons row">
         <button class="btn small ghost" id="rot-go" type="button">Play upright anyway</button>

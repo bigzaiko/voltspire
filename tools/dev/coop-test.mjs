@@ -2,7 +2,7 @@
 //   node tools/dev/coop-test.mjs [baseUrl]
 import puppeteer from 'puppeteer-core';
 const base = process.argv[2] || 'http://localhost:5184';
-const b = await puppeteer.launch({ executablePath: '/usr/bin/chromium', headless: true, protocolTimeout: 90000, args: ['--no-sandbox', '--mute-audio', '--use-gl=angle', '--use-angle=gl', '--ignore-gpu-blocklist'], defaultViewport: { width: 1280, height: 720 } });
+const b = await puppeteer.launch({ executablePath: '/usr/bin/chromium', headless: true, protocolTimeout: 90000, args: ['--no-sandbox', '--mute-audio', '--headless=new', '--use-gl=angle', '--use-angle=gl', '--enable-gpu', '--ignore-gpu-blocklist'], defaultViewport: { width: 1280, height: 720 } });
 const errs = [];
 const open = async (tag) => { const p = await b.newPage(); p.on('pageerror', (e) => errs.push(tag + ': ' + e.message)); p.on('console', (m) => { if (m.type() === 'error') errs.push(tag + ': ' + m.text()); }); await p.goto(base + '/play.html'); await p.waitForFunction(() => document.getElementById('loading').classList.contains('hidden'), { timeout: 60000 }); return p; };
 const A = await open('host'), B = await open('guest');

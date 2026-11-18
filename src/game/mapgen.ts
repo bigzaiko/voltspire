@@ -237,7 +237,8 @@ function toLane(cells: Cell[], h: number[]): LanePoint[] {
 }
 
 // ---------- names ----------
-const WORDS = [
+/** The place names a sector is called after (exported so the pre-made list can keep its generated maps' names apart). */
+export const WORDS = [
   'Ashfall', 'Cinder Reach', 'Emberline', 'Rustwater', 'Kiln Row', 'Slagheap', 'Copper Fen', 'Dustgate', 'Saltpan', 'Brasswind',
   'Furnace Flats', 'Ochre Step', 'Tinder Gap', 'Sandglass', 'Smelt Hollow', 'Amber Cut', 'Charline', 'Forgemouth', 'Dry Relay', 'Red Shelf',
   'Lantern Mile', 'Scoria', 'Hearthward', 'Burnt Orchard', 'Glassfield', 'Verdigris', 'Low Kestrel', 'Signal Dune', 'Wickside', 'Old Foundry',

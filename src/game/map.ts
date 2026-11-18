@@ -1,12 +1,16 @@
 // Maps are data: lanes (roads) of cell waypoints, a core, blocked tiles and starting conditions.
-import { GW, GH, TOWER_TYPES, cellX, cellZ } from './data.ts';
+import { GW, GH, TOWER_TYPES, ORE_TYPES, cellX, cellZ } from './data.ts';
 import { worldToCell, disc, hexDist, lineDir, route } from './hex.ts';
-import type { TowerType } from './data.ts';
+import type { TowerType, OreType } from './data.ts';
 
 /** A road waypoint: cell x, cell z and an optional height level (0 = deck, up to 3; roads ramp between levels and can bridge over each other). */
 export type LanePoint = [number, number, number?];
 /** World height of one elevation level. */
 export const LEVEL_H = 1.6;
+/** A map's own deposits: per kind, the [cellX, cellZ] tiles it covers (see deposits.ts). */
+export type OreLayout = Partial<Record<OreType, [number, number][]>>;
+/** Most deposit tiles a map may list. */
+export const MAX_ORE = 320;
 
 export interface MapDef {
   id: string;
@@ -21,6 +25,8 @@ export interface MapDef {
   lives: number;
   towers: { t: TowerType; cx: number; cz: number }[];
   blocked: [number, number][];
+  /** Optional: the map's own deposits. Without it the run lays them out by the rules in deposits.ts. */
+  ore?: OreLayout;
 }
 
 export interface Difficulty { id: string; name: string; desc: string; hp: number; count: number; gold: number; lives: number; waves: number }
@@ -163,6 +169,29 @@ export function sanitizeMap(raw: unknown): MapDef | null {
   def.towers = def.towers.filter((t) => { const k = t.cz * GW + t.cx; if (g[k] !== 0 || seen.has(k)) return false; seen.add(k); return true; });
   const seenB = new Set<number>();
   def.blocked = def.blocked.filter(([cx, cz]) => { const k = cz * GW + cx; if (g[k] !== 3 || seenB.has(k)) return false; seenB.add(k); return true; });
+  // the map's own deposits: free deck only (not under a starting tower), one per tile, at most MAX_ORE
+  if (r.ore && typeof r.ore === 'object' && !Array.isArray(r.ore)) {
+    const o = r.ore as Record<string, unknown>, ore: OreLayout = {}, used = new Set<number>();
+    for (const t of def.towers) used.add(t.cz * GW + t.cx);
+    let n = 0;
+    for (const kind of ORE_TYPES) {
+      if (!Object.hasOwn(o, kind) || !Array.isArray(o[kind])) continue;
+      const list: [number, number][] = [];
+      for (const p of (o[kind] as unknown[]).slice(0, MAX_ORE)) {
+        // (off the board or not a whole tile: dropped, not clamped onto some other tile)
+        if (!Array.isArray(p) || n >= MAX_ORE || !Number.isInteger(p[0]) || !Number.isInteger(p[1]) || p[0] < 0 || p[1] < 0 || p[0] >= GW || p[1] >= GH) continue;
+        const c: [number, number] = [p[0], p[1]];
+        const k = c[1] * GW + c[0];
+        if (g[k] !== 0 || used.has(k)) continue;
+        used.add(k); list.push(c); n++;
+      }
+      if (list.length) ore[kind] = list;
+    }
+    // ({} given as {} is a map without deposits; a layout that had tiles but lost every one, say of an ore kind this build does
+    // not know, falls back to the automatic layout instead of a factory map nothing can be mined on)
+    const given = Object.keys(o).some((k) => Array.isArray(o[k]) && (o[k] as unknown[]).length > 0);
+    if (!given || n > 0) def.ore = ore;
+  }
   return def;
 }
 
@@ -175,7 +204,7 @@ export const DEFAULT_MAP: MapDef = {
 
 /** Compact share code for a map (plain data, always passed through sanitizeMap when read). */
 export function encodeMap(def: MapDef): string {
-  const json = JSON.stringify({ name: def.name, lanes: def.lanes, core: def.core, gold: def.gold, lives: def.lives, towers: def.towers, blocked: def.blocked, tier: def.tier });
+  const json = JSON.stringify({ name: def.name, lanes: def.lanes, core: def.core, gold: def.gold, lives: def.lives, towers: def.towers, blocked: def.blocked, tier: def.tier, ...(def.ore ? { ore: def.ore } : {}) });
   return btoa(unescape(encodeURIComponent(json))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 export function decodeMap(code: string): MapDef | null {

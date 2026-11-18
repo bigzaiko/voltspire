@@ -20,6 +20,8 @@
   --stencil: 'Saira Stencil One', 'Barlow Condensed', 'Arial Narrow', sans-serif;
   /* metrics */
   --r: 2px; --console-h: 92px; --top-h: 62px;
+  /* what the bottom console really takes up (it grows past --console-h when the bar tabs sit over the bar; play.ts measures it) */
+  --dock-h: max(var(--console-h), var(--bottom-h, 0px));
   --safe-l: env(safe-area-inset-left, 0px); --safe-r: env(safe-area-inset-right, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
   /* legacy aliases (other modules may still reference them) */
   --cyan: var(--sand); --mag: var(--rust); --yel: var(--apricot); --grn: var(--moss); --red: var(--rust); --vio: var(--sand-dim);
@@ -36,6 +38,7 @@ button { font: inherit; color: inherit; }
 * { scrollbar-width: thin; scrollbar-color: var(--soot-4) transparent; }
 
 kbd { display: inline-block; min-width: 1.7em; padding: 0 5px; margin: 0 1px; font-family: var(--mono); font-size: 0.72em; font-weight: 500; line-height: 1.55; text-align: center; white-space: nowrap; color: var(--sand); background: var(--soot-0); border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 3px; }
+.nowrap { white-space: nowrap; }
 
 #vignette { position: fixed; inset: 0; pointer-events: none; background: radial-gradient(ellipse at center, transparent 58%, rgba(12, 9, 7, 0.7) 100%); }
 #flash { position: fixed; inset: 0; pointer-events: none; opacity: 0; background: #f4ecd2; transition: opacity 0.45s ease-out; z-index: 30; }
@@ -103,6 +106,15 @@ kbd { display: inline-block; min-width: 1.7em; padding: 0 5px; margin: 0 1px; fo
 .stat.hurt b, .stat.hurt label { color: var(--ink); }
 #top .chip { min-height: 44px; min-width: 44px; font-size: 16px; }
 #btn-pause { letter-spacing: 0.2em; padding-left: 14px; }
+/* supply rings: a hex ring drawn as the cues draw it; switched on it glows in their green and gets its tick */
+#btn-rings { flex: none; margin-left: auto; min-width: 34px; min-height: 30px; padding: 0; }
+#btn-rings + #btn-auto { margin-left: 0; }
+@media (pointer: coarse) { #btn-rings { min-width: 44px; min-height: 44px; } }
+#btn-rings svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; opacity: 0.75; }
+#btn-rings .tick { opacity: 0; }
+#btn-rings.on { color: var(--verdigris, #6fe0c8); border-color: color-mix(in srgb, var(--verdigris, #6fe0c8) 60%, transparent); background: var(--plate); }
+#btn-rings.on svg { opacity: 1; filter: drop-shadow(0 0 4px color-mix(in srgb, var(--verdigris, #6fe0c8) 70%, transparent)); }
+#btn-rings.on .tick { opacity: 1; }
 /* next wave summary: enemy icons with counts, in the enemy's cold blue */
 .stat.next { grid-template-columns: 1fr; min-width: 112px; }
 #next-row { display: flex; align-items: center; gap: 9px; height: 29px; white-space: nowrap; }
@@ -147,7 +159,7 @@ body:has(#editor:not(.hidden)) #btn-full { display: none; }
 #btn-wave.off { visibility: hidden; }
 #btn-wave.first { box-shadow: inset 0 -3px 0 rgba(26, 15, 8, 0.24), 0 0 0 2px var(--soot-0), 0 0 0 4px var(--apricot); }
 
-#tower { position: absolute; right: calc(12px + var(--safe-r)); bottom: calc(var(--console-h) + 12px); width: 250px; }
+#tower { position: absolute; right: calc(12px + var(--safe-r)); bottom: calc(var(--dock-h) + 12px); width: 250px; }
 /* docked on the left when the core is on the right side of the screen */
 #tower.left { right: auto; left: calc(12px + var(--safe-l)); }
 #hud:has(#tower.left:not(.hidden)) #tip { left: calc(274px + var(--safe-l)); }
@@ -197,18 +209,18 @@ body:has(#editor:not(.hidden)) #btn-full { display: none; }
 .toast { max-width: 340px; padding: 7px 12px 7px 11px; font-size: 14px; line-height: 1.3; color: var(--bone); background: var(--plate); border: 1px solid var(--line); border-left: 3px solid var(--apricot); border-radius: var(--r); animation: toast 3.2s forwards; }
 @keyframes toast { 0% { opacity: 0; transform: translateX(-12px); } 7% { opacity: 1; transform: none; } 86% { opacity: 1; } 100% { opacity: 0; } }
 #dmg span { position: absolute; left: 0; top: 0; opacity: 0; font-family: var(--display); font-weight: 700; font-size: 19px; letter-spacing: 0.02em; color: var(--sand); text-shadow: 1px 1px 0 var(--soot-0), -1px 1px 0 var(--soot-0), 1px -1px 0 var(--soot-0), -1px -1px 0 var(--soot-0), 0 2px 0 var(--soot-0); font-variant-numeric: tabular-nums; pointer-events: none; will-change: transform, opacity; }
-#tip { position: absolute; left: calc(12px + var(--safe-l)); bottom: calc(var(--console-h) + 12px); max-width: 300px; padding: 10px 14px 11px; font-size: 14px; line-height: 1.35; background: var(--plate); border: 1px solid var(--line-2); border-radius: var(--r); }
+#tip { position: absolute; left: calc(12px + var(--safe-l)); bottom: calc(var(--dock-h) + 12px); max-width: 300px; padding: 10px 14px 11px; font-size: 14px; line-height: 1.35; background: var(--plate); border: 1px solid var(--line-2); border-radius: var(--r); }
 #tip b { display: block; margin-bottom: 3px; font-family: var(--display); font-size: 18px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sand); }
 #tip span { color: var(--bone); }
 #tip i { display: block; margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--line); font-style: normal; font-size: 13px; color: var(--sand-dim); }
 #dmg span.crit { font-size: 28px; color: var(--apricot); z-index: 1; }
-#tutor { position: absolute; left: 50%; bottom: calc(var(--console-h) + 64px); transform: translateX(-50%); display: grid; gap: 4px; max-width: min(560px, 86vw); padding: 9px 16px 11px 14px; background: var(--plate); border: 1px solid var(--line-2); border-left: 3px solid var(--apricot); border-radius: var(--r); z-index: 4; }
+#tutor { position: absolute; left: 50%; bottom: calc(var(--dock-h) + 64px); transform: translateX(-50%); display: grid; gap: 4px; max-width: min(560px, 86vw); padding: 9px 16px 11px 14px; background: var(--plate); border: 1px solid var(--line-2); border-left: 3px solid var(--apricot); border-radius: var(--r); z-index: 4; }
 #tutor b { font-family: var(--display); font-size: 21px; font-weight: 600; line-height: 1.15; letter-spacing: 0.04em; color: var(--bone); }
 /* before the first wave: what to do, and how long the grace period still runs */
-#prep { position: absolute; left: 50%; bottom: calc(var(--console-h) + 18px); transform: translateX(-50%); display: grid; gap: 3px; max-width: min(560px, 86vw); padding: 9px 16px 10px 14px; background: var(--plate); border: 1px solid var(--line-2); border-left: 3px solid var(--apricot); border-radius: var(--r); z-index: 3; }
+#prep { position: absolute; left: 50%; bottom: calc(var(--dock-h) + 18px); transform: translateX(-50%); display: grid; gap: 3px; max-width: min(560px, 86vw); padding: 9px 16px 10px 14px; background: var(--plate); border: 1px solid var(--line-2); border-left: 3px solid var(--apricot); border-radius: var(--r); z-index: 3; }
 #prep b { font-family: var(--display); font-size: 21px; font-weight: 600; line-height: 1.15; letter-spacing: 0.04em; color: var(--bone); }
 #prep small { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; color: var(--muted); font-variant-numeric: tabular-nums; }
-#prep:not(.hidden) ~ #tutor { bottom: calc(var(--console-h) + 104px); }
+#prep:not(.hidden) ~ #tutor { bottom: calc(var(--dock-h) + 104px); }
 /* messages shown while a menu sheet is open (the HUD toasts are underneath it then) */
 #notes { position: fixed; left: 50%; bottom: calc(16px + var(--safe-b)); transform: translateX(-50%); z-index: 46; display: grid; gap: 4px; justify-items: center; pointer-events: none; }
 
@@ -220,20 +232,18 @@ body:has(#editor:not(.hidden)) #btn-full { display: none; }
 .itag .ibody { display: flex; align-items: center; gap: 8px; }
 .itag .en svg { width: 13px; height: 13px; }
 .itag .en b { font-size: 15px; }
-.itag.dot { translate: -50% -50%; width: 14px; height: 14px; padding: 0; background: var(--static); border: 3px solid var(--soot-0); border-radius: 50%; box-shadow: 0 0 0 1px var(--static); }
-.itag.dot.boss { background: var(--violet); box-shadow: 0 0 0 1px var(--violet); }
-.itag.dot > * { display: none; }
+/* a gate off screen: a pill on the edge with the wave number, its arrow (--a, set per frame) turned toward the gate */
+.itag.dot { translate: -50% -50%; gap: 6px; padding: 3px 9px 3px 6px; border-left-width: 1px; border-color: var(--static); border-radius: 999px; box-shadow: 0 0 0 3px rgb(0 0 0 / 0.35); }
+.itag.dot::before { content: ''; flex: none; width: 14px; height: 14px; background: var(--static); clip-path: polygon(100% 50%, 15% 8%, 38% 50%, 15% 92%); rotate: var(--a, 0rad); }
+.itag.dot .iw { color: var(--sand); }
+.itag.dot.boss { border-color: var(--violet); }
+.itag.dot.boss::before { background: var(--violet); }
+.itag.dot .ibody { display: none; }
 
 /* Uplink hints: charged power nodes (diamond) and other Spires (ring) */
 
-#marks .mark svg { display: block; width: 8px; height: 8px; margin: 2px auto 0; fill: var(--ink); }
-#marks .mark { position: absolute; left: -7px; top: -7px; width: 14px; height: 14px; display: none; font-style: normal; font-size: 10px; line-height: 17px; text-align: center; color: var(--ink); background: var(--apricot); border: 1px solid var(--soot-0); border-radius: var(--r); animation: bob 1s ease-in-out infinite alternate; pointer-events: none; }
-@keyframes bob { to { margin-top: -3px; } }
-/* a tower that is jammed by mites (violet) or stunned by the Titan (cold blue-white) */
-#marks .mark.jam, #marks .mark.stun { left: -8px; top: -8px; width: 16px; height: 16px; animation: none; }
-#marks .mark.jam { background: var(--violet); }
-#marks .mark.stun { background: var(--static); }
-#marks .mark.jam svg, #marks .mark.stun svg { width: 12px; height: 12px; margin-top: 1px; }
+/* (a wave tag that comes into view fades in rather than blinking on; what marks a tower is drawn in the scene, see cues.ts) */
+@starting-style { .itag { opacity: 0; } }
 /* F3 diagnostics: frame times and the mouse path */
 #diag { position: fixed; right: calc(8px + var(--safe-r)); top: 50%; transform: translateY(-50%); z-index: 47; margin: 0; padding: 7px 10px; font-family: var(--mono); font-size: 11px; line-height: 1.5; color: var(--sand); background: rgba(16, 14, 12, 0.88); border: 1px solid var(--line-2); border-radius: var(--r); pointer-events: none; white-space: pre; }
 
@@ -312,7 +322,7 @@ a.foot { align-self: flex-start; padding: 6px 0; }
 .sheet.centre .sheet-head { justify-items: center; width: 100%; }
 .sheet.centre .sheet-head::after { right: calc(50% - 48px); }
 #card-row { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; perspective: 900px; }
-.card { --rc: var(--sand); position: relative; display: grid; grid-template-rows: auto auto auto 1fr auto; justify-items: start; align-content: start; width: 236px; min-height: 304px; padding: 18px 18px 0; text-align: left; cursor: pointer; color: var(--bone); font-family: var(--body); font-size: 15px; background: var(--soot-2); border: 1px solid var(--line-2); border-top: 5px solid var(--rc); border-radius: var(--r); box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.4); transition: transform 0.12s, border-color 0.12s, background-color 0.12s; animation: cardin 0.32s backwards; }
+.card { --rc: var(--sand); position: relative; display: grid; grid-template-rows: auto auto auto 1fr auto auto; justify-items: start; align-content: start; width: 236px; min-height: 304px; padding: 18px 18px 0; text-align: left; cursor: pointer; color: var(--bone); font-family: var(--body); font-size: 15px; background: var(--soot-2); border: 1px solid var(--line-2); border-top: 5px solid var(--rc); border-radius: var(--r); box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.4); transition: transform 0.12s, border-color 0.12s, background-color 0.12s; animation: cardin 0.32s backwards; }
 .card:nth-child(2) { animation-delay: 0.06s; } .card:nth-child(3) { animation-delay: 0.12s; }
 @keyframes cardin { from { opacity: 0; transform: translateY(26px); } }
 .card:hover, .card:focus-visible { transform: translate(-3px, -6px); background: var(--soot-3); border-color: var(--rc); }
@@ -321,6 +331,13 @@ a.foot { align-self: flex-start; padding: 6px 0; }
 .card .rar { font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rc); }
 .card h4 { margin: 5px 0 8px; font-family: var(--display); font-size: 26px; font-weight: 600; line-height: 1; letter-spacing: 0.04em; text-transform: uppercase; color: var(--sand); }
 .card p { font-size: 15px; line-height: 1.35; color: var(--bone); padding-bottom: 14px; }
+/* the stack track: rank text over one pip per rank, held ones filled, this card's rank lit */
+.card .stk { align-self: end; justify-self: stretch; display: grid; gap: 7px; padding: 11px 0 13px; border-top: 1px dashed var(--line-2); font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.card .pips { display: flex; gap: 4px; }
+.card .pips i { flex: 1; height: 7px; background: var(--soot-1); border: 1px solid var(--line-2); border-radius: 1px; transform: skewX(-18deg); }
+.card .pips i.on { background: color-mix(in srgb, var(--rc) 45%, var(--soot-1)); border-color: color-mix(in srgb, var(--rc) 60%, transparent); }
+.card .pips i.nx { background: var(--rc); border-color: var(--rc); box-shadow: 0 0 10px color-mix(in srgb, var(--rc) 70%, transparent); animation: pipnx 1.1s ease-in-out infinite alternate; }
+@keyframes pipnx { from { opacity: 0.55; } to { opacity: 1; } }
 .card .kind { align-self: end; justify-self: stretch; margin: 0 -18px; padding: 9px 18px 10px; font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; color: var(--tc, var(--muted)); background: var(--soot-1); border-top: 1px solid var(--line); }
 .card kbd { position: absolute; top: 14px; right: 14px; font-size: 12px; }
 /* a fresh offer cannot be picked for a moment, so a click or key meant for the fight does not take a card unread */
@@ -410,7 +427,9 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
 /* every card keeps this line, with or without a record, so the grid never changes height */
 .mapcard .rec { min-height: 1.4em; color: var(--sand-dim); }
 .mapcard.on .rec { color: var(--sand); }
-.mapcard .rec.none, .mapcard.on .rec.none { color: var(--soot-4); }
+.mapcard .rec.none, .mapcard.on .rec.none { color: var(--muted); opacity: 0.6; }
+/* (the small line wraps under itself on a narrow tile rather than losing the road count) */
+.mapcard .sub { white-space: normal; line-height: 1.3; }
 #gen { display: grid; grid-template-columns: auto minmax(190px, 1fr); gap: 16px; align-items: start; height: var(--pick-h); }
 #gen-cv { display: block; height: 100%; width: auto; max-width: 100%; min-height: 0; aspect-ratio: 416 / 288; border: 1px solid var(--line-2); border-radius: 1px; }
 #gen-side { max-height: 100%; overflow-y: auto; }
@@ -476,7 +495,7 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
   #tip { max-width: 250px; padding: 6px 10px 7px; font-size: 12px; }
   #tip b { font-size: 15px; margin-bottom: 1px; }
   #tip i { display: none; }
-  #tutor { bottom: calc(var(--console-h) + 14px); padding-block: 6px 7px; }
+  #tutor { bottom: calc(var(--dock-h) + 14px); padding-block: 6px 7px; }
   #tutor b { font-size: 17px; }
   body.hero #tutor, body.uplink #prep:not(.hidden) ~ #tutor { bottom: auto; top: calc(var(--top-h) + 10px); }
   .set-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -517,6 +536,7 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
   .card h4 { font-size: 18px; margin: 2px 0 0; align-self: start; overflow-wrap: anywhere; }
   .card p { grid-column: 1 / -1; font-size: 14px; padding-bottom: 10px; }
   .card .kind { grid-column: 1 / -1; padding-block: 7px; }
+  .card .stk { grid-column: 1 / -1; gap: 5px; padding: 7px 0 9px; }
   .card kbd { display: none; }
   #card-row { gap: 12px; flex-wrap: nowrap; }
   #end-stats span, #end-stats b { padding: 4px 0; }
@@ -530,10 +550,26 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
   .stat.wide, .stat.bow, .stat.next { display: none; }
   .stat { min-width: 52px; padding: 5px 8px 4px; }
   .gauges .stat:first-child { padding-left: 10px; }
-  #top { gap: 4px; padding-left: calc(8px + var(--safe-l)); }
-  body.has-full #top { padding-right: calc(8px + 48px + var(--safe-r)); }
+  /* (two rows: the gauges share the full width, the speed, pause and fullscreen buttons sit under them on the right) */
+  :root { --top-h: 108px; }
+  #top { flex-wrap: wrap; gap: 4px; padding-left: calc(8px + var(--safe-l)); padding-right: calc(8px + var(--safe-r)); }
+  body.has-full #top { padding-right: calc(8px + var(--safe-r)); }
+  #top .gauges { flex: 1 1 100%; min-width: 0; }
+  #top .gauges .stat { flex: 1 1 0; min-width: 0; padding: 5px 6px 4px; }
+  #top .gauges .stat:first-child { padding-left: 9px; }
+  #top .stat label { letter-spacing: 0.05em; overflow: hidden; text-overflow: ellipsis; }
+  #top .stat b { font-size: 22px; }
+  #top .stat b.sm { font-size: 14px; line-height: 23px; letter-spacing: 0.02em; }
+  #top .spacer { display: none; }
+  #btn-speed { margin-left: auto; }
+  /* (the build bar gets the full width; Auto waves and Call wave go on a row under it) */
+  #bottom { flex-wrap: wrap; gap: 8px; }
+  #buildwrap { flex: 1 1 100%; }
+  #btn-auto { margin-left: auto; }
+  body.has-full #btn-pause { margin-right: 48px; }
   #top .chip { min-width: 40px; padding: 0 8px; }
   #btn-full { right: calc(8px + var(--safe-r)); }
+  body:has(#hud:not(.hidden)):not(:has(.overlay:not(.hidden))) #btn-full { top: 60px; }
   .cover { padding-inline: 24px; }
   .cover .logo { font-size: min(76px, 16vw); }
   #touch:not(.hidden) ~ #herohud #hero-time { bottom: calc(232px + var(--safe-b)); width: min(300px, 70vw); }
@@ -580,7 +616,7 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
 #t-special:disabled { opacity: 0.45; cursor: default; }
 #t-spec.dry .bar i { background: var(--rust-deep); }
 #t-spec.dry #t-spec-state { color: var(--rust); }
-#fpanel { position: absolute; right: calc(12px + var(--safe-r)); bottom: calc(var(--console-h) + 12px); width: 270px; z-index: 4; }
+#fpanel { position: absolute; right: calc(12px + var(--safe-r)); bottom: calc(var(--dock-h) + 12px); width: 270px; z-index: 4; }
 #tower { z-index: 4; }
 #fpanel.left { right: auto; left: calc(12px + var(--safe-l)); }
 #fpanel h3 { color: var(--sand); }
@@ -594,10 +630,51 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
 #t-btns2 { display: grid; gap: 6px; }
 #f-desc { margin: 8px 0 0; font-size: 12px; line-height: 1.35; }
 #hud:has(#fpanel.left:not(.hidden)) #tip { left: calc(294px + var(--safe-l)); }
-#marks .mark.ammo, #marks .mark.power, #marks .mark.petrol { left: -8px; top: -8px; width: 16px; height: 16px; background: var(--rust); animation: bob 0.5s ease-in-out infinite alternate; }
-#marks .mark.ammo svg, #marks .mark.power svg, #marks .mark.petrol svg { width: 12px; height: 12px; margin-top: 1px; }
-#t-turn { right: calc(18px + var(--safe-r)); bottom: calc(var(--console-h) + 18px); }
-body.touch #fpanel, body.touch #tower { bottom: calc(var(--console-h) + 90px); }
+/* a deposit: the tooltip beside the pointer and the info panel (placed like the factory panel) */
+#oretip { position: fixed; left: 0; top: 0; z-index: 6; max-width: 280px; padding: 8px 12px 9px; font-size: 13px; line-height: 1.35; background: var(--plate); border: 1px solid var(--line-2); border-radius: var(--r); pointer-events: none; box-shadow: 0 6px 18px rgb(0 0 0 / 0.35); }
+#oretip b { display: flex; align-items: center; gap: 7px; margin-bottom: 3px; font-family: var(--display); font-size: 17px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sand); }
+#oretip span { color: var(--bone); }
+#oretip i:not(.swatch) { display: block; margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--line); font-style: normal; font-size: 12px; color: var(--sand-dim); }
+#oretip i.needs { color: var(--apricot); }
+#oretip i.lock { color: var(--muted); }
+.swatch { display: inline-block; flex: none; width: 13px; height: 13px; border-radius: 2px; background: var(--c); box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.28), inset 0 -2px 0 rgb(0 0 0 / 0.3), 0 0 0 1px rgb(0 0 0 / 0.45); transform: rotate(45deg) scale(0.85); }
+#opanel { position: absolute; right: calc(12px + var(--safe-r)); bottom: calc(var(--dock-h) + 12px); width: 270px; z-index: 4; }
+#opanel.left { right: auto; left: calc(12px + var(--safe-l)); }
+#opanel h3 { color: var(--sand); }
+#opanel .ore-name { display: inline-flex; align-items: center; gap: 8px; }
+#opanel .btn { width: 100%; }
+#opanel .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+#o-use { margin: 0 0 8px; font-size: 13px; line-height: 1.4; color: var(--bone); }
+#o-stats { margin-bottom: 10px; padding-top: 7px; border-top: 1px solid var(--line); font-size: 13px; line-height: 1.45; color: var(--muted); }
+#o-stats b { font-weight: 600; color: var(--bone); }
+#o-why { margin: 8px 0 0; font-size: 12px; line-height: 1.35; }
+#o-why.bad { color: var(--rust); }
+/* the one line that says where the building is: the Factory bar button it names is cued at the same time */
+#o-pick { margin: 0; padding: 6px 10px 6px 9px; font-family: var(--display); font-size: 15px; font-weight: 600; line-height: 1.2; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink); background: var(--apricot); border-radius: var(--r); cursor: pointer; }
+#o-pick.locked { cursor: default; color: var(--bone); background: repeating-linear-gradient(135deg, var(--soot-2) 0 6px, var(--soot-3) 6px 12px); border: 1px dashed var(--sand-dim); text-transform: none; font-size: 14px; letter-spacing: 0.02em; }
+/* the deposit cue on the Factory bar: an apricot frame that breathes and a marching top rule (a locked building shows anyway, hatched) */
+.tw.fac.cue { border-color: var(--apricot); border-top-color: var(--apricot); background: linear-gradient(0deg, rgb(246 139 86 / 0.3), rgb(246 139 86 / 0.04) 75%), var(--soot-2); animation: cue 0.55s ease-in-out infinite alternate; }
+.tw.fac.cue::after { content: ''; position: absolute; left: -1px; right: -1px; top: -3px; height: 3px; background: repeating-linear-gradient(90deg, var(--apricot-hi) 0 6px, var(--ink) 6px 9px); animation: march 0.5s linear infinite; pointer-events: none; }
+.tw.fac.cue .nm { color: var(--bone); }
+.tw.fac.locked.cue { display: grid; border-color: var(--sand-dim); border-style: dashed; background: repeating-linear-gradient(135deg, var(--soot-1) 0 6px, var(--soot-3) 6px 12px); animation-name: cue-locked; }
+.tw.fac.locked.cue::after { background: repeating-linear-gradient(90deg, var(--sand-dim) 0 6px, var(--soot-0) 6px 9px); }
+@keyframes cue { from { box-shadow: inset 0 0 0 1px var(--apricot); } to { box-shadow: inset 0 0 0 3px var(--apricot-hi); } }
+@keyframes cue-locked { from { box-shadow: inset 0 0 0 1px rgb(169 163 115 / 0.4); } to { box-shadow: inset 0 0 0 2px var(--sand-dim); } }
+@keyframes march { from { background-position-x: 0; } to { background-position-x: 9px; } }
+@media (prefers-reduced-motion: reduce) { .tw.fac.cue, .tw.fac.cue::after { animation: none; } .tw.fac.cue { box-shadow: inset 0 0 0 2px var(--apricot); } }
+#hud:has(#opanel.left:not(.hidden)) #tip { left: calc(294px + var(--safe-l)); }
+/* (no lift on touch: the panel closes as soon as a tool is picked, so the Turn button never shares its corner) */
+#opanel { max-height: calc(100dvh - var(--dock-h) - var(--top-h) - 30px); overflow-y: auto; overscroll-behavior: contain; }
+@media (max-height: 480px) {
+  #opanel { width: 250px; padding: 8px 12px 9px; }
+  #opanel h3 { margin-bottom: 3px; }
+  #o-use { margin-bottom: 5px; font-size: 12px; line-height: 1.3; }
+  #o-stats { margin-bottom: 7px; padding-top: 5px; font-size: 12px; line-height: 1.35; }
+  #o-why:not(.bad) { display: none; }
+  #o-why { margin-top: 5px; }
+}
+#t-turn { right: calc(18px + var(--safe-r)); bottom: calc(var(--dock-h) + 18px); }
+body.touch #fpanel, body.touch #tower { bottom: calc(var(--dock-h) + 90px); }
 
 /* ---------- the guided first run ---------- */
 #guide { position: absolute; right: calc(12px + var(--safe-r)); top: calc(var(--top-h) + 14px); display: grid; gap: 5px; width: min(360px, 78vw); padding: 10px 14px 12px 13px; background: var(--plate); border: 1px solid var(--line-2); border-left: 3px solid var(--verdigris); border-radius: var(--r); z-index: 4; pointer-events: auto; }
@@ -605,8 +682,70 @@ body.touch #fpanel, body.touch #tower { bottom: calc(var(--console-h) + 90px); }
 #guide p { margin: 0; font-size: 14px; line-height: 1.38; color: var(--bone); }
 #guide .guide-btns { display: flex; gap: 6px; margin-top: 4px; }
 #guide .guide-btns .btn { min-height: 28px; padding: 0 10px; font-size: 12px; }
-#marks .mark.here { left: -9px; top: -9px; width: 18px; height: 18px; background: var(--verdigris); animation: bob 0.45s ease-in-out infinite alternate; }
-#marks .mark.here svg { width: 12px; height: 12px; margin-top: 3px; }
+/* phone on its side: a narrow card that keeps most of the board in view, its text scrolling if it must */
+@media (max-height: 480px) {
+  #guide { top: calc(var(--top-h) + 8px); width: min(284px, 34vw); max-height: calc(100dvh - var(--top-h) - var(--console-h) - 24px); overflow-y: auto; overscroll-behavior: contain; gap: 3px; padding: 7px 10px 8px 10px; }
+  #guide b { font-size: 15px; }
+  #guide p { font-size: 12px; line-height: 1.3; }
+  #guide .guide-btns { margin-top: 2px; }
+}
+/* phones (upright or on their side): the card folds to a one-line strip while the player acts on the board (play.ts
+   decides when); a tap anywhere on it but its buttons opens or folds it */
+@media (max-width: 600px) and (orientation: portrait), (max-height: 480px) {
+  #guide { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  #guide::after { content: 'Less'; position: absolute; right: 10px; top: 7px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--verdigris); }
+  #guide.fold { display: flex; align-items: center; gap: 8px; min-height: 40px; max-height: none; padding-block: 5px; overflow: hidden; }
+  #guide.fold p, #guide.fold .guide-btns { display: none; }
+  #guide.fold .kicker { flex: none; }
+  #guide.fold b { flex: 1 1 auto; min-width: 0; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #guide.fold::after { content: 'More'; position: static; flex: none; }
+}
+@media (max-width: 600px) and (orientation: portrait) {
+  /* (full width under the top bar; open, it scrolls past a third of the screen) */
+  #guide { left: calc(8px + var(--safe-l)); right: calc(8px + var(--safe-r)); top: calc(var(--top-h) + 6px); width: auto; max-height: 36dvh; overflow-y: auto; overscroll-behavior: contain; gap: 3px; padding: 7px 10px 8px 10px; }
+  #guide b { font-size: 16px; padding-right: 40px; }
+  #guide p { font-size: 13px; line-height: 1.32; }
+  /* the info panels dock as a compact bottom sheet; the camera keeps the tile they describe above it (sheetFrame in play.ts) */
+  #tower, #fpanel, #opanel, #tower.left, #fpanel.left, #opanel.left, body.touch #fpanel, body.touch #tower {
+    left: calc(8px + var(--safe-l)); right: calc(8px + var(--safe-r)); bottom: calc(var(--dock-h) + 6px); width: auto;
+    max-height: 40dvh; overflow-y: auto; overscroll-behavior: contain; padding: 9px 12px 10px;
+  }
+  #tower h3, #fpanel h3, #opanel h3 { margin-bottom: 5px; }
+  #t-spec-desc, #f-desc, #o-why:not(.bad) { display: none; }
+  #t-btns, #t-btns2 { grid-template-columns: 1fr 1fr; }
+  #t-stats, #f-stats, #o-stats { margin-bottom: 6px; font-size: 12px; line-height: 1.4; }
+  /* (the tower's numbers two to a row; the special as one line and its bar) */
+  #t-stats { display: grid; grid-template-columns: auto 1fr auto 1fr; column-gap: 8px; align-items: baseline; }
+  #t-stats b { float: none; font-size: 15px; text-align: right; }
+  #t-stats br { display: none; }
+  #t-spec { margin-bottom: 7px; padding-top: 6px; }
+  #t-spec-name { margin-bottom: 4px; font-size: 14px; }
+  #tower .btn, #fpanel .btn, #opanel .btn { min-height: 40px; }
+  /* the tooltip of the item picked to place: its name and one line, small, above the console */
+  #tip { left: calc(8px + var(--safe-l)); right: auto; max-width: min(300px, calc(100vw - 96px)); padding: 6px 10px 7px; font-size: 12px; line-height: 1.3; }
+  #tip b { font-size: 15px; margin-bottom: 1px; }
+  #tip i { display: none; }
+  /* the one-off tips and the build phase banner: full width over the console, small type */
+  #tutor, #prep { left: calc(8px + var(--safe-l)); right: calc(8px + var(--safe-r)); transform: none; max-width: none; padding: 6px 10px 7px 10px; gap: 2px; }
+  #tutor { bottom: calc(var(--dock-h) + 8px); }
+  #prep:not(.hidden) ~ #tutor { bottom: calc(var(--dock-h) + 96px); }
+  #tutor b, #prep b { font-size: 15px; line-height: 1.25; }
+  #prep small { font-size: 10px; }
+}
+@media (max-height: 480px) {
+  /* on its side the open card stays in the upper part of the right edge (the board keeps the rest) */
+  #guide { max-height: calc(58dvh - var(--top-h)); }
+  /* the info panels sit on the console (the Turn button only shows while placing, when they are closed) and scroll
+     rather than run off the top; the camera keeps the tile they describe beside them (sheetFrame in play.ts) */
+  #tower, #fpanel, #opanel, body.touch #fpanel, body.touch #tower { bottom: calc(var(--dock-h) + 8px); max-height: calc(100dvh - var(--dock-h) - 16px); overflow-y: auto; overscroll-behavior: contain; }
+  #f-desc { display: none; }
+  /* the one-off tips and the build phase banner: small type, so they leave the board its middle */
+  #tutor, #prep { max-width: min(460px, 56vw); padding: 5px 10px 6px; gap: 2px; }
+  #tutor b, #prep b { font-size: 14px; line-height: 1.25; }
+  #prep small { font-size: 10px; line-height: 1.3; }
+  #prep:not(.hidden) ~ #tutor { bottom: calc(var(--dock-h) + 86px); }
+}
+/* (the tutorial's pointers are drawn on the deck by the view: see cues.ts) */
 .tw.fac.locked { display: none; }
 #h-tutorial { margin-top: 6px; }
 
@@ -618,19 +757,14 @@ body.planning #vignette { box-shadow: inset 0 0 0 2px rgba(143, 208, 255, 0.22),
 #prep b { font-size: 19px; }
 /* the power gauge turns rust when a grid will be (or is) short */
 .stat.power.short b, .stat.power.short label { color: var(--rust); }
-/* supply diagnosis: will lack something (rust), nothing takes its output (muted), just became supplied (green, short-lived) */
-#marks .mark.warn, #marks .mark.idle, #marks .mark.ok { left: -8px; top: -8px; width: 16px; height: 16px; animation: none; }
-#marks .mark.warn { background: var(--rust); }
-#marks .mark.idle { background: var(--sand-dim); opacity: 0.85; }
-#marks .mark.ok { background: #8fe07a; animation: tick 0.35s ease-out; }
-#marks .mark.warn svg, #marks .mark.idle svg, #marks .mark.ok svg { width: 12px; height: 12px; margin-top: 1px; }
-@keyframes tick { 0% { opacity: 0; scale: 0.6; } 60% { opacity: 1; scale: 1.15; } 100% { scale: 1; } }
+/* (the supply diagnosis is drawn in the scene: rings, holograms and route pulses, see cues.ts) */
 /* "Supplied by" / "Missing" in the tower and factory panels */
 .diag { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0 0 10px; font-size: 13px; line-height: 1.3; }
 .diag:empty { display: none; }
 .diag span { color: var(--muted); }
 .diag b { font-weight: 600; color: var(--bone); text-align: right; }
 .diag .bad { color: var(--rust); }
+.diag .warn { color: var(--sand-dim); }
 #f-stats b.bad { color: var(--rust); }
 /* what a Mk3 upgrade changes about a tower's supply */
 #t-next { margin: 0 0 8px; font-size: 12px; line-height: 1.35; color: var(--apricot); }

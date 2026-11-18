@@ -153,7 +153,9 @@ export function initTouch(api: TouchApi): void {
         const twist = Math.min(d, g.d0) >= APART ? Math.abs(turn(a - g.a0)) / TWIST : 0;
         if (pinch < 1 && twist < 1) return;
         g.mode = pinch >= twist ? 1 : 2;
-        // start from here, so the camera does not jump by the distance the threshold took
+        // A pinch starts from here, so the camera does not jump by the distance the threshold took. A twist catches up
+        // with the angle the threshold took: from now on the board follows the fingers 1:1, like a paper map.
+        if (g.mode === 2) api.rotate(turn(a - g.a0));
         g.d = d; g.a = a;
         return;
       }
