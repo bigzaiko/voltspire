@@ -2397,5 +2397,93 @@ ok(!sv.won, 'survival never "wins"'); console.log('survival reached wave', sv.wa
     ok(!bad.length && ({} as Record<string, unknown>).polluted === undefined, 'state block: tampered blocks are refused with a clear message or load harmlessly' + (bad.length ? ': ' + bad.join('; ') : ''));
   }
 }
+// ---------- mid-run saves (src/game/saves.ts, src/platform): save in the build phase, reload, carry on exactly ----------
+{
+  const { Saves, saveKey, canSave, atBuildPhase, autoStartsIn, SAVES_MAX, SAVE_V } = await import('../src/game/saves.ts');
+  const { MemoryStorage, StorageFullError } = await import('../src/platform/core.ts');
+  const { WebStorage, NS } = await import('../src/platform/web.ts');
+  const { stateHash } = await import('../src/game/snapshot.ts');
+  const { RunTracker } = await import('../src/game/records.ts');
+  const def = MAPS.find((m) => m.id === 'switchback')!, N = 7, K = 3, key = saveKey('switchback', 'normal', 'campaign');
+  // A: the scripted opener, N waves without a break (the state hash after each wave)
+  const hashA: string[] = [];
+  const A = playOpening(def, 101, N, 'normal', (x) => { hashA.push(stateHash(x)); });
+  // B: the same K waves, saved through the platform storage the way the game saves, loaded back
+  const store = new MemoryStorage(), saves = new Saves(store);
+  let atK: Sim | null = null;
+  playOpening(def, 101, K, 'normal', (x, w) => { if (w === K) atK = x; });
+  const kSim = atK! as Sim, tr = new RunTracker(kSim);
+  ok(canSave(kSim) && atBuildPhase(kSim), 'save: a solo run stands in its build phase after a wave');
+  const meta = await saves.put(kSim, { now: 5000, acc: tr.stats });
+  ok(!!meta && meta.wave === K && meta.lives === kSim.lives && meta.credits === Math.floor(kSim.gold) && meta.key === key && meta.mode === 'campaign', 'save: written with its metadata ' + JSON.stringify(meta && { wave: meta.wave, lives: meta.lives, credits: meta.credits }));
+  const raw = (await store.get(key)) || '';
+  const loaded = await saves.load(key, { hold: false });
+  ok(!('error' in loaded) && stateHash(loaded.sim) === hashA[K - 1] && loaded.entry.acc?.v === 1, `save: ${raw.length} characters, loads back to the same state as the run after wave ${K}`);
+  // ... and continued in place of the original: the same state after every later wave and the same outcome
+  const hashB: string[] = [];
+  const B = playOpening(def, 101, N, 'normal', (x, w) => { const y = w === K && !('error' in loaded) ? loaded.sim : x; hashB.push(stateHash(y)); return y; });
+  ok(hashA.length === N && JSON.stringify(hashA) === JSON.stringify(hashB) && JSON.stringify(A) === JSON.stringify(B), `save: continued after wave ${K}, waves ${K + 1}..${N} end in the same state and the same outcome as the run without a break (core ${B.lives.join(' > ')})`);
+  // never mid-wave, never a run that does not count
+  const mid = new Sim({ seed: 4, map: def, pauseOnCards: false }); mid.startWave(); for (let i = 0; i < 120; i++) { mid.step(1 / 60); mid.events.length = 0; }
+  ok(!atBuildPhase(mid) && (await saves.put(mid)) === null, 'save: refused during a wave');
+  const coop = new Sim({ mode: 'coop', players: 2, seed: 4, map: def }), free = new Sim({ seed: 4, map: def, free: true }), solo = new Sim({ seed: 4, map: def });
+  ok(!canSave(coop) && !canSave(free) && !canSave(solo, { bot: true }) && !canSave(solo, { attract: true }) && canSave(solo), 'save: co-op, free, bot and attract runs never save');
+  ok((await saves.put(free)) === null && (await saves.put(solo, { ctx: { bot: true } })) === null, 'save: put() refuses runs that do not count');
+  solo.autoWaves = true; solo.holdFirst = false; solo.nextWaveIn = 0.01;
+  ok(autoStartsIn(solo, 1 / 60) && !autoStartsIn(solo, 0.001), 'save: the step that starts an auto wave is seen coming');
+  // list, last, clear, the newest first, at most SAVES_MAX
+  const s2 = new Sim({ seed: 9, map: MAPS[1], diff: 'hard' });
+  await saves.put(s2, { now: 9000 });
+  const list = await saves.list();
+  ok(list.length === 2 && list[0].map === MAPS[1].id && (await saves.last())?.diff === 'hard' && !('block' in list[0]), 'save: list() newest first without blocks, last() for Continue');
+  ok(await saves.has('switchback', 'normal', 'campaign'), 'save: has() for the map picker');
+  for (let i = 0; i < SAVES_MAX + 3; i++) await saves.put(solo, { map: 'm' + i, now: 10000 + i });
+  const after = await saves.list();
+  ok(after.length === SAVES_MAX && after[0].map === 'm' + (SAVES_MAX + 2) && !after.some((x) => x.map === 'switchback'), `save: at most ${SAVES_MAX} kept, the oldest dropped`);
+  await saves.clearAll();
+  ok((await saves.list()).length === 0, 'save: clearAll');
+  // a corrupt or foreign save is dropped with a message, never thrown
+  const st2 = new MemoryStorage(), sv2 = new Saves(st2);
+  const good = JSON.parse(raw);
+  await st2.set('save:a|normal|campaign', '{not json');
+  await st2.set('save:b|normal|campaign', JSON.stringify({ ...good, v: SAVE_V + 1 }));
+  await st2.set('save:c|normal|campaign', JSON.stringify({ ...good, snap: 99 }));
+  await st2.set('save:d|normal|campaign', JSON.stringify({ ...good, block: good.block.slice(0, 200) + 'AAAA' + good.block.slice(204) }));
+  await st2.set('save:e|normal|campaign', JSON.stringify({ ...good, block: 'BSR1:zz.' }));
+  let threw = '';
+  const res: string[] = [];
+  try { for (const k of ['save:a|normal|campaign', 'save:b|normal|campaign', 'save:c|normal|campaign', 'save:d|normal|campaign', 'save:e|normal|campaign']) { const r = await sv2.load(k); res.push('error' in r ? r.error : 'LOADED'); } } catch (e) { threw = String(e); }
+  ok(!threw && res.every((m) => m !== 'LOADED' && m.length > 10) && JSON.stringify(await st2.keys('save:')) === JSON.stringify(['save:b|normal|campaign', 'save:c|normal|campaign']) && sv2.dropped.length === 3 && /newer/.test(res[1]) && /newer/.test(res[2]), 'save: corrupt and truncated saves are dropped with a message, a newer build\'s save is refused but kept: ' + (threw || res.map((m) => m.slice(0, 50)).join(' / ')));
+  // an old-format save (an older build wrote it) is dropped; a block that is not the run its key names is refused
+  await st2.set('save:f|normal|campaign', JSON.stringify({ ...good, v: 0 }));
+  await st2.set('save:g|normal|campaign', JSON.stringify({ ...good, diff: 'hard' }));
+  const rf = await sv2.load('save:f|normal|campaign'), rg = await sv2.load('save:g|normal|campaign');
+  ok('error' in rf && 'error' in rg && /match/.test(rg.error) && !(await st2.keys('save:')).some((k) => k.startsWith('save:f') || k.startsWith('save:g')), 'save: an old format is dropped, a save whose block is another difficulty is refused: ' + ('error' in rg ? rg.error : 'LOADED'));
+  // the web adapter: namespace, sorted keys, size guard, and a full quota drops the oldest archive entries first
+  const mem = new Map<string, string>(); let cap = 4000;
+  const fake = {
+    get length() { return mem.size; }, key: (i: number) => [...mem.keys()][i] ?? null, getItem: (k: string) => mem.get(k) ?? null,
+    setItem: (k: string, v: string) => { const used = [...mem].reduce((n, [a, b]) => n + (a === k ? 0 : a.length + b.length), 0); if (used + k.length + v.length > cap) { const e = new Error('full'); e.name = 'QuotaExceededError'; throw e; } mem.set(k, v); },
+    removeItem: (k: string) => { mem.delete(k); }, clear: () => mem.clear(),
+  } as unknown as Storage;
+  const ws = new WebStorage(fake);
+  mem.set('beatspire', '{"v":2}');
+  for (let i = 0; i < 6; i++) await ws.set('run:' + String(i).padStart(4, '0'), 'x'.repeat(400));
+  await ws.set('ach:state', '{}');
+  ok([...mem.keys()].filter((k) => k.startsWith(NS)).length === 7 && mem.has('beatspire') && JSON.stringify(await ws.keys('run:')) === JSON.stringify(['run:0000', 'run:0001', 'run:0002', 'run:0003', 'run:0004', 'run:0005']), 'web storage: namespaced keys, sorted, the old progress key untouched');
+  await ws.set('save:big', 'y'.repeat(1800));
+  ok(mem.has(NS + 'save:big') && !mem.has(NS + 'run:0000') && mem.has(NS + 'run:0005') && mem.has(NS + 'ach:state'), 'web storage: a full quota drops the oldest runs first, keeps the rest: ' + (await ws.keys('run:')).join(','));
+  cap = 100;
+  let full = '';
+  try { await ws.set('save:huge', 'z'.repeat(5000)); } catch (e) { full = e instanceof StorageFullError ? 'full' : String(e); }
+  let big = '';
+  try { await ws.set('x', 'q'.repeat(2_000_000)); } catch (e) { big = e instanceof StorageFullError ? 'big' : String(e); }
+  ok(full === 'full' && big === 'big' && mem.has(NS + 'ach:state'), 'web storage: too big or still full rejects with StorageFullError, saves and achievements are never dropped');
+  const broken = new WebStorage({ getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); }, removeItem() { throw new Error('blocked'); }, key() { throw new Error('blocked'); }, get length() { throw new Error('blocked'); } } as unknown as Storage);
+  let bthrew = '';
+  try { await broken.get('a'); await broken.remove('a'); await broken.keys(''); } catch (e) { bthrew = String(e); }
+  ok(!bthrew, 'web storage: blocked site data reads as empty');
+  console.log(`saves: switchback seed 101, saved after wave ${K} (${raw.length} characters), reloaded and played on to wave ${N}: same state hash after every wave, same outcome (core ${B.lives.join(' > ')})`);
+}
 console.log(fail ? `${fail} FAILED` : 'all smoke checks passed');
 process.exit(fail ? 1 : 0);

@@ -22,6 +22,8 @@
   <link rel="stylesheet" href="./src/music.css" />
   <link rel="stylesheet" href="./src/icons.css" />
   <link rel="stylesheet" href="./src/report.css" />
+  <link rel="stylesheet" href="./src/records-ui.css" />
+  <link rel="stylesheet" href="./src/help.css" />
 </head>
 <body>
   <canvas id="c"></canvas>
@@ -31,8 +33,8 @@
   <div id="hud" class="hidden">
     <div id="top">
       <div class="gauges">
-        <div class="stat"><label>Wave</label><b id="wave">0</b><small id="wave-sub"></small></div>
-        <div class="stat core"><label>Core</label><b id="lives">20</b></div>
+        <div class="stat st-wave"><label>Wave</label><svg class="hi" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4.8a3.2 3.2 0 1 0 0 6.4a3.2 3.2 0 0 0 0-6.4zM0.8 3.6l4 1.7-0.5 1.3-4-1.7zM15.2 3.6l-4 1.7 0.5 1.3 4-1.7zM0.3 7.3h4v1.4h-4zM11.7 7.3h4v1.4h-4zM0.8 12.4l4-1.7-0.5-1.3-4 1.7zM15.2 12.4l-4-1.7 0.5-1.3 4 1.7z"/></svg><b id="wave">0</b><small id="wave-sub"></small></div>
+        <div class="stat core"><label>Core</label><svg class="hi" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 .8l6.2 3.6v7.2L8 15.2l-6.2-3.6V4.4zM8 4.6a3.4 3.4 0 1 0 0 6.8a3.4 3.4 0 0 0 0-6.8z" fill-rule="evenodd"/></svg><b id="lives">20</b></div>
         <div class="stat ics" id="st-gold"><label>Credits</label><b id="gold">0</b></div>
         <div class="stat ics" id="st-mats" tabindex="0" aria-describedby="rtip" data-rt="res:mats"><label>Materials</label><b id="mats">0</b></div>
         <div class="stat wide"><label>Level <span id="level">1</span></label><div class="bar"><i id="xpbar"></i></div></div>
@@ -40,6 +42,7 @@
         <div class="stat next" id="next"><label id="next-label">Next wave</label><div id="next-row"></div></div>
       </div>
       <div class="spacer"></div>
+      <span id="saved-tick" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2 8.6 3.6 7l2.9 2.9L12.4 4 14 5.6l-7.5 7.5z"/></svg>saved</span>
       <button id="btn-speed" class="chip" type="button" title="Game speed (G)" aria-label="Game speed">1x</button>
       <button id="btn-pause" class="chip" type="button" title="Pause (P or Esc)" aria-label="Pause">II</button>
     </div>
@@ -55,6 +58,7 @@
       </div>
       <button id="btn-rings" class="chip" type="button" title="Supply rings: keep the green ring on everything that will be supplied (hold V to peek)" aria-label="Supply rings" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 1.6l7.3 4.2v8.4L10 18.4l-7.3-4.2V5.8z"/><path class="tick" d="M6.4 10.2l2.5 2.5 4.8-5.2"/></svg></button>
       <button id="btn-auto" class="chip" type="button" title="Start the next wave automatically after a pause" aria-pressed="false">Auto waves: off</button>
+      <button id="btn-legend" class="chip" type="button" title="Legend: every icon and symbol (L)" aria-label="Legend" aria-expanded="false" aria-keyshortcuts="L">?</button>
       <!-- what will lack supply when the wave starts: a press steps the camera to the next one (hidden when nothing will) -->
       <button id="wave-warn" class="chip hidden" type="button" title="Will lack supply when the wave starts: show the next"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.2a7.8 7.8 0 0 1 7.6 6M17.6 11.8A7.8 7.8 0 0 1 11.6 17.6M8.4 17.6A7.8 7.8 0 0 1 2.4 11.8M2.4 8.2A7.8 7.8 0 0 1 8.2 2.4"/></svg><b id="wave-warn-n">0</b></button>
       <!-- the wave button changes with the phase: Call wave N (time stands still, or the Auto countdown), then the wave's progress -->
@@ -179,12 +183,16 @@
       <span class="kicker">Nyx-9 garrison / field console</span>
       <div class="logo"><span>BEAT</span><span class="alt">SPIRE</span></div>
       <p class="tag">Build the grid. Become the storm.</p>
+      <!-- the newest saved run: one click resumes it (records-ui.ts fills it) -->
+      <button class="mcont hidden" id="m-continue" type="button"></button>
       <div class="menu-buttons">
         <button class="btn" id="m-solo">Play solo</button>
         <button class="btn ghost" id="m-tutorial">Tutorial</button>
         <!-- online play is off until the factory is kept in sync between two browsers -->
         <button class="btn hidden" id="m-coop">Co-op online</button>
         <button class="btn hidden" id="m-versus">1 v 1 online</button>
+        <button class="btn ghost" id="m-records">Records</button>
+        <button class="btn ghost" id="m-achs">Achievements</button>
         <button class="btn ghost" id="m-editor">Map editor</button>
         <button class="btn ghost" id="m-music">Music</button>
         <button class="btn ghost" id="m-help">How to play</button>
@@ -297,52 +305,233 @@
   <div id="editor" class="overlay hidden"></div>
 
   <div id="help" class="overlay hidden">
-    <div class="sheet wide">
+    <!-- How to play: a visual guide. Short illustrated cards under a sticky section bar; the pictures ([data-fig]) are built
+         by src/help.ts from the game's tables, the four id="help-*" boxes by play.ts (buildHelp). Details sit behind "More". -->
+    <div class="sheet wide guide">
       <header class="sheet-head">
         <span class="kicker">Field manual</span>
         <h2>How to play</h2>
       </header>
-      <div class="help-grid">
-        <div class="panel"><h3>Command view</h3>
-          <p class="kbd-only">Pick a tower or a factory building from the bar (number keys; <kbd>F</kbd> switches between Towers and Factory), then click a free hex to build. <kbd>Shift</kbd> keeps building.</p>
-          <p class="kbd-only">Click something you built to upgrade <span class="nowrap">(<kbd>U</kbd>)</span> or sell <span class="nowrap">(<kbd>X</kbd>)</span> it: towers, and Transfer Arms, mines, pumpjacks, plants and generators too. <kbd>R</kbd> turns a selected arm or belt. <kbd>T</kbd> steps a selected tower through its targeting modes (<kbd>Shift</kbd>+<kbd>T</kbd> backwards). The tags over the spawn gates show what the next wave sends down each road.</p>
-          <p class="kbd-only">Right-click a charged tower to fire its special: it does not have to be selected. <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or right-drag to pan, wheel to zoom. <kbd>Q</kbd> <kbd>E</kbd> or middle-drag turns the view, <kbd>Home</kbd> resets it.</p>
-          <p class="kbd-only"><kbd>N</kbd> calls the next wave. Between waves time stands still: build, nothing is made and nothing moves until you call (or Auto waves calls for you). <kbd>G</kbd> switches the game speed, <kbd>P</kbd> or <kbd>Esc</kbd> pauses.</p>
-          <p class="tap-only lead">Tap a building in the bar, tap a hex to place its preview, and tap the preview again to build. It stays picked to build more: the X chip, or a tap off the board, puts it away. Belts, pipes and arms: hold the preview and drag to lay a line. Two fingers never build. Tap something on the board to upgrade or sell it. Hold a charged tower, or double-tap it, to fire its special.</p>
-          <p class="tap-only">Drag with one finger to pan. Two fingers either pinch to zoom or twist to turn the view. Between waves time stands still until you tap Call wave, unless you switch Auto waves on.</p>
-          <button class="btn small ghost" id="h-tutorial" type="button">Replay the tutorial</button>
+      <nav class="g-nav" aria-label="How to play sections">
+        <a class="g-tab" href="#g-goal" data-ic="goal"><span>Goal</span></a>
+        <a class="g-tab" href="#g-waves" data-ic="waves"><span>Waves</span></a>
+        <a class="g-tab" href="#g-towers" data-ic="towers"><span>Towers</span></a>
+        <a class="g-tab" href="#g-supply" data-ic="supply"><span>Supply</span></a>
+        <a class="g-tab" href="#g-cards" data-ic="cards"><span>Cards</span></a>
+        <a class="g-tab" href="#g-controls" data-ic="controls"><span>Controls</span></a>
+        <a class="g-tab" href="#g-icons" data-ic="icons"><span>Icons</span></a>
+        <button class="g-x" id="h-close" type="button" aria-label="Close How to play"></button>
+      </nav>
+
+      <section class="g-sec" id="g-goal" aria-labelledby="g-goal-h">
+        <h3 class="g-h" id="g-goal-h">Goal</h3>
+        <div class="g-cards">
+          <article class="g-card">
+            <div class="g-fig" data-fig="heart"></div>
+            <h4>Guard the Heart</h4>
+            <p>Machines march down the roads. Stop each one before it strikes the core.</p>
+            <details class="g-more"><summary>More</summary>
+              <p>A machine that reaches the Heart stops and attacks it. Destroy it before it strikes and the core takes no damage.</p>
+              <p>A campaign lasts 20, 25 or 30 waves, by threat level. Survival has no last wave.</p>
+            </details>
+          </article>
+          <article class="g-card">
+            <div class="g-fig" data-fig="roster"></div>
+            <h4>Who comes when</h4>
+            <p>New machines join as the waves go on. A Colossus comes every 5th wave.</p>
+          </article>
+          <article class="g-card">
+            <div class="g-fig" data-fig="jam"></div>
+            <h4>Jammed or stunned</h4>
+            <p>Violet ring: mites jam the tower, any hit knocks them off. Blue ring: the Titan's stun.</p>
+            <details class="g-more"><summary>More</summary>
+              <p>Broodcarriers let mites loose that climb a tower and jam it.</p>
+              <p>Late in a campaign the Titan lands and stuns every tower until it reboots. Its hull turns most tower fire: save the specials for it.</p>
+            </details>
+          </article>
         </div>
-        <div class="panel"><h3>Supplying towers</h3>
-          <p>A tower fires only what it is fed. It starts empty and keeps just one item in hand. Nothing hands anything on by itself: every item that passes from a mine, a plant, a belt or a crate into a tower, a building or onto a belt is carried by a <b>Transfer Arm</b>. The one exception keeps the first minute simple: a supply crate feeds the towers built right next to it, until it runs out.</p>
-          <p>An arm takes one tile. It takes from the tile behind it and delivers to the tile in front of it, straight through; the preview shows the direction<span class="kbd-only">, <kbd>R</kbd> turns it, and dragging lays a line of arms that hand on to each other</span><span class="tap-only">, Turn changes it, and holding its preview and dragging lays a line of arms that hand on to each other</span>. It only picks up what its target will take right now, so nothing jams in its hand. <span class="kbd-only">Click</span><span class="tap-only">Tap</span> an arm to give it a filter: one kind of item only, to pull that kind off a mixed belt.</p>
-          <p>A Mine digs about one ore every 3 seconds, enough for one Pulse Turret: Mine, arm, turret in a straight line is a whole supply line (<span class="kbd-only">point at</span><span class="tap-only">tap</span> a deposit to see what it is). Belts come with the Conveyor Belts card, always among the first offers. A belt only carries: an arm puts items on it, other arms take them off further along, so one belt can pass a row of towers and each arm decides what its tower gets. A belt pointing into another merges onto it. Pipes and power keep it simple: a pipe feeds what it touches, a Generator or Power Pole powers what stands within 2 tiles.</p>
-          <p>Between waves a broken rust ring under a tower or building, with a hologram of the missing item over it, means it will lack something when the wave starts; <span class="kbd-only">click</span><span class="tap-only">tap</span> it to see what is missing, which hand-off is not there and what supplies it. The Power gauge shows what the grids need against what they have.</p>
-          <p>While you place something, a green ring marks everything that will be supplied, dashes flow along the route the new piece would get, and brackets close on what it would feed or power. <span class="kbd-only">Hold <kbd>V</kbd> to see the green rings at any time between waves, or switch them on for good with the hexagon button beside Auto waves.</span><span class="tap-only">The hexagon button beside Auto waves keeps the green rings on between waves.</span></p>
-          <p>Every building is on the Factory bar from the start; a hatched one is locked and names the card that unlocks it. Arms, mines, pumpjacks, plants and generators upgrade twice to work faster.</p>
+      </section>
+
+      <section class="g-sec" id="g-waves" aria-labelledby="g-waves-h">
+        <h3 class="g-h" id="g-waves-h">Build phase and waves</h3>
+        <div class="g-cards">
+          <article class="g-card">
+            <div class="g-fig" data-fig="build"></div>
+            <h4>Time stands still</h4>
+            <p>Between waves nothing moves: build in peace, then <span class="kbd-only">press <kbd>N</kbd></span><span class="tap-only">tap Call wave</span>.</p>
+            <details class="g-more"><summary>More</summary>
+              <p>Nothing is made and nothing moves until you call the wave, unless Auto waves calls for you.</p>
+              <p class="kbd-only"><kbd>G</kbd> switches the game speed, <kbd>P</kbd> or <kbd>Esc</kbd> pauses.</p>
+            </details>
+          </article>
+          <article class="g-card">
+            <div class="g-fig" data-fig="gates"></div>
+            <h4>Read the gate tags</h4>
+            <p>Each spawn gate shows what the next wave sends down its road.</p>
+          </article>
+          <article class="g-card">
+            <div class="g-fig" data-fig="upgrade"></div>
+            <h4>Upgrade or sell</h4>
+            <p><span class="kbd-only">Click</span><span class="tap-only">Tap</span> anything you built<span class="kbd-only">: <kbd>U</kbd> upgrades, <kbd>X</kbd> sells</span>.</p>
+            <details class="g-more"><summary>More</summary>
+              <p>Towers go up to Mk3. Transfer Arms, mines, pumpjacks, plants and generators upgrade twice to work faster.</p>
+            </details>
+          </article>
         </div>
-        <div class="panel"><h3>Cards, specials and the machines</h3>
-          <p>Every level you pick one of three cards: tower blueprints, production cards, tower upgrades, factory upgrades or economy. A blueprint unlocks only its tower; the buildings that make its supply come with production cards of their own. A card is offered only once what it builds on is there (a Shell Press needs Smelting and the Power Grid), a blueprint card says which production cards its tower still waits for, and those are put into the next offers. The paths below show what needs what.</p>
-          <p>A Pulse Turret Mk3 can fire plasma shells and a Firewall Mk3 can burn petrol, for more damage. Upgrading never changes what a tower eats: the Plasma Rounds or Petrol Burners card puts a switch into each Mk3's panel, so you convert a tower when its new supply line stands.</p>
-          <p>Towers charge a special. <span class="kbd-only">Right-click a charged tower to fire it, selected or not (or select it and press <kbd>Space</kbd>).</span><span class="tap-only">Hold a charged tower, or double-tap it, to fire it (or tap it and use Fire special).</span> The tower then reboots for a few seconds.</p>
-          <p>A campaign lasts 20, 25 or 30 waves depending on the threat level. A Colossus arrives every 5th wave. Survival has no last wave. A machine that reaches the Heart stops and attacks it. Destroy it before it strikes and the core takes no damage.</p>
-          <p id="help-aim-p">Every tower that picks a target can be told which: select it and choose First, Last, Strongest, Weakest, Fastest or Slowest in its panel<span class="kbd-only"> (<kbd>T</kbd> steps through them)</span>. Set all gives the mode to every tower of that kind<span class="kbd-only">, as does a <kbd>Shift</kbd>-click on a mode</span>, and new towers of the kind start with it. A bracket marks the enemy the selected tower is aiming at.</p>
-          <div id="help-aim" class="help-aim"></div>
-          <p>Broodcarriers let mites loose that climb a tower and jam it: a violet ring crackles round its base with a mite over it, and any hit knocks them off. Late in a campaign the Titan lands and stuns every tower (a cold blue ring and a bolt until it reboots): its hull turns most tower fire, so save the specials for it.</p>
+      </section>
+
+      <section class="g-sec" id="g-towers" aria-labelledby="g-towers-h">
+        <h3 class="g-h" id="g-towers-h">Towers</h3>
+        <div class="g-cards">
+          <article class="g-card full">
+            <div class="g-fig" data-fig="towers"></div>
+            <h4>Ten towers, each with its own supply</h4>
+            <p>The Pulse Turret is there from the start; the rest come as blueprint cards. <span class="kbd-only">Point at</span><span class="tap-only">Tap</span> one to see its supply chain.</p>
+          </article>
+          <article class="g-card">
+            <div class="g-fig g-aim"><div id="help-aim" class="help-aim"></div></div>
+            <h4>Pick its target</h4>
+            <p>Select a tower and choose who it shoots<span class="kbd-only"> (<kbd>T</kbd>)</span>.</p>
+            <details class="g-more"><summary>More</summary>
+              <p>Set all gives the mode to every tower of that kind<span class="kbd-only"> (so does <kbd>Shift</kbd>-click)</span>, and new ones start with it.<span class="kbd-only"> <kbd>Shift</kbd>+<kbd>T</kbd> steps back.</span> A bracket marks the enemy the selected tower aims at.</p>
+            </details>
+          </article>
+          <article class="g-card">
+            <div class="g-fig" data-fig="specials"></div>
+            <h4>Charge, then fire</h4>
+            <p><span class="kbd-only">Right-click</span><span class="tap-only">Hold or double-tap</span> a charged tower to fire its special.</p>
+            <details class="g-more"><summary>More</summary>
+              <p>It does not have to be selected<span class="kbd-only"> (or select it and press <kbd>Space</kbd>)</span><span class="tap-only"> (or tap it and use Fire special)</span>. The tower reboots for a few seconds after.</p>
+            </details>
+          </article>
+          <article class="g-card">
+            <div class="g-fig" data-fig="mk3"></div>
+            <h4>Mk3 ammo switch</h4>
+            <p>Two towers can switch to a stronger supply at Mk3.</p>
+            <details class="g-more"><summary>More</summary>
+              <p>Upgrading never changes what a tower eats. The card puts a switch into each Mk3's panel: convert a tower once its new supply line stands.</p>
+            </details>
+          </article>
         </div>
-        <!-- the card paths: which production card needs which, and what each tower's supply waits for (built by play.ts from the card table) -->
-        <div class="panel help-res"><h3>Card paths</h3>
-          <p class="help-res-lead">A card stands to the right of the cards it needs. During a run the level-up screen shows the same picture with what you hold.</p>
-          <div id="help-paths" class="paths"></div>
+      </section>
+
+      <section class="g-sec" id="g-supply" aria-labelledby="g-supply-h">
+        <h3 class="g-h" id="g-supply-h">Supply</h3>
+        <div class="g-cards">
+          <article class="g-card full">
+            <div class="g-fig" data-fig="chain"></div>
+            <h4>Towers fire only what they are fed</h4>
+            <p>Mine, arm, turret in a line is a whole supply line.</p>
+            <details class="g-more"><summary>More</summary>
+              <p>A tower starts empty and keeps one item in hand. A Mine digs about one ore every 3 seconds, enough for one Pulse Turret<span class="kbd-only"> (point at a deposit to see what it is)</span><span class="tap-only"> (tap a deposit to see what it is)</span>.</p>
+              <p>The one exception: a supply crate feeds the towers built right next to it, until it runs out.</p>
+            </details>
+          </article>
+          <article class="g-card">
+            <div class="g-fig" data-fig="arm"></div>
+            <h4>Arms make every hand-off</h4>
+            <p>An arm takes from the hex behind it and puts into the hex in front.</p>
+            <details class="g-more"><summary>More</summary>
+              <p>It only picks what its target takes right now, so nothing jams. <span class="kbd-only"><kbd>R</kbd> turns it; dragging lays a line of arms.</span><span class="tap-only">Turn changes its direction; hold its preview and drag to lay a line.</span></p>
+              <p><span class="kbd-only">Click</span><span class="tap-only">Tap</span> an arm to give it a filter: one kind of item, to pull it off a mixed belt.</p>
+            </details>
+          </article>
+          <article class="g-card">
+            <div class="g-fig" data-fig="belt"></div>
+            <h4>Belts only carry</h4>
+            <p>A belt never feeds a tower: an arm takes off what its tower needs.</p>
+            <details class="g-more"><summary>More</summary>
+              <p>Belts come with the Conveyor Belts card, always among the first offers. One belt can pass a row of towers. A belt pointing into another merges onto it.</p>
+            </details>
+          </article>
+          <article class="g-card">
+            <div class="g-fig" data-fig="grid"></div>
+            <h4>Pipes and power</h4>
+            <p>A pipe feeds what it touches. Power reaches 2 tiles round a Generator or Pole.</p>
+            <details class="g-more"><summary>More</summary>
+              <p>Poles wire up to 5 tiles apart, across roads too. The Power gauge shows what the grids need against what they have.</p>
+            </details>
+          </article>
+          <article class="g-card">
+            <div class="g-fig" data-fig="cues"></div>
+            <h4>Rings show what will run</h4>
+            <p>Green: supplied. Broken rust ring: something is missing.</p>
+            <details class="g-more"><summary>More</summary>
+              <p>Between waves a rust ring with a hologram of the missing item marks what will run short; <span class="kbd-only">click</span><span class="tap-only">tap</span> it to see which hand-off is missing.</p>
+              <p>While you place something, dashes flow along its route and brackets close on what it would feed. <span class="kbd-only">Hold <kbd>V</kbd> for the green rings, or keep them on with</span><span class="tap-only">Keep the green rings on with</span> the hexagon button beside Auto waves.</p>
+            </details>
+          </article>
+          <article class="g-card">
+            <div class="g-fig" data-fig="recipe"></div>
+            <h4>Every recipe</h4>
+            <p>What each tower runs on and how each resource is made.</p>
+            <details class="g-more grow"><summary>Show all</summary>
+              <div id="help-towers" class="help-towers"></div>
+              <div id="help-recipes" class="help-recipes"></div>
+            </details>
+          </article>
+          <article class="g-card full">
+            <div class="g-fig" data-fig="facs"></div>
+            <h4>The Factory bar</h4>
+            <p>Every building is there from the start. A hatched one names the card that unlocks it.</p>
+          </article>
         </div>
-        <!-- what every tower runs on and how each resource is made: built by play.ts from the game's own tables -->
-        <div class="panel help-res"><h3>What the towers run on</h3>
-          <p class="help-res-lead"><span class="kbd-only">Point at</span><span class="tap-only">Tap</span> any icon, here or in the game, to see how it is made.</p>
-          <div id="help-towers" class="help-towers"></div>
-          <div id="help-recipes" class="help-recipes"></div>
+      </section>
+
+      <section class="g-sec" id="g-cards" aria-labelledby="g-cards-h">
+        <h3 class="g-h" id="g-cards-h">Cards</h3>
+        <div class="g-cards">
+          <article class="g-card">
+            <div class="g-fig" data-fig="offer"></div>
+            <h4>Level up: pick one of three</h4>
+            <p>Blueprints bring towers, production cards bring buildings, upgrades make them stronger.</p>
+            <details class="g-more"><summary>More</summary>
+              <p>Cards come as tower blueprints, production, tower upgrades, factory upgrades and economy. A blueprint unlocks only its tower; it names the production cards its supply still waits for, and those come into the next offers.</p>
+            </details>
+          </article>
+          <article class="g-card">
+            <div class="g-fig" data-fig="needs"></div>
+            <h4>Cards build on cards</h4>
+            <p>A card is offered once the cards it needs are yours.</p>
+          </article>
+          <article class="g-card">
+            <div class="g-fig" data-fig="plan"></div>
+            <h4>Plan with Paths</h4>
+            <p>On the level-up screen, Paths<span class="kbd-only"> (<kbd>4</kbd>)</span> shows what unlocks what.</p>
+            <details class="g-more grow"><summary>All paths</summary>
+              <div id="help-paths" class="paths"></div>
+            </details>
+          </article>
         </div>
-      </div>
+      </section>
+
+      <section class="g-sec" id="g-controls" aria-labelledby="g-controls-h">
+        <h3 class="g-h" id="g-controls-h">Controls</h3>
+        <div class="g-cards">
+          <article class="g-card full g-ctl">
+            <div class="g-seg" role="group" aria-label="Controls for">
+              <button type="button" class="g-segb" data-ctl="keys" aria-pressed="true">Keyboard and mouse</button>
+              <button type="button" class="g-segb" data-ctl="touch" aria-pressed="false">Touch</button>
+            </div>
+            <div class="g-fig" data-fig="keys"></div>
+            <div class="g-fig hidden" data-fig="touch"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="g-sec" id="g-icons" aria-labelledby="g-icons-h">
+        <h3 class="g-h" id="g-icons-h">All icons</h3>
+        <div class="g-cards">
+          <article class="g-card full g-lg">
+            <p>Every symbol you meet in a run. In a game: the <b>?</b> button<span class="kbd-only"> or <kbd>L</kbd></span>, or the pause screen.</p>
+            <div data-legend></div>
+          </article>
+        </div>
+      </section>
+
       <div class="menu-buttons row">
         <button class="btn small" id="h-back">Got it</button>
+        <button class="btn small ghost" id="h-tutorial" type="button">Replay the tutorial</button>
         <button class="btn small ghost" id="h-report" type="button">Report on GitHub</button>
       </div>
     </div>
@@ -415,6 +604,8 @@
   </div>
 
   <div id="pause" class="overlay hidden">
+    <!-- the menu and, beside it on a wide screen, the legend of every symbol (help.ts); on a phone the Legend button opens it -->
+    <div class="pause-wrap">
     <div class="sheet narrow">
       <header class="sheet-head">
         <span class="kicker">Hold</span>
@@ -425,11 +616,14 @@
         <button class="btn ghost" id="p-settings">Settings</button>
         <button class="btn ghost" id="p-music">Music</button>
         <button class="btn ghost" id="p-help">How to play</button>
+        <button class="btn ghost lg-phone" id="p-legend" type="button">Legend</button>
         <button class="btn ghost hidden" id="p-editor">Back to editor</button>
         <button class="btn ghost" id="p-report">Report on GitHub</button>
         <button class="btn ghost hidden" id="p-load">Load report</button>
         <button class="btn ghost" id="p-quit">Quit to menu</button>
       </div>
+    </div>
+    <aside id="p-legend-panel" class="panel lg-side" aria-label="Legend"></aside>
     </div>
   </div>
 
@@ -441,6 +635,7 @@
         <p id="end-sub"></p>
       </header>
       <div id="end-stats" class="panel"></div>
+      <div id="end-badges" class="hidden"></div>
       <div class="menu-buttons row">
         <button class="btn" id="e-again">Play again</button>
         <button class="btn ghost hidden" id="e-endless">Keep going</button>
@@ -449,6 +644,13 @@
       </div>
     </div>
   </div>
+
+  <!-- records, achievements and the "continue or start over?" dialog (records-ui.ts builds them) -->
+  <div id="records" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Records"></div>
+  <div id="achs" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Achievements"></div>
+  <div id="cont" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Run in progress"></div>
+  <!-- an achievement unlocked in play: a small slide-in at the top -->
+  <div id="ach-pop" class="hidden" role="status"></div>
 
   <!-- the recipe of whatever resource icon the pointer rests on, has the focus or was tapped (see play.ts) -->
   <div id="rtip" class="hidden" role="tooltip"></div>

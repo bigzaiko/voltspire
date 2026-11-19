@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import {
   GW, GH, TOWERS, TOWER_TYPES, ENEMIES, ENEMY_TYPES, CARD_BY_ID, RARITY, SQUADS, worldToCell, cellX, cellZ, FACS, FAC_TYPES, ITEMS, FLUIDS, ORES, MAKES,
   TOWER_SUPPLY, TOWER_CHAIN, TOWER_NEEDS_L3, TOWER_CHAIN_L3, TOWER_SUPPLY_L3, FAC_LVL_SPEED, FAC_UPGRADABLE, needsOf, ITEM_SHOTS,
-  ORE_TYPES, TOWER_TIER, TARGET_MODES, TARGET_INFO, TARGETABLE, ITEM_TYPES, FLUID_TYPES, FAC_CARD, PROD_CARDS, AMMO2_CARD, CARDS,
+  ORE_TYPES, TOWER_TIER, TARGET_MODES, TARGET_INFO, TARGETABLE, ITEM_TYPES, FLUID_TYPES, FAC_CARD, PROD_CARDS, AMMO2_CARD, CARDS, NEXT_WAVE_IN,
 } from './game/data.ts';
 import type { TowerType, EnemyType, FacType, ItemType, TowerNeeds, OreType, TargetMode, FluidType, Card } from './game/data.ts';
 import { Sim, TITAN_STUN, towerOff } from './game/sim.ts';
@@ -30,6 +30,12 @@ import type { Msg } from './game/net.ts';
 import { icon as ic, chip, recipeDiagram, iconLabel, recipes, chainOf } from './icons.ts';
 import type { IconName, ChainTarget } from './icons.ts';
 import { initReport, openReport, openLoad, reportOpen, loadOpen, closeForms, logEvents, logAction, showBanner, reportHooks } from './report.ts';
+import { Career } from './game/career.ts';
+import type { AchDef } from './game/achievements.ts';
+import type { SaveMeta } from './game/saves.ts';
+import type { MapBest } from './game/records.ts';
+import { memoryPlatform } from './platform/index.ts';
+import { initRecordsUi } from './records-ui.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const el = (tag: string, cls = '', text = '') => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; };
@@ -185,6 +191,8 @@ function applyFx() {
 type GameMode = 'attract' | Mode;
 let mode: GameMode = 'attract';
 let sim = new Sim({ pauseOnCards: false });
+/** saves, the run archive and achievements (career.ts); null until it has loaded at boot */
+let career: Career | null = null;
 let bot: Bot | null = null;
 let me = 0;
 let net: Net | null = null;
@@ -276,7 +284,7 @@ const act = {
     return true;
   },
   card(i: number) { if (isClient) net?.send({ t: 'in', a: 'card', i }); else sim.pickCard(me, i); },
-  wave() { if (isClient) net?.send({ t: 'in', a: 'wave' }); else sim.startWave(); },
+  wave() { if (isClient) net?.send({ t: 'in', a: 'wave' }); else { career?.beforeWave(sim); sim.startWave(); } },
   /** fire a charged tower's special */
   special(id: number) {
     const t = sim.towerById(id);
@@ -364,6 +372,7 @@ const ENEMY_ICON: Record<EnemyType, string> = {
 };
 /** enemies that get the violet plate in a wave tag: the ones a wave is built around */
 const bigOne = (t: EnemyType) => t === 'boss' || t === 'titan';
+void import('./help.ts').then((m) => m.initLegend({ enemyIcon: (t) => icon(ENEMY_ICON[t]) })); // the legend (HUD ?, L, pause screen; help.ts)
 type Group = { type: EnemyType; n: number };
 /** Fill a box with icon + count chips, Colossus first. Anything that is not a known enemy type is dropped. */
 function enemyChips(box: HTMLElement, list: Group[]) {
@@ -431,7 +440,7 @@ function rtInfo(key: string): RtInfo | null {
   }
   if (k === 'tower' && Object.hasOwn(TOWERS, id)) {
     const t = id as TowerType, n = needsOf({ type: t, lvl, ammo2: lvl === 3 });
-    return { icon: `tw_${t}`, name: TOWERS[t].name + (lvl === 3 ? ' Mk3' : ''), kind: 'Tower', target: { tower: t }, lvl, line: n.item ? ((q: number) => `One ${ITEMS[n.item!].short} lasts ${q} shot${q === 1 ? '' : 's'}.`)(Math.round((n.shots || ITEM_SHOTS[n.item] || 1) * sim.mods.ammo)) : '' };
+    return { icon: `tw_${t}`, name: TOWERS[t].name + (lvl === 3 ? ' Mk3' : ''), kind: 'Tower', target: { tower: t }, lvl, line: (n.item ? ((q: number) => `One ${ITEMS[n.item!].short} lasts ${q} shot${q === 1 ? '' : 's'}.`)(Math.round((n.shots || ITEM_SHOTS[n.item] || 1) * sim.mods.ammo)) : '') + (mode !== 'attract' && !sim.unlocked.has(t) ? ` Locked: its blueprint card ${sim.bpOpen().includes(t) ? 'can come up at the next level' : 'comes after the towers before it'}.` : '') };
   }
   return null;
 }
@@ -789,52 +798,78 @@ function drawMark(n: number, cls = 'pw'): HTMLElement {
 const facKeyOf = (t: FacType) => { const i = FAC_TYPES.indexOf(t); return i < 0 || i > 9 ? '' : String((i + 1) % 10); };
 const buildBtns = {} as Record<TowerType, HTMLButtonElement>;
 const facBtns = {} as Record<FacType, HTMLButtonElement>;
-/** the price line of each bar button (the last thing written to it is kept in btnState) */
+/** the price chip of each bar card (the last thing written to it is kept in btnState) */
 const btnCost = new Map<HTMLElement, HTMLElement>();
 let tipHover: TowerType | FacType | null = null;
-for (const t of TOWER_TYPES) {
-  const d = TOWERS[t];
-  const b = el('button', 'tw') as HTMLButtonElement;
+/** A padlock (the corner of a locked bar card). */
+const LOCK_PATH = 'M5 7V5a3 3 0 0 1 6 0v2h1.2c.4 0 .8.4.8.8v6.4c0 .4-.4.8-.8.8H3.8c-.4 0-.8-.4-.8-.8V7.8c0-.4.4-.8.8-.8zm1.6 0h2.8V5a1.4 1.4 0 0 0-2.8 0zM8 9.2a1.1 1.1 0 0 0-.6 2v1.4h1.2v-1.4a1.1 1.1 0 0 0-.6-2z';
+/** The face of a bar card: the render of the tower or building (public/media/sm), its icon large where no still loads. */
+function barFace(still: string, fallback: IconName): HTMLElement {
+  const f = el('span', 'face'), img = el('img') as HTMLImageElement;
+  img.alt = ''; img.width = 160; img.height = 160; img.decoding = 'async'; img.draggable = false;
+  img.src = `./media/sm/${still}.jpg`;
+  img.addEventListener('error', () => { img.remove(); f.classList.add('noimg'); f.append(ic(fallback, { size: 40 })); }, { once: true });
+  f.append(img);
+  return f;
+}
+/** One card of the build bar: the face, the key in a corner badge, what it runs on (or makes) as a tiny row, the name as a caption, the price as a chip, a padlock. */
+function barCard(kind: 'tower' | 'fac', id: string, color: number, key: string, name: string, need: HTMLElement): HTMLButtonElement {
+  const b = el('button', kind === 'tower' ? 'tw' : 'tw fac') as HTMLButtonElement;
   b.type = 'button';
-  b.style.setProperty('--c', hex(d.color));
-  b.setAttribute('aria-label', `${d.name}, key ${d.key.toUpperCase()}. Runs on ${needsText(t)}.`);
-  b.dataset.lp = 'tower:' + t;
-  // the final resources it has to be fed, as icons (how each is made: the tooltip's diagram)
-  const need = el('div', 'need'), cost = el('div', 'cost'), sign = ic(`tw_${t}`, { size: 18 });
-  sign.classList.add('twi');
-  if (d.needs.item) need.append(ic(d.needs.item, { size: 15 }));
-  if (d.needs.fluid) need.append(ic(d.needs.fluid, { size: 15 }));
-  if (d.needs.power) need.append(drawMark(d.needs.power));
-  b.append(el('kbd', '', d.key), sign, el('div', 'nm', d.name), cost, need);
+  b.style.setProperty('--c', hex(color));
+  b.dataset.k = id;
+  b.dataset.lp = kind + ':' + id;
+  const cost = el('div', 'cost');
+  need.classList.add('need');
+  b.append(barFace((kind === 'tower' ? 'tower_' : 'fac_') + id, `${kind === 'tower' ? 'tw' : 'fac'}_${id}` as IconName), el('kbd', '', key), need, icon(LOCK_PATH, 'lk'), el('div', 'nm', name), cost);
   btnCost.set(b, cost);
+  // A tooltip opens when the mouse moves over the card, not when a card appears under a resting pointer.
+  // Fingers have no hover: the tooltip of the tower picked for building is shown instead (a long press shows any card's).
+  b.addEventListener('pointermove', (e) => { if (e.pointerType !== 'touch' && (e.movementX || e.movementY)) tipHover = id as TowerType | FacType; });
+  b.addEventListener('pointerleave', () => { if (tipHover === id) tipHover = null; });
+  return b;
+}
+for (const t of TOWER_TYPES) {
+  const d = TOWERS[t], need = el('div');
+  // the final resources it has to be fed, as icons (how each is made: the tooltip's diagram)
+  if (d.needs.item) need.append(ic(d.needs.item, { size: 14 }));
+  if (d.needs.fluid) need.append(ic(d.needs.fluid, { size: 14 }));
+  if (d.needs.power) need.append(drawMark(d.needs.power));
+  const b = barCard('tower', t, d.color, d.key, d.name, need);
+  b.setAttribute('aria-label', `${d.name}, key ${d.key.toUpperCase()}. Runs on ${needsText(t)}.`);
   b.addEventListener('click', () => { sound.init(); pickBuild(t); });
-  // A tooltip opens when the mouse moves over the button, not when a button appears under a resting pointer.
-  // Fingers have no hover: the tooltip of the tower picked for building is shown instead.
-  b.addEventListener('pointermove', (e) => { if (e.pointerType !== 'touch' && (e.movementX || e.movementY)) tipHover = t; });
-  b.addEventListener('pointerleave', () => { if (tipHover === t) tipHover = null; });
   buildBtns[t] = b;
   $('build').appendChild(b);
 }
 for (const t of FAC_TYPES) {
-  const d = FACS[t], makes = facMakes(t);
-  const b = el('button', 'tw fac') as HTMLButtonElement;
-  b.type = 'button';
-  b.style.setProperty('--c', hex(d.color));
-  b.setAttribute('aria-label', d.name + (makes.length ? `. Makes ${andList(makes.map(iconLabel))}` : '') + (d.power ? `. Draws ${d.power} power` : '') + '.');
-  b.dataset.lp = 'fac:' + t;
-  // what it makes, and on the right the power it draws
-  const need = el('div', 'need'), cost = el('div', 'cost'), sign = ic(`fac_${t}`, { size: 18 });
-  sign.classList.add('twi');
-  for (const m of makes) need.append(ic(m, { size: 15 }));
+  const d = FACS[t], makes = facMakes(t), need = el('div');
+  // what it makes, and the power it draws
+  for (const m of makes.slice(0, 2)) need.append(ic(m, { size: 14 }));
   if (t === 'generator') need.append(el('span', 'pw', String(GEN_POWER)));
   if (d.power) need.append(drawMark(d.power, 'pw draw'));
-  b.append(el('kbd', '', facKeyOf(t)), sign, el('div', 'nm', d.name), cost, need);
-  btnCost.set(b, cost);
+  const b = barCard('fac', t, d.color, facKeyOf(t), d.name, need);
+  b.setAttribute('aria-label', d.name + (makes.length ? `. Makes ${andList(makes.map(iconLabel))}` : '') + (d.power ? `. Draws ${d.power} power` : '') + '.');
   b.addEventListener('click', () => { sound.init(); pickFac(t); });
-  b.addEventListener('pointermove', (e) => { if (e.pointerType !== 'touch' && (e.movementX || e.movementY)) tipHover = t; });
-  b.addEventListener('pointerleave', () => { if (tipHover === t) tipHover = null; });
   facBtns[t] = b;
   $('fbuild').appendChild(b);
+}
+// the tabs: the icon of a turret and of a smelter (the word stays for screen readers and as the tooltip)
+for (const [id, n] of [['tab-towers', 'tw_pulse'], ['tab-factory', 'fac_smelter']] as const) {
+  const b = $(id), word = (b.textContent || '').trim();
+  b.replaceChildren(ic(n, { size: 22 }), el('span', 'tl', word));
+  b.setAttribute('aria-label', word);
+}
+// a mouse wheel turned over a bar that does not fit scrolls it sideways
+for (const id of ['build', 'fbuild']) {
+  const bar = $(id);
+  bar.addEventListener('wheel', (e) => {
+    if (bar.scrollWidth <= bar.clientWidth + 1 || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+    e.preventDefault();
+    bar.scrollLeft += e.deltaY * (e.deltaMode === 1 ? 32 : 1);
+  }, { passive: false });
+  // (one that does not fit fades its right edge, so a card cut off there reads as "more this way")
+  const fit = () => { const over = bar.classList.contains('over'); bar.classList.toggle('over', bar.scrollWidth - (over ? 19 : 0) > bar.clientWidth + 2); };
+  new ResizeObserver(fit).observe(bar);
 }
 /** Show the tower bar or the factory bar. */
 function setTab(tab: 'towers' | 'factory') {
@@ -930,6 +965,28 @@ function armCards() {
   if (!cardFree && !mouseBtns && !keys.has('1') && !keys.has('2') && !keys.has('3')) cardFree = true;
   if (cardFree && performance.now() - cardAt >= CARD_GUARD_MS) { cardArmed = true; $('cards').classList.add('armed'); }
 }
+/** The first sentence of a card's text (the whole text is on the card's info side). */
+const firstLine = (t: string) => { const one = (t.match(/^.*?[.!?](?=\s|$)/)?.[0] || t).trim(), c = one.indexOf(': '); return c > 12 ? one.slice(0, c) + '.' : one; };
+/** The picture of a level-up card: a blueprint's tower render, the building renders a production card opens, an ammo card's tower with its new ammunition, else its glyph large on a tinted panel. */
+function cardVisual(c: Card, bt: TowerType | null): HTMLElement {
+  const v = el('div', 'cv');
+  const pic = (still: string, fb: IconName) => { const f = barFace(still, fb); f.className = 'cimg'; return f; };
+  if (bt) { v.classList.add('cv-tw'); v.append(pic('tower_' + bt, `tw_${bt}`)); }
+  else if (c.unlocks) { v.classList.add('cv-fac'); v.dataset.n = String(Math.min(3, c.unlocks.length)); for (const f of c.unlocks.slice(0, 3)) v.append(pic('fac_' + f, `fac_${f}`)); }
+  else if (c.ammo) {
+    v.classList.add('cv-tw', 'cv-ammo'); v.append(pic('tower_' + c.ammo, `tw_${c.ammo}`));
+    const n = TOWER_NEEDS_L3[c.ammo], a = n?.item || n?.fluid;
+    if (a) { const b = el('span', 'cv-badge'); b.append(ic(a, { size: 34 })); v.append(b); }
+  } else {
+    v.classList.add('cv-ic');
+    if (c.needs) { const bg = pic('tower_' + c.needs, `tw_${c.needs}`); bg.classList.add('ghost'); v.append(bg); }
+    const g = el('span', 'cv-glyph', c.icon), about = CARD_ICONS[c.id];
+    v.append(g);
+    if (about) { const r = el('span', 'cv-about'); for (const n of about.slice(0, 4)) r.append(ic(n, { size: 26 })); v.append(r); }
+    else if (c.needs) { const r = el('span', 'cv-about'); r.append(ic(`tw_${c.needs}`, { size: 26 })); v.append(r); }
+  }
+  return v;
+}
 function showCards() {
   const p = sim.players[me];
   if (!p || !p.pending.length || mode === 'attract' || bot) { if (cardKey) { cardKey = ''; show('cards', false); } return; }
@@ -939,47 +996,42 @@ function showCards() {
   cardKey = key;
   const row = $('card-row');
   row.textContent = '';
-  setText('cards-sub', p.pending.length > 1 ? `Choose one upgrade (${p.pending.length} waiting)` : 'Choose one upgrade');
+  setText('cards-sub', p.pending.length > 1 ? `Choose one (${p.pending.length} waiting)` : 'Choose one');
   p.pending[0].forEach((id, i) => {
     // a co-op guest gets its offer from the host: skip anything that is not a known card
     if (typeof id !== 'string' || !Object.hasOwn(CARD_BY_ID, id)) return;
     const c = CARD_BY_ID[id];
-    const d = el('button', 'card') as HTMLButtonElement;
-    d.type = 'button';
-    d.style.setProperty('--rc', ['#e3dc92', '#f68b56', '#6fe0c8'][c.rar]);
-    // (the stack track: how many of this card the run holds and which rank this one would be, one pip per rank)
-    const own = Math.min(c.max, sim.stacks[c.id] || 0), stk = el('div', 'stk');
-    if (c.max > 1) {
-      stk.append(el('span', '', own ? `Rank ${own + 1} of ${c.max} · you hold ${own}` : `Rank 1 of ${c.max}`));
-      const pips = el('div', 'pips');
-      for (let k = 0; k < c.max; k++) pips.append(el('i', k < own ? 'on' : k === own ? 'nx' : ''));
-      stk.append(pips);
-    } else stk.append(el('span', '', c.kind === 'blueprint' ? 'Unlocks the tower' : c.unlocks ? `Unlocks ${c.unlocks.length > 1 ? 'buildings' : 'a building'}` : c.ammo ? 'Unlocks a switch on each Mk3' : 'Once per run'));
-    // A blueprint shows what its tower runs on, each resource marked as one the player can make already (a tick) or not yet
-    // (a broken ring), and the production cards its supply still waits for. A production card shows what it lets you build,
-    // which towers it serves and which cards it leads to. The icons open their recipe like everywhere else.
+    // The card: a big picture, its name, one line and its icon chips. The whole text and every detail row are on its
+    // info side (the i button, or a moment's hover with a mouse), laid over the card.
+    const w = el('div', 'cw'), d = el('button', 'card') as HTMLButtonElement, info = el('button', 'cinfo') as HTMLButtonElement, full = el('div', 'cfull');
+    d.type = 'button'; info.type = 'button';
+    w.style.setProperty('--rc', ['#e3dc92', '#f68b56', '#6fe0c8'][c.rar]);
+    w.classList.add('r' + c.rar);
     const bt = c.kind === 'blueprint' && c.id.startsWith('bp_') && Object.hasOwn(TOWERS, c.id.slice(3)) ? (c.id.slice(3) as TowerType) : null;
-    const big = bt ? `tw_${bt}` as IconName : c.unlocks ? `fac_${c.unlocks[0]}` as IconName : c.ammo ? `tw_${c.ammo}` as IconName : null;
-    const ci = el('div', 'ci', big ? '' : c.icon), body = el('div', 'cbody');
-    if (big) ci.append(ic(big, { size: 38 }));
-    const offer = p.pending[0];
+    const tint = bt || c.ammo || c.needs;
+    if (tint) w.style.setProperty('--tc', hex(TOWERS[tint].color));
+    const offer = p.pending[0], chips = el('div', 'cchips'), more = el('div', 'cmore');
+    const kindWord = bt ? 'Blueprint' : c.unlocks ? 'Production' : c.ammo ? 'Mk3 ammo' : c.kind === 'eco' ? 'Economy' : c.kind === 'factory' ? 'Factory' : c.needs ? TOWERS[c.needs].name : 'All towers';
+    const desc = bt ? TOWERS[bt].desc : c.desc;
+    more.append(el('p', '', bt ? `${TOWERS[bt].desc} Supply: ${needsText(bt)}.` : c.desc));
     if (bt) {
       const td = TOWERS[bt], mk = needsMakeable(td.needs), wait = sim.supplyCards(bt);
-      const needs = rrow('Needs', ...mk.chips);
-      if (td.mat) needs.append(rgrp('Costs', rchip('mats', td.mat, { tab: false, state: sim.facs.has('works') ? 'ok' : 'missing', label: `${td.mat} building materials: ${sim.facs.has('works') ? 'you can make them' : 'you start with a few; more need the Frame Works card'}` })));
+      chips.append(...mk.chips);
+      if (td.mat) chips.append(rchip('mats', td.mat, { tab: false, state: sim.facs.has('works') ? 'ok' : 'missing', label: `${td.mat} building materials: ${sim.facs.has('works') ? 'you can make them' : 'you start with a few; more need the Frame Works card'}` }));
+      if (wait.length) {
+        chips.append(arrow());
+        for (const wc of wait.slice(0, 3)) { const cc = cardChip(wc, { name: false }); if (offer.includes(wc)) cc.classList.add('onoffer'); chips.append(cc); }
+        if (wait.length > 3) chips.append(el('span', 'more', `+${wait.length - 3}`));
+      } else chips.append(el('span', 'cchip have ready', '✓'));
       const sup = rrow(wait.length ? 'Supply needs' : 'Supply');
       sup.classList.add('wrap', 'unlock');
-      if (wait.length) sup.append(...wait.map((w) => cardChip(w, { note: offer.includes(w) ? 'on offer' : '' })));
+      if (wait.length) sup.append(...wait.map((wc) => cardChip(wc, { note: offer.includes(wc) ? 'on offer' : '' })));
       else sup.append(el('span', 'cchip have', 'you can build it now'));
-      body.append(el('p', '', td.desc), needs, sup);
+      more.append(rrow('Needs', ...needsMakeable(td.needs).chips), sup);
       d.dataset.lp = 'tower:' + bt;
-      d.setAttribute('aria-label', `${c.name}. ${td.desc} Runs on ${needsText(bt)}. ${wait.length ? `Its supply still needs the ${andList(wait.map((w) => CARD_BY_ID[w].name))} card${wait.length > 1 ? 's' : ''}.` : 'You can build its supply line now.'}`);
+      d.setAttribute('aria-label', `${c.name}. ${td.desc} Runs on ${needsText(bt)}. ${wait.length ? `Its supply still needs the ${andList(wait.map((x) => CARD_BY_ID[x].name))} card${wait.length > 1 ? 's' : ''}.` : 'You can build its supply line now.'}`);
     } else if (c.unlocks) {
-      body.append(el('p', '', c.desc));
-      const builds = rrow('Builds');
-      builds.classList.add('wrap');
-      for (const f of c.unlocks) { const mk = facMakes(f); builds.append(rgrp('', rchip(`fac_${f}`, '', { tab: false }), ...(mk.length ? [arrow(), ...mk.map((m) => rchip(m, '', { tab: false }))] : []))); }
-      body.append(builds);
+      for (const f of c.unlocks) { const mk = facMakes(f); chips.append(rgrp('', rchip(`fac_${f}`, '', { tab: false }), ...(mk.length ? [arrow(), ...mk.slice(0, 2).map((m) => rchip(m, '', { tab: false }))] : []))); }
       // the towers whose supply line runs through these buildings: the ones the player has first, then the blueprints still to come
       const serves = TOWER_TYPES.filter((t) => TOWER_CHAIN[t].some((f) => c.unlocks!.includes(f)) || (TOWER_CHAIN_L3[t] || []).some((f) => c.unlocks!.includes(f) && sim.taken(AMMO2_CARD[t] || '')));
       const mine = serves.filter((t) => sim.unlocked.has(t)), later = serves.filter((t) => !sim.unlocked.has(t));
@@ -989,7 +1041,9 @@ function showCards() {
         for (const t of mine) r.append(rchip(`tw_${t}`, '', { tab: false, state: 'ok', label: `${TOWERS[t].name}: unlocked` }));
         for (const t of later.slice(0, 6)) r.append(rchip(`tw_${t}`, '', { tab: false, state: 'dim', label: `${TOWERS[t].name}: blueprint still to come` }));
         if (later.length > 6) r.append(el('span', 'more', `+${later.length - 6}`));
-        body.append(r);
+        more.append(r);
+        // (on the card itself: the towers it serves that the player already has)
+        if (mine.length) { const g = rgrp('', ...mine.slice(0, 4).map((t) => rchip(`tw_${t}`, '', { tab: false, state: 'ok', label: `Serves your ${TOWERS[t].name}` }))); g.classList.add('serves'); chips.append(g); }
       }
       const leads = CARDS.filter((o) => (o.requires || []).includes(c.id) && cardState(o) !== 'have');
       if (leads.length) {
@@ -997,24 +1051,55 @@ function showCards() {
         r.classList.add('wrap', 'unlock');
         // (what it would be once this card is taken: on offer if nothing else holds it back)
         for (const o of leads) r.append(cardChip(o.id, { state: cardWaits(o).length > 1 ? 'locked' : 'open' }));
-        body.append(r);
+        more.append(r);
       }
       d.dataset.lp = 'fac:' + c.unlocks[0];
       d.setAttribute('aria-label', `${c.name}. ${c.desc}${mine.length ? ` Serves your ${andList(mine.map((t) => TOWERS[t].name))}.` : ''}${leads.length ? ` Leads to ${andList(leads.map((o) => o.name))}.` : ''}`);
     } else if (c.ammo && TOWER_NEEDS_L3[c.ammo]) {
       const l3 = TOWER_NEEDS_L3[c.ammo]!, mk = needsMakeable(l3);
-      body.append(el('p', '', c.desc), rrow('Mk3', ...needChips(TOWERS[c.ammo].needs, { tab: false }), arrow(), ...mk.chips));
-      if (mk.cards.length) { const r = rrow('Supply needs', ...mk.cards.map((w) => cardChip(w))); r.classList.add('wrap', 'unlock'); body.append(r); }
+      chips.append(...needChips(TOWERS[c.ammo].needs, { tab: false }), arrow(), ...mk.chips);
+      if (mk.cards.length) { const r = rrow('Supply needs', ...mk.cards.map((x) => cardChip(x))); r.classList.add('wrap', 'unlock'); more.append(r); }
+      d.setAttribute('aria-label', `${c.name}. ${c.desc}`);
     } else {
-      body.append(el('p', '', c.desc));
       const about = CARD_ICONS[c.id];
-      if (about) body.append(rrow('', ...about.map((n) => rchip(n, '', { tab: false }))));
+      if (about) chips.append(...about.map((n) => rchip(n, '', { tab: false })));
+      else if (c.needs) chips.append(rchip(`tw_${c.needs}`, '', { tab: false, label: TOWERS[c.needs].name }));
+      d.setAttribute('aria-label', `${c.name}. ${c.desc}`);
     }
-    d.append(el('kbd', '', String(i + 1)), ci, el('div', 'rar', RARITY[c.rar]), el('h4', '', c.name), body, stk, el('div', 'kind', c.needs ? TOWERS[c.needs].name : c.kind === 'eco' ? 'economy' : c.kind === 'tower' ? 'all towers' : c.kind));
-    if (c.needs) d.style.setProperty('--tc', hex(TOWERS[c.needs].color));
+    // (the stack track: how many of this card the run holds and which rank this one would be, one pip per rank)
+    const own = Math.min(c.max, sim.stacks[c.id] || 0);
+    let stk: HTMLElement | null = null;
+    if (c.max > 1 && c.max < 20) {
+      stk = el('div', 'pips');
+      stk.title = own ? `Rank ${own + 1} of ${c.max} (you hold ${own})` : `Rank 1 of ${c.max}`;
+      for (let k = 0; k < c.max; k++) stk.append(el('i', k < own ? 'on' : k === own ? 'nx' : ''));
+    }
+    const head = el('div', 'ckick');
+    head.append(el('span', 'rar', RARITY[c.rar]), el('span', 'kind', kindWord));
+    const name = el('h4', '', bt ? TOWERS[bt].name : c.name);
+    const body = el('div', 'cb');
+    body.append(head, name, el('p', 'cl', firstLine(desc)), chips);
+    if (stk) body.append(stk);
+    const v = cardVisual(c, bt);
+    v.append(el('kbd', '', String(i + 1)));
+    d.append(v, body);
+    // the info side: every word and row of the card (the i button, or a mouse resting on the card)
+    const fh = el('b', '', c.name);
+    full.append(fh, more);
+    full.setAttribute('aria-hidden', 'true');
+    info.append(el('span', '', 'i'));
+    info.setAttribute('aria-label', `More about ${c.name}`);
+    info.setAttribute('aria-expanded', 'false');
+    info.addEventListener('click', (e) => {
+      e.stopPropagation(); sound.init(); sound.play('click');
+      const on = !w.classList.contains('full');
+      for (const o of row.querySelectorAll('.cw.full')) if (o !== w) { o.classList.remove('full'); o.querySelector('.cinfo')?.setAttribute('aria-expanded', 'false'); o.querySelector('.cfull')?.setAttribute('aria-hidden', 'true'); }
+      w.classList.toggle('full', on); info.setAttribute('aria-expanded', String(on)); full.setAttribute('aria-hidden', String(!on));
+    });
+    w.append(d, info, full);
     d.addEventListener('click', () => pickCard(i));
     d.addEventListener('mouseenter', () => sound.play('hover'));
-    row.appendChild(d);
+    row.appendChild(w);
   });
   cardAt = performance.now(); cardFree = false; cardArmed = false;
   setPaths(false);
@@ -1285,6 +1370,7 @@ function resetUi() {
   clearTimeout(endTimer); clearTimeout(tutorTimer);
   for (const id of ['prep', 'p-editor', 'e-editor']) show(id, false);
   $('toasts').textContent = ''; $('notes').textContent = ''; toastQ.length = 0; // (nothing of the last run is said in the next)
+  recUi?.clearPopups(); show('end-badges', false); show('cont', false);
   lastRx = performance.now(); squadTokens = 3;
   buildType = null; buildFac = null; selected = 0; selFac = 0; painting = false; facDir = 0; dragging = false; rotating = false; paused = false; speed = 1; acc = 0; cardKey = ''; ended = false;
   runKey = ''; runWon = false; tipHover = null; editorRun = false; selOre = null; overBoard = false; oreLit = '';
@@ -1305,6 +1391,7 @@ function bestLine() {
   return [wave ? `Best campaign: ${wave} waves held` : '', wins ? `${wins} ${wins === 1 ? 'win' : 'wins'}` : '', surv ? `Best survival: ${surv} waves held` : ''].filter(Boolean).join(' / ');
 }
 function startAttract() {
+  leaveRun();
   resetUi();
   if (setupStale) { setupStale = false; loadSetup(); }
   net?.close(); net = null; isClient = false;
@@ -1315,6 +1402,7 @@ function startAttract() {
   view.setSim(sim, 0); view.orbit = true;
   show('hud', false); show('menu');
   setText('best', bestLine());
+  refreshContinue();
 }
 /** Start camera: the whole board with its gates in view, turned the standard way. */
 function frameBoard() {
@@ -1330,12 +1418,14 @@ function frameBoard() {
     if (typeof f.dist === 'number' && Number.isFinite(f.dist)) c.dist = clamp(f.dist, 20, 84);
   }
 }
-function startGame(m: Mode, opts: { client?: boolean; seed?: number; demo?: boolean; map?: MapDef; diff?: string; survival?: boolean; editor?: boolean } = {}) {
+/** `restore`: a saved run (career.continueRun) to go on with instead of a new Sim; it is already tracked. */
+function startGame(m: Mode, opts: { client?: boolean; seed?: number; demo?: boolean; map?: MapDef; diff?: string; survival?: boolean; editor?: boolean; restore?: Sim } = {}) {
+  if (!opts.restore) leaveRun();
   resetUi();
   editorRun = !!opts.editor && m === 'solo';
   mode = m; isClient = !!opts.client; me = isClient ? 1 : 0;
   aimPref = opts.demo ? {} : { ...store.aim };
-  sim = new Sim({
+  sim = opts.restore ?? new Sim({
     mode: m, players: m === 'coop' ? 2 : 1, pauseOnCards: m === 'solo' && !opts.demo, seed: opts.seed ?? ((Math.random() * 2 ** 31) | 0),
     map: opts.map ?? choice.map, diff: opts.diff ?? choice.diff, survival: m === 'versus' ? false : opts.survival ?? choice.survival,
     // the scripted demo is played by the bot, which builds no factory
@@ -1343,8 +1433,17 @@ function startGame(m: Mode, opts: { client?: boolean; seed?: number; demo?: bool
   });
   // the player calls the waves: the first one always, the later ones unless Auto waves is switched on
   if (!opts.demo) { sim.holdFirst = true; sim.autoWaves = m !== 'solo' || settings.auto; }
+  // a continued run gets a full build-phase countdown before an automatic wave
+  if (opts.restore && sim.autoWaves) sim.nextWaveIn = Math.max(sim.nextWaveIn, NEXT_WAVE_IN);
   sim.replica = isClient;
   bot = opts.demo ? new Bot(sim, 0, 1.5) : null;
+  runAchs = [];
+  // a fresh run is tracked from here (career.ts leaves out the demo, co-op, versus and the editor's test plays)
+  if (!opts.restore && career) {
+    const def = opts.map ?? choice.map;
+    career.startRun(sim, { map: mapKeyOf(def), mapName: def.name, tier: def.tier || 0, ctx: { bot: !!bot, attract: editorRun } });
+  }
+  saveSig = sigOf(sim);
   view.setSim(sim, me); view.orbit = false;
   frameBoard();
   show('hud'); show('vs', m === 'versus');
@@ -1357,9 +1456,11 @@ function startGame(m: Mode, opts: { client?: boolean; seed?: number; demo?: bool
     runKey = REC_KEY.test(key) ? key : '';
   }
   if (!opts.demo) {
-    announce('Defend the Heart', m === 'coop' ? 'Co-op link is up' : m === 'versus' ? 'Outlast your rival'
+    if (opts.restore) announce('Run resumed', `${sim.map.def.name} / wave ${sim.wave + 1} next`);
+    else announce('Defend the Heart', m === 'coop' ? 'Co-op link is up' : m === 'versus' ? 'Outlast your rival'
       : `${sim.map.def.name} / ${sim.endless ? 'Survival' : `${sim.diff.name}, ${sim.winWave} waves`}`);
-    if (m === 'solo' && !editorRun && !store.tips.tutorial) startGuide();
+    if (opts.restore) { /* (a continued run never restarts the tutorial) */ }
+    else if (m === 'solo' && !editorRun && !store.tips.tutorial) startGuide();
     else setTimeout(() => {
       if (sim.wave === 0 && mode === m && !ended) toast('Towers start empty: build one beside a supply crate.');
     }, 1500);
@@ -1402,6 +1503,7 @@ function endGame(win: boolean, title?: string, sub?: string) {
   show('cards', false); show('tutor', false); show('prep', false);
   sound.play(win ? 'win' : 'lose'); sound.intense = 0;
   const saved = recordRun(win);
+  careerEnd(win);
   if (!win && sim.endless && !title) { title = 'Overrun'; sub = `You held the line for ${Math.max(0, sim.wave - 1)} waves.`; }
   const e = $('end');
   e.classList.toggle('win', win); e.classList.toggle('lose', !win);
@@ -1574,6 +1676,7 @@ function refreshSetup() {
     const t = recText(c.def);
     c.rec.textContent = t || 'No record yet'; c.rec.classList.toggle('none', !t);
   }
+  markSaves();
   const endless = choice.survival || (setupFor === 'lobby' && lobbyMode === 'versus');
   for (const c of $('setup-diff').children) { const sm = c.querySelector('small'), df = diffById((c as HTMLElement).dataset.v); if (sm) sm.textContent = endless ? 'no end' : `${df.waves} waves`; }
   if (gen) {
@@ -1641,6 +1744,8 @@ function openSetup(target: 'solo' | 'lobby') {
   setText('setup-go', target === 'solo' ? 'Start' : 'Use this map');
   refreshSetup();
   show('setup');
+  if (career && target === 'solo') { const c = career; void c.saves.list().then((l) => { saveIdx = new Map(l.map((m) => [m.key, m])); markSaves(); }); }
+  else saveIdx = new Map();
   // the chosen map is in view when the sheet opens; the grid scrolls inside its own box
   mapCards.find((c) => c.def === choice.map && !c.btn.classList.contains('hidden'))?.btn.scrollIntoView({ block: 'nearest' });
 }
@@ -1715,6 +1820,126 @@ function openEditorScreen() {
 }
 loadSetup();
 
+// ---------- saves, the run archive and achievements (career.ts holds them; records-ui.ts draws the screens) ----------
+// Only solo runs count (career.ts leaves out the demo, co-op, versus and the editor's test plays). A run saves itself between
+// waves (when one is cleared, right before the next starts, and while things get built in the build phase), never during
+// one. Leaving to the menu or reloading keeps the save; the menu then offers Continue. A win or a loss archives the run.
+const careerP: Promise<Career> = Career.open().catch(() => Career.open(memoryPlatform()));
+let recUi: ReturnType<typeof initRecordsUi> | null = null;
+/** achievements unlocked during the run going on (the end screen shows them) */
+let runAchs: AchDef[] = [];
+/** the save key the menu's Continue resumes ('' when there is no save) */
+let contKey = '';
+/** what the last save held, roughly: the build phase saves again when it changes */
+let saveSig = '', saveCheck = 0;
+const sigOf = (s: Sim) => `${s.wave}|${Math.floor(s.gold)}|${Math.floor(s.mats)}|${s.towers.length}|${s.towers.reduce((a, t) => a + t.id * 3 + t.lvl, 0)}|${s.factory.facs.reduce((a, f) => a + f.id * 7 + f.dir, 0)}|${s.level}`;
+/** The map a record or save key names: pre-made, generated ('gen-<tier>-<seed>') or one of the player's own. */
+function mapOfKey(k: string): MapDef | null {
+  const m = MAPS.find((d) => d.id === k);
+  if (m) return m;
+  const g = /^gen-([1-3])-(\d{1,9})$/.exec(k);
+  if (g) { try { return generateMap(+g[2], +g[1]); } catch { return null; } }
+  if (!k.startsWith('custom:')) return null;
+  return loadCustomMaps().find((d) => mapKeyOf(d) === k) || null;
+}
+async function initCareer() {
+  try { career = await careerP; } catch { career = null; return; }
+  const c = career;
+  // every save goes through here: the HUD shows a small tick when one is written
+  const put = c.saves.put.bind(c.saves);
+  c.saves.put = (s, o) => {
+    const p = put(s, o);
+    if (s === sim) saveSig = sigOf(s);
+    void p.then((m) => { if (m && s === sim && mode === 'solo' && !ended) recUi?.savedTick(); });
+    return p;
+  };
+  recUi = initRecordsUi({
+    career: c, mapOf: mapOfKey,
+    cardIcons: (id) => (Object.hasOwn(CARD_BY_ID, id) ? cardIcons(CARD_BY_ID[id]) : []),
+    sound: (name, g) => sound.play(name, g),
+  });
+  c.onUnlock((a) => {
+    if (mode === 'attract') return;
+    if (!runAchs.includes(a)) runAchs.push(a);
+    if (!ended) recUi?.popup(a);
+  });
+}
+/** After the run's steps each frame: feed the run's counters, and save the build phase again when something was built. */
+function careerFrame(evs: Ev[]) {
+  if (!career?.run) return;
+  career.frame(sim, evs);
+  const now = performance.now();
+  if (ended || paused || now - saveCheck < 2500) return;
+  saveCheck = now;
+  if (sim.planning && !sim.waveActive && sigOf(sim) !== saveSig) void career.save(sim);
+}
+/** Stop tracking the run going on without ending it (back to the menu, a new run): its save stays for Continue. */
+function leaveRun() {
+  const c = career;
+  if (!c?.run) return;
+  if (!ended) void c.save(sim);
+  c.run = null; c.key = '';
+}
+/** The run has ended (endGame): archive it, then put what it set and earned on the end screen. */
+function careerEnd(win: boolean) {
+  recUi?.clearPopups();
+  show('end-badges', false);
+  const c = career, t = c?.run;
+  if (!c || !t) { if (runAchs.length) recUi?.endBadges($('end-badges'), { rec: null, achs: runAchs }); return; }
+  const b = c.records.best(t.stats.map, t.stats.diff, t.stats.mode), prev: MapBest | undefined = b ? { ...b } : undefined;
+  void c.endRun(sim, win ? 'win' : 'loss').then((rec) => { if (ended) recUi?.endBadges($('end-badges'), { rec, prev, achs: runAchs }); });
+}
+/** The menu's Continue: the newest save, if there is one. */
+function refreshContinue() {
+  const c = career;
+  if (!c || !recUi) return;
+  void c.saves.flush().then(() => c.saves.last()).then((m) => {
+    if (c.saves.dropped.length) { note(c.saves.dropped.join(' ')); c.saves.dropped.length = 0; }
+    contKey = m && mode === 'attract' ? m.key : '';
+    recUi?.fillContinue($('m-continue'), contKey ? m : null);
+  });
+}
+/** Saves by key, for the marks on the setup screen's map cards (filled when the setup opens). */
+let saveIdx = new Map<string, SaveMeta>();
+function markSaves() {
+  for (const c of mapCards) {
+    c.btn.querySelector('.savemark')?.remove();
+    const m = career && saveIdx.get(career.keyFor(mapKeyOf(c.def), choice.diff, choice.survival));
+    if (m && recUi) c.btn.append(recUi.saveMark(m));
+  }
+}
+/**
+ * Start a solo run on a map, difficulty and mode, unless it has a save: then ask first (continue it, or start over, which
+ * archives the old run as given up). `from` is the sheet the question opens over; `fresh` starts the new run.
+ */
+function launchSolo(o: { map: MapDef; diff: string; survival: boolean }, from: string, fresh: () => void) {
+  const c = career;
+  if (!c || !recUi) { fresh(); return; }
+  const key = c.keyFor(mapKeyOf(o.map), o.diff, o.survival), ui = recUi;
+  void c.saves.flush().then(() => c.saves.get(key)).then((m) => {
+    if (!m || mode !== 'attract') { fresh(); return; }
+    ui.askContinue(m, {
+      resume: () => { show(from, false); void resumeSave(key); },
+      fresh: () => { void c.startOver(key).then(() => { show(from, false); fresh(); }); },
+      back: () => show(from),
+    });
+  });
+}
+/** Go on with a saved run. */
+async function resumeSave(key: string) {
+  const c = career;
+  if (!c) return;
+  leaveRun();
+  const r = await c.continueRun(key);
+  if ('error' in r) { note(`That save could not be loaded: ${r.error}.`); refreshContinue(); return; }
+  for (const id of ['menu', 'setup', 'cont', 'records', 'achs']) show(id, false);
+  const def = mapOfKey(r.meta.map) ?? r.sim.map.def;
+  // Play again after it plays the same map
+  choice.map = def; choice.diff = diffById(r.meta.diff).id; choice.survival = r.meta.mode === 'survival';
+  startGame('solo', { restore: r.sim, map: def, diff: choice.diff, survival: choice.survival });
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden && career?.run && !ended && mode === 'solo') void career.save(sim); });
+
 // ---------- music sheet (the playlist UI itself is built by the music module) ----------
 const music = initMusic({
   root: $('music-root'),
@@ -1739,12 +1964,19 @@ const click = (id: string, fn: () => void) => $(id).addEventListener('click', ()
 let helpFrom = 'menu', setFrom = 'menu';
 click('m-solo', () => openSetup('solo'));
 // the tutorial from the menu: the first map on the easiest setting, with the guide switched back on
-click('m-tutorial', () => { store.tips.tutorial = false; save(); show('menu', false); startGame('solo', { map: MAPS[0], diff: 'easy', survival: false }); });
+click('m-tutorial', () => launchSolo({ map: MAPS[0], diff: 'easy', survival: false }, 'menu', () => { store.tips.tutorial = false; save(); show('menu', false); startGame('solo', { map: MAPS[0], diff: 'easy', survival: false }); }));
+click('m-records', () => { if (!recUi) return; show('menu', false); recUi.openRecords(() => show('menu')); });
+click('m-achs', () => { if (!recUi) return; show('menu', false); recUi.openAchievements(() => show('menu')); });
+click('m-continue', () => { if (contKey) void resumeSave(contKey); });
 click('m-editor', () => openEditorScreen());
 click('l-change', () => openSetup('lobby'));
 click('setup-back', () => { show('setup', false); show(setupFor === 'solo' ? 'menu' : 'lobby'); });
 click('setup-editor', () => openEditorScreen());
-click('setup-go', () => { saveSetup(); show('setup', false); if (setupFor === 'solo') startGame('solo'); else { show('lobby'); lobbyChoice(); } });
+click('setup-go', () => {
+  saveSetup();
+  if (setupFor === 'solo') launchSolo({ map: choice.map, diff: choice.diff, survival: choice.survival }, 'setup', () => { show('setup', false); startGame('solo'); });
+  else { show('setup', false); show('lobby'); lobbyChoice(); }
+});
 click('m-coop', () => openLobby('coop'));
 click('m-versus', () => openLobby('versus'));
 click('m-help', () => { helpFrom = 'menu'; show('menu', false); buildHelp(); show('help'); });
@@ -1766,6 +1998,7 @@ click('m-load', () => loadFrom('menu'));
 // A test play goes straight back to the editor. The draft is still there: the editor keeps it between visits.
 /** The How to play sheet's tables: the six targeting modes, what each tower runs on, and how each resource is made. Built from the game's tables each time the sheet opens (the diagrams follow the window's width). */
 function buildHelp() {
+  void import('./help.ts').then((m) => m.buildGuide()); // the guide's pictures (help.ts, loaded on first open)
   const aim = $('help-aim'); aim.textContent = '';
   buildPaths($('help-paths'), mode !== 'attract');
   for (const m of TARGET_MODES) { const r = el('div', 'ha'); r.append(ic(`aim_${m}`, { size: 20 }), el('b', '', TARGET_INFO[m].name), el('span', '', TARGET_INFO[m].desc)); aim.append(r); }
@@ -1804,7 +2037,7 @@ click('p-editor', backToEditor);
 click('e-editor', backToEditor);
 click('e-again', () => { if (mode === 'solo') startGame('solo', { editor: editorRun }); else { const m = mode === 'versus' ? 'versus' : 'coop'; sound.stopMusic(); startAttract(); openLobby(m); } });
 click('e-menu', () => { sound.stopMusic(); startAttract(); });
-click('e-endless', () => { sim.over = false; sim.won = false; sim.endless = true; sim.nextWaveIn = 5; ended = false; show('end', false); toast('No last wave from here on. How far can you go?'); });
+click('e-endless', () => { runAchs = []; sim.over = false; sim.won = false; sim.endless = true; sim.nextWaveIn = 5; ended = false; show('end', false); toast('No last wave from here on. How far can you go?'); });
 // A HUD button must not keep the keyboard focus, or Space (the special key) would press it again.
 $('hud').addEventListener('click', () => { const a = document.activeElement; if (a instanceof HTMLButtonElement) a.blur(); });
 // The pause and speed chips act on press (wired up by the touch module), so a second finger reaches them too.
@@ -1889,7 +2122,9 @@ function gpuName(): string {
 }
 /** A report's state continues as a solo run here, paused, with nothing recorded. */
 function loadRun(s: Sim, note: string) {
+  leaveRun();
   resetUi();
+  runAchs = []; // (a loaded report is not tracked: the end screen must not show the last run's medals)
   net?.close(); net = null; isClient = false; me = 0; bot = null;
   mode = 'solo';
   aimPref = { ...store.aim };
@@ -1920,7 +2155,8 @@ initReport({
 if (DEBUG) (window as unknown as Record<string, unknown>).__report = reportHooks;
 /** Escape on a sheet that has a way back: take it. Returns false when no such sheet is open. */
 function escBack(): boolean {
-  const open = ([['help', 'h-back'], ['settings', 's-back'], ['music', 'mu-back'], ['setup', 'setup-back'], ['lobby', 'l-back']] as const).find(([id]) => shown(id));
+  // (the dialog over the setup first: it is the sheet on top)
+  const open = ([['cont', 'cont-back'], ['achs', 'ach-back'], ['records', 'rec-back'], ['help', 'h-back'], ['settings', 's-back'], ['music', 'mu-back'], ['setup', 'setup-back'], ['lobby', 'l-back']] as const).find(([id]) => shown(id));
   if (open) $(open[1]).click();
   return !!open;
 }
@@ -1967,12 +2203,12 @@ $<HTMLInputElement>('fx-custom').addEventListener('input', (e) => {
 });
 
 // reset progress, with a second step instead of a browser dialog
-const RESET_IDLE = 'Records, last run setup, targeting defaults and tips are saved in this browser.';
+const RESET_IDLE = 'Records, saved runs, achievements, last run setup, targeting defaults and tips are saved in this browser.';
 function resetStep(asking: boolean, text = RESET_IDLE) {
   show('s-reset', !asking); show('s-reset-yes', asking); show('s-reset-no', asking);
   $('reset-text').textContent = text;
 }
-click('s-reset', () => resetStep(true, 'Delete all records, the last run setup, the targeting defaults and the tips? Sound and effects settings stay.'));
+click('s-reset', () => resetStep(true, 'Delete all records, saved runs, the run archive, achievements, the last run setup, the targeting defaults and the tips? Sound and effects settings stay.'));
 click('s-reset-no', () => resetStep(false));
 click('s-reset-yes', () => {
   store.records = {}; store.tips = { node: false, boss: false, mite: false, titan: false, factory: false, dry: false, tutorial: false }; store.setup = defaultSetup(); store.aim = {};
@@ -1980,6 +2216,12 @@ click('s-reset-yes', () => {
   // a run in progress keeps its own choice; the defaults are loaded when it goes back to the menu
   if (mode === 'attract') loadSetup(); else setupStale = true;
   setText('best', bestLine());
+  if (career) {
+    const c = career;
+    // (the run going on, if any, keeps going untracked)
+    c.run = null; c.key = '';
+    void Promise.all([c.saves.clearAll(), c.records.clear(), c.achievements.reset()]).then(() => refreshContinue());
+  }
   resetStep(false, 'Progress deleted.');
 });
 function openSettings() { syncFxUi(); resetStep(false); show('settings'); }
@@ -2856,6 +3098,7 @@ function endGuide(skipped: boolean) {
   guide.on = false;
   show('guide', false);
   store.tips.tutorial = true; save();
+  if (!skipped) void career?.flag('tutorial');
   if (skipped) note('Tutorial skipped. You can replay it from How to play.');
 }
 /** The tile markers of the current step (none while the guide is off or the step is waiting for its moment). */
@@ -3030,6 +3273,7 @@ function diagBad(key: string, d: Diag): boolean {
 }
 /** Only "nothing takes its output": a softer marker than a missing input. */
 const onlyTaker = (d: Diag) => d.missing.every((m) => m.startsWith('a taker'));
+const bpoOf: { sim: Sim | null; n: number; list: TowerType[] } = { sim: null, n: -1, list: [] };
 function updateHud() {
   setText('wave', String(sim.wave));
   setText('wave-sub', sim.campaign ? '/ ' + sim.winWave : '');
@@ -3084,12 +3328,15 @@ function updateHud() {
   if (cache.rings !== rk) { cache.rings = rk; const rb = $('btn-rings'); rb.classList.toggle('on', settings.rings); rb.setAttribute('aria-pressed', rk); }
   if (cache.auto !== ak) { cache.auto = ak; const ab = $('btn-auto'); ab.textContent = settings.auto ? 'Auto waves: on' : 'Auto waves: off'; ab.setAttribute('aria-pressed', ak); }
   // (the buttons are only touched when their state or price changes: nothing is written to the DOM on a frame where none did)
+  // (the blueprints that can come up next change only with the unlocks: worked out again only then, not every frame)
+  if (bpoOf.sim !== sim || bpoOf.n !== sim.unlocked.size) { bpoOf.sim = sim; bpoOf.n = sim.unlocked.size; bpoOf.list = bpoOf.n < TOWER_TYPES.length ? sim.bpOpen() : []; }
+  const bpo = bpoOf.list;
   for (const t of TOWER_TYPES) {
     const b = buildBtns[t], locked = !sim.unlocked.has(t), cost = sim.cost(t), mt = sim.matCost(t);
-    const poor = !locked && (sim.gold < cost || sim.mats < mt), st = (locked ? 1 : 0) | (poor ? 2 : 0) | (buildType === t ? 4 : 0);
+    const poor = !locked && (sim.gold < cost || sim.mats < mt), soon = locked && bpo.includes(t), st = (locked ? 1 : 0) | (poor ? 2 : 0) | (buildType === t ? 4 : 0) | (soon ? 8 : 0);
     const was = btnState.get(b);
-    if (!was || was.st !== st) { b.classList.toggle('locked', locked); b.classList.toggle('poor', poor); b.classList.toggle('sel', buildType === t); }
-    if (!was || was.cost !== cost || was.mt !== mt) { const c = btnCost.get(b)!; c.textContent = String(cost); if (mt) { const m = el('span', 'm'); m.append(ic('mats', { size: 13 }), String(mt)); c.append(m); } }
+    if (!was || was.st !== st) { b.classList.toggle('locked', locked); b.classList.toggle('poor', poor); b.classList.toggle('sel', buildType === t); b.classList.toggle('soon', soon); }
+    if (!was || was.cost !== cost || was.mt !== mt) { const c = btnCost.get(b)!; const cr = el('span', 'cr'); cr.append(ic('credits', { size: 12 }), el('b', '', String(cost))); c.replaceChildren(cr); if (mt) { const m = el('span', 'm'); m.append(ic('mats', { size: 12 }), el('b', '', String(mt))); c.append(m); } }
     if (!was) btnState.set(b, { st, cost, mt }); else { was.st = st; was.cost = cost; was.mt = mt; }
   }
   // the factory bar shows every building from the start: a locked one is hatched like a locked tower and names its card
@@ -3100,7 +3347,7 @@ function updateHud() {
       b.classList.toggle('locked', locked); b.classList.toggle('poor', poor); b.classList.toggle('sel', buildFac === t);
       if (!was || (was.st & 1) !== (st & 1)) { const lk = FAC_CARD[t]; b.title = locked && lk ? `Locked: ${CARD_BY_ID[lk].name} card` : ''; }
     }
-    if (!was || was.cost !== cost) { const c = btnCost.get(b)!, txt = String(cost); if (c.textContent !== txt) c.textContent = txt; }
+    if (!was || was.cost !== cost) { const cr = el('span', 'cr'); cr.append(ic('credits', { size: 12 }), el('b', '', String(cost))); btnCost.get(b)!.replaceChildren(cr); }
     if (!was) btnState.set(b, { st, cost, mt: 0 }); else { was.st = st; was.cost = cost; }
   }
   // tooltip: the building under the pointer, else the one picked for building (touch has no hover). While the mouse
@@ -3990,7 +4237,7 @@ function frame(dt: number) {
     acc += dt * (mode === 'attract' ? 1.4 : speed) * titanSlow();
     let n = 0;
     const cap = dt > 0.2 ? 70 : 10; // a hidden tab is stepped in big chunks so a multiplayer match keeps running
-    while (acc >= STEP && n < cap) { bot?.step(STEP); if (!isClient) sim.step(STEP); acc -= STEP; n++; }
+    while (acc >= STEP && n < cap) { bot?.step(STEP); if (!isClient) { career?.beforeStep(sim, STEP); sim.step(STEP); } acc -= STEP; n++; }
     if (n === cap) acc = 0;
     squadT += dt; if (squadT > 1.5) { squadT = 0; squadTokens = Math.min(3, squadTokens + 1); }
     if (isClient) for (const p of sim.projs) { p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; }
@@ -4042,7 +4289,7 @@ function frame(dt: number) {
   }
 
   const evs = sim.events.splice(0);
-  if (mode !== 'attract') logEvents(evs, sim.time);
+  if (mode !== 'attract') { logEvents(evs, sim.time); careerFrame(evs); }
   handleEvents(evs);
   if (mode !== 'attract') {
     updateHud();
@@ -4108,6 +4355,7 @@ function frame(dt: number) {
     };
     return;
   }
+  await initCareer();
   startAttract();
   if (params.get('mode') === 'solo') startGame('solo');
   // back from the Spotify sign-in: show the Music sheet again, where the connection is
@@ -4115,6 +4363,8 @@ function frame(dt: number) {
   if (import.meta.env.DEV) {
     (window as unknown as Record<string, unknown>).__dbg = {
       get sim() { return sim; }, view, act, startGame, sound, diag, zoomS, touch: touchApi, music,
+      /** saves, the run archive and achievements */
+      get career() { return career; },
       /** the tutorial: its step and the turret / mine / belt chain it points at */
       get guide() { return { on: guide.on, i: guide.i, n: GUIDE.length, title: guide.on ? GUIDE[guide.i].title : '', text: guide.on ? GUIDE[guide.i].text() : '', lines: guide.on ? guideLines() : [], first: guide.on ? firstTurret() : null, belt: guide.on && sim.facs.has('belt') ? beltPlan() : null, marks: guidePoints(), cam: guideCam.on, fold: $('guide').classList.contains('fold') }; },
       /** fire a tower's special as a right-click on it does */

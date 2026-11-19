@@ -133,24 +133,6 @@ body:has(#editor:not(.hidden)) #btn-full { display: none; }
 
 #bottom { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 16px; min-height: var(--console-h); padding: 8px calc(12px + var(--safe-r)) calc(8px + var(--safe-b)) calc(12px + var(--safe-l)); background: rgba(16, 14, 12, 0.95); border-top: 1px solid var(--line-2); pointer-events: auto; }
 #bottom::before { content: ''; position: absolute; left: 0; right: 0; top: -5px; height: 4px; background: repeating-linear-gradient(90deg, var(--line-2) 0 1px, transparent 1px 16px); pointer-events: none; }
-#build { display: flex; gap: 4px; flex: 0 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain; }
-#build::-webkit-scrollbar { display: none; }
-.tw { --c: var(--sand); position: relative; flex: none; display: grid; grid-template-columns: 1fr auto; grid-template-rows: 16px 24px 16px; row-gap: 3px; align-items: center; width: clamp(59px, 4.6vw, 76px); padding: 6px 5px 5px 6px; text-align: left; font-family: var(--display); color: var(--bone); background: var(--soot-2); border: 1px solid var(--line); border-top: 3px solid var(--c); border-radius: var(--r); cursor: pointer; transition: background-color 0.1s, border-color 0.1s; }
-.tw:hover { background: var(--soot-3); border-color: var(--line-2); border-top-color: var(--c); }
-.tw.sel { background: var(--sand); border-color: var(--sand); color: var(--ink); }
-.tw kbd { grid-area: 1 / 1; justify-self: start; margin: 0; min-width: 16px; padding: 0 3px; font-size: 10px; line-height: 13px; border-bottom-width: 1px; text-transform: uppercase; }
-.tw .ico { grid-area: 1 / 2; width: 10px; height: 10px; border-radius: 50%; background: var(--c); box-shadow: 0 0 0 2px var(--soot-0); }
-.tw .nm { grid-area: 2 / 1 / 3 / 3; align-self: center; font-size: 12px; font-weight: 600; line-height: 1; letter-spacing: 0.03em; text-transform: uppercase; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.tw .cost { grid-area: 3 / 1 / 4 / 3; font-size: 15px; font-weight: 600; line-height: 1; color: var(--sand); font-variant-numeric: tabular-nums; }
-.tw.sel .cost { color: var(--ink); }
-.tw.sel kbd { color: var(--sand); }
-.tw.poor .nm { color: var(--muted); }
-.tw.poor .cost { color: var(--rust); }
-.tw.locked { cursor: not-allowed; border-top-color: var(--soot-4); background: repeating-linear-gradient(135deg, var(--soot-1) 0 6px, var(--soot-2) 6px 12px); }
-.tw.locked .nm { color: #b0a696; }
-.tw.locked .ico { background: var(--soot-4); }
-.tw.locked .cost { font-size: 0; }
-.tw.locked .cost::after { content: 'Locked'; font-family: var(--mono); font-size: 9px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
 
 @keyframes lit { to { box-shadow: inset 0 0 0 1px var(--verdigris), 0 0 26px rgba(111, 224, 200, 0.8); } }
 #btn-wave { flex: none; flex-direction: column; gap: 4px; min-width: 138px; min-height: 52px; padding: 0 14px; font-size: 17px; }
@@ -321,25 +303,6 @@ a.foot { align-self: flex-start; padding: 6px 0; }
 .sheet.centre { justify-items: center; text-align: center; }
 .sheet.centre .sheet-head { justify-items: center; width: 100%; }
 .sheet.centre .sheet-head::after { right: calc(50% - 48px); }
-#card-row { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; perspective: 900px; }
-.card { --rc: var(--sand); position: relative; display: grid; grid-template-rows: auto auto auto 1fr auto auto; justify-items: start; align-content: start; width: 236px; min-height: 304px; padding: 18px 18px 0; text-align: left; cursor: pointer; color: var(--bone); font-family: var(--body); font-size: 15px; background: var(--soot-2); border: 1px solid var(--line-2); border-top: 5px solid var(--rc); border-radius: var(--r); box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.4); transition: transform 0.12s, border-color 0.12s, background-color 0.12s; animation: cardin 0.32s backwards; }
-.card:nth-child(2) { animation-delay: 0.06s; } .card:nth-child(3) { animation-delay: 0.12s; }
-@keyframes cardin { from { opacity: 0; transform: translateY(26px); } }
-.card:hover, .card:focus-visible { transform: translate(-3px, -6px); background: var(--soot-3); border-color: var(--rc); }
-.card:active { transform: none; }
-.card .ci { width: 62px; height: 62px; margin: 2px 0 16px; display: grid; place-items: center; font-size: 30px; line-height: 1; color: var(--rc); border: 1.5px solid var(--rc); border-radius: 50%; box-shadow: inset 0 0 0 4px var(--soot-2), inset 0 0 0 5px color-mix(in srgb, var(--rc) 40%, transparent); }
-.card .rar { font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rc); }
-.card h4 { margin: 5px 0 8px; font-family: var(--display); font-size: 26px; font-weight: 600; line-height: 1; letter-spacing: 0.04em; text-transform: uppercase; color: var(--sand); }
-.card p { font-size: 15px; line-height: 1.35; color: var(--bone); padding-bottom: 14px; }
-/* the stack track: rank text over one pip per rank, held ones filled, this card's rank lit */
-.card .stk { align-self: end; justify-self: stretch; display: grid; gap: 7px; padding: 11px 0 13px; border-top: 1px dashed var(--line-2); font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
-.card .pips { display: flex; gap: 4px; }
-.card .pips i { flex: 1; height: 7px; background: var(--soot-1); border: 1px solid var(--line-2); border-radius: 1px; transform: skewX(-18deg); }
-.card .pips i.on { background: color-mix(in srgb, var(--rc) 45%, var(--soot-1)); border-color: color-mix(in srgb, var(--rc) 60%, transparent); }
-.card .pips i.nx { background: var(--rc); border-color: var(--rc); box-shadow: 0 0 10px color-mix(in srgb, var(--rc) 70%, transparent); animation: pipnx 1.1s ease-in-out infinite alternate; }
-@keyframes pipnx { from { opacity: 0.55; } to { opacity: 1; } }
-.card .kind { align-self: end; justify-self: stretch; margin: 0 -18px; padding: 9px 18px 10px; font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; color: var(--tc, var(--muted)); background: var(--soot-1); border-top: 1px solid var(--line); }
-.card kbd { position: absolute; top: 14px; right: 14px; font-size: 12px; }
 /* a fresh offer cannot be picked for a moment, so a click or key meant for the fight does not take a card unread */
 #card-guard { width: min(220px, 60%); height: 4px; margin-top: 6px; }
 #card-guard i { width: 100%; transform-origin: left center; background: var(--apricot); }
@@ -442,7 +405,6 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
 #gen-dice svg { display: block; width: 18px; height: 18px; fill: currentColor; }
 
 /* ---------- responsive ---------- */
-@media (max-width: 1440px) { .tw .nm { font-size: 11px; letter-spacing: 0; } }
 @media (max-width: 1100px) {
   .stat { min-width: 66px; padding-inline: 10px; }
   .stat.wide { min-width: 120px; }
@@ -456,7 +418,6 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
   #gen-cv { width: 100%; height: auto; }
   #gen-side { max-height: none; }
   #setup { --pick-h: clamp(150px, calc(100vh - 600px), 400px); }
-  .tw { width: 58px; }
     #btn-wave { padding: 0 12px; }
   .lobby-cols, .help-grid { grid-template-columns: 1fr; }
   .field { grid-template-columns: 1fr; gap: 6px; }
@@ -473,9 +434,6 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
   .stat label { font-size: 9px; }
   .stat.wide .bar { margin-top: 9px; }
   #bottom { padding-block: 6px; gap: 10px; }
-  .tw { grid-template-rows: 12px 22px 14px; row-gap: 2px; padding: 4px 5px 4px 6px; }
-  .tw .nm { font-size: 10.5px; letter-spacing: 0; }
-  .tw .cost { font-size: 14px; }
   #btn-wave { min-height: 48px; }
   #ult-label { font-size: 10px; letter-spacing: 0.08em; }
     .menu-buttons.row { position: sticky; bottom: -14px; z-index: 2; padding-bottom: 10px; margin-bottom: -10px; background: var(--soot-0); }
@@ -530,15 +488,6 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
   .help-grid .panel p { font-size: 13px; line-height: 1.4; }
   .lobby-cols { grid-template-columns: 1fr 1fr; }
   .lobby-cols .panel { min-height: 0; }
-  .card { width: 204px; min-height: 0; padding-top: 12px; grid-template-columns: auto 1fr; column-gap: 12px; }
-  .card .ci { grid-row: 1 / 3; width: 46px; height: 46px; margin: 0 0 8px; font-size: 22px; }
-  .card .rar { align-self: end; }
-  .card h4 { font-size: 18px; margin: 2px 0 0; align-self: start; overflow-wrap: anywhere; }
-  .card p { grid-column: 1 / -1; font-size: 14px; padding-bottom: 10px; }
-  .card .kind { grid-column: 1 / -1; padding-block: 7px; }
-  .card .stk { grid-column: 1 / -1; gap: 5px; padding: 7px 0 9px; }
-  .card kbd { display: none; }
-  #card-row { gap: 12px; flex-wrap: nowrap; }
   #end-stats span, #end-stats b { padding: 4px 0; }
   .sheet.narrow { width: min(100%, 520px); }
   #hero-time { bottom: 92px; }
@@ -564,7 +513,6 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
   #btn-speed { margin-left: auto; }
   /* (the build bar gets the full width; Auto waves and Call wave go on a row under it) */
   #bottom { flex-wrap: wrap; gap: 8px; }
-  #buildwrap { flex: 1 1 100%; }
   #btn-auto { margin-left: auto; }
   body.has-full #btn-pause { margin-right: 48px; }
   #top .chip { min-width: 40px; padding: 0 8px; }
@@ -577,14 +525,10 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
 }
 /* fingers: bigger targets, no keyboard hints on things you tap */
 @media (max-width: 700px) { .stat.next { display: none; } }
-/* the build bar scrolls sideways when it does not fit: fade its right edge as a cue */
-@media (max-width: 1000px) { #build { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 22px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 22px), transparent); padding-right: 14px; } }
 @media (pointer: coarse) {
   .btn.small, .chip, .menu-buttons.row .btn.small { min-height: 44px; }
   #top .chip { min-height: 44px; min-width: 48px; }
   .seg .chip { min-height: 44px; }
-  .tw kbd { visibility: hidden; }
-  .tw { min-height: 56px; }
   .settings input[type='range'] { height: 44px; }
   .settings select { height: 44px; }
 }
@@ -595,14 +539,6 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
 }
 
 /* ---------- the factory ---------- */
-#buildwrap { display: flex; flex-direction: column; gap: 4px; flex: 0 1 auto; min-width: 0; pointer-events: auto; }
-#bar-tabs { display: flex; gap: 4px; }
-#bar-tabs .chip { min-height: 22px; padding: 0 10px; font-size: 11px; }
-#bar-tabs .chip.on { color: var(--ink); background: var(--sand); border-color: var(--sand); }
-#fbuild { display: flex; gap: 4px; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain; }
-#fbuild::-webkit-scrollbar { display: none; }
-#fbuild.hidden, #build.hidden { display: none; }
-.tw.fac .ico { border-radius: 2px; }
 #btn-auto { margin-left: auto; flex: none; min-height: 30px; padding: 0 10px; font-size: 11px; white-space: nowrap; }
 #btn-auto[aria-pressed="true"] { color: var(--ink); background: var(--sand); border-color: var(--sand); }
 .stat.power b.sm { font-size: 15px; }
@@ -653,15 +589,9 @@ body.touch .help-grid .panel p.lead { margin-top: 0; padding-top: 0; border-top:
 #o-pick { margin: 0; padding: 6px 10px 6px 9px; font-family: var(--display); font-size: 15px; font-weight: 600; line-height: 1.2; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink); background: var(--apricot); border-radius: var(--r); cursor: pointer; }
 #o-pick.locked { cursor: default; color: var(--bone); background: repeating-linear-gradient(135deg, var(--soot-2) 0 6px, var(--soot-3) 6px 12px); border: 1px dashed var(--sand-dim); text-transform: none; font-size: 14px; letter-spacing: 0.02em; }
 /* the deposit cue on the Factory bar: an apricot frame that breathes and a marching top rule (a locked building shows anyway, hatched) */
-.tw.fac.cue { border-color: var(--apricot); border-top-color: var(--apricot); background: linear-gradient(0deg, rgb(246 139 86 / 0.3), rgb(246 139 86 / 0.04) 75%), var(--soot-2); animation: cue 0.55s ease-in-out infinite alternate; }
-.tw.fac.cue::after { content: ''; position: absolute; left: -1px; right: -1px; top: -3px; height: 3px; background: repeating-linear-gradient(90deg, var(--apricot-hi) 0 6px, var(--ink) 6px 9px); animation: march 0.5s linear infinite; pointer-events: none; }
-.tw.fac.cue .nm { color: var(--bone); }
-.tw.fac.locked.cue { display: grid; border-color: var(--sand-dim); border-style: dashed; background: repeating-linear-gradient(135deg, var(--soot-1) 0 6px, var(--soot-3) 6px 12px); animation-name: cue-locked; }
-.tw.fac.locked.cue::after { background: repeating-linear-gradient(90deg, var(--sand-dim) 0 6px, var(--soot-0) 6px 9px); }
 @keyframes cue { from { box-shadow: inset 0 0 0 1px var(--apricot); } to { box-shadow: inset 0 0 0 3px var(--apricot-hi); } }
 @keyframes cue-locked { from { box-shadow: inset 0 0 0 1px rgb(169 163 115 / 0.4); } to { box-shadow: inset 0 0 0 2px var(--sand-dim); } }
 @keyframes march { from { background-position-x: 0; } to { background-position-x: 9px; } }
-@media (prefers-reduced-motion: reduce) { .tw.fac.cue, .tw.fac.cue::after { animation: none; } .tw.fac.cue { box-shadow: inset 0 0 0 2px var(--apricot); } }
 #hud:has(#opanel.left:not(.hidden)) #tip { left: calc(294px + var(--safe-l)); }
 /* (no lift on touch: the panel closes as soon as a tool is picked, so the Turn button never shares its corner) */
 #opanel { max-height: calc(100dvh - var(--dock-h) - var(--top-h) - 30px); overflow-y: auto; overscroll-behavior: contain; }
@@ -793,29 +723,6 @@ body.planning #vignette { box-shadow: inset 0 0 0 2px rgba(143, 208, 255, 0.22),
 @media (max-height: 480px) { .stat.ics > svg { width: 16px; height: 16px; } }
 @media (max-width: 600px) and (orientation: portrait) { .stat.ics > svg { width: 14px; height: 14px; } .stat.ics { column-gap: 3px; } }
 
-/* the build bar: the tower's or building's own sign, and under the price what it has to be fed (a building: what it makes, and on the right the power it draws) */
-.tw { grid-template-rows: 18px 24px 16px 19px; --ic-bg: var(--soot-2); }
-.tw .twi { grid-area: 1 / 2; justify-self: end; }
-.tw .need { grid-area: 4 / 1 / 5 / 3; display: flex; align-items: center; gap: 3px; min-width: 0; height: 19px; padding-top: 3px; border-top: 1px solid var(--line); overflow: hidden; }
-.tw .need .pw { display: inline-flex; align-items: center; font-family: var(--mono); font-size: 10.5px; font-weight: 500; line-height: 1; color: #a6e070; }
-.tw.fac .need .pw:not(.draw) { margin-left: -2px; }
-.tw .need .draw { margin-left: auto; opacity: 0.8; }
-.tw .cost .m { display: inline-flex; align-items: center; gap: 1px; margin-left: 5px; font-size: 13px; color: var(--bone); vertical-align: 1px; }
-.tw.poor .cost .m { color: var(--rust); }
-.tw.sel { --ic-bg: var(--sand); }
-.tw.sel .need { border-top-color: rgba(26, 15, 8, 0.28); }
-.tw.sel .need .pw, .tw.sel .cost .m { color: var(--ink); }
-.tw.sel .need svg, .tw.sel .twi { filter: drop-shadow(0 0 0.6px rgba(26, 15, 8, 0.9)) drop-shadow(0 1px 0 rgba(26, 15, 8, 0.55)); }
-.tw.locked { --ic-bg: var(--soot-1); }
-.tw.locked .twi, .tw.locked .need { opacity: 0.4; filter: saturate(0.15); }
-.tw.locked .cost .m { display: none; }
-@media (max-height: 480px) {
-  .tw { grid-template-rows: 15px 21px 13px 17px; }
-  .tw .twi { width: 15px; height: 15px; }
-  .tw .need { height: 17px; padding-top: 2px; }
-  .tw .need svg { width: 13px; height: 13px; }
-}
-
 /* the tooltip of a bar button: words, then the chips and the chain */
 #tip { width: max-content; max-width: min(640px, calc(100vw - 24px)); --ic-bg: var(--soot-1); background: var(--soot-1); box-shadow: 0 10px 26px rgb(0 0 0 / 0.45); }
 #tip > b { display: flex; align-items: center; gap: 8px; }
@@ -886,16 +793,6 @@ body.planning #vignette { box-shadow: inset 0 0 0 2px rgba(143, 208, 255, 0.22),
 #oretip .rr .rl, #oretip .rr .ra { color: var(--sand-dim); }
 #oretip b svg, #opanel .ore-name svg { flex: none; }
 
-/* level-up cards: what a blueprint's tower will ask of the factory */
-.card { --ic-bg: var(--soot-2); }
-.card .cbody { justify-self: stretch; display: grid; align-content: start; gap: 8px; padding-bottom: 14px; }
-.card .cbody p { padding-bottom: 0; }
-.card .cbody .rr { gap: 3px 4px; }
-.card .ci svg { display: block; }
-@media (max-height: 480px) {
-  .card .cbody { grid-column: 1 / -1; gap: 5px; padding-bottom: 9px; }
-  .card .ci svg { width: 28px; height: 28px; }
-}
 
 /* the tutorial card and the How to play sheet */
 #guide-ic { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
@@ -923,11 +820,8 @@ body.planning #vignette { box-shadow: inset 0 0 0 2px rgba(143, 208, 255, 0.22),
   .help-recipes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ha { grid-template-columns: 20px 64px minmax(0, 1fr); gap: 5px; } .ha b { font-size: 13px; } .ha span { font-size: 11.5px; }
 }
-.tw { width: clamp(64px, 5vw, 78px); }
-.tw .cost { display: flex; align-items: baseline; white-space: nowrap; }
 #tip { z-index: 5; }
 #tip .ic-d-cap i { display: inline; margin: 0; padding: 0; border: 0; font-size: 10px; color: var(--muted); }
-@media (max-width: 900px) { .tw { width: 62px; } }
 /* the tower panel holds more now: a little wider, never taller than the board's clear height, and tighter on a low window */
 #tower { width: 272px; max-height: calc(100dvh - var(--dock-h) - var(--top-h) - 30px); overflow-y: auto; overscroll-behavior: contain; }
 @media (max-height: 820px) and (min-height: 481px) {
@@ -986,9 +880,6 @@ body.planning #vignette { box-shadow: inset 0 0 0 2px rgba(143, 208, 255, 0.22),
   #t-sup { padding-top: 5px; margin-bottom: 5px; }
   #t-spec { padding-top: 5px; margin-bottom: 5px; }
 }
-.tw.sel .cost .m svg { filter: brightness(0.12); }
-.tw.sel .need .pw svg { filter: brightness(0.3) saturate(1.6); }
-@media (max-height: 480px) { .card .cbody .rr.wrap { display: none; } }
 #guide #guide-ic .ic-chip > b { padding: 0; letter-spacing: 0; line-height: 1; }
 #t-name { white-space: nowrap; }
 #t-aim-now span { display: none; }
@@ -1074,12 +965,7 @@ body.planning #vignette { box-shadow: inset 0 0 0 2px rgba(143, 208, 255, 0.22),
   .cards-foot { margin-top: 8px; }
   #cards-paths { min-height: 30px; font-size: 12px; }
   #cards-paths kbd { display: none; }
-  .card .cbody .rr.unlock .cchip { font-size: 9.5px; min-height: 19px; }
 }
-/* the Factory bar holds all sixteen buildings from the start: a little narrower, so they fit a laptop screen without scrolling */
-.tw.fac { width: clamp(56px, 4.1vw, 76px); }
-.tw kbd:empty { visibility: hidden; }
-@media (max-width: 1500px) { #fbuild { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 18px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 18px), transparent); padding-right: 12px; } }
 @media (max-height: 480px) { #t-next p.muted { display: none; } #f-arm p { display: none; } }
 
 /* ---------- less on screen (issue #1): the wave button speaks for the build phase, toasts queue, the tutorial is one line ---------- */
@@ -1200,3 +1086,252 @@ img.thumb.sm { width: 46px; height: 46px; }
   #tower:not(.big) #t-spec, #tower:not(.big) img.thumb.sm { display: none !important; }
   #tower:not(.big) h3 { margin-bottom: 4px; }
 }
+
+/* ---------- the build bar: picture cards ----------
+   Each tower or building is its own render (public/media/sm) cropped onto a card: its colour as the top rule, the key in a
+   corner badge, what it runs on (or makes) as a tiny row of icons, the price as a chip at the foot, the name as a caption
+   where there is room (the tooltip says it everywhere). Locked: greyed under a veil with a padlock (lit apricot when its
+   blueprint can come next). The picked card glows. The bar scrolls sideways when it does not fit (wheel or swipe, snapping). */
+#buildwrap { --tw: clamp(70px, 5.6vw, 104px); --th: calc(var(--tw) * 1.2); display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; pointer-events: auto; }
+#bar-tabs { display: flex; flex-direction: column; gap: 4px; flex: none; height: var(--th); }
+#bar-tabs .chip { position: relative; flex: 1 1 0; flex-direction: column; gap: 2px; width: 50px; min-width: 0; min-height: 0; padding: 2px 0 0; color: var(--muted); }
+#bar-tabs .chip .ic { flex: none; filter: saturate(0.4) brightness(0.8); transition: filter 0.12s; }
+#bar-tabs .chip .tl { font-family: var(--mono); font-size: 8.5px; font-weight: 500; letter-spacing: 0.08em; }
+#bar-tabs .chip:hover .ic { filter: none; }
+#bar-tabs .chip.on { color: var(--ink); background: var(--sand); border-color: var(--sand); }
+#bar-tabs .chip.on .ic { filter: drop-shadow(0 0 0.6px rgba(26, 15, 8, 0.9)) drop-shadow(0 1px 0 rgba(26, 15, 8, 0.5)); }
+#build, #fbuild { display: flex; gap: 5px; flex: 0 1 auto; min-width: 0; margin: -6px 0; padding: 6px 3px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain; scroll-snap-type: x proximity; scroll-padding-inline: 3px; }
+#build::-webkit-scrollbar, #fbuild::-webkit-scrollbar { display: none; }
+#fbuild.hidden, #build.hidden { display: none; }
+/* (a bar that does not fit fades its right edge; play.ts turns the mouse wheel into sideways scrolling over it) */
+#build.over, #fbuild.over { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent); padding-right: 22px; }
+.tw { --c: var(--sand); --ic-bg: rgba(16, 14, 12, 0.78); position: relative; flex: none; display: block; width: var(--tw); height: var(--th); padding: 0; overflow: hidden; color: var(--bone); font-family: var(--display); text-align: left; background: var(--soot-1); border: 1px solid var(--line); border-top: 3px solid var(--c); border-radius: 3px; cursor: pointer; scroll-snap-align: start; transition: transform 0.12s, box-shadow 0.12s, border-color 0.12s; }
+.tw.fac { --tw: clamp(64px, 5.3vw, 92px); }
+.tw .face { position: absolute; inset: 0; display: grid; place-items: center; overflow: hidden; background: radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--c) 26%, var(--soot-2)), var(--soot-0) 78%); }
+.tw .face img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: 50% var(--fy, 42%); transform: scale(var(--z, 1.4)); transition: transform 0.25s, filter 0.15s; }
+.tw .face::after { content: ''; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(10, 9, 8, 0.5) 0, transparent 24%, transparent 50%, rgba(10, 9, 8, 0.94) 100%); }
+.tw .face.noimg .ic { width: 58%; height: 58%; }
+.tw:hover { border-color: var(--line-2); }
+.tw:hover .face img { transform: scale(calc(var(--z, 1.4) * 1.07)); }
+.tw:active { transform: scale(0.97); }
+.tw kbd { position: absolute; top: 3px; left: 3px; z-index: 1; min-width: 15px; margin: 0; padding: 0 3px; font-size: 9.5px; line-height: 13px; border-bottom-width: 1px; background: rgba(16, 14, 12, 0.82); }
+.tw kbd:empty { display: none; }
+.tw .need { position: absolute; top: 3px; right: 3px; z-index: 1; display: flex; align-items: center; gap: 1px; padding: 1px 2px; background: rgba(16, 14, 12, 0.78); border-radius: 2px; }
+.tw .need .pw { display: inline-flex; align-items: center; font-family: var(--mono); font-size: 10px; font-weight: 500; line-height: 1; color: #a6e070; }
+.tw .need .pw .ic { width: 11px; height: 11px; }
+.tw .need .draw { opacity: 0.85; }
+.tw .nm { position: absolute; left: 5px; right: 4px; bottom: 23px; z-index: 1; font-size: 10.5px; font-weight: 600; line-height: 1.05; letter-spacing: 0.02em; text-transform: uppercase; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; text-shadow: 0 1px 2px #000, 0 0 6px #000; }
+.tw .cost { position: absolute; left: 3px; right: 3px; bottom: 3px; z-index: 1; display: flex; flex-wrap: wrap-reverse; align-items: center; gap: 2px; }
+.tw .cost > span { display: inline-flex; align-items: center; gap: 2px; padding: 1px 4px 1px 2px; font-size: 14px; font-weight: 600; line-height: 15px; color: var(--sand); font-variant-numeric: tabular-nums; background: rgba(16, 14, 12, 0.86); border: 1px solid var(--line-2); border-radius: 2px; }
+.tw .cost .m { color: var(--bone); }
+.tw .lk { display: none; position: absolute; left: 50%; top: 42%; z-index: 1; width: 22px; height: 22px; margin: -11px 0 0 -11px; fill: var(--bone); opacity: 0.85; filter: drop-shadow(0 1px 3px #000); }
+/* picked: lifted, ringed in sand, lit in its own colour */
+.tw.sel { border-color: var(--sand); box-shadow: 0 0 0 2px var(--sand), 0 0 18px 3px color-mix(in srgb, var(--c) 55%, transparent); transform: translateY(-2px); }
+.tw.sel .face img { transform: scale(calc(var(--z, 1.4) * 1.1)); }
+.tw.sel .face::after { background: linear-gradient(180deg, rgba(10, 9, 8, 0.35) 0, transparent 26%, transparent 55%, rgba(10, 9, 8, 0.9) 100%), radial-gradient(circle at 50% 100%, color-mix(in srgb, var(--c) 40%, transparent), transparent 70%); }
+.tw.poor .face img { filter: saturate(0.5) brightness(0.7); }
+.tw.poor .cost > span { color: var(--rust); border-color: color-mix(in srgb, var(--rust) 55%, transparent); }
+.tw.locked { cursor: not-allowed; border-top-color: var(--soot-4); }
+.tw.locked .face img { filter: grayscale(0.85) brightness(0.7) contrast(0.95); }
+.tw.locked .face::after { background: repeating-linear-gradient(135deg, rgba(10, 9, 8, 0.22) 0 5px, transparent 5px 10px), linear-gradient(180deg, rgba(10, 9, 8, 0.3), rgba(10, 9, 8, 0.1) 45%, rgba(10, 9, 8, 0.88)); }
+.tw.locked .cost { display: none; }
+.tw.locked .lk { display: block; }
+.tw.locked .nm { bottom: 5px; color: #b0a696; }
+.tw.locked .need { opacity: 0.55; filter: saturate(0.2); }
+.tw.locked.soon .lk { fill: var(--apricot); opacity: 1; }
+.tw.locked.soon { border-top-color: color-mix(in srgb, var(--apricot) 60%, var(--soot-4)); }
+.tw.locked:hover .face img { transform: scale(var(--z, 1.4)); filter: grayscale(0.5) brightness(0.75); }
+/* the crop of each render: the tower or building fills the card the same way */
+.tw[data-k='beacon'], .tw[data-k='arm'], .tw[data-k='pump'] { --z: 1.15; }
+.tw[data-k='belt'], .tw[data-k='pipe'], .tw[data-k='splitter'], .tw[data-k='tunnel'], .tw[data-k='ptunnel'] { --z: 1.2; --fy: 50%; }
+.tw[data-k='flame'] { --z: 1.3; }
+.tw[data-k='pole'] { --z: 1.5; --fy: 38%; }
+/* the deposit cue: the building the board asks for next marches its top rule */
+.tw.fac.cue { border-color: var(--apricot); border-top-color: var(--apricot); animation: cue 0.55s ease-in-out infinite alternate; }
+.tw.fac.cue::after { content: ''; position: absolute; left: 0; right: 0; top: 0; z-index: 2; height: 3px; background: repeating-linear-gradient(90deg, var(--apricot-hi) 0 6px, var(--ink) 6px 9px); animation: march 0.5s linear infinite; pointer-events: none; }
+.tw.fac.cue .face::after { background: linear-gradient(0deg, rgb(246 139 86 / 0.45), rgb(246 139 86 / 0.05) 70%); }
+.tw.fac.locked.cue { border-color: var(--sand-dim); border-style: dashed; animation-name: cue-locked; }
+.tw.fac.locked.cue::after { background: repeating-linear-gradient(90deg, var(--sand-dim) 0 6px, var(--soot-0) 6px 9px); }
+.tw.fac.cue .face::after, .tw.fac.cue { box-shadow: inset 0 0 0 1px var(--apricot); }
+@media (prefers-reduced-motion: reduce) { .tw.fac.cue, .tw.fac.cue::after { animation: none; } .tw.fac.cue { box-shadow: inset 0 0 0 2px var(--apricot); } }
+@media (min-width: 1400px) { #buildwrap { --tw: clamp(84px, 6.2vw, 110px); } }
+@media (max-width: 1100px) { #buildwrap { --tw: clamp(62px, 6.4vw, 72px); } .tw.fac { --tw: 62px; } }
+/* fingers and small screens: no captions (the tooltip and a long press name it), no key badges; the bar is a row that snaps */
+@media (max-width: 600px), (max-height: 480px), (pointer: coarse) {
+  .tw .nm { display: none; }
+  .tw.locked .nm { display: none; }
+}
+@media (pointer: coarse) {
+  .tw kbd { display: none; }
+  #build, #fbuild { scroll-snap-type: x mandatory; }
+  #bar-tabs { flex-direction: row; }
+  #bar-tabs .chip { width: 44px; min-height: 44px; }
+  #bar-tabs .chip .tl { display: none; }
+}
+/* phones in landscape: a slim bar, the board gets the height */
+@media (max-height: 480px) {
+  #buildwrap { --tw: 56px; --th: 56px; }
+  #bottom { padding-block: 4px calc(4px + var(--safe-b)); }
+  .tw.fac { --tw: 56px; }
+  .tw .cost > span { font-size: 12.5px; line-height: 13px; }
+  .tw .need .ic { width: 12px; height: 12px; }
+  #bar-tabs .chip { width: 42px; }
+}
+/* phones held upright: the bar takes the whole width, Auto waves and Call wave sit under it */
+@media (max-width: 600px) and (orientation: portrait) {
+  #buildwrap { --tw: 64px; --th: 70px; flex: 1 1 100%; }
+  .tw.fac { --tw: 64px; }
+}
+
+/* ---------- level-up cards: a big picture each ----------
+   A blueprint shows its tower's render lit in the tower's colour, a production card the buildings it opens, an ammunition
+   card its tower and the new round, any other card its glyph large on a panel tinted by its tower or rarity. The rarity is
+   the frame's colour. Under the picture: the name, one line, the icon chips. The whole text and every detail row are on the
+   card's info side (the i button). Desktop: three tall cards side by side; phones upright: three wide rows; phones on their
+   side: three short cards. */
+#card-row { display: flex; gap: 18px; justify-content: center; align-items: stretch; }
+.cw { --rc: var(--sand); position: relative; display: flex; width: 264px; animation: cardin 0.32s backwards; transition: transform 0.14s; }
+.cw:nth-child(2) { animation-delay: 0.06s; } .cw:nth-child(3) { animation-delay: 0.12s; }
+@keyframes cardin { from { opacity: 0; transform: translateY(26px) scale(0.97); } }
+.cw:hover, .cw:has(.card:focus-visible) { transform: translateY(-6px); }
+.cw:has(.card:active) { transform: none; }
+.card { --ic-bg: var(--soot-1); position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 0; overflow: hidden; text-align: left; cursor: pointer; color: var(--bone); font-family: var(--body); font-size: 15px; background: var(--soot-2); border: 1px solid color-mix(in srgb, var(--rc) 45%, transparent); border-top: 4px solid var(--rc); border-radius: 4px; box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.42); transition: border-color 0.12s, box-shadow 0.12s; }
+.cw.r1 .card { box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.42), 0 0 22px -4px color-mix(in srgb, var(--rc) 45%, transparent); }
+.cw.r2 .card { box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.42), 0 0 30px -2px color-mix(in srgb, var(--rc) 55%, transparent); }
+.cw:hover .card, .card:focus-visible { border-color: var(--rc); }
+/* the picture */
+.cv { position: relative; flex: none; height: 188px; overflow: hidden; background: radial-gradient(circle at 50% 58%, color-mix(in srgb, var(--tc, var(--rc)) 30%, var(--soot-2)), var(--soot-0) 80%); border-bottom: 1px solid color-mix(in srgb, var(--rc) 35%, transparent); }
+.cv .cimg { position: absolute; inset: 0; display: grid; place-items: center; overflow: hidden; }
+.cv .cimg img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: 50% 40%; transform: scale(1.18); transition: transform 0.4s; }
+.cw:hover .cv .cimg img { transform: scale(1.25); }
+.cv .cimg.noimg .ic { width: 50%; height: 50%; }
+.cv::after { content: ''; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(180deg, rgba(10, 9, 8, 0.35), transparent 30%, transparent 62%, color-mix(in srgb, var(--soot-2) 92%, transparent)); }
+.cv-tw::after { background: linear-gradient(180deg, rgba(10, 9, 8, 0.3), transparent 30%, transparent 60%, color-mix(in srgb, var(--soot-2) 90%, transparent)), radial-gradient(ellipse at 50% 92%, color-mix(in srgb, var(--tc, var(--rc)) 55%, transparent), transparent 62%); box-shadow: inset 0 0 34px -6px color-mix(in srgb, var(--tc, var(--rc)) 70%, transparent); }
+.cv-fac { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; background: var(--soot-0); }
+.cv-fac .cimg { position: relative; inset: auto; min-height: 0; }
+.cv-fac .cimg img { position: absolute; inset: 0; }
+.cv-fac[data-n='1'] .cimg img { transform: scale(1.25); }
+.cv-fac:not([data-n='1']) .cimg img { transform: scale(1.5); }
+.cw:hover .cv-fac:not([data-n='1']) .cimg img { transform: scale(1.58); }
+.cv-badge { position: absolute; right: 10px; bottom: 10px; z-index: 1; display: grid; place-items: center; width: 52px; height: 52px; background: rgba(16, 14, 12, 0.85); border: 1.5px solid var(--rc); border-radius: 50%; box-shadow: 0 0 16px color-mix(in srgb, var(--rc) 50%, transparent); }
+.cv-ic { display: grid; place-items: center; background: radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--tc, var(--rc)) 34%, var(--soot-2)), var(--soot-0) 76%); }
+.cv-ic .cimg.ghost { opacity: 0.28; filter: grayscale(0.4); }
+.cv-glyph { position: relative; z-index: 1; display: grid; place-items: center; width: 84px; height: 84px; margin-top: -14px; font-family: var(--display); font-size: 50px; line-height: 1; color: var(--tc, var(--rc)); background: rgba(16, 14, 12, 0.55); border: 1.5px solid var(--tc, var(--rc)); border-radius: 50%; box-shadow: inset 0 0 0 5px rgba(16, 14, 12, 0.6), inset 0 0 0 6px color-mix(in srgb, var(--tc, var(--rc)) 40%, transparent), 0 0 26px color-mix(in srgb, var(--tc, var(--rc)) 40%, transparent); text-shadow: 0 0 14px color-mix(in srgb, var(--tc, var(--rc)) 70%, transparent); }
+.cv-about { position: absolute; left: 0; right: 0; bottom: 8px; z-index: 1; display: flex; justify-content: center; gap: 6px; }
+.cv-about .ic { filter: drop-shadow(0 1px 3px #000); }
+.cv kbd { position: absolute; top: 8px; right: 8px; z-index: 2; font-size: 12px; background: rgba(16, 14, 12, 0.85); }
+/* the words */
+.cb { flex: 1; display: flex; flex-direction: column; gap: 6px; padding: 10px 14px 13px; }
+.ckick { display: flex; gap: 8px; align-items: baseline; font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+.ckick .rar { color: var(--rc); }
+.card h4 { margin: 0; font-family: var(--display); font-size: 25px; font-weight: 600; line-height: 1; letter-spacing: 0.04em; text-transform: uppercase; color: var(--sand); overflow-wrap: anywhere; }
+.card .cl { margin: 0; font-size: 14px; line-height: 1.32; color: var(--bone); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.cchips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: auto; padding-top: 4px; }
+.cchips .rg { display: inline-flex; align-items: center; gap: 3px; }
+.cchips .rg + .rg { margin-left: 4px; }
+.cchips .ra { font-family: var(--display); font-size: 18px; font-weight: 600; line-height: 14px; color: var(--sand-dim); padding: 0 1px 2px; }
+.cchips .serves { padding-left: 6px; border-left: 1px solid var(--line-2); }
+.cchips .cchip { min-height: 24px; padding: 1px 4px; }
+.cchips .cchip.onoffer { border-style: solid; border-color: var(--apricot); box-shadow: 0 0 8px color-mix(in srgb, var(--apricot) 45%, transparent); }
+.cchips .cchip.ready { color: var(--verdigris); font-family: var(--display); font-size: 15px; padding: 0 7px; }
+.cchips .more { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+.card .pips { display: flex; gap: 4px; margin-top: 4px; }
+.card .pips i { flex: 1; height: 6px; background: var(--soot-1); border: 1px solid var(--line-2); border-radius: 1px; transform: skewX(-18deg); }
+.card .pips i.on { background: color-mix(in srgb, var(--rc) 45%, var(--soot-1)); border-color: color-mix(in srgb, var(--rc) 60%, transparent); }
+.card .pips i.nx { background: var(--rc); border-color: var(--rc); box-shadow: 0 0 10px color-mix(in srgb, var(--rc) 70%, transparent); animation: pipnx 1.1s ease-in-out infinite alternate; }
+@keyframes pipnx { from { opacity: 0.55; } to { opacity: 1; } }
+/* the info side: the i button (a mouse resting on it shows it too) lays the whole text over the card */
+.cinfo { position: absolute; top: 10px; left: 8px; z-index: 3; display: grid; place-items: center; width: 26px; height: 26px; padding: 0; font-family: var(--display); font-size: 16px; font-weight: 700; font-style: italic; color: var(--sand); background: rgba(16, 14, 12, 0.85); border: 1px solid var(--line-2); border-radius: 50%; cursor: pointer; }
+.cinfo::after { content: ''; position: absolute; inset: -9px; }
+.cinfo:hover, .cw.full .cinfo { color: var(--ink); background: var(--sand); border-color: var(--sand); }
+.cfull { position: absolute; inset: 0; z-index: 2; display: grid; align-content: start; gap: 8px; padding: 44px 14px 14px; overflow-y: auto; overscroll-behavior: contain; text-align: left; background: rgb(16, 14, 12); border: 1px solid var(--rc); border-top: 4px solid var(--rc); border-radius: 4px; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 0.15s, visibility 0.15s; }
+.cfull > b { font-family: var(--display); font-size: 19px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--sand); }
+.cfull .cmore { display: grid; gap: 8px; }
+.cfull p { margin: 0; font-size: 14px; line-height: 1.4; color: var(--bone); }
+.cfull .rr { gap: 3px 4px; }
+.cw.full .cfull { opacity: 1; visibility: visible; pointer-events: auto; }
+@media (hover: hover) { .cinfo:hover + .cfull { opacity: 1; visibility: visible; transition-delay: 0.15s; } }
+#cards:not(.armed) .cw:hover { transform: none; }
+
+/* phones held upright: three wide rows, the picture on the left */
+@media (max-width: 600px) and (orientation: portrait) {
+  #cards .sheet-head { gap: 2px; padding-bottom: 8px; }
+  #cards .kicker { display: none; }
+  #card-row { flex-direction: column; gap: 10px; width: 100%; }
+  .cw { width: 100%; }
+  .cw:hover, .cw:has(.card:focus-visible) { transform: none; }
+  .card { flex-direction: row; border-top-width: 1px; border-left: 4px solid var(--rc); }
+  .cv { width: 112px; height: auto; min-height: 128px; border-bottom: 0; border-right: 1px solid color-mix(in srgb, var(--rc) 35%, transparent); }
+  .cv-fac { grid-auto-flow: row; grid-auto-rows: 1fr; }
+  .cv-glyph { width: 62px; height: 62px; margin-top: -16px; font-size: 36px; }
+  .cv-about .ic { width: 20px; height: 20px; }
+  .cv-badge { width: 40px; height: 40px; right: 6px; bottom: 6px; }
+  .cv-badge .ic { width: 26px; height: 26px; }
+  .cv kbd { display: none; }
+  .cb { gap: 4px; padding: 8px 10px 10px; min-width: 0; }
+  .card h4 { font-size: 20px; }
+  .card .cl { font-size: 13px; }
+  .cchips { padding-top: 2px; }
+  .cinfo { top: 8px; left: 10px; width: 30px; height: 30px; }
+  .cfull { padding: 10px 12px 10px 52px; border-top-width: 1px; border-left: 4px solid var(--rc); }
+}
+/* phones on their side: three short cards in a row */
+@media (max-height: 480px) {
+  #cards .sheet-head { grid-template-columns: auto auto 1fr; align-items: baseline; column-gap: 12px; padding-bottom: 6px; }
+  #cards .kicker { display: none; }
+  #cards .sheet-head h2 { font-size: 26px; }
+  #card-guard { grid-column: 1 / -1; }
+  #card-row { gap: 10px; flex-wrap: nowrap; width: 100%; }
+  .cw { width: auto; flex: 1 1 0; max-width: 250px; min-width: 0; }
+  .cw:hover, .cw:has(.card:focus-visible) { transform: translateY(-3px); }
+  .cv { height: 92px; }
+  .cv .cimg img, .cw:hover .cv .cimg img { object-position: 50% 42%; transform: scale(1); }
+  .cv-glyph { width: 56px; height: 56px; margin-top: -10px; font-size: 32px; }
+  .cv-about { bottom: 4px; }
+  .cv-about .ic { width: 18px; height: 18px; }
+  .cv-badge { width: 38px; height: 38px; right: 6px; bottom: 6px; }
+  .cv-badge .ic { width: 24px; height: 24px; }
+  .cv kbd { display: none; }
+  .cb { gap: 3px; padding: 6px 10px 9px; }
+  .ckick { font-size: 9px; letter-spacing: 0.1em; }
+  .card h4 { font-size: 18px; }
+  .card .cl { font-size: 12.5px; line-height: 1.25; }
+  .cchips .cchip { min-height: 20px; }
+  .cinfo { top: 6px; left: 6px; width: 28px; height: 28px; }
+  .cfull { padding: 40px 10px 10px; gap: 6px; }
+  .cfull p { font-size: 12.5px; }
+}
+
+/* ---------- the top bar on phones: icons for words ----------
+   Credits, materials and power already carry their icon; the wave and the core get theirs (svg.hi), and the words go. */
+.stat .hi { display: none; flex: none; width: 15px; height: 15px; fill: var(--muted); }
+.stat.core .hi { fill: var(--sand-dim); }
+@media (max-height: 480px), (max-width: 600px) and (orientation: portrait) {
+  #top .gauges .stat:not(.wide) > label { display: none; }
+  #top .gauges .stat:not(.wide) { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  #top .gauges .stat.next { display: flex; }
+  .stat .hi { display: block; }
+  #top .stat small { font-size: 10px; }
+}
+@media (max-height: 480px) {
+  :root { --top-h: 44px; --console-h: 64px; }
+  #top { padding-top: 4px; }
+  #top .gauges .stat { padding: 4px 9px; }
+  #top .stat b { font-size: 21px; line-height: 1; }
+  #top .stat b.sm { font-size: 15px; line-height: 21px; }
+  #top .stat.wide { min-width: 96px; padding-block: 3px; }
+  #top .stat.wide label { font-size: 9px; letter-spacing: 0.1em; }
+  #top .stat.wide .bar { margin-top: 5px; }
+  #top .stat.next { min-width: 0; }
+  #next-row { height: 21px; }
+  #btn-full { top: 4px; }
+}
+@media (max-width: 600px) and (orientation: portrait) {
+  :root { --top-h: 92px; }
+  #top .gauges .stat { justify-content: center; padding: 6px 4px; }
+  #top .gauges .stat:first-child { padding-left: 7px; }
+  #top .stat b { font-size: 20px; line-height: 1; }
+  #top .stat b.sm { font-size: 14px; line-height: 20px; }
+  #top .gauges .stat.next { display: none; }
+}
+@media (max-width: 600px) and (orientation: portrait) { body:has(#hud:not(.hidden)):not(:has(.overlay:not(.hidden))) #btn-full { top: 48px; } }
