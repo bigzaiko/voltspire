@@ -2,14 +2,25 @@
 // in, including a state block (snapshot.ts) from which the run can be rebuilt exactly (tools/repro.ts, or Load report in a
 // dev build or with ?debug=1). Nothing is sent from here: the player submits the issue on GitHub, signed in to their own
 // account. The game state goes into the issue in the way its size allows (see planReport and the limits below):
-//  1. it all fits in the new-issue link: GitHub opens with everything filled in;
-//  2. too long for a link, short enough for one issue: GitHub opens with the text filled in and a PASTE STATE HERE line, the
-//     rest (the state block, and the logs if they did not fit either) goes on the clipboard;
-//  3. too long even for one issue: the game also downloads a report file (with a screenshot in it) to drag into the issue.
+//  1. it all fits in the new-issue link: GitHub opens with everything filled in, and no file is saved;
+//  2. too long for a link: GitHub opens with the text that fits filled in and an "Attach the screenshot file ... here" line,
+//     and the game saves one PNG screenshot of the current frame (with a caption strip: version, map, wave) that carries the
+//     whole state inside it, as a tEXt chunk 'beatspire-state' (and the issue text as an iTXt chunk 'beatspire-report'; see
+//     pngstate.ts). The player drags that one file into the issue. No clipboard: Firefox and most Android browsers cannot put
+//     a picture on it, and a pasted state got lost in a real report (issue #1 came without it).
+// Does GitHub keep the chunks? Checked 2026-11-19, without uploading anything: GitHub documents nothing about processing
+// attachments, and no community source reports PNG text being stripped. Ten public issue attachments were fetched anonymously
+// (github.com/user-attachments/assets/<id>): GitHub redirects to the original object in its S3 bucket
+// (github-production-user-asset-*.s3.amazonaws.com) and the PNGs came back with their ancillary chunks intact: iCCP, eXIf,
+// pHYs, iTXt 'XML:com.adobe.xmp' and Apple's private iDOT (macOS screenshots), JPEGs with their Exif. So uploads are stored
+// as sent, not re-encoded or stripped, and the state survives the trip: one file, no companion .txt. (What can lose it is a
+// picture pasted from the clipboard instead of the file: the browser re-encodes that. The line in the issue asks for the file.)
+// When the browser gives no picture at all (no canvas, toBlob fails), the same state goes into a .txt file instead.
 // A small ring buffer keeps the last game events and player actions (logEvents, logAction) and the last console errors and
 // warnings (installed when this module loads), with messages only: query strings are cut from URLs, no storage is read.
 import { encodeSnapshot, decodeSnapshot, restoreSim, trialRun } from './game/snapshot.ts';
 import type { Sim, Ev } from './game/sim.ts';
+import { withText, readText, isPng, STATE_KEY, REPORT_KEY } from './pngstate.ts';
 
 declare const __BEATSPIRE_BUILD__: { hash: string; date: string } | undefined;
 
@@ -30,19 +41,22 @@ export const NEW_ISSUE_URL = `https://github.com/${REPO}/issues/new`;
  *  Signed in, the form opens straight away; that state could not be tested without the owner's session, so the stricter
  *  signed-out limit is used for everyone: URL_MAX for the link itself (the ~6940 above applies signed in too) and
  *  URL_MAX_LOGIN for it encoded once more, each about 8-10 % under the measured edge.
- *  - An issue body may be 65536 characters (GitHub's documented limit, "Body is too long (maximum is 65536 characters)").
- *    Not tested here: that needs a real issue, and none is ever created. BODY_MAX leaves room for the player's own edits.
+ *  (An issue body may be 65536 characters; the state no longer goes into the body past the link, so that limit is never near.)
+ *  - An attached image may be 10 MB (GitHub's documented limit for images; other files 25 MB): SHOT_MAX keeps the PNG under it.
  */
 export const URL_MAX = 6400;
 export const URL_MAX_LOGIN = 6200;
-export const BODY_MAX = 60000;
+export const SHOT_MAX = 9 * 1024 * 1024;
+/** The screenshot's longest side, in pixels (a 4K or high-DPI phone frame is scaled down: smaller file, same story). */
+const SHOT_SIDE = 1920;
 /** Text limits of the form. */
 export const SUMMARY_MAX = 120;
 export const WHAT_MAX = 2000;
 export const EXPECT_MAX = 1000;
 const EVENTS_MAX = 200, CONSOLE_MAX = 50;
-export const PASTE_HERE = 'PASTE STATE HERE: the game copied it to your clipboard. Select this line and paste with Ctrl+V (Cmd+V on a Mac), or long-press and Paste on a phone.';
-export const ATTACH_HERE = 'ATTACH THE REPORT FILE HERE: the game downloaded it as {file}. Drag it into this box, or use "Paste, drop, or click to add files" below.';
+/** The line in the issue where the file goes ({file}: its name). */
+export const ATTACH_HERE = '**Attach the screenshot file {file} here.** The game saved it to your downloads; the game state is inside it. Drag the file into this box, or use "Paste, drop, or click to add files" below (the file itself: a pasted picture loses the state).';
+export const ATTACH_TXT = '**Attach the file {file} here.** The game saved it to your downloads; the game state is inside it. Drag it into this box, or use "Paste, drop, or click to add files" below.';
 
 export const BUILD = typeof __BEATSPIRE_BUILD__ !== 'undefined' && __BEATSPIRE_BUILD__ ? __BEATSPIRE_BUILD__ : { hash: import.meta.env.DEV ? 'dev server' : 'unknown', date: '' };
 
@@ -169,49 +183,57 @@ export function stateText(block: string): string {
 
 // ---------- how it goes to GitHub ----------
 export interface Plan {
-  path: 1 | 2 | 3;
+  path: 1 | 2;
   title: string;
   /** the new-issue link to open */
   url: string;
   /** the body as the link fills it in */
   urlBody: string;
-  /** path 2: what goes on the clipboard */
-  clip: string;
-  /** path 3: the report file (its name and text; the screenshot is added on the way out) */
-  fileName: string; file: string;
-  /** the body as it reads once the player pasted or attached the rest (what the preview shows) */
+  /** path 2: the file to attach (beatspire-report-<time>.png, or .txt when there is no picture) */
+  fileName: string;
+  /** path 2: the issue text that goes into the file beside the state (title, the player's text, details, logs) */
+  fileText: string;
+  /** the body as it reads once the player attached the file (what the preview shows) */
   body: string;
 }
 export const issueUrl = (title: string, body: string) => NEW_ISSUE_URL + '?' + new URLSearchParams({ title, labels: 'bug', body }).toString();
 /** True if a new-issue link is short enough for GitHub, signed in or out (see URL_MAX). */
 export const urlFits = (url: string) => url.length <= URL_MAX && encodeURIComponent(url).length <= URL_MAX_LOGIN;
 export const titleOf = (summary: string) => '[Bug] ' + (summary.replace(/\s+/g, ' ').trim().slice(0, SUMMARY_MAX) || 'untitled');
+/** The file name of a report's attachment: beatspire-report-<time>.png (or .txt). */
+export const attachName = (stamp: string, png = true) => `beatspire-report-${stamp}.${png ? 'png' : 'txt'}`;
 /**
- * Choose how a report goes to GitHub (see the header): the whole issue in the link when it fits; else the text that fits
- * (the player's text and the game's details first, then the logs) in the link with a PASTE STATE HERE line, the rest on the
- * clipboard; else, when the pasted issue would pass BODY_MAX, an ATTACH line and a downloaded file with everything.
- * `force` (a test hook) skips the paths before it.
+ * Choose how a report goes to GitHub (see the header): the whole issue in the link when it fits; else the parts that fit
+ * (the player's text and the game's details first, then the logs; never the state) in the link with an ATTACH line, and
+ * everything in the file. `png` false: there is no picture, the file is a .txt. `force` (a test hook) skips path 1.
  */
-export function planReport(title: string, head: string, log: string, state: string, force: 0 | 1 | 2 | 3 = 0, stamp = 'report'): Plan {
+export function planReport(title: string, head: string, log: string, state: string, force: 0 | 1 | 2 = 0, stamp = 'report', png = true): Plan {
   const parts = [head, log, state], join = (p: string[]) => p.join('\n\n');
   const full = join(parts), url1 = issueUrl(title, full);
-  const fileName = `beatspire-${stamp}.txt`;
-  const base = { title, clip: '', fileName: '', file: '' };
-  if (force <= 1 && (urlFits(url1) || force === 1)) return { ...base, path: 1, url: url1, urlBody: full, body: full };
-  // the link takes the first parts that fit, the rest goes on the clipboard (or into the file)
-  const split = (mark: string) => {
-    for (let k = parts.length - 1; k >= 0; k--) {
-      const urlBody = join([...parts.slice(0, k), mark]), url = issueUrl(title, urlBody);
-      if (urlFits(url) || k === 0) return { k, urlBody, url };
-    }
-    throw new Error('unreachable');
-  };
-  const s2 = split(PASTE_HERE), clip = join(parts.slice(s2.k));
-  if (force <= 2 && (full.length <= BODY_MAX || force === 2)) return { ...base, path: 2, url: s2.url, urlBody: s2.urlBody, clip, body: full };
-  const s3 = split(ATTACH_HERE.replace('{file}', fileName));
-  const file = `BEATSPIRE bug report\n${title}\n\n${full}\n`;
-  return { ...base, path: 3, url: s3.url, urlBody: s3.urlBody, fileName, file, body: s3.urlBody + `\n\n[attached: ${fileName}, ${Math.ceil(file.length / 1024)} KB, with the whole report, the state and a screenshot]` };
+  if (force !== 2 && (urlFits(url1) || force === 1)) return { path: 1, title, url: url1, urlBody: full, fileName: '', fileText: '', body: full };
+  const fileName = attachName(stamp, png), mark = (png ? ATTACH_HERE : ATTACH_TXT).replace('{file}', fileName);
+  let urlBody = '', url = '';
+  for (let k = parts.length - 1; k >= 0; k--) {
+    urlBody = join([...parts.slice(0, k), mark]); url = issueUrl(title, urlBody);
+    if (urlFits(url)) break;
+  }
+  // (the issue text without the state section: the state has a chunk of its own; for a .txt the block follows the text)
+  const fileText = `${title}\n\n${join([head, log])}\n`;
+  const kb = (n: number) => Math.max(1, Math.round(n / 1024));
+  return { path: 2, title, url, urlBody, fileName, fileText, body: urlBody + `\n\n[attached: ${fileName}${png ? ', the screenshot' : ''}, with the game state (${kb(state.length)} KB) and the whole report inside]` };
 }
+/** The .txt attachment when there is no picture: the report, then the state section (decodeSnapshot finds the block in it). */
+export const txtFile = (p: Plan, state: string) => `BEATSPIRE bug report\n${p.fileText}\n${state}\n`;
+/** The screenshot with the state and the report put inside (synchronous: it runs inside the click). */
+export function shotWithState(png: Uint8Array, block: string, p: Plan): Uint8Array {
+  return withText(png, [
+    ...(block ? [{ key: STATE_KEY, text: block }] : []),
+    { key: REPORT_KEY, text: p.fileText, utf8: true },
+    { key: 'Software', text: 'BEATSPIRE ' + BUILD.hash.replace(/[^\x20-\x7e]/g, '') },
+  ]);
+}
+/** The state block inside a report screenshot ('' when it carries none). Throws when the file is not a readable PNG. */
+export function stateFromPng(png: Uint8Array): string { return readText(png).get(STATE_KEY) || ''; }
 
 // ---------- the form ----------
 /** What the game gives the report form. */
@@ -227,47 +249,115 @@ export interface ReportHost {
   /** a report block was loaded (dev builds and ?debug=1 only) */
   load(sim: Sim, note: string): void;
 }
-/** Test hooks (exposed on the dev server and with ?debug=1): force a path, catch the opened link and the download, read the last plan. */
+/** Test hooks (exposed on the dev server and with ?debug=1): force a path, catch the opened link and the saved file, read the last plan. */
 export const reportHooks = {
-  force: 0 as 0 | 1 | 2 | 3,
+  force: 0 as 0 | 1 | 2,
   open: null as null | ((url: string) => void),
-  download: null as null | ((name: string, text: string) => void),
+  download: null as null | ((name: string, file: Blob) => void),
   last: null as null | Plan,
   /** the state block of the open form ('' outside a run) */
   get block() { return block; },
+  /** the screenshot of the open form, without the state (null while it is made, or when the browser gave no picture) */
+  get shot() { return shot; },
 };
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 let host: ReportHost | null = null;
-let block = '', packing: Promise<void> | null = null, shotUrl = '', lastFocus: Element | null = null, prevTimer = 0, openId = 0;
+let block = '', packing: Promise<void> | null = null, shot: Uint8Array | null = null, thumbUrl = '', lastFocus: Element | null = null, prevTimer = 0, openId = 0;
+let thumb: HTMLImageElement | null = null;
 const fields = (): ReportFields => ({ summary: $<HTMLInputElement>('rp-sum').value, what: $<HTMLTextAreaElement>('rp-what').value, expected: $<HTMLTextAreaElement>('rp-exp').value });
 const env = () => ({ ua: navigator.userAgent, screen: `${screen.width}x${screen.height}, window ${innerWidth}x${innerHeight} at ${(devicePixelRatio || 1).toFixed(2)}x` });
 const status = (text: string, bad = false) => { const s = $('rp-status'); s.textContent = text; s.classList.toggle('bad', bad); };
 const fileStamp = () => new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-');
 
-function plan(): Plan {
+function plan(force = reportHooks.force): Plan {
   const f = fields(), c = host!.context();
-  const p = planReport(titleOf(f.summary), headText(f, c, env()), logText(), stateText(block), reportHooks.force, fileStamp());
-  reportHooks.last = p;
+  const p = planReport(titleOf(f.summary), headText(f, c, env()), logText(), stateText(block), force, fileStamp(), !!shot);
+  if (force === reportHooks.force) reportHooks.last = p;
   return p;
 }
-const HOW: Record<1 | 2 | 3, string> = {
-  1: 'It all fits in the link: GitHub opens with everything filled in.',
-  2: 'Too long for a link: GitHub opens with the text filled in, and the game state goes on your clipboard to paste where it says PASTE STATE HERE.',
-  3: 'Too long for one issue: GitHub opens with the text filled in, and the game downloads a report file (with a screenshot) to drag into the issue.',
+const HOW: Record<1 | 2, string> = {
+  1: 'Fits in the link: GitHub opens with everything filled in.',
+  2: 'GitHub opens with the text filled in. This screenshot, with the game state inside, is saved for you to attach there.',
 };
 function preview() {
   clearTimeout(prevTimer);
   const f = fields();
   $('rp-what-n').textContent = `${f.what.length} / ${WHAT_MAX}`;
-  if (packing) { $('rp-how').textContent = 'Packing the game state...'; $('rp-preview').textContent = ''; return; }
+  if (packing) { $('rp-how').textContent = 'Packing the game state...'; $('rp-preview').textContent = ''; $('rp-shot').classList.add('hidden'); return; }
   const p = plan();
   $('rp-how').textContent = HOW[p.path] + ` (${p.body.length.toLocaleString('en')} characters)`;
   $('rp-preview').textContent = `${p.title}\n\n${p.body}`;
+  $('rp-shotbox').classList.toggle('attach', p.path === 2);
+  // (path 2 saves the screenshot anyway: the button is for path 1)
+  $('rp-shot').classList.toggle('hidden', p.path !== 1 || !shot);
 }
-/** Capture the frame on the canvas as a PNG (drawn right before it is read: a WebGL canvas keeps its picture only until then). */
-function grab(): Promise<Blob | null> {
-  return new Promise((res) => { try { host!.render(); host!.canvas.toBlob((b) => res(b), 'image/png'); } catch { res(null); } });
+
+// ---------- the screenshot ----------
+const cssVar = (k: string, d: string) => getComputedStyle(document.documentElement).getPropertyValue(k).trim() || d;
+const toPng = (c: HTMLCanvasElement) => new Promise<Uint8Array | null>((res) => {
+  try { c.toBlob((b) => (b ? b.arrayBuffer().then((a) => res(new Uint8Array(a)), () => res(null)) : res(null)), 'image/png'); } catch { res(null); }
+});
+/** The frame with a caption strip under it (version, map, wave, time; the date on the right when there is room). */
+function compose(frame: HTMLCanvasElement | null, k: number, cap: string[]): HTMLCanvasElement {
+  const w = frame ? Math.max(1, Math.round(frame.width * k)) : 960, fh = frame ? Math.max(1, Math.round(frame.height * k)) : 360;
+  const H = Math.round(Math.min(64, Math.max(30, w * 0.03))), c = document.createElement('canvas');
+  c.width = w; c.height = fh + H;
+  const g = c.getContext('2d');
+  if (!g) return c;
+  const soot = cssVar('--soot-0', '#100e0c'), sand = cssVar('--sand', '#e3dc92'), bone = cssVar('--bone', '#efe9d6'), muted = cssVar('--muted', '#9c9384');
+  g.fillStyle = soot; g.fillRect(0, 0, w, fh + H);
+  if (frame) { g.imageSmoothingQuality = 'high'; g.drawImage(frame, 0, 0, w, fh); }
+  else { g.fillStyle = muted; g.font = `500 ${Math.round(H * 0.6)}px "IBM Plex Mono", ui-monospace, monospace`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('no picture from this browser', w / 2, fh / 2); g.textAlign = 'left'; }
+  g.fillStyle = sand; g.fillRect(0, fh, w, Math.max(2, Math.round(H / 16)));
+  const y = fh + H / 2 + H / 32, pad = Math.round(H * 0.45);
+  g.textBaseline = 'middle';
+  const date = new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+  g.font = `500 ${Math.round(H * 0.4)}px "IBM Plex Mono", ui-monospace, monospace`;
+  const dw = g.measureText(date).width;
+  g.font = `700 ${Math.round(H * 0.56)}px "Barlow Condensed", "Arial Narrow", sans-serif`;
+  let x = pad;
+  g.fillStyle = sand; g.fillText('BEATSPIRE', x, y); x += g.measureText('BEATSPIRE').width;
+  g.font = `600 ${Math.round(H * 0.5)}px "Barlow Condensed", "Arial Narrow", sans-serif`;
+  for (const s of cap) {
+    const sep = '  /  ', need = g.measureText(sep + s).width;
+    if (x + need > w - pad) break;
+    g.fillStyle = muted; g.fillText(sep, x, y); x += g.measureText(sep).width;
+    g.fillStyle = bone; g.fillText(s, x, y); x += g.measureText(s).width;
+  }
+  if (x + dw + pad * 2 < w - pad) { g.font = `500 ${Math.round(H * 0.4)}px "IBM Plex Mono", ui-monospace, monospace`; g.fillStyle = muted; g.textAlign = 'right'; g.fillText(date, w - pad, y); }
+  return c;
+}
+/**
+ * The screenshot as a PNG (without the state: that goes in at the click). The frame is drawn and copied at once (a WebGL
+ * canvas keeps its picture only until then), scaled to SHOT_SIDE, then captioned; a PNG over SHOT_MAX is made again smaller.
+ * With no picture to read, a captioned card. null only when the browser makes no PNG at all.
+ */
+async function makeShot(cap: string[]): Promise<Uint8Array | null> {
+  let frame: HTMLCanvasElement | null = null;
+  try {
+    host!.render();
+    const src = host!.canvas, k = Math.min(1, SHOT_SIDE / Math.max(src.width, src.height, 1));
+    if (src.width && src.height) {
+      frame = document.createElement('canvas');
+      frame.width = Math.round(src.width * k); frame.height = Math.round(src.height * k);
+      const g = frame.getContext('2d');
+      if (g) { g.imageSmoothingQuality = 'high'; g.drawImage(src, 0, 0, frame.width, frame.height); } else frame = null;
+    }
+  } catch { frame = null; }
+  try { await Promise.all(['700 20px "Barlow Condensed"', '600 20px "Barlow Condensed"', '500 20px "IBM Plex Mono"'].map((f) => document.fonts.load(f))); } catch { /* the fallback fonts do */ }
+  for (let k = 1; k > 0.2; k *= 0.7) {
+    const png = await toPng(compose(frame, k, cap));
+    if (!png || png.length <= SHOT_MAX - 512 * 1024 || !frame) return png; // (half a MB left for the state and the text)
+  }
+  return null;
+}
+/** What the caption strip says about the run. */
+function caption(sim: Sim | null): string[] {
+  const v = BUILD.hash + (BUILD.date ? ' ' + BUILD.date.slice(0, 10) : '');
+  if (!sim) return [v, 'main menu'];
+  const t = Math.floor(sim.time);
+  return [v, sim.map.def.name, `wave ${sim.wave}${sim.campaign ? ' of ' + sim.winWave : ''}`, `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`];
 }
 
 /** Open the report form (pauses nothing itself: the caller does). */
@@ -277,11 +367,19 @@ export function openReport() {
   lastFocus = document.activeElement;
   $('report').classList.remove('hidden');
   status('');
-  $('rp-link').classList.add('hidden'); $('rp-clipbox').classList.add('hidden');
-  shotUrl = ''; block = '';
-  void grab().then((b) => (b ? blobData(b) : '')).then((u) => { if (id === openId) shotUrl = u; });
+  $('rp-link').classList.add('hidden');
+  block = ''; shot = null;
+  if (thumbUrl) { URL.revokeObjectURL(thumbUrl); thumbUrl = ''; }
+  thumb!.removeAttribute('src'); $('rp-shotbox').classList.add('hidden');
   const sim = host.sim();
-  packing = sim ? encodeSnapshot(sim, { build: BUILD.hash, date: new Date().toISOString() }).then((b) => { if (id === openId) block = b; }, (e: unknown) => { if (id === openId) { block = ''; status('The game state could not be packed: ' + argText(e), true); console.error(e); } }).finally(() => { if (id === openId) { packing = null; preview(); } }) : null;
+  const shooting = makeShot(caption(sim)).then((png) => {
+    if (id !== openId || !png) return;
+    shot = png;
+    thumbUrl = URL.createObjectURL(new Blob([png as BlobPart], { type: 'image/png' }));
+    thumb!.src = thumbUrl; $('rp-shotbox').classList.remove('hidden');
+  }, (e: unknown) => console.warn('report screenshot: ' + argText(e)));
+  const packed = sim ? encodeSnapshot(sim, { build: BUILD.hash, date: new Date().toISOString() }).then((b) => { if (id === openId) block = b; }, (e: unknown) => { if (id === openId) { block = ''; status('The game state could not be packed: ' + argText(e), true); console.error(e); } }) : Promise.resolve();
+  packing = Promise.all([packed, shooting]).then(() => undefined).finally(() => { if (id === openId) { packing = null; preview(); } });
   preview();
   $('rp-sum').focus();
 }
@@ -297,32 +395,20 @@ function openTab(url: string) {
   if (reportHooks.open) { reportHooks.open(url); return; }
   window.open(url, '_blank', 'noopener,noreferrer');
 }
-function download(name: string, text: string) {
-  if (reportHooks.download) { reportHooks.download(name, text); return; }
-  const a = document.createElement('a'), u = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+function download(name: string, file: Blob) {
+  if (reportHooks.download) { reportHooks.download(name, file); return; }
+  const a = document.createElement('a'), u = URL.createObjectURL(file);
   a.href = u; a.download = name; a.rel = 'noopener';
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(u), 60000);
 }
-/**
- * Copy text inside the click itself (a hidden textarea and execCommand: synchronous, and it works in Firefox and Safari as
- * well as Chrome), so the GitHub tab can still open in the same click: a browser blocks a window opened later than that.
- */
-function copyNow(text: string): boolean {
-  const ta = document.createElement('textarea'), back = document.activeElement;
-  ta.className = 'rp-offscreen'; ta.readOnly = true; ta.value = text; ta.setAttribute('aria-hidden', 'true'); ta.tabIndex = -1;
-  $('report').appendChild(ta);
-  let ok = false;
-  try { ta.select(); ok = document.execCommand('copy'); } catch { ok = false; }
-  ta.remove();
-  if (back instanceof HTMLElement) back.focus();
-  return ok;
-}
-const blobData = (b: Blob) => new Promise<string>((res) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = () => res(''); r.readAsDataURL(b); });
+/** The file of a path-2 plan: the screenshot with the state inside, or the .txt when there is no picture. */
+const attachment = (p: Plan) => (shot ? new Blob([shotWithState(shot, block, p) as BlobPart], { type: 'image/png' }) : new Blob([txtFile(p, stateText(block))], { type: 'text/plain' }));
 
 /**
  * The Report button. Everything up to opening the tab runs inside the click, with no wait in between (a popup blocker lets a
- * window.open through only then): the state was packed and the screenshot read while the player wrote.
+ * window.open through only then, and some browsers save a file only then): the state was packed and the screenshot made
+ * while the player wrote; putting the state into the PNG is a copy of bytes.
  */
 function send(e: Event) {
   e.preventDefault();
@@ -333,35 +419,17 @@ function send(e: Event) {
   const p = plan();
   const link = $<HTMLAnchorElement>('rp-link');
   link.href = p.url; link.classList.remove('hidden');
-  const okMsg = 'The game state is on your clipboard. On GitHub, paste with Ctrl+V / long-press Paste where it says PASTE STATE HERE, then press Create.';
-  const byHand = () => {
-    const ta = $<HTMLTextAreaElement>('rp-clip');
-    ta.value = p.clip; $('rp-clipbox').classList.remove('hidden');
-    status('Your browser did not let the game use the clipboard: copy the text in the box below by hand, then paste it on GitHub where it says PASTE STATE HERE.', true);
-  };
-  if (p.path === 1) {
-    openTab(p.url);
-    status('GitHub is open in a new tab with everything filled in. Check it and press Create there.');
-  } else if (p.path === 2) {
-    if (copyNow(p.clip)) { openTab(p.url); status(okMsg); return; }
-    // (no synchronous copy: the Clipboard API, then the tab; it answers in a moment, well inside the click's grace period)
-    const cb = navigator.clipboard;
-    const tryApi = cb && typeof cb.writeText === 'function' ? cb.writeText(p.clip).then(() => true, () => false) : Promise.resolve(false);
-    void tryApi.then((ok) => { openTab(p.url); if (ok) status(okMsg); else byHand(); });
-  } else {
-    download(p.fileName, p.file + (shotUrl ? `\n### Screenshot (PNG as a data URL)\n${shotUrl}\n` : '\n(no screenshot: the browser did not give the game its picture)\n'));
-    openTab(p.url);
-    status(`The game downloaded ${p.fileName}. On GitHub, drag that file into the issue where it says ATTACH THE REPORT FILE HERE, then press Create.`);
-  }
+  if (p.path === 2) download(p.fileName, attachment(p));
+  openTab(p.url);
+  status(p.path === 1 ? 'GitHub is open in a new tab with everything filled in. Check it and press Create there.'
+    : `Saved ${p.fileName} to your downloads. On GitHub, drag it into the issue where it says so, then press Create.`);
 }
-async function copyShot() {
-  const C = (globalThis as { ClipboardItem?: typeof ClipboardItem }).ClipboardItem;
-  if (!C || !navigator.clipboard || typeof navigator.clipboard.write !== 'function') { status('This browser cannot put a picture on the clipboard. Use your system\'s screenshot tool instead if a picture helps.', true); return; }
-  try {
-    // (the picture is handed over as a promise, inside the click: Safari needs that)
-    await navigator.clipboard.write([new C({ 'image/png': grab().then((b) => { if (!b) throw new Error('no picture'); return b; }) })]);
-    status('A screenshot is on your clipboard: paste it into the issue on GitHub with Ctrl+V / long-press Paste.');
-  } catch { status('The browser did not let the game copy a screenshot. Use your system\'s screenshot tool instead if a picture helps.', true); }
+/** Save screenshot (path 1, where nothing is saved otherwise): the same PNG, state inside. */
+function saveShot() {
+  if (packing || !shot) return;
+  const p = plan(2);
+  download(p.fileName, attachment(p));
+  status(`Saved ${p.fileName}. Attach it on GitHub if a picture helps.`);
 }
 
 // ---------- Load report (dev builds and ?debug=1) ----------
@@ -409,7 +477,17 @@ export function initReport(h: ReportHost, debug: boolean) {
   $<HTMLInputElement>('rp-sum').maxLength = SUMMARY_MAX; $<HTMLTextAreaElement>('rp-what').maxLength = WHAT_MAX; $<HTMLTextAreaElement>('rp-exp').maxLength = EXPECT_MAX;
   $('rp-form').addEventListener('submit', send);
   $('rp-form').addEventListener('input', () => { clearTimeout(prevTimer); prevTimer = window.setTimeout(preview, 150); });
-  $('rp-shot').addEventListener('click', () => void copyShot());
+  // the screenshot beside the line that says how the report goes (built here: play.html holds the form's fixed parts)
+  thumb = document.createElement('img');
+  thumb.className = 'rp-thumb'; thumb.alt = 'The screenshot that goes with the report'; thumb.decoding = 'async';
+  const box = document.createElement('figure'), badge = document.createElement('figcaption'), row = document.createElement('div');
+  box.id = 'rp-shotbox'; box.className = 'rp-shotbox hidden'; badge.className = 'rp-badge'; badge.textContent = 'state inside';
+  box.append(thumb, badge); row.className = 'rp-shotrow';
+  const how = $('rp-how');
+  how.before(row); row.append(box, how);
+  $('rp-shot').textContent = 'Save screenshot';
+  $('rp-shot').addEventListener('click', saveShot);
+  $('rp-clipbox').remove(); // (the clipboard path is gone)
   $('rp-cancel').addEventListener('click', closeReport);
   // Escape closes the form, from inside a field too; it goes no further (the game would read it as "pause")
   // (Tab goes round inside the open form: it is modal, the game behind it takes no focus)
@@ -422,8 +500,20 @@ export function initReport(h: ReportHost, debug: boolean) {
     const f = (e.target as HTMLInputElement).files?.[0];
     if (!f) return;
     if (f.size > 40 * 1024 * 1024) { $('lr-status').textContent = 'That file is too big to be a report.'; return; }
-    $<HTMLTextAreaElement>('lr-text').value = await f.text();
-    $('lr-status').textContent = `${f.name}: ${Math.ceil(f.size / 1024)} KB read. Press Load.`;
+    const s = $('lr-status'), bytes = new Uint8Array(await f.arrayBuffer());
+    s.classList.remove('bad');
+    if (isPng(bytes)) {
+      // a report screenshot: the state is in its 'beatspire-state' chunk
+      let st = '';
+      try { st = stateFromPng(bytes); } catch (err) { s.classList.add('bad'); s.textContent = `${f.name}: ${err instanceof Error ? err.message : String(err)}`; return; }
+      if (!st) { s.classList.add('bad'); s.textContent = `${f.name}: a picture with no game state inside (a screenshot pasted or re-saved loses it).`; return; }
+      $<HTMLTextAreaElement>('lr-text').value = st;
+      s.textContent = `${f.name}: game state read from the screenshot (${Math.ceil(st.length / 1024)} KB). Press Load.`;
+      return;
+    }
+    $<HTMLTextAreaElement>('lr-text').value = new TextDecoder().decode(bytes);
+    s.textContent = `${f.name}: ${Math.ceil(f.size / 1024)} KB read. Press Load.`;
   });
+  $<HTMLInputElement>('lr-file').accept = '.png,.txt,.md,image/png,text/plain';
   for (const id of ['m-load', 'p-load']) $(id).classList.toggle('hidden', !debug);
 }

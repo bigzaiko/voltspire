@@ -15,9 +15,9 @@ const WAVES = +(process.argv[2] || 5) || 5, SEEDS = +(process.argv[3] || 3) || 3
 const PREFER = ['belts', 'p_dmg', 'hollow', 'p_servo', 'overclock', 'twin', 'p_crit', 'salvage', 'drop', 'optics'];
 
 export interface OpeningResult { map: string; seed: number; lives: number[]; maxLives: number; lines: number; turrets: number; mk2: number; delivered: number; gold: number; over: boolean; waves: number; first: string; start: number }
-/** Play the opening of one run (see the header). */
-export function playOpening(def: MapDef, seed: number, waves = WAVES, diff = 'normal'): OpeningResult {
-  const s = new Sim({ seed, map: def, pauseOnCards: false, diff });
+/** Play the opening of one run (see the header). `after` is called in the build phase after each wave and may hand back a Sim to go on with (a restored save). */
+export function playOpening(def: MapDef, seed: number, waves = WAVES, diff = 'normal', after?: (s: Sim, wave: number) => Sim | void): OpeningResult {
+  let s = new Sim({ seed, map: def, pauseOnCards: false, diff });
   s.autoWaves = false; // (each wave is called once the build is done)
   const al = armLines(def), used = new Set<number>(), lines: ArmLine[] = [];
   const key = (c: [number, number]) => c[1] * GW + c[0];
@@ -64,6 +64,8 @@ export function playOpening(def: MapDef, seed: number, waves = WAVES, diff = 'no
     s.startWave();
     for (let i = 0; i < 60 * 240 && !s.over && !s.planning; i++) { s.step(1 / 60); s.events.length = 0; cards(); }
     lives.push(s.lives);
+    // (tools/smoke.ts: a save taken here and restored carries on in place of the original)
+    if (after) s = after(s, w) || s;
   }
   return {
     map: def.id, seed, lives, maxLives: s.maxLives, lines: lines.length, turrets: s.towers.filter((t) => t.type === 'pulse').length,

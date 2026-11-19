@@ -32,7 +32,7 @@ labels: bug
 ```
 
 ### State
-<!-- The game's state block (it starts with BSR1:). Paste it here if the game put it on your clipboard, or attach the report file it downloaded. -->
+<!-- The game's state block (it starts with BSR1:). When it did not fit in the link, the game saved a screenshot, beatspire-report-<time>.png, with the state inside it: attach that file here (drag it in; the file itself, not a pasted picture). -->
 ```text
 
 ```

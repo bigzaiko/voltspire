@@ -69,21 +69,35 @@ In the game, **Report on GitHub** (in the pause menu, the main menu and How to p
 
 The issue holds your text, the game version, browser, OS, graphics card, screen size, quality settings, the run (mode, map, difficulty, wave), the last ~200 game events and your actions, the last 50 console errors and warnings (messages only, without the query strings of any address), and a **state block**: the whole game state, packed (`BSR1:...`), from which the run can be rebuilt exactly. How it gets there depends on its size:
 
-1. It all fits in the link: GitHub opens with everything filled in.
-2. Too long for a link (a big factory): GitHub opens with the text filled in and a line saying PASTE STATE HERE. The game put the state on your clipboard: select that line and paste (<kbd>Ctrl</kbd>+<kbd>V</kbd>, or long-press and Paste on a phone).
-3. Too long for one issue: the game also downloads a report file (with a screenshot inside); drag it into the issue where it says so.
+1. It all fits in the link: GitHub opens with everything filled in. Nothing is saved (**Save screenshot** saves the picture if it helps).
+2. Too long for a link (a big factory): GitHub opens with the text filled in and a line *Attach the screenshot file beatspire-report-<time>.png here*, and the game saves that file to your downloads: a screenshot of the game with a caption strip (version, map, wave) and **the game state inside the PNG** (a text chunk `beatspire-state`, beside the issue text in `beatspire-report`). Drag the file into the issue. Attach the file itself: a picture pasted from the clipboard is re-encoded and loses the state. (A browser that gives no picture saves the same as a `.txt` file.)
 
-**Copy screenshot** puts a picture of the game on your clipboard to paste into the issue (browsers that cannot do that say so). The limits were measured against GitHub: a new-issue link stops working past about 7000 characters for a signed-out visitor (the login redirect carries the whole link once more), and GitHub refuses any link past about 8150; an issue body may be 65536 characters. `src/report.ts` keeps the numbers and how they were found.
+GitHub stores attachments as uploaded: public PNGs fetched from `github.com/user-attachments` come back with their text and metadata chunks intact, so the state survives (how that was checked is in `src/report.ts`). The link limits were measured against GitHub: a new-issue link stops working past about 7000 characters for a signed-out visitor (the login redirect carries the whole link once more), and GitHub refuses any link past about 8150. `src/report.ts` keeps the numbers and how they were found.
 
 **Reproducing a report** (for the owner):
 
 ```bash
-node tools/repro.ts issue.txt               # a saved issue body, a downloaded report file, or just the block; '-' reads stdin
+node tools/repro.ts beatspire-report-20261119-084528.png   # the report screenshot (--text prints the report text inside it)
+node tools/repro.ts issue.txt               # a saved issue body, a .txt report file, or just the block; '-' reads stdin
 node tools/repro.ts issue.txt --steps 1800  # run 30 s on and list what changed
 node tools/repro.ts issue.txt --wave --watch fac:12 --watch tower:3   # call the next wave, follow one arm and one tower
 ```
 
-It prints the map, wave, credits and counts, the supply diagnosis of every building and tower (with the arms' and mines' state), then runs the sim forward. It exits with code 2 when the block is missing, damaged or from another format version. In the game itself, **Load report** (on the dev server, or any build with `?debug=1` in the address) takes a pasted block or a report file and continues from exactly that state, paused. `node tools/smoke.ts` checks that a restored state goes on step for step like the original.
+It prints the map, wave, credits and counts, the supply diagnosis of every building and tower (with the arms' and mines' state), then runs the sim forward. It exits with code 2 when the block is missing, damaged or from another format version. In the game itself, **Load report** (on the dev server, or any build with `?debug=1` in the address) takes a pasted block, a report screenshot or a report file and continues from exactly that state, paused. `node tools/smoke.ts` checks that a restored state goes on step for step like the original; `node tools/png-test.ts` that the state goes into a PNG and comes back with valid CRCs and the same state hash.
+
+## Saves, records and achievements
+
+- **Saves** - a solo run saves itself between waves: when a wave is cleared and again right before the next one starts, never during a wave. Reload the page in the middle of a wave and the run comes back at the end of that wave's build phase, with everything you had built, and the wave starts again from the top. One save per map, difficulty and mode; picking a map that has one asks whether to continue or start over. A win, a loss or starting over clears it. Bot, demo, co-op and versus runs never save. A save that cannot be read (damaged, or from another version of the game) is dropped with a message.
+- **Records** - every finished run (won, lost, or given up after wave 1) goes into an archive of the last 200 runs: map, difficulty, mode, wave, core left, time, kills, Colossi and the Titan, towers and buildings built by type, items delivered, cards taken, seed. Per map, difficulty and mode the game keeps the best wave, the most core left in a win and the fastest win; lifetime totals add up runs, wins, kills, play time, items and specials.
+- **Achievements** - 39, in bronze, silver and gold, each with the art of its tower, building or machine: firsts (first win, Mk3, arm line, belt, oil, power, blueprint, special, targeting, the tutorial), wins per map tier and difficulty, a win without losing core integrity, the Colossus and the Titan, factory milestones (1,000 and 10,000 items delivered, 20 arms at once, every plant in one run), tower mastery (Pulse Turrets only, every tower in one run, five Mk3s), Survival waves 30, 40 and 50, and a few hidden ones.
+
+In the game: the main menu shows a Continue card for the newest save (a reload lands there, nothing resumes without a click), map cards with a save carry a small wave mark, and the HUD shows a quiet "saved" tick. Records (lifetime tiles, best per map with a medal, the archive with towers and cards per run) and Achievements (hex medals by tier, progress rings, hidden ones as ???) are in the main menu; unlocks slide in at the top during play and the end screen shows what the run set and earned. The screens are `src/records-ui.ts` and `src/records-ui.css`.
+
+How it fits together: `src/game/career.ts` is what the game talks to; `saves.ts` writes the saves (the state block of the bug reports, `snapshot.ts`, plus the run's counters), `records.ts` holds the run counters (fed from the sim's events every frame) and the archive, `achievements.ts` the table and the evaluator. All of it is DOM-free and tested in Node (`tools/achievements-test.ts`, and `tools/smoke.ts` plays waves with the scripted opener, saves, reloads and checks the continued run ends in the same state as one without a break).
+
+## Platforms
+
+Saves, records and achievements go through a small platform layer in `src/platform/`: async key/value storage, the platform's achievement service, and a few capability flags. The web build uses `localStorage` under the `beatspire:` prefix (when the browser's storage is full, the oldest archived runs are dropped first). The older settings, map records and music list keep their own keys. An Android build (Capacitor: Preferences, Google Play Games) or a Steam build (Electron or Tauri with Steamworks: Steam Cloud, achievements and stats) only needs an adapter of its own; `src/platform/README.md` says how, and `src/platform/ids.ts` maps the achievement ids to each service.
 
 ## Develop
 
@@ -94,6 +108,7 @@ npm run build      # static site in dist/
 node tools/balance.ts               # headless bot runs for balancing (see the file for its arguments)
 node tools/smoke.ts        # headless checks: maps, the factory, hostile input, co-op sync
 node tools/hex-test.ts     # hex grid maths
+node tools/achievements-test.ts  # achievements, run archive, saves through the career
 node tools/mapgen-test.ts  # map generator
 node tools/music-test.ts   # Spotify sign-in, links, BPM lookups and cache, beat maths, beat detector
 ```

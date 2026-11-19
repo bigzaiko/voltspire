@@ -1,5 +1,5 @@
 /* The bug report form, the Load report form (debug) and the banner after a load (see report.ts). */
-#report, #loadrep { z-index: 24; }
+#report, #loadrep { z-index: 27; } /* above #ach-pop (26): an unlock popup must not cover the form */
 .report-sheet { width: min(100%, 820px); gap: 12px; }
 .rp-note { margin: 0; color: var(--bone); font-size: 16px; }
 .rp-note.rp-small { font-size: 14px; color: var(--muted); }
@@ -17,6 +17,19 @@ input.rp-in { height: 44px; }
 .rp-count { justify-self: end; font-family: var(--mono); font-size: 11px; color: var(--muted); }
 .rp-ph { margin: 10px 0 0; }
 .rp-how { margin: 0; font-size: 15px; color: var(--sand); }
+/* the screenshot that goes with the report, beside the line that says how (report.ts builds the row) */
+.rp-shotrow { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.rp-shotbox { position: relative; flex: 0 0 auto; max-width: 40%; margin: 0; line-height: 0; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--soot-0); overflow: hidden; }
+/* the whole picture, caption strip included: a landscape frame up to 220 px wide, a portrait one up to 160 px high */
+.rp-thumb { display: block; width: auto; height: auto; max-width: min(220px, 100%); max-height: 160px; }
+.rp-badge {
+  position: absolute; left: 4px; top: 4px; padding: 1px 5px; font-family: var(--mono); font-size: 10px; line-height: 1.4; letter-spacing: 0.06em;
+  text-transform: uppercase; max-width: calc(100% - 8px); color: var(--ink); background: var(--verdigris); border-radius: var(--r);
+}
+/* path 2: this picture is the attachment */
+.rp-shotbox.attach { border-color: var(--sand); box-shadow: 0 0 0 1px var(--sand), 0 0 18px rgba(227, 220, 146, 0.25); }
+.rp-shotbox.attach .rp-badge { background: var(--sand); }
+.rp-shotrow .rp-how { flex: 1 1 0; min-width: 0; }
 .rp-preview {
   margin: 0; max-height: 34vh; overflow: auto; padding: 10px 12px; font-family: var(--mono); font-size: 12px; line-height: 1.45;
   white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; color: var(--bone);
@@ -26,7 +39,6 @@ input.rp-in { height: 44px; }
 .rp-status.bad { color: var(--apricot); }
 .rp-link { justify-self: start; color: var(--sand); font-size: 15px; }
 .rp-link:focus-visible { outline: 2px solid var(--sand); outline-offset: 2px; }
-.rp-clipbox { display: grid; gap: 6px; }
 .rp-file { font: inherit; font-size: 15px; color: var(--bone); }
 .rp-banner {
   position: fixed; left: 50%; top: calc(var(--top-h) + 10px); transform: translateX(-50%); z-index: 21;
@@ -40,7 +52,6 @@ input.rp-in { height: 44px; }
 @media (max-width: 520px) {
   .report-sheet { gap: 8px; }
   .rp-preview { max-height: 28vh; font-size: 11px; }
+  .rp-shotrow .rp-how { font-size: 14px; }
   .rp-form .menu-buttons.row .btn { flex: 1 1 100%; }
 }
-/* the textarea the game copies from inside the click (report.ts copyNow): off screen, never seen */
-.rp-offscreen { position: fixed; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; }

@@ -1,28 +1,32 @@
 // Rebuild a run from a bug report and run it forward (Node, no browser):
-//   node tools/repro.ts <file | -> [--steps N] [--wave] [--pick K] [--watch fac:<id> | tower:<id>]... [--quiet]
-// The input is a state block (BSR1:...), a whole issue body pasted from GitHub, or a downloaded report file; '-' reads stdin.
+//   node tools/repro.ts <file | -> [--steps N] [--wave] [--pick K] [--watch fac:<id> | tower:<id>]... [--quiet] [--text]
+// The input is a state block (BSR1:...), a whole issue body pasted from GitHub, a downloaded report file, or the report
+// screenshot (beatspire-report-<time>.png: the state is in its 'beatspire-state' chunk, see src/pngstate.ts); '-' reads stdin.
 // Prints what the state holds (map, wave, credits, counts), the supply diagnosis of every building and tower with the
 // Transfer Arms' and mines' own state, then runs the sim N steps of 1/60 s (default 600: ten seconds) and reports what
 // changed. --wave calls the next wave first when the run is in its build phase (the factory stands still until then).
 // --pick K picks card K (1..3) of every offer as it comes; without it offers stay open and the run goes on regardless.
+// --text prints the whole report text a screenshot carries (the logs that did not fit in the issue's link).
 // --watch prints a building or tower once a second, and every event about it. Exit code 2: the block is missing, corrupt or
 // from a format version this checkout cannot read; 1: bad arguments.
 import { readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
-import { decodeSnapshot, restoreSim, SnapError, SNAP_V, extractBlock } from '../src/game/snapshot.ts';
+import { decodeSnapshot, restoreSim, SnapError, SNAP_V, extractBlock, stateHash } from '../src/game/snapshot.ts';
 import type { Snap } from '../src/game/snapshot.ts';
 import type { Sim, Ev, Tower } from '../src/game/sim.ts';
 import type { Fac, Diag } from '../src/game/factory.ts';
 import { facKey, towerKey } from '../src/game/factory.ts';
+import { isPng, readText, STATE_KEY, REPORT_KEY } from '../src/pngstate.ts';
 
-const USAGE = 'usage: node tools/repro.ts <file | -> [--steps N] [--wave] [--pick K] [--watch fac:<id>|tower:<id>]... [--quiet]';
+const USAGE = 'usage: node tools/repro.ts <file | -> [--steps N] [--wave] [--pick K] [--watch fac:<id>|tower:<id>]... [--quiet] [--text]';
 const args = process.argv.slice(2);
-const opt = { file: '', steps: 600, wave: false, pick: 0, quiet: false, watch: [] as { k: 'f' | 't'; id: number }[] };
+const opt = { file: '', steps: 600, wave: false, pick: 0, quiet: false, text: false, watch: [] as { k: 'f' | 't'; id: number }[] };
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--steps') { opt.steps = Math.max(0, Math.floor(Number(args[++i]))); if (!Number.isFinite(opt.steps)) bad('--steps needs a number'); }
   else if (a === '--wave') opt.wave = true;
   else if (a === '--quiet') opt.quiet = true;
+  else if (a === '--text') opt.text = true;
   else if (a === '--pick') { opt.pick = Math.floor(Number(args[++i])); if (!(opt.pick >= 1 && opt.pick <= 3)) bad('--pick needs 1, 2 or 3'); }
   else if (a === '--watch') {
     const m = /^(fac|tower|f|t):?(\d+)$/.exec(args[++i] || '');
@@ -97,8 +101,20 @@ function changes(a: Map<string, string>, b: Map<string, string>) {
 }
 
 async function main() {
-  let text: string;
-  try { text = opt.file === '-' ? readFileSync(0, 'utf8') : readFileSync(opt.file, 'utf8'); } catch (e) { console.error(`cannot read ${opt.file}: ${(e as Error).message}`); process.exit(1); }
+  let raw: Buffer;
+  try { raw = opt.file === '-' ? readFileSync(0) : readFileSync(opt.file); } catch (e) { console.error(`cannot read ${opt.file}: ${(e as Error).message}`); process.exit(1); }
+  let text = '';
+  const bytes = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+  if (isPng(bytes)) {
+    // a report screenshot: the state block and the issue text are in its text chunks
+    let t: Map<string, string>;
+    try { t = readText(bytes); } catch (e) { console.error(`repro: ${opt.file}: ${(e as Error).message}`); process.exit(2); }
+    text = t.get(STATE_KEY) || '';
+    if (!text) { console.error(`repro: ${opt.file} is a PNG with no '${STATE_KEY}' chunk (not a report screenshot, or re-saved / pasted, which drops it)`); process.exit(2); }
+    const rep = t.get(REPORT_KEY);
+    console.log(`report screenshot: ${Math.ceil(bytes.length / 1024)} KB${rep ? `; report text ${rep.length} characters: ${rep.split('\n')[0]}${opt.text ? '' : ' (--text prints it)'}` : ''}`);
+    if (rep && opt.text) console.log('\n' + rep);
+  } else text = raw.toString('utf8');
   let snap: Snap, sim: Sim;
   try { snap = await decodeSnapshot(text); sim = restoreSim(snap); } catch (e) {
     if (e instanceof SnapError) { console.error('repro: ' + e.message); process.exit(2); }
@@ -108,6 +124,7 @@ async function main() {
   try { here = execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch { /* not a checkout */ }
   const block = extractBlock(text)!;
   console.log(`state block: ${block.length} characters, format ${SNAP_V}${snap.meta?.build ? `, written by build ${snap.meta.build}` : ''}${snap.meta?.date ? ' on ' + snap.meta.date : ''}${here ? `; this checkout is ${here}` : ''}`);
+  console.log(`state hash ${stateHash(sim)} (equal hashes, equal states)`);
   if (snap.meta?.build && /^[0-9a-f]{7,40}$/.test(snap.meta.build) && here && !snap.meta.build.startsWith(here) && !here.startsWith(snap.meta.build)) console.log(`  (another build: check out ${snap.meta.build} if the run goes another way than reported)`);
   summary(sim);
   if (!opt.quiet) diagnosis(sim);
