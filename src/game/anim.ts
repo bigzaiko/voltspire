@@ -110,11 +110,16 @@ interface Leg {
   ph: number;                              // phase offset in the gait cycle
   lift: number;                            // current foot lift (0 = planted)
   down: boolean;                           // planted
+  falls: number;                           // footfalls so far (a count for tools)
+  aim: boolean;                            // in a swing whose spot (tx, tz) is being eased (gaits without a snap callback)
   wx: number; wz: number; wyaw: number;    // world position / heading of the plant (or of the last lift-off)
   sx: number; sz: number;                  // current toe pivot, root space
   tx: number; tz: number;                  // world spot the swing is heading for (rigs with a snap callback)
   pyaw: number;                            // world heading of the pad while it stands (gaits with `pad`)
-  hop: number; ox: number; oz: number;     // a step out of turn (gaits with `restep`): progress 0..1 (0 = none) and where it began (world)
+  hop: number; ox: number; oz: number;     // a step out of turn: progress 0..1 (0 = none) and where it began (world)
+  ux: number; uz: number; clear: number;   // radial legs: unit direction from the hip to the neutral foot, and how far out along it a foot must stand
+  lo: number; hi: number;                  // hip to ankle: the shortest and the longest reach the leg is posed at without strain
+  max: number;                             // hip to ankle: as far as the solve reaches at all (beyond it a foot is left behind)
 }
 
 function makeLeg(root: O3, id: string, ph: number, body: O3 | null): Leg | null {
@@ -127,15 +132,16 @@ function makeLeg(root: O3, id: string, ph: number, body: O3 | null): Leg | null 
   let ux = 0, uz = 1;
   if (yawRoot) { const d = Math.hypot(T.x - H.x, T.z - H.z) || 1; ux = (T.x - H.x) / d; uz = (T.z - H.z) / d; }
   const ang = (a: THREE.Vector3, b: THREE.Vector3) => Math.atan2((b.x - a.x) * ux + (b.z - a.z) * uz, a.y - b.y);
-  const a1 = ang(H, K), a2 = ang(K, A);
+  const a1 = ang(H, K), a2 = ang(K, A), l1 = H.distanceTo(K), l2 = K.distanceTo(A);
   upper.rotation.order = 'ZYX';            // hip: abduction (z) is applied outside the flexion (x)
   const bp = body ? body.position : H.clone().set(0, 0, 0);
   return {
     root: yawRoot, upper, lower, foot, toe,
-    l1: H.distanceTo(K), l2: K.distanceTo(A), l3: foot ? A.distanceTo(T) : 0, bend: a1 >= a2 ? 1 : -1,
+    l1, l2, l3: foot ? A.distanceTo(T) : 0, bend: a1 >= a2 ? 1 : -1,
     hx: H.x, hy: H.y, hz: H.z, bhx: H.x - bp.x, bhy: H.y - bp.y, bhz: H.z - bp.z,
     fx: T.x, fz: T.z, toeH: T.y, a3: foot ? ang(A, T) : 0, ph, lift: 0,
-    down: false, wx: 0, wz: 0, wyaw: 0, sx: T.x, sz: T.z, tx: 0, tz: 0, pyaw: 0, hop: 0, ox: 0, oz: 0,
+    down: false, falls: 0, aim: false, wx: 0, wz: 0, wyaw: 0, sx: T.x, sz: T.z, tx: 0, tz: 0, pyaw: 0, hop: 0, ox: 0, oz: 0,
+    ux, uz, clear: yawRoot ? 0.155 * (l1 + l2) : 0, lo: Math.abs(l1 - l2) + 0.1 * (l1 + l2), hi: 0.97 * (l1 + l2), max: 0.995 * (l1 + l2),
   };
 }
 
@@ -182,11 +188,36 @@ interface Gait {
 }
 
 /** Per-update context shared by all legs of one rig. */
-const C = { X: 0, Y: 0, Z: 0, cs: 1, sn: 0, sc: 1, psi: 0, vx: 0, vz: 0, om: 0, sp: 0, spMin: 1, liftAmp: 1, pitch: 0, yaw: 0, init: false, dt: 0 };
+const C = { X: 0, Y: 0, Z: 0, cs: 1, sn: 0, ct: 1, sc: 1, psi: 0, vx: 0, vz: 0, om: 0, sp: 0, spMin: 1, liftAmp: 1, pitch: 0, yaw: 0, init: false, dt: 0, dcyc: 0, hopT: 0.3 };
 const QBI = new THREE.Quaternion(), QC = new THREE.Quaternion(), QD = new THREE.Quaternion(), EU = new THREE.Euler();
 const SN = { x: 0, z: 0 };
-/** Gaits with `restep`: a foot never stands closer than this to the axis of its own hip (model units). */
-const HIP_CLEAR = 1.9;
+const V2 = new THREE.Vector3();
+
+/** Height of the ground under a world point, relative to the root (model units). */
+const groundAt = (r: EnemyRig, x: number, z: number) => (r.ground ? (r.ground(x, z) - C.Y) / C.sc : 0);
+/** Root-space point -> world (into SN). */
+function toWorld(x: number, z: number) { SN.x = C.X + (x * C.cs + z * C.ct * C.sn) * C.sc; SN.z = C.Z + (-x * C.sn + z * C.ct * C.cs) * C.sc; return SN; }
+/**
+ * Hip to ankle (model units) that leg L needs for its toe at root-space (x, y, z) in the body's current pose: the same
+ * reduction solveLeg makes, so the result can be held against L.lo / L.hi.
+ */
+function reachOf(r: EnemyRig, L: Leg, x: number, y: number, z: number) {
+  V2.set(x, y, z);
+  if (r.body) V2.sub(r.body.position).applyQuaternion(QBI);
+  V2.x -= L.bhx; V2.y -= L.bhy; V2.z -= L.bhz;
+  let tz: number, ty: number;
+  if (L.root) { tz = Math.hypot(V2.x, V2.z); ty = V2.y; } else { tz = V2.z; ty = -Math.hypot(V2.x, V2.y); }
+  if (L.foot) { tz -= L.l3 * Math.sin(L.a3); ty += L.l3 * Math.cos(L.a3); }
+  return Math.hypot(tz, ty);
+}
+/** Radial legs: a foot is never set down under or behind its own hip (the leg would have to spin round on its yaw to follow it). Moves the root-space point (x, z) out along the leg (into SN). */
+function keepOut(L: Leg, x: number, z: number) {
+  SN.x = x; SN.z = z;
+  if (!L.root) return SN;
+  const out = (x - L.hx) * L.ux + (z - L.hz) * L.uz;
+  if (out < L.clear) { SN.x += (L.clear - out) * L.ux; SN.z += (L.clear - out) * L.uz; }
+  return SN;
+}
 /** How far a leaping machine pulls its feet up under itself (model units). */
 const AIR_TUCK = 3.2;
 
@@ -205,54 +236,67 @@ function stepLeg(r: EnemyRig, L: Leg, G: Gait) {
   if (C.init) {
     // first frame of a (re)used visual: drop every foot where a steady walk would have it
     const u = p < G.duty ? p / G.duty : 1;
-    L.down = p < G.duty; L.sx = nx + ox * (1 - 2 * u); L.sz = nz + oz * (1 - 2 * u); L.wyaw = C.psi;
-    L.wx = C.X + (L.sx * C.cs + L.sz * C.sn) * C.sc; L.wz = C.Z + (-L.sx * C.sn + L.sz * C.cs) * C.sc;
+    keepOut(L, nx + ox * (1 - 2 * u), nz + oz * (1 - 2 * u));
+    L.down = p < G.duty; L.sx = SN.x; L.sz = SN.z; L.wyaw = C.psi;
+    L.wx = C.X + (L.sx * C.cs + L.sz * C.ct * C.sn) * C.sc; L.wz = C.Z + (-L.sx * C.sn + L.sz * C.ct * C.cs) * C.sc;
     if (r.snap && L.down) { r.snap(L.wx, L.wz, SN); L.wx = SN.x; L.wz = SN.z; }
-    L.hop = 0; L.pyaw = NaN;
+    L.hop = 0; L.pyaw = NaN; L.aim = false;
   }
   // the stored world point seen from the body now
   let dx = (L.wx - C.X) / C.sc, dz = (L.wz - C.Z) / C.sc;
-  let ax = dx * C.cs - dz * C.sn, az = dx * C.sn + dz * C.cs;
+  let ax = dx * C.cs - dz * C.sn, az = (dx * C.sn + dz * C.cs) / C.ct;
   const ex = ax - nx, ez = az - nz, ed = Math.hypot(ex, ez);
   // a radial leg cannot stand right under its own hip either (it would have to spin round to follow the foot through)
-  const under = L.root && G.restep ? Math.hypot(ax - L.hx, az - L.hz) < HIP_CLEAR : false;
-  if (G.restep && L.down && !L.hop && !C.init && p < G.duty - 0.1 && r.air <= 0 && (ed > leash || under)) {
+  const under = L.root ? Math.hypot(ax - L.hx, az - L.hz) < L.clear || (ax - L.hx) * L.ux + (az - L.hz) * L.uz < L.clear * 0.5 : false;
+  let strain = false;
+  if (L.down && !L.hop && !C.init && r.air <= 0 && r.dead <= 0) {
+    // a planted foot the leg can no longer reach without stretching (or that it would have to fold up under itself for)
+    const d = reachOf(r, L, ax, L.toeH + groundAt(r, L.wx, L.wz), az);
+    strain = d > L.max || d < L.lo;
+  }
+  if (L.down && !L.hop && !C.init && p < G.duty - (G.restep ? 0.1 : 0.04) && r.air <= 0 && r.dead <= 0 && (ed > leash || under || strain)) {
     // out of reach with most of its stance still to come: pick the foot up and set it down where it belongs
     L.hop = 1e-4; L.ox = L.wx; L.oz = L.wz;
     const k = 0.5 - p / G.duty;   // where a foot at this point of its stance would stand
-    const tx = nx + ox * 2 * k, tz = nz + oz * 2 * k;
-    L.tx = C.X + (tx * C.cs + tz * C.sn) * C.sc; L.tz = C.Z + (-tx * C.sn + tz * C.cs) * C.sc;
+    keepOut(L, nx + ox * 2 * k, nz + oz * 2 * k);
+    toWorld(SN.x, SN.z); L.tx = SN.x; L.tz = SN.z;
     if (r.snap) { r.snap(L.tx, L.tz, SN); L.tx = SN.x; L.tz = SN.z; }
     // (no better spot to be had: it stays where it is)
     dx = (L.tx - C.X) / C.sc; dz = (L.tz - C.Z) / C.sc;
-    if (Math.hypot(dx * C.cs - dz * C.sn - nx, dx * C.sn + dz * C.cs - nz) > Math.min(leash, ed) * 0.8 && !under) L.hop = 0;
+    if (Math.hypot(dx * C.cs - dz * C.sn - nx, (dx * C.sn + dz * C.cs) / C.ct - nz) > Math.min(leash, ed) * 0.8 && !under && !strain) L.hop = 0;
+    else if (strain) { // (only if the new spot is easier on the leg)
+      const tx = dx * C.cs - dz * C.sn, tz = (dx * C.sn + dz * C.cs) / C.ct, d = reachOf(r, L, tx, L.toeH + groundAt(r, L.tx, L.tz), tz);
+      if (d > L.max || d < L.lo) L.hop = 0;
+    }
   }
   // out of reach (dragged, pushed): give way, keep the foot under the machine. A machine that re-steps has the reach to
   // let a planted foot trail far behind instead: it is only dragged at the very end of what the leg can do
-  const hard = G.restep ? leash * 1.4 : leash;
+  const hard = leash * 1.4;
   if (ed > hard && !L.hop) {
     ax = nx + ex * hard / ed; az = nz + ez * hard / ed;
-    L.wx = C.X + (ax * C.cs + az * C.sn) * C.sc; L.wz = C.Z + (-ax * C.sn + az * C.cs) * C.sc;
+    L.wx = C.X + (ax * C.cs + az * C.ct * C.sn) * C.sc; L.wz = C.Z + (-ax * C.sn + az * C.ct * C.cs) * C.sc;
   }
   if (L.hop > 0 && p < G.duty) {
     // the step out of turn: a short, low arc from where it stood to its new spot, both fixed in the world
-    const u = (L.hop = Math.min(1, L.hop + C.dt / (G.restep || 1))), e = ease(u);
+    // (it keeps up with the gait: never slower than a regular swing would be at this pace)
+    const u = (L.hop = Math.min(1, L.hop + Math.max(C.dt / C.hopT, C.dcyc / ((1 - G.duty) * 0.8)))), e = ease(u);
     const hx = L.ox + (L.tx - L.ox) * e, hz = L.oz + (L.tz - L.oz) * e;
     dx = (hx - C.X) / C.sc; dz = (hz - C.Z) / C.sc;
-    lx = dx * C.cs - dz * C.sn; lz = dx * C.sn + dz * C.cs;
-    lift = Math.sin(PI * u) * 0.55 * C.liftAmp; sw = e; roll = 0;
+    lx = dx * C.cs - dz * C.sn; lz = (dx * C.sn + dz * C.cs) / C.ct;
+    lift = Math.sin(PI * u) * 0.55 * Math.max(C.liftAmp, 0.5); sw = e; roll = 0;
     L.down = false; L.wx = hx; L.wz = hz;
-    if (u >= 1) { L.hop = 0; L.down = true; L.wyaw = C.psi; if (r.steps && r.air <= 0) r.steps.push(L.wx, L.wz); }
+    if (u >= 1) { L.hop = 0; L.down = true; L.falls++; L.wyaw = C.psi; if (r.steps && r.air <= 0) r.steps.push(L.wx, L.wz); }
   } else if (p < G.duty) {
     if (!L.down) { // touchdown: plant where the swing was heading
-      L.down = true; L.wyaw = C.psi;
+      L.down = true; L.falls++; L.wyaw = C.psi;
       const back = p * (G.stride / G.duty) / den;                 // ground covered since the exact moment of touchdown
-      ax = nx + ox - vnx * back; az = nz + oz - vnz * back;
-      if (r.snap) { // it comes down on the spot it picked when it lifted
+      keepOut(L, nx + ox - vnx * back, nz + oz - vnz * back); ax = SN.x; az = SN.z;
+      if (r.snap || L.aim) { // it comes down on the spot it picked when it lifted (or the one its swing was making for)
         dx = (L.tx - C.X) / C.sc; dz = (L.tz - C.Z) / C.sc;
-        ax = dx * C.cs - dz * C.sn; az = dx * C.sn + dz * C.cs;
+        ax = dx * C.cs - dz * C.sn; az = (dx * C.sn + dz * C.cs) / C.ct;
       }
-      L.wx = C.X + (ax * C.cs + az * C.sn) * C.sc; L.wz = C.Z + (-ax * C.sn + az * C.cs) * C.sc;
+      L.aim = false;
+      L.wx = C.X + (ax * C.cs + az * C.ct * C.sn) * C.sc; L.wz = C.Z + (-ax * C.sn + az * C.ct * C.cs) * C.sc;
       if (r.steps && r.air <= 0) r.steps.push(L.wx, L.wz);
     }
     const u = p / G.duty;
@@ -266,17 +310,41 @@ function stepLeg(r: EnemyRig, L: Leg, G: Gait) {
     // foot leaves and meets the ground without sliding
     const rem = (1 - u) * (1 - G.duty) * (G.stride / G.duty) / den;
     let tx = nx + ox + vnx * rem, tz = nz + oz + vnz * rem;
+    if (!r.snap) {
+      // the spot follows the machine's pace and heading, but never faster than half again its own pace: a sudden stop,
+      // start or reversal (a stun, a gravity pull) moves where the foot comes down without yanking it across the ground
+      // in mid-swing; one that comes down short re-steps once it stands (see above)
+      keepOut(L, tx, tz); toWorld(SN.x, SN.z);
+      if (L.down || L.hop || C.init || !L.aim) { L.tx = SN.x; L.tz = SN.z; }
+      else {
+        const mx = SN.x - L.tx, mz = SN.z - L.tz, m = Math.hypot(mx, mz), lim = 1.5 * den * C.sc * C.dt;
+        if (m > lim) { L.tx += mx * lim / m; L.tz += mz * lim / m; } else { L.tx = SN.x; L.tz = SN.z; }
+      }
+      L.aim = true;
+      dx = (L.tx - C.X) / C.sc; dz = (L.tz - C.Z) / C.sc;
+      tx = dx * C.cs - dz * C.sn; tz = (dx * C.sn + dz * C.cs) / C.ct;
+      // (and it stays within the leg's reach of where the machine is now)
+      const td = Math.hypot(tx - nx, tz - nz), tmax = leash * 0.9;
+      let pull = td > tmax ? tmax / td : 1;
+      if (reachOf(r, L, nx + (tx - nx) * pull, L.toeH + groundAt(r, L.tx, L.tz), nz + (tz - nz) * pull) > L.hi) {
+        // (further than the leg reaches from the hip as the body hangs now: as far out toward it as the leg goes)
+        let a = 0, b = pull;
+        for (let i = 0; i < 5; i++) { const m = (a + b) / 2; if (reachOf(r, L, nx + (tx - nx) * m, L.toeH + groundAt(r, L.tx, L.tz), nz + (tz - nz) * m) > L.hi) b = m; else a = m; }
+        pull = a;
+      }
+      if (pull < 1) { tx = nx + (tx - nx) * pull; tz = nz + (tz - nz) * pull; toWorld(tx, tz); L.tx = SN.x; L.tz = SN.z; }
+    }
     if (r.snap) {
       // a machine that picks its footing: the spot is chosen once, in the world, as the foot lifts (the view may move it
       // onto a free tile), and the swing goes there whatever the body does meanwhile
-      if (L.down || C.init) { r.snap(C.X + (tx * C.cs + tz * C.sn) * C.sc, C.Z + (-tx * C.sn + tz * C.cs) * C.sc, SN); L.tx = SN.x; L.tz = SN.z; }
+      if (L.down || C.init) { r.snap(C.X + (tx * C.cs + tz * C.ct * C.sn) * C.sc, C.Z + (-tx * C.sn + tz * C.ct * C.cs) * C.sc, SN); L.tx = SN.x; L.tz = SN.z; }
       dx = (L.tx - C.X) / C.sc; dz = (L.tz - C.Z) / C.sc;
-      tx = dx * C.cs - dz * C.sn; tz = dx * C.sn + dz * C.cs;
+      tx = dx * C.cs - dz * C.sn; tz = (dx * C.sn + dz * C.cs) / C.ct;
       const td = Math.hypot(tx - nx, tz - nz), tmax = leash * (G.restep ? 0.9 : 1.15);
       if (td > tmax) {
         tx = nx + (tx - nx) * tmax / td; tz = nz + (tz - nz) * tmax / td;
         // (a gait that never drags a foot comes down where the swing really ends, so the spot gives way with the machine)
-        if (G.restep) { L.tx = C.X + (tx * C.cs + tz * C.sn) * C.sc; L.tz = C.Z + (-tx * C.sn + tz * C.cs) * C.sc; }
+        if (G.restep) { L.tx = C.X + (tx * C.cs + tz * C.ct * C.sn) * C.sc; L.tz = C.Z + (-tx * C.sn + tz * C.ct * C.cs) * C.sc; }
       }
     }
     L.down = false; L.hop = 0; sw = e;
@@ -288,10 +356,10 @@ function stepLeg(r: EnemyRig, L: Leg, G: Gait) {
   }
   // in the air (a leap): the legs fold up under the hull, feet off the ground
   const air = r.air;
-  if (air > 0) { lx += (nx * 0.7 - lx) * air; lz += (nz * 0.7 - lz) * air; L.wx = C.X + (lx * C.cs + lz * C.sn) * C.sc; L.wz = C.Z + (-lx * C.sn + lz * C.cs) * C.sc; }
+  if (air > 0) { lx += (nx * 0.7 - lx) * air; lz += (nz * 0.7 - lz) * air; L.wx = C.X + (lx * C.cs + lz * C.ct * C.sn) * C.sc; L.wz = C.Z + (-lx * C.sn + lz * C.ct * C.cs) * C.sc; }
   L.sx = lx; L.sz = lz; L.lift = lift;
   // the ground under this foot, where the view knows it (terraces, raised roads)
-  const gy = r.ground ? (r.ground(C.X + (lx * C.cs + lz * C.sn) * C.sc, C.Z + (-lx * C.sn + lz * C.cs) * C.sc) - C.Y) / C.sc * (1 - air) : 0;
+  const gy = r.ground ? (r.ground(C.X + (lx * C.cs + lz * C.ct * C.sn) * C.sc, C.Z + (-lx * C.sn + lz * C.ct * C.cs) * C.sc) - C.Y) / C.sc * (1 - air) : 0;
   // foot target relative to the hip, in the body's own frame (exact for any body pitch / roll / yaw)
   const body = r.body;
   V.set(lx, L.toeH + lift * G.lift + gy + air * AIR_TUCK, lz);
@@ -364,8 +432,10 @@ export interface EnemyRig {
   footR: number;                        // mean distance of the feet from the turning axis
   cyc: number; t: number; seed: number; age: number; flinch: number; hp: number;
   speed: number; mv: number; sing: number; lastYaw: number; bank: number; look: number;
-  lastX: number; lastZ: number; vx: number; vz: number; om: number; init: boolean; walk: number;
+  lastX: number; lastY: number; lastZ: number; vx: number; vz: number; om: number; init: boolean; walk: number;
   atk: number; atkT: number; hit: boolean;   // attacking the core: blend, clock, and "a blow landed this frame"
+  /** seconds of a step out of turn (a foot picked up and set down again where the leg can reach), and how far the body is raised (+) or lowered (-) so the planted legs can reach their feet (model units) */
+  hopT: number; fit: number;
   sag: number; sagV: number; downN: number;  // Colossus: the hull sags onto every footfall (a damped spring), feet planted last frame
   /** Colossus: how far to its left the middle of the road lies where its front feet land (BOSS_REACH ahead) and where its rear feet land (as far behind), model units. Set by the view before each update; 0 on a straight. */
   roadF: number; roadR: number;
@@ -406,7 +476,8 @@ export function makeEnemyRig(root: O3, type: ET): EnemyRig {
     armLU: find(root, 'arm_l_upper'), armLL: find(root, 'arm_l_lower'), armRU: find(root, 'arm_r_upper'), armRL: find(root, 'arm_r_lower'),
     bx: body ? body.position.x : 0, by: body ? body.position.y : 0, bz: body ? body.position.z : 0, footR,
     cyc: 0, t: 0, seed: 0, age: 0, flinch: 0, hp: -1, speed: 0, mv: 0, sing: 0, lastYaw: 0, bank: 0, look: 0,
-    lastX: 0, lastZ: 0, vx: 0, vz: 0, om: 0, init: true, walk: 1, atk: 0, atkT: 0, hit: false,
+    lastX: 0, lastY: 0, lastZ: 0, vx: 0, vz: 0, om: 0, init: true, walk: 1, atk: 0, atkT: 0, hit: false,
+    hopT: g.restep || clamp(0.8 * (1 - g.duty) * (g.stride / g.duty) / NOMINAL[type], 0.12, 0.6), fit: 0,
     sag: 0, sagV: 0, downN: 0, roadF: 0, roadR: 0, rim, roll: 0, pend: 0, pendV: 0, pvz: 0, spin: 1, stag: 0,
     cells, open: 0, lid: 0, neck, lookPitch: 0, crouch: 0, air: 0, lunge: 0, dead: 0, pist, pistLen: pist.map(boneLen), steps: type === 'titan' ? [] : null, ground: null, snap: null,
   };
@@ -421,14 +492,23 @@ const STRIKE_REACH: Record<ET, number> = { grunt: 0.3, runner: 0.4, drone: 0.5, 
 /** Nominal walking speed (model units / s) used to normalise the "how fast am I moving" blend. */
 const NOMINAL: Record<ET, number> = { grunt: 3, runner: 5, drone: 3.8, shield: 2.5, brute: 1.9, boss: 1.37, wheel: 4.4, brood: 1.6, mite: 4, titan: 0.7 };
 
-/** Call when a pooled visual is handed to a new enemy (after its root has been placed). */
-export function resetEnemy(r: EnemyRig) {
+/**
+ * Call when a pooled visual is handed to a new enemy (after its root has been placed). carry: the same machine goes on
+ * as another enemy (the Titan from its leap onto the road): its feet and its gait stay where they are, only the movement
+ * is measured afresh from here, so nothing jumps.
+ */
+export function resetEnemy(r: EnemyRig, carry = false) {
+  if (carry) {
+    r.lastX = r.root.position.x; r.lastY = r.root.position.y; r.lastZ = r.root.position.z; r.lastYaw = r.root.rotation.y;
+    r.crouch = 0; r.air = 0; r.lunge = 0; r.atk = 0; r.atkT = 0; r.hit = false;   // (the leap leaves it at the very end of its fall)
+    return;
+  }
   r.seed = Math.random() * 100; r.cyc = Math.random(); r.t = 0; r.age = 0; r.flinch = 0; r.hp = -1;
   r.sing = 0; r.bank = 0; r.look = 0; r.lastYaw = r.root.rotation.y;
   // assume it walks in at its normal pace: the first frame is already a valid walking pose
   r.speed = NOMINAL[r.type]; r.mv = 1; r.vx = 0; r.vz = r.speed; r.om = 0; r.walk = 1;
-  r.lastX = r.root.position.x; r.lastZ = r.root.position.z; r.init = true; r.atk = 0; r.atkT = 0; r.hit = false;
-  r.sag = 0; r.sagV = 0; r.downN = r.legs.length; r.roadF = 0; r.roadR = 0; r.roll = Math.random() * TAU; r.pend = 0; r.pendV = 0; r.pvz = r.speed; r.spin = 1; r.stag = 0;
+  r.lastX = r.root.position.x; r.lastY = r.root.position.y; r.lastZ = r.root.position.z; r.init = true; r.atk = 0; r.atkT = 0; r.hit = false;
+  r.fit = 0; r.sag = 0; r.sagV = 0; r.downN = r.legs.length; r.roadF = 0; r.roadR = 0; r.roll = Math.random() * TAU; r.pend = 0; r.pendV = 0; r.pvz = r.speed; r.spin = 1; r.stag = 0;
   r.open = 0; r.lid = 0; r.lookPitch = 0; r.crouch = 0; r.air = 0; r.lunge = 0; r.dead = 0;
   if (r.steps) r.steps.length = 0;
   for (const n of r.neck) n.rotation.set(0, 0, 0);
@@ -447,9 +527,34 @@ export function updateEnemy(r: EnemyRig, dt: number, hpFrac: number, sing: boole
   r.hit = false;
   if (r.steps) r.steps.length = 0;
   if (dt <= 0) return;
+  // A long frame (a hitch, a fast game speed): the way the machine came is walked again in short steps, so every foot
+  // still lifts, swings and lands on its way instead of being dragged (or jumping) across the ground in one go.
+  const root = r.root, sc = root.scale.x || 1, P = root.position;
+  if (!r.init && !frozen && r.legs.length) {
+    const dx = P.x - r.lastX, dy = P.y - r.lastY, dz = P.z - r.lastZ, dpsi = wrap(root.rotation.y - r.lastYaw);
+    const move = Math.hypot(dx, dz) / sc + Math.abs(dpsi) * r.footR;
+    // (further than it could have walked, even at the fastest game speed: it was put there, see stepEnemy)
+    const n = move < 2.5 + 3 * NOMINAL[r.type] * dt ? Math.min(SUB_MAX, Math.ceil(Math.max(dt / SUB_DT, move / (r.gait.stride * 0.3)))) : 1;
+    if (n > 1) {
+      const x1 = P.x, y1 = P.y, z1 = P.z, psi1 = root.rotation.y, x0 = r.lastX, y0 = r.lastY, z0 = r.lastZ, psi0 = r.lastYaw;
+      for (let k = 1; k <= n; k++) {
+        const u = k / n;
+        P.set(x0 + dx * u, y0 + dy * u, z0 + dz * u); root.rotation.y = psi0 + dpsi * u;
+        stepEnemy(r, dt / n, hpFrac, sing, frozen, lookYaw, strike, spin);
+      }
+      P.set(x1, y1, z1); root.rotation.y = psi1; r.lastYaw = psi1;
+      return;
+    }
+  }
+  stepEnemy(r, dt, hpFrac, sing, frozen, lookYaw, strike, spin);
+}
+/** Longest step of a walker's update (s), and how many steps one frame may take at most. */
+const SUB_DT = 0.05, SUB_MAX = 16;
+
+function stepEnemy(r: EnemyRig, dt: number, hpFrac: number, sing: boolean, frozen: boolean, lookYaw: number, strike: boolean, spin: number) {
   const root = r.root, g = r.gait, sc = root.scale.x || 1, psi = root.rotation.y;
   const wdx = root.position.x - r.lastX, wdz = root.position.z - r.lastZ, dpsi = wrap(psi - r.lastYaw);
-  r.lastX = root.position.x; r.lastZ = root.position.z; r.lastYaw = psi;
+  r.lastX = root.position.x; r.lastY = root.position.y; r.lastZ = root.position.z; r.lastYaw = psi;
   if (frozen && !r.init) { r.hp = hpFrac; r.speed = 0; r.vx = r.vz = r.om = 0; return; }
   const t = (r.t += dt), s = r.seed;
   const cs = Math.cos(psi), sn = Math.sin(psi);
@@ -472,11 +577,20 @@ export function updateEnemy(r: EnemyRig, dt: number, hpFrac: number, sing: boole
   const fl = r.flinch, sg = r.sing;
   // gait phase: driven by the ground actually covered (walking and stepping round a turn); scrabbling in place while held
   const step = dist + Math.abs(dpsi) * r.footR;
-  r.cyc += step / (g.stride / g.duty) + sg * dt * (r.type === 'boss' ? 0.5 : 1.7);
+  // stopped with a foot in the air (stunned, blocked): the machine finishes that step at its own pace and sets the foot
+  // down where it belongs, instead of lowering it wherever it hung (as far as it can without lifting another foot)
+  let settle = 0;
+  if (r.legs.length && step < NOMINAL[r.type] * 0.05 * dt && sg < 0.05 && !r.init && r.air <= 0 && r.dead <= 0) {
+    let need = 0, room = 1;
+    for (const L of r.legs) { const p = frac(r.cyc + L.ph); if (p >= g.duty) need = Math.max(need, 1 - p + 1e-3); else room = Math.min(room, g.duty - p - 1e-3); }
+    settle = Math.max(0, Math.min(need, room, dt * NOMINAL[r.type] * g.duty / g.stride * 0.8));
+  }
+  const dcyc = step / (g.stride / g.duty) + sg * dt * (r.type === 'boss' ? 0.5 : 1.7) + settle;
+  r.cyc += dcyc;
   const c = r.cyc, w = c * TAU;
   const amp = Math.max(mv, sg * 0.55);
   // feet that are in the air when the machine stops are set down instead of hanging there
-  r.walk = damp(r.walk, step / dt > NOMINAL[r.type] * 0.04 || sg > 0.05 ? 1 : 0, 6, dt);
+  r.walk = damp(r.walk, step / dt > NOMINAL[r.type] * 0.04 || sg > 0.05 || settle > 0 ? 1 : 0, 6, dt);
   const spawn = 1 - ease(r.age / 0.7);
   r.bank = damp(r.bank, clamp(r.om * 0.055, -0.2, 0.2) * mv, 5, dt);
   const shake = sg * Math.sin(t * 31 + s), shake2 = sg * Math.sin(t * 23 + s * 2);
@@ -654,10 +768,14 @@ export function updateEnemy(r: EnemyRig, dt: number, hpFrac: number, sing: boole
     if (r.jaw) r.jaw.rotation.x += (0.5 * wind - 0.1 * blow) * k;
     if (r.head && r.type !== 'boss' && !tt) r.head.rotation.x += (0.25 * blow - 0.2 * wind) * k;
   } else r.atkT = 0;
+  // the planted legs carry the body: it comes down (or up) as far as they need to reach their feet without a stretch
+  if (body && r.legs.length && !r.init) by += fitBody(r, bx, by, bz, dt, cs, sn, sc);
   if (body) { body.position.set(r.bx + bx, r.by + by, r.bz + bz); body.rotation.set(pitch, yaw, roll); QBI.copy(body.quaternion).invert(); }
   C.X = root.position.x; C.Y = root.position.y; C.Z = root.position.z; C.cs = cs; C.sn = sn; C.sc = sc; C.psi = psi;
+  // (a walker on a ramp is pitched with it: along its length the ground it plants on is shorter in plan by the cosine)
+  C.ct = Math.max(0.5, Math.cos(root.rotation.x));
   C.vx = r.vx; C.vz = r.vz; C.om = r.om; C.sp = r.speed + Math.abs(r.om) * r.footR; C.spMin = NOMINAL[r.type] * 0.2;
-  C.liftAmp = r.walk * (sg > 0.05 ? 0.55 + 0.45 * mv : 1) * (r.dead > 0 ? 0 : 1); C.pitch = pitch; C.yaw = yaw; C.init = r.init; C.dt = dt;
+  C.liftAmp = r.walk * (sg > 0.05 ? 0.55 + 0.45 * mv : 1) * (r.dead > 0 ? 0 : 1); C.pitch = pitch; C.yaw = yaw; C.init = r.init; C.dt = dt; C.dcyc = dcyc; C.hopT = r.hopT;
   const legs = r.legs;
   let downN = 0;
   for (let i = 0; i < legs.length; i++) { stepLeg(r, legs[i], g); if (legs[i].down) downN++; }
@@ -668,6 +786,33 @@ export function updateEnemy(r: EnemyRig, dt: number, hpFrac: number, sing: boole
   const sp = dt * (r.type === 'drone' ? 38 : r.type === 'boss' ? 2.5 : r.type === 'wheel' ? 6 + 16 * spin : 4.5);
   for (let i = 0; i < r.spins.length; i++) r.spins[i].rotateY(i & 1 ? -sp : sp);
   if (r.pist.length) aimPistons(r);
+}
+
+/**
+ * How far to raise (+) or lower (-) the body (model units, eased) so every planted foot lies within what its leg reaches
+ * comfortably (L.lo .. L.hi from the hip to the ankle). Body pitch and roll are left out: they are small.
+ */
+function fitBody(r: EnemyRig, bx: number, by: number, bz: number, dt: number, cs: number, sn: number, sc: number) {
+  let lo = -1e9, hi = 1e9, len = 0;
+  const X = r.root.position.x, Y = r.root.position.y, Z = r.root.position.z;
+  for (const L of r.legs) {
+    len = Math.max(len, L.l1 + L.l2);
+    if (!L.down || L.hop || r.air > 0 || r.dead > 0) continue;
+    const dx = (L.wx - X) / sc, dz = (L.wz - Z) / sc, ax = dx * cs - dz * sn, az = dx * sn + dz * cs;
+    const hx = r.bx + bx + L.bhx, hz = r.bz + bz + L.bhz, hy = r.by + L.bhy;
+    const s3 = L.l3 * Math.sin(L.a3), ay = L.toeH + (r.ground ? (r.ground(L.wx, L.wz) - Y) / sc : 0) + L.l3 * Math.cos(L.a3);
+    let H2: number;
+    if (L.root) { const h = Math.max(0, Math.hypot(ax - hx, az - hz) - s3); H2 = h * h; } else { const h = az - hz - s3; H2 = h * h + (ax - hx) * (ax - hx); }
+    // (with a little room to spare: the solve itself eases a foot out of the last of its range)
+    const a = L.lo * 1.06, b = L.hi * 0.985;
+    lo = Math.max(lo, ay + Math.sqrt(Math.max(0, a * a - H2)) - hy);
+    const v2 = b * b - H2;
+    if (v2 > 0) hi = Math.min(hi, ay + Math.sqrt(v2) - hy);
+  }
+  const want = lo > hi ? (lo + hi) / 2 : lo > -1e8 || hi < 1e8 ? clamp(by, lo, hi) : by;
+  // (quick to give the legs what they need, slow to take it back)
+  const to = clamp(want - by, -0.25 * len, 0.2 * len), need = Math.abs(to) > Math.abs(r.fit) && to * r.fit >= 0;
+  return (r.fit = damp(r.fit, to, need ? 30 : 8, dt));
 }
 
 /**
@@ -822,15 +967,20 @@ const recoil = (t: number, T: number) => (t >= T ? 0 : t < 0.035 ? t / 0.035 : 1
 /** @param cd the sim's cooldown for this tower: at or below 0 for a while means "no target", so it idles and sweeps */
 export function updateTower(r: TowerRig, yaw: number, cd: number, rate: number, dt: number, st: TowerState = IDLE_STATE) {
   const R = RECOIL[r.type];
+  // (on the frame of a shot the turret, the barrel that fired and the dish stay as the view found them: it has just put
+  // the round, beam or flash at the muzzle where the rig stood, so the kick shows from the next frame on)
+  const shot = r.since === 0;
   r.t += dt; r.since += dt;
+  const ts = shot ? 99 : r.since;
   // offline: the turret sags onto its stops, comes back up when the tower reboots
   r.slump = damp(r.slump, st.down ? 1 : 0, st.down ? 3.5 : 6, dt);
   const sl = r.slump, live = 1 - sl;
-  const k = recoil(r.since, R.T);
+  const k = recoil(ts, R.T);
   for (let i = 0; i < r.barrels.length; i++) {
+    const kicked = r.kick[i] === 0;
     r.kick[i] += dt;
-    const d = recoil(r.kick[i], R.T) * R.d;
-    r.barrels[i].position.copy(r.rest[i]).addScaledVector(r.axis[i], d);
+    // (a barrel that has just fired stays where the view found its muzzle; it kicks from the next frame on)
+    if (!kicked) r.barrels[i].position.copy(r.rest[i]).addScaledVector(r.axis[i], recoil(r.kick[i], R.T) * R.d);
   }
   const tur = r.turret;
   if (tur && r.type !== 'beacon' && r.type !== 'arc' && r.type !== 'gravity') {
@@ -842,14 +992,14 @@ export function updateTower(r: TowerRig, yaw: number, cd: number, rate: number, 
     const sag = r.cradle ? 0 : 0.3;
     // the nod toward a close target is held while the tower fires and let go a moment after its last shot
     r.pit = damp(r.pit, r.since > 1.6 || st.down ? 0 : r.pitTo, 12, dt);
-    tur.rotation.set(r.pit * live - k * R.pitch + r.idle * 0.02 * Math.sin(r.sweep * 2.3) + sl * sag, yaw + r.idle * 0.7 * Math.sin(r.sweep), sl * 0.04);
-    tur.position.y = r.ty - (r.type === 'mortar' ? 0.05 * recoil(r.since, 0.5) : 0);
+    if (!shot) tur.rotation.set(r.pit * live - k * R.pitch + r.idle * 0.02 * Math.sin(r.sweep * 2.3) + sl * sag, yaw + r.idle * 0.7 * Math.sin(r.sweep), sl * 0.04);
+    tur.position.y = r.ty - (r.type === 'mortar' ? 0.05 * recoil(ts, 0.5) : 0);
   }
   if (r.type === 'missile') { if (st.spec) r.elevTo = -0.74; else if (r.since > 1.6) r.elevTo = -0.1; }   // (a Swarm: the pods stand almost on end)
   if (r.cradle) { r.elev = damp(r.elev, r.elevTo, 4, dt); r.cradle.rotation.x = r.elev + k * R.pitch * 1.2 - r.idle * 0.06 * (1 + Math.sin(r.sweep * 1.3)) + sl * 0.5; }
-  if (r.dish) { const s = 1 + 0.16 * recoil(r.since, 0.35) + 0.012 * Math.sin(r.t * 3) * live; r.dish.scale.set(s, s, 1); r.dish.position.z = (r.dish.userData.z0 ??= r.dish.position.z) - k * R.d; }
+  if (r.dish && !shot) { const s = 1 + 0.16 * recoil(ts, 0.35) + 0.012 * Math.sin(r.t * 3) * live; r.dish.scale.set(s, s, 1); r.dish.position.z = (r.dish.userData.z0 ??= r.dish.position.z) - k * R.d; }
   if (r.orb) {
-    const p = recoil(r.since, R.T);
+    const p = recoil(ts, R.T);
     if (r.type === 'gravity') {
       // the well's core clenches on every pulse and hangs low while offline
       const s = (1 - 0.32 * p + 0.03 * Math.sin(r.t * 2.1) * live) * (1 - 0.3 * sl) * (st.spec ? 1.25 + 0.1 * Math.sin(r.t * 17) : 1);

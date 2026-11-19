@@ -1081,3 +1081,122 @@ body.planning #vignette { box-shadow: inset 0 0 0 2px rgba(143, 208, 255, 0.22),
 .tw kbd:empty { visibility: hidden; }
 @media (max-width: 1500px) { #fbuild { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 18px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 18px), transparent); padding-right: 12px; } }
 @media (max-height: 480px) { #t-next p.muted { display: none; } #f-arm p { display: none; } }
+
+/* ---------- less on screen (issue #1): the wave button speaks for the build phase, toasts queue, the tutorial is one line ---------- */
+/* the old build phase banner is gone: the wave button and the blue frame carry it */
+#prep { display: none !important; }
+#btn-wave { position: relative; overflow: hidden; }
+#btn-wave .wbar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(26, 15, 8, 0.25); }
+#btn-wave .wbar i { display: block; width: 0; height: 100%; background: var(--sand); transition: width 0.3s; }
+#btn-wave:not(.live) .wbar i { background: var(--ink); opacity: 0.45; }
+/* time stands still: the button takes the frame's blue and a small clock */
+#wave-clock { display: none; position: absolute; left: 7px; top: 7px; width: 13px; height: 13px; border: 1.6px solid currentColor; border-radius: 50%; opacity: 0.7; }
+#wave-clock::before, #wave-clock::after { content: ''; position: absolute; left: 4.6px; bottom: 4.6px; width: 1.6px; height: 4px; background: currentColor; transform-origin: 50% 100%; }
+#wave-clock::after { height: 3px; transform: rotate(90deg); }
+#btn-wave.still #wave-clock { display: block; }
+#btn-wave.still { box-shadow: inset 0 -3px 0 rgba(26, 15, 8, 0.24), 0 0 0 2px var(--soot-0), 0 0 0 3px rgba(143, 208, 255, 0.75); }
+#btn-wave.still.first { box-shadow: inset 0 -3px 0 rgba(26, 15, 8, 0.24), 0 0 0 2px var(--soot-0), 0 0 0 4px var(--static); }
+/* during a wave: its progress, not a button to press */
+#btn-wave.live, #btn-wave.live:disabled { visibility: visible; color: var(--sand); background: var(--soot-1); box-shadow: inset 0 0 0 1px var(--line-2); cursor: default; }
+#btn-wave.live small { color: var(--bone); opacity: 1; }
+/* what will lack supply: a broken rust ring and its count, beside the wave button */
+#wave-warn { flex: none; display: inline-flex; align-items: center; gap: 5px; min-height: 36px; padding: 0 10px 0 8px; color: var(--rust); border-color: color-mix(in srgb, var(--rust) 55%, transparent); animation: warn-in 0.25s ease-out; }
+#wave-warn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+#wave-warn b { font-family: var(--display); font-size: 17px; font-weight: 700; color: var(--bone); font-variant-numeric: tabular-nums; }
+#wave-warn:hover { background: var(--soot-3); }
+@media (pointer: coarse) { #wave-warn { min-height: 44px; } }
+@keyframes warn-in { from { transform: scale(0.7); opacity: 0; } }
+#btn-auto + #wave-warn { margin-left: 0; }
+/* toasts on phones: one at a time, top centre, short */
+@media (max-width: 600px) and (orientation: portrait), (max-height: 480px) {
+  #toasts { left: 50%; right: auto; top: calc(var(--top-h) + 8px); transform: translateX(-50%); justify-items: center; width: max-content; max-width: calc(100vw - 32px); }
+  .toast { max-width: min(420px, calc(100vw - 32px)); text-align: center; border-left-width: 1px; border-top: 2px solid var(--apricot); }
+}
+body.uplink #toasts { top: calc(var(--top-h) + 8px); }
+/* the tutorial: one short order, its icons, and the why folded away */
+#guide-why { min-height: 28px; padding: 0 10px; font-size: 12px; color: var(--verdigris); border-color: color-mix(in srgb, var(--verdigris) 45%, transparent); }
+#guide-why.on { background: color-mix(in srgb, var(--verdigris) 16%, var(--soot-1)); }
+#guide .guide-btns { align-items: center; }
+#guide #guide-skip { margin-left: auto; }
+#guide-ic { align-items: center; }
+#guide-ic .ra { color: var(--verdigris); font-size: 18px; line-height: 1; opacity: 0.8; }
+#guide-text { color: var(--sand-dim) !important; }
+/* touch: the picked tool's chip sits at the bottom left; the tooltip of what is picked moves beside it */
+body.touch.tool #tip { left: calc(84px + var(--safe-l)); max-width: min(360px, calc(100vw - 96px)); }
+/* a deposit points at its building while the Towers bar is open: the Factory tab pulses (the bar itself never switches) */
+#bar-tabs .chip.cue { position: relative; color: var(--bone); border-color: var(--apricot); background: color-mix(in srgb, var(--apricot) 22%, var(--soot-1)); animation: tab-cue 0.55s ease-in-out infinite alternate; }
+#bar-tabs .chip.cue::after { content: ''; position: absolute; left: -1px; right: -1px; top: -4px; height: 3px; background: repeating-linear-gradient(90deg, var(--apricot-hi) 0 6px, var(--ink) 6px 9px); animation: march 0.5s linear infinite; pointer-events: none; }
+@keyframes tab-cue { to { box-shadow: 0 0 14px rgb(246 139 86 / 0.65); } }
+@media (prefers-reduced-motion: reduce) { #bar-tabs .chip.cue, #bar-tabs .chip.cue::after { animation: none; } }
+/* stat chips: a glyph and a number (damage, fire rate, range, boost), the word is their tooltip */
+.stat-row { display: flex; flex-wrap: wrap; gap: 5px; }
+.stat-c { display: inline-flex; align-items: center; gap: 5px; min-height: 26px; padding: 0 8px 0 6px; background: var(--soot-1); border: 1px solid var(--line); border-radius: var(--r); white-space: nowrap; }
+.stat-c svg { width: 15px; height: 15px; flex: none; }
+.stat-c svg .f { fill: currentColor; }
+.stat-c svg .s { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.stat-c b { font-family: var(--display); font-size: 16px; font-weight: 600; letter-spacing: 0.02em; color: var(--bone); font-variant-numeric: tabular-nums; }
+.stat-c.s-dmg { color: var(--apricot); }
+.stat-c.s-rate { color: var(--sand); }
+.stat-c.s-range { color: var(--verdigris); }
+.stat-c.s-boost { color: var(--moss); }
+/* the render of a tower or building: a small square picture */
+img.thumb { flex: none; width: 56px; height: 56px; object-fit: cover; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--soot-0); }
+img.thumb.sm { width: 46px; height: 46px; }
+#tip .tip-top { display: flex; gap: 10px; align-items: flex-start; }
+#tip .tip-words { display: grid; gap: 4px; min-width: 0; }
+#tip .tip-words > b { margin: 0; }
+#tip .tip-words > span { color: var(--bone); }
+#tip i.tip-spec { display: flex; align-items: center; gap: 8px; }
+#tip i.tip-spec .stat-c { color: var(--sand); }
+#tip i.tip-spec small { font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; color: var(--muted); }
+#tower #t-stats { display: flex; float: none; flex-wrap: nowrap; align-items: center; gap: 10px; margin-bottom: 10px; line-height: 1.2; }
+#tower #t-stats br { display: none; }
+#tower #t-stats .stat-row { flex: 1 1 auto; min-width: 0; }
+#tower #t-stats b { float: none; margin: 0; font-size: 16px; text-align: left; }
+@media (max-width: 600px) and (orientation: portrait), (max-height: 480px) {
+  #tip img.thumb { width: 40px; height: 40px; }
+  #tip .tip-words > span { display: none; }
+  #tip i.tip-spec { display: none; }
+  .stat-c { min-height: 24px; padding-inline: 5px 7px; }
+  .stat-c b { font-size: 14px; }
+  img.thumb.sm { width: 38px; height: 38px; }
+  #tower #t-stats { margin-bottom: 6px; }
+}
+/* the grip of a bottom sheet (phones): a tap or a drag grows or shrinks it */
+.panel > .grip { display: none; }
+@media (max-width: 600px) and (orientation: portrait), (max-height: 480px) {
+  #tower, #fpanel, #opanel { padding-top: 16px !important; }
+  .panel > .grip { display: block; position: absolute; left: 50%; top: 0; width: 88px; height: 18px; margin-left: -44px; padding: 0; background: none; border: 0; cursor: grab; touch-action: none; }
+  .panel > .grip::before { content: ''; position: absolute; left: 28px; right: 28px; top: 6px; height: 4px; border-radius: 2px; background: var(--line-2); }
+  .panel.big > .grip::before { background: var(--sand-dim); }
+  /* small (the default): what it is, its numbers, what it lacks, Upgrade and Sell */
+  #tower:not(.big) #t-aim, #tower:not(.big) #t-aim-none, #tower:not(.big) #t-next, #tower:not(.big) #t-spec-desc,
+  #fpanel:not(.big) #f-desc, #opanel:not(.big) #o-why:not(.bad) { display: none !important; }
+  #tower:not(.big) #t-spec { display: grid; grid-template-columns: auto 1fr auto; align-items: center; column-gap: 8px; margin-bottom: 6px; padding-top: 6px; }
+  #tower:not(.big) #t-spec > .bar { grid-column: 2; grid-row: 1; margin: 0; }
+  #tower:not(.big) #t-spec > #t-spec-name { grid-column: 1; grid-row: 1; margin: 0; font-size: 13px; }
+  #tower:not(.big) #t-spec > #t-spec-state { display: none; }
+  #tower:not(.big) #t-spec > #t-special { grid-column: 3; grid-row: 1; width: auto; min-height: 34px; margin: 0; padding: 0 10px; font-size: 12px; }
+  #tower.big, #fpanel.big, #opanel.big { max-height: 64dvh !important; }
+}
+@media (max-width: 600px) and (orientation: portrait) {
+  #tower:not(.big), #fpanel:not(.big), #opanel:not(.big) { max-height: 34dvh; }
+}
+@media (max-width: 600px) and (orientation: portrait), (max-height: 480px) {
+  /* the folded strip: the step number and the order, up to two lines */
+  #guide.fold b { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.2; }
+}
+@media (max-height: 480px) {
+  /* on its side a sheet stays under the top bar (it scrolls when it is grown) */
+  #tower, #fpanel, #opanel, body.touch #fpanel, body.touch #tower { max-height: calc(100dvh - var(--dock-h) - var(--top-h) - 16px) !important; }
+  #tower:not(.big) #t-sup { margin-bottom: 4px; }
+}
+/* the render of the building or deposit, at the top right of its panel */
+#f-thumb, #o-thumb { float: right; margin: 0 0 6px 10px; }
+#fpanel h3, #opanel h3 { min-height: 20px; }
+#tip .stat-c b, .stat-c b { display: inline; margin: 0; text-transform: none; }
+@media (max-height: 480px) {
+  /* on its side the small sheet is the numbers, the supply and Upgrade / Sell (the special: hold the tower, or grow the sheet) */
+  #tower:not(.big) #t-spec, #tower:not(.big) img.thumb.sm { display: none !important; }
+  #tower:not(.big) h3 { margin-bottom: 4px; }
+}
