@@ -71,7 +71,7 @@ type FxColor = 'auto' | 'sand' | 'apricot' | 'verdigris' | 'custom';
 /** A map's record: the campaign (wave, wins, time) and Survival (surv), kept apart. */
 interface Rec { wave: number; wins: number; time: number; surv: number }
 interface Store {
-  v: 2;
+  v: 3;
   /** rings: the supply rings stay on everything between waves (the HUD's ring button; V shows them while held) */
   settings: { vol: number; mus: number; q: 'high' | 'low'; auto: boolean; rings: boolean };
   fx: { impact: boolean; beat: boolean; borders: boolean; env: boolean; towers: boolean; intensity: number; color: FxColor; custom: string };
@@ -113,15 +113,17 @@ function readStore(raw: unknown): Store {
   const str = (v: unknown, max: number, d: string) => (typeof v === 'string' && v.length <= max ? v : d);
   const r = o(raw);
   // version 1 kept the settings flat in the top-level object
-  const old = r.v === 2 ? null : r;
+  const old = r.v === 2 || r.v === 3 ? null : r;
+  // version 3 turned every 'Shown on' effect on and the colour back to Auto, for everyone once (the owner's new defaults)
+  const pre3 = r.v !== 3;
   const s = old || o(r.settings), f = o(r.fx), u = o(r.setup), t = o(r.tips), ds = defaultSetup();
   const colors: FxColor[] = ['auto', 'sand', 'apricot', 'verdigris', 'custom'];
   const store: Store = {
-    v: 2,
+    v: 3,
     settings: { vol: int(s.vol, 0, 100, 70), mus: int(s.mus, 0, 100, 50), q: s.q === 'low' ? 'low' : 'high', auto: bool(s.auto, false), rings: bool(s.rings, false) },
     fx: {
-      impact: bool(f.impact, true), beat: bool(f.beat, true), borders: bool(f.borders, true), env: bool(f.env, false), towers: bool(f.towers, false),
-      intensity: int(f.intensity, 0, 100, 30), color: colors.find((c) => c === f.color) || 'auto',
+      impact: bool(f.impact, true), beat: bool(f.beat, true), borders: pre3 || bool(f.borders, true), env: pre3 || bool(f.env, true), towers: pre3 || bool(f.towers, true),
+      intensity: int(f.intensity, 0, 100, 30), color: pre3 ? 'auto' : colors.find((c) => c === f.color) || 'auto',
       custom: typeof f.custom === 'string' && /^#[0-9a-f]{6}$/i.test(f.custom) ? f.custom.toLowerCase() : '#e3dc92',
     },
     setup: {
@@ -2523,9 +2525,9 @@ function boardTap(clientX: number, clientY: number, keep: boolean) {
   let t = sim.towers.find((x) => x.cx === hover.cx && x.cz === hover.cz);
   const f = t ? undefined : sim.factory.facAt(hover.cx, hover.cz);
   // a free deposit tile: what lies there and what to build on it
+  // (a press on the upper part of a tower lands on the tile behind it, bare or a deposit: it means the tower)
+  if (!t && !f) t = towerAtScreen(clientX, clientY);
   const o = t || f ? null : freeOre(hover.cx, hover.cz);
-  // (a press on the upper part of a tower lands on the bare tile behind it: it means the tower)
-  if (!t && !f && !o) t = towerAtScreen(clientX, clientY);
   selected = t ? t.id : 0; selFac = f ? f.id : 0;
   selOre = o ? { cx: hover.cx, cz: hover.cz } : null;
   if (t || f || o) sound.play('click');
@@ -3624,10 +3626,13 @@ function aimToken(m: TargetMode): HTMLCanvasElement {
   if (c) return c;
   c = document.createElement('canvas'); c.width = c.height = 128;
   const g = c.getContext('2d')!;
-  g.beginPath(); g.arc(64, 64, 58, 0, Math.PI * 2);
-  g.fillStyle = 'rgba(16, 14, 12, 0.82)'; g.fill();
-  g.lineWidth = 3; g.strokeStyle = 'rgba(227, 220, 146, 0.75)'; g.stroke();
-  g.translate(64 - 12 * 3.1, 64 - 12 * 3.1); g.scale(3.1, 3.1);
+  // (a slim token: a dark glass disc with a hairline ring and tick marks, like the range ring it sits on)
+  g.beginPath(); g.arc(64, 64, 52, 0, Math.PI * 2);
+  g.fillStyle = 'rgba(16, 14, 12, 0.6)'; g.fill();
+  g.lineWidth = 1.6; g.strokeStyle = 'rgba(227, 220, 146, 0.7)'; g.stroke();
+  g.lineWidth = 2; g.strokeStyle = 'rgba(227, 220, 146, 0.9)';
+  for (let i = 0; i < 4; i++) { const a = (i * Math.PI) / 2; g.beginPath(); g.moveTo(64 + Math.cos(a) * 52, 64 + Math.sin(a) * 52); g.lineTo(64 + Math.cos(a) * 60, 64 + Math.sin(a) * 60); g.stroke(); }
+  g.translate(64 - 12 * 2.6, 64 - 12 * 2.6); g.scale(2.6, 2.6);
   for (const p of ic(`aim_${m}`).querySelectorAll('path')) {
     const d = new Path2D(p.getAttribute('d') || ''), fill = p.getAttribute('fill'), stroke = p.getAttribute('stroke');
     if (p.classList.contains('ic-key') || p.classList.contains('ic-cut') || p.classList.contains('ic-cut-line')) continue;

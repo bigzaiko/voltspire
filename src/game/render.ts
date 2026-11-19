@@ -726,10 +726,19 @@ export class View {
     };
     const bc = document.createElement('canvas'); bc.width = bc.height = 128;
     const bx = bc.getContext('2d')!;
-    bx.strokeStyle = '#' + APRICOT.toString(16).padStart(6, '0'); bx.lineWidth = 7; bx.lineCap = 'butt'; bx.lineJoin = 'miter';
-    for (const [sx, sy] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) { bx.beginPath(); bx.moveTo(64 - sx * 56, 64 - sy * 26); bx.lineTo(64 - sx * 56, 64 - sy * 56); bx.lineTo(64 - sx * 26, 64 - sy * 56); bx.stroke(); }
+    // (a hex reticle in the cue language: six hairline corner ticks with a soft glow, and a small centre pip; drawn once)
+    const ac = '#' + APRICOT.toString(16).padStart(6, '0');
+    bx.strokeStyle = ac; bx.lineWidth = 2.6; bx.lineCap = 'round'; bx.lineJoin = 'round'; bx.shadowColor = ac; bx.shadowBlur = 6;
+    for (let i = 0; i < 6; i++) {
+      const a = Math.PI / 6 + (i * Math.PI) / 3, b = a + Math.PI / 3, R = 54, f = 0.22;
+      const cx = 64 + Math.cos(a) * R, cy = 64 + Math.sin(a) * R;
+      const nx = 64 + Math.cos(b) * R, ny = 64 + Math.sin(b) * R, px = 64 + Math.cos(a - Math.PI / 3) * R, py = 64 + Math.sin(a - Math.PI / 3) * R;
+      bx.beginPath(); bx.moveTo(cx + (px - cx) * f, cy + (py - cy) * f); bx.lineTo(cx, cy); bx.lineTo(cx + (nx - cx) * f, cy + (ny - cy) * f); bx.stroke();
+    }
+    bx.shadowBlur = 4; bx.fillStyle = ac; bx.beginPath(); bx.arc(64, 64, 2.6, 0, Math.PI * 2); bx.fill();
     const bt = new THREE.CanvasTexture(bc); bt.colorSpace = THREE.SRGBColorSpace;
     this.aimLock = sprite(bt, 9);
+    (this.aimLock.material as THREE.SpriteMaterial).blending = THREE.AdditiveBlending;
     this.aimGlyph = sprite(null, 9);
     this.aimLine = put(makeBeam());
     // build marker: a tile-sized plate with a rim, plus a cross when the tile cannot take a tower
@@ -1051,13 +1060,14 @@ export class View {
     if (range <= 0 || !clear(this.aimSide)) { let k = -1; if (range > 0) for (let i = 0; i < 4 && k < 0; i++) if (clear(i)) k = i; this.aimSide = k < 0 ? 4 : k; }
     const [gx, gz] = this.aimSide === 4 || range <= 0 ? at(0, HEX_SIZE * 1.55) : at(this.aimSide, range);
     // (a steady size on screen between a near and a far zoom: about one tile close up, never a speck from afar)
-    const sc = Math.max(1.05, Math.min(2.6, cp.distanceTo(V.set(gx, y, gz)) * 0.036));
+    const sc = Math.max(0.8, Math.min(1.9, cp.distanceTo(V.set(gx, y, gz)) * 0.027));
     g.position.set(gx, y + 0.7, gz); g.scale.setScalar(sc);
     if (!e) return;
-    const k = 1 + 0.06 * Math.sin(this.time * 6), bs = Math.max(1.5, e.r * 3.4) * k;
+    // (a slow turn and a faint breath, so the lock reads as alive without bouncing; sized to the machine, not inflated)
+    const k = 1 + 0.025 * Math.sin(this.time * 4), bs = Math.max(1.1, e.r * 2.5) * k;
     this.aimLock.position.set(e.x, e.y, e.z); this.aimLock.scale.setScalar(bs);
-    (this.aimLock.material as THREE.SpriteMaterial).rotation = 0;
-    placeBeam(this.aimLine, t.x, y + t.h * 0.85, t.z, e.x, e.y, e.z, 0.05, APRICOT, 0.55, 0.2);
+    (this.aimLock.material as THREE.SpriteMaterial).rotation = this.time * 0.6;
+    placeBeam(this.aimLine, t.x, y + t.h * 0.85, t.z, e.x, e.y, e.z, 0.022, APRICOT, 0.32, 0.2);
   }
   /** The placement marker for a factory building: its ghost, the tile plate, and a cross where it cannot go. */
   setFacGhost(type: FacType | null, cx = 0, cz = 0, dir = 0, ok = true) {
