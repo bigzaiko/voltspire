@@ -1163,6 +1163,8 @@ export class View {
               ARCP[0] = MZ.x + (dx / L) * r; ARCP[1] = MZ.y + (dy / L) * r; ARCP[2] = MZ.z + (dz / L) * r; ARCP[3] = p[3]; ARCP[4] = p[4]; ARCP[5] = p[5];
               e.p = ARCP;
               fx.burst(ARCP[0], ARCP[1], ARCP[2], 3, 3, e.c, 0.14, 0.22, 0);
+              // (the discharge flashes where it leaves the sphere: without it the Arc's shot was the one start that did not read at play zoom)
+              fx.flash(ARCP[0], ARCP[1], ARCP[2], 0.5, e.c, 0.08);
             }
           }
           fx.arc(e.p, e.c, storm ? 0.2 : 0.07);
@@ -2480,7 +2482,9 @@ export class View {
     roundedPose(sim.map, lane, dist, off, TURN_A[e.type], PO);
     const gy = e.gy || 0, fly = e.type === 'drone', y = fly ? e.y : gy;
     if (v.fresh) {
-      v.obj.position.set(PO.x, y, PO.z); v.obj.rotation.set(0, PO.yaw, 0); v.fresh = false; v.tilt = 0; v.lx = PO.x; v.lz = PO.z; v.lgy = gy; resetEnemy(v.rig);
+      v.obj.position.set(PO.x, y, PO.z); v.obj.rotation.set(0, PO.yaw, 0); v.fresh = false; v.tilt = 0; v.lx = PO.x; v.lz = PO.z; v.lgy = gy;
+      // (the Titan fresh from its leap keeps its footing: its feet come down from the leap where they are)
+      resetEnemy(v.rig, e.type === 'titan' && this.roam.off);
       if (e.type === 'titan') {
         // it picks its footing on the deck; fresh from its leap, the legs take the fall
         v.rig.ground = this.groundAt; v.rig.snap = this.footing; v.hp0 = e.hp; v.dim = 0; v.glow.visible = true;
@@ -2981,10 +2985,10 @@ export class View {
         this.pv.set(p.id, v);
       }
       v.seen = f;
-      if (v.fresh) { v.fresh = false; v.age = 0; v.ox = v.oy = v.oz = 0; this.launch(p, v); }
+      // (on its first frame a round is drawn right at the muzzle it leaves by)
+      if (v.fresh) { v.fresh = false; v.age = 0; v.ox = v.oy = v.oz = 0; this.launch(p, v); } else v.age += dt;
       // the round leaves the muzzle and joins the path the sim flies it on: a bolt within a few metres, a missile as its motor
       // takes hold, a shell over the first part of its arc
-      v.age += dt;
       const join = p.kind === 'shell' ? (p.T > 0 ? p.t / (p.T * 0.5) : 1) : v.age / (p.kind === 'missile' ? 0.45 : 0.14);
       const ko = join >= 1 ? 0 : (1 - join) * (1 - join) * (1 + 2 * join);
       const px = p.x + v.ox * ko, py = p.y + v.oy * ko, pz = p.z + v.oz * ko;

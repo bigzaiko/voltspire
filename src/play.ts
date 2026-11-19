@@ -214,6 +214,11 @@ let mouseBtns = 0;
 let editorRun = false;
 /** the last press came from a finger, not from the mouse or the keyboard */
 let byTouch = false;
+/**
+ * Touch build: the ghost of what is picked stands where a tap (or a held finger) put it. A second tap on that same tile
+ * builds; a tap anywhere else only moves it there, so no single tap, twist or pinch can build by accident (issue #1).
+ */
+let touchPend = false;
 let snapT = 0, vsT = 0;
 let netEvs: Ev[] = [];
 let cardKey = '', ended = false;
@@ -302,12 +307,25 @@ function announce(text: string, sub = '') {
   if (sub) a.appendChild(el('small', '', sub));
   a.classList.remove('show'); void a.offsetWidth; a.classList.add('show');
 }
+/** Phones (upright, or on their side): one toast at a time, top centre, the rest wait their turn. */
+const toastMq = matchMedia('(max-width: 600px) and (orientation: portrait), (max-height: 480px)');
+const toastQ: string[] = [];
 /** A short message. In a match it goes to the HUD; over a menu sheet it goes to a layer above the sheets. */
 function toast(text: string) {
-  const box = $(mode === 'attract' || menuOpen() || shown('end') ? 'notes' : 'toasts');
+  const notes = mode === 'attract' || menuOpen() || shown('end'), box = $(notes ? 'notes' : 'toasts');
+  if (!notes && toastMq.matches) {
+    // one at a time: a line already up or waiting is not queued again; the queue keeps the newest three
+    if (box.firstChild) { if (box.firstChild.textContent !== text && !toastQ.includes(text)) { toastQ.push(text); if (toastQ.length > 3) toastQ.shift(); } return; }
+    const t = el('div', 'toast', text), ms = Math.min(3300, 1700 + text.length * 22);
+    t.style.setProperty('animation-duration', ms + 'ms');
+    box.appendChild(t);
+    setTimeout(() => { t.remove(); const n = toastQ.shift(); if (n) toast(n); }, ms);
+    return;
+  }
   const t = el('div', 'toast', text);
   box.appendChild(t);
-  setTimeout(() => t.remove(), 3300);
+  // (a line queued while the phone layout was up waits for this one to go: the screen may have turned since)
+  setTimeout(() => { t.remove(); if (!box.firstChild) { const n = toastQ.shift(); if (n) toast(n); } }, 3300);
   while (box.children.length > 5) box.firstChild!.remove();
 }
 /** Like toast, but the same line is not repeated while it is still fresh. */
@@ -675,12 +693,49 @@ function priceChips(credits: number, mats = 0): HTMLElement[] {
   if (mats) out.push(rchip('mats', mats, { tab: false }));
   return out;
 }
+/** The glyphs of the stat chips: damage (a burst), fire rate (two chevrons), range (a ring round a dot), a boost (an arrow up). */
+const STAT_GLYPH: Record<'dmg' | 'rate' | 'range' | 'boost', [string, boolean][]> = {
+  dmg: [['M10 1.5l2 5.3 5.6.3-4.4 3.5 1.5 5.5L10 13l-4.7 3.1 1.5-5.5L2.4 7.1 8 6.8z', true]],
+  rate: [['M3.5 4.5l5.5 5.5-5.5 5.5M10.5 4.5l5.5 5.5-5.5 5.5', false]],
+  range: [['M10 2.6a7.4 7.4 0 1 1 0 14.8a7.4 7.4 0 1 1 0-14.8z', false], ['M10 8.2a1.8 1.8 0 1 1 0 3.6a1.8 1.8 0 1 1 0-3.6z', true]],
+  boost: [['M10 3l6 7h-4v7H8v-7H4z', true]],
+};
+const STAT_NAME = { dmg: 'Damage', rate: 'Fire rate', range: 'Range', boost: 'Damage boost' };
+/** A number with its glyph: damage, fire rate or range (the word is its tooltip and what a screen reader says). */
+function statChip(kind: keyof typeof STAT_GLYPH, value: string, name: string = STAT_NAME[kind]): HTMLElement {
+  const c = el('span', 'stat-c s-' + kind), svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 20 20'); svg.setAttribute('aria-hidden', 'true');
+  for (const [d, fill] of STAT_GLYPH[kind]) { const p = document.createElementNS(SVG_NS, 'path'); p.setAttribute('d', d); p.setAttribute('class', fill ? 'f' : 's'); svg.append(p); }
+  c.append(svg, el('b', '', value));
+  c.title = name; c.setAttribute('role', 'img'); c.setAttribute('aria-label', `${name} ${value}`);
+  return c;
+}
+/** A tower's numbers as stat chips. */
+function statRow(dmg: number, rate: number, range: number, pulse = false): HTMLElement {
+  const row = el('div', 'stat-row');
+  if (dmg > 0) row.append(statChip('dmg', dmg.toFixed(0)));
+  if (rate > 0) row.append(statChip('rate', rate.toFixed(rate < 10 ? 1 : 0) + '/s', pulse ? 'Pulse rate' : 'Fire rate'));
+  if (range > 0) row.append(statChip('range', range.toFixed(1)));
+  return row;
+}
+/** The rendered still of a tower or building (public/media/sm), as a small square picture. */
+function thumb(name: string, cls = 'thumb'): HTMLImageElement {
+  const img = el('img', cls) as HTMLImageElement;
+  img.alt = ''; img.width = 48; img.height = 48; img.decoding = 'async';
+  img.src = `./media/sm/${name}.jpg`;
+  img.addEventListener('error', () => img.remove(), { once: true });
+  return img;
+}
 function towerTip(t: TowerType) {
   const d = TOWERS[t], tip = $('tip'), l3 = TOWER_NEEDS_L3[t];
   tip.textContent = '';
-  const stats = d.dmg > 0 ? ` Damage ${d.dmg}, ${d.rate} per second, range ${d.range}.` : d.range > 0 ? ` Range ${d.range}.` : '';
+  // the render of the tower, its name and one line; its numbers as chips
   const head = el('b'); head.append(ic(`tw_${t}`, { size: 22 }), d.name);
-  tip.append(head, el('span', '', d.desc + stats));
+  const top = el('div', 'tip-top'), words = el('div', 'tip-words');
+  words.append(head, el('span', '', d.desc));
+  if (d.dmg > 0 || d.range > 0) words.append(statRow(d.dmg, d.rate, d.range, t === 'beacon'));
+  top.append(thumb('tower_' + t), words);
+  tip.append(top);
   // what it runs on: the chips, the whole chain as a diagram (left out where there is no room for it: a long press shows it)
   const mk = needsMakeable(d.needs), row = rrow('Needs', ...mk.chips);
   // (its second ammunition is a choice, not a consequence of Mk3: the card that opens it, then a switch on each tower)
@@ -692,7 +747,8 @@ function towerTip(t: TowerType) {
   const dia = recipeDiagram({ tower: t }, { width: tipWidth() });
   dia.classList.add('tip-dia');
   tip.append(dia);
-  if (d.special) tip.append(el('i', '', `Special: ${d.special.name}. ${d.special.desc} ${touchUi() ? 'Hold or double-tap the charged tower to fire it.' : 'Right-click the charged tower to fire it.'}`));
+  // the special: its name (what it does is its tooltip; the tower's panel says it in full)
+  if (d.special) { const sp = el('i', 'tip-spec'); sp.append(statChip('dmg', d.special.name, 'Special'), el('small', '', touchUi() ? 'hold the tower' : 'right-click the tower')); sp.title = d.special.desc; tip.append(sp); }
   if (!sim.unlocked.has(t)) tip.append(el('i', 'lock', sim.bpOpen().includes(t) ? 'Locked. Its blueprint card can come up at the next blueprint level.' : 'Locked. Its blueprint card comes after the towers before it.'));
   show('tip');
 }
@@ -700,7 +756,10 @@ function facTip(t: FacType) {
   const d = FACS[t], tip = $('tip');
   tip.textContent = '';
   const head = el('b'); head.append(ic(`fac_${t}`, { size: 22 }), d.name);
-  tip.append(head, el('span', '', d.desc));
+  const top = el('div', 'tip-top'), words = el('div', 'tip-words');
+  words.append(head, el('span', '', d.desc));
+  top.append(thumb('fac_' + t), words);
+  tip.append(top);
   const row = rrow('Costs', ...priceChips(sim.facCost(t)));
   if (d.power) row.append(rgrp('Draws', rchip('power', d.power, { tab: false })));
   tip.append(row);
@@ -793,24 +852,35 @@ function pickFac(t: FacType | null) {
   if (t && !sim.facs.has(t)) { sound.play('error'); note(`${FACS[t].name} is locked: it ${unlockText(t)}.`); return; }
   buildFac = buildFac === t ? null : t;
   buildType = null; selected = 0; selFac = 0;
+  touchUnpend();
   sound.play('click');
   view.setGhost(null);
   if (!buildFac) view.setFacGhost(null);
   refreshGhost();
-  if ((buildFac === 'belt' || buildFac === 'pipe') && !bot && !store.tips.factory && !guideOn()) { store.tips.factory = true; save(); tutor(touchUi() ? 'Hold and drag to lay a line of belts. A belt only carries: a Transfer Arm puts items on it and takes them off.' : 'Drag to lay a line of belts. A belt only carries: a Transfer Arm puts items on it and takes them off.'); }
-  if (buildFac === 'arm' && !bot && !guideOn()) note(touchUi() ? 'The arm takes from the tile behind its arrow and delivers to the tile in front. Turn changes its direction.' : 'The arm takes from the tile behind its arrow and delivers to the tile in front. R turns it.');
+  if ((buildFac === 'belt' || buildFac === 'pipe') && !bot && !store.tips.factory && !guideOn()) { store.tips.factory = true; save(); tutor(touchUi() ? 'Tap a hex, then hold the ghost and drag to lay a line.' : 'Drag to lay a line of belts. Arms put items on and take them off.'); }
+  // (once a run: the ghost's arrow shows it from then on)
+  if (buildFac === 'arm' && !bot && !guideOn() && !told.arm) { told.arm = true; note(touchUi() ? 'Arm: takes from behind its arrow, delivers in front. Turn turns it.' : 'Arm: takes from behind its arrow, delivers in front. R turns it.'); }
+  touchHowTo();
   if (buildFac === 'tunnel') note(`Build the entrance, then the exit facing the same way up to ${TUNNEL_REACH} tiles ahead. ${touchUi() ? 'Turn' : 'R'} turns it.`);
   if (buildFac === 'ptunnel') note(`Build two in a straight line, up to ${TUNNEL_REACH} tiles apart: their pipes join under whatever stands between.`);
 }
+/** What was already said once this run. */
+const told = { arm: false, tap: false };
+/** Touch, the first tool picked in a run: how placing works now (a tap shows the ghost, a second tap builds). */
+function touchHowTo() { if (byTouch && (buildType || buildFac) && !told.tap && !guideOn()) { told.tap = true; note('Tap a hex to place the ghost, tap it again to build.'); } }
 function pickBuild(t: TowerType | null) {
   if (t && !sim.unlocked.has(t)) { sound.play('error'); note(TOWERS[t].name + ' is locked. Its blueprint card comes at a later level.'); return; }
   buildType = buildType === t ? null : t;
   buildFac = null; selected = 0; selFac = 0;
+  touchUnpend();
   view.setFacGhost(null);
   sound.play('click');
   if (!buildType) view.setGhost(null);
   refreshGhost();
+  touchHowTo();
 }
+/** A tool picked by touch shows no ghost until a tap puts it on a tile (the last tile tapped means nothing to the new tool). */
+function touchUnpend() { touchPend = false; if (byTouch) { hover.cx = -1; hover.cz = -1; } }
 function refreshGhost() {
   const inb = hover.cx >= 0 && hover.cz >= 0 && hover.cx < GW && hover.cz < GH;
   if (buildFac) {
@@ -1110,7 +1180,7 @@ function handleEvents(evs: Ev[]) {
       case 'special': {
         playAt('special', e);
         const d = typeof e.t === 'string' && Object.hasOwn(TOWERS, e.t) ? TOWERS[e.t as TowerType] : null;
-        if (d?.special && e.p === me && !bot) toast(`${d.special.name} fired. ${d.name} reboots afterwards.`);
+        if (d?.special && e.p === me && !bot) toast(`${d.special.name}!`);
         break;
       }
       case 'down': playAt('down', e); break;
@@ -1131,7 +1201,8 @@ function handleEvents(evs: Ev[]) {
       case 'clear': {
         sound.play('clear');
         const last = sim.campaign && e.n >= sim.winWave;
-        toast(`Wave ${e.n} cleared, +${e.g} credits.${last ? '' : sim.autoWaves ? ' Build phase: the factory rests until the next wave.' : ' Build phase: time stands still until you call the next wave.'}`);
+        // (the wave button says what comes next: call it, or the countdown)
+        toast(`Wave ${e.n} cleared · +${e.g} credits`);
         break;
       }
       case 'levelup': sound.play('levelup'); break;
@@ -1144,11 +1215,11 @@ function handleEvents(evs: Ev[]) {
         if (t && Object.hasOwn(TOWERS, t)) {
           const wait = sim.supplyCards(t);
           tutor(`${TOWERS[t].name}: ${TOWER_SUPPLY[t]}`);
-          toast(wait.length ? `Unlocked: ${TOWERS[t].name}. Its supply still needs the ${andList(wait.map((w) => CARD_BY_ID[w].name))} card${wait.length > 1 ? 's' : ''}: they come up in the next offers.` : `Unlocked: ${TOWERS[t].name}. You can build its supply line now.`);
+          toast(wait.length ? `Unlocked: ${TOWERS[t].name} · its supply needs ${andList(wait.map((w) => CARD_BY_ID[w].name))}` : `Unlocked: ${TOWERS[t].name}`);
         } else if (c.unlocks) {
           // a production card: the buildings are on the Factory bar now, and the towers that were waiting for them
           const serves = [...sim.unlocked].filter((u) => TOWER_CHAIN[u].some((f) => c.unlocks!.includes(f)));
-          toast(`Unlocked on the Factory bar: ${andList(c.unlocks.map((f) => FACS[f].name))}.${serves.length ? ` For your ${andList(serves.map((u) => TOWERS[u].name))}.` : ''}`);
+          toast(`Unlocked: ${andList(c.unlocks.map((f) => FACS[f].name))}${serves.length ? ` · for ${andList(serves.map((u) => TOWERS[u].name))}` : ''}`);
           if (c.id === 'belts' && !guideOn()) tutor('Belts only carry. Put items on a belt with a Transfer Arm and take them off with another.');
         } else if (c.ammo) toast(`${TOWERS[c.ammo].name} Mk3: the ammunition switch is in each tower's panel now.`);
         break;
@@ -1208,11 +1279,12 @@ function fastForward(seconds: number) {
   for (let i = 0; i < seconds * 60 && !sim.over; i++) { bot?.step(STEP); sim.step(STEP); sim.events.length = 0; }
 }
 function resetUi() {
+  told.arm = false; told.tap = false;
   for (const id of ['cards', 'menu', 'lobby', 'help', 'settings', 'music', 'pause', 'end', 'rp-banner', 'tower', 'fpanel', 'opanel', 'oretip', 'vs', 'tip', 'setup', 'editor', 'tutor', 'guide']) show(id, false);
   guide.on = false;
   clearTimeout(endTimer); clearTimeout(tutorTimer);
   for (const id of ['prep', 'p-editor', 'e-editor']) show(id, false);
-  $('toasts').textContent = ''; $('notes').textContent = '';
+  $('toasts').textContent = ''; $('notes').textContent = ''; toastQ.length = 0; // (nothing of the last run is said in the next)
   lastRx = performance.now(); squadTokens = 3;
   buildType = null; buildFac = null; selected = 0; selFac = 0; painting = false; facDir = 0; dragging = false; rotating = false; paused = false; speed = 1; acc = 0; cardKey = ''; ended = false;
   runKey = ''; runWon = false; tipHover = null; editorRun = false; selOre = null; overBoard = false; oreLit = '';
@@ -1220,7 +1292,7 @@ function resetUi() {
   cue.k = '';
   setTab('towers'); view.setFacGhost(null);
   // what these keys stood for was just hidden or reset behind the cache's back
-  for (const k of ['prep', 'wavecls', 'tdock', 'fdock', 'odock', 'otip', 'opanel', 'tip', 'titan', 'titancls', 'farm', 'tnext', 'tsup', 'fmake']) delete cache[k];
+  for (const k of ['prep', 'lack', 'wavemax', 'wavecls', 'tdock', 'fdock', 'odock', 'otip', 'opanel', 'tip', 'titan', 'titancls', 'farm', 'tnext', 'tsup', 'fmake']) delete cache[k];
   btnState.clear();
   show('titan', false);
   titanCue = 0; zoomS.on = false; keyV.x = keyV.y = keyV.r = 0;
@@ -1289,7 +1361,7 @@ function startGame(m: Mode, opts: { client?: boolean; seed?: number; demo?: bool
       : `${sim.map.def.name} / ${sim.endless ? 'Survival' : `${sim.diff.name}, ${sim.winWave} waves`}`);
     if (m === 'solo' && !editorRun && !store.tips.tutorial) startGuide();
     else setTimeout(() => {
-      if (sim.wave === 0 && mode === m && !ended) toast('Towers start empty. Build one next to a supply crate, or feed it from a Mine through a Transfer Arm. Time stands still until you call the wave.');
+      if (sim.wave === 0 && mode === m && !ended) toast('Towers start empty: build one beside a supply crate.');
     }, 1500);
   }
 }
@@ -1743,6 +1815,38 @@ function pressSpeed() {
   speed = speed === 1 ? 2 : 1; setText('btn-speed', speed + 'x');
 }
 click('btn-wave', () => act.wave());
+// On a phone the tower, building and deposit panels are bottom sheets that open small (what it is, its numbers, why it
+// lacks something, Upgrade and Sell). The grip on top grows them to everything (targeting, the special in full, the Mk3
+// option) and back: a tap, or a drag up or down. Dragged well down from small, the sheet closes. The size is kept.
+let sheetBig = false;
+function setSheetBig(on: boolean) {
+  sheetBig = on;
+  for (const id of ['tower', 'fpanel', 'opanel']) {
+    const p = $(id), g = p.querySelector('.grip');
+    p.classList.toggle('big', on);
+    g?.setAttribute('aria-expanded', String(on)); g?.setAttribute('aria-label', on ? 'Show less' : 'Show more');
+  }
+}
+for (const id of ['tower', 'fpanel', 'opanel']) {
+  const g = $(id).querySelector('.grip') as HTMLElement | null;
+  if (!g) continue;
+  const drag = { id: -1, y: 0, moved: false };
+  g.addEventListener('pointerdown', (e) => { drag.id = e.pointerId; drag.y = e.clientY; drag.moved = false; try { g.setPointerCapture(e.pointerId); } catch { /* gone */ } e.preventDefault(); });
+  g.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== drag.id) return;
+    const dy = e.clientY - drag.y;
+    if (Math.abs(dy) < 24) return;
+    drag.moved = true; drag.id = -1;
+    sound.init(); sound.play('click');
+    if (dy < 0) setSheetBig(true);
+    else if (sheetBig) setSheetBig(false);
+    else { selected = 0; selFac = 0; selOre = null; }
+  });
+  g.addEventListener('pointerup', (e) => { if (e.pointerId !== drag.id) return; drag.id = -1; if (!drag.moved) { sound.init(); sound.play('click'); setSheetBig(!sheetBig); } });
+  g.addEventListener('pointercancel', () => { drag.id = -1; });
+  // (the keyboard: Enter or Space on the grip)
+  g.addEventListener('click', (e) => { if (e.detail === 0) setSheetBig(!sheetBig); });
+}
 click('t-up', () => { if (selected) act.upgrade(selected); });
 click('t-sell', () => { if (selected && act.sell(selected)) selected = 0; });
 $('t-special').addEventListener('click', () => { sound.init(); if (selected) act.special(selected); });
@@ -1751,7 +1855,7 @@ click('f-turn', () => turnSelected());
 click('f-flip', () => { const f = selFac ? sim.factory.facById(selFac) : undefined; if (f && f.type === 'arm') act.turnFac(f.id, f.dir + 3); });
 click('f-up', () => { if (selFac) act.upFac(selFac); });
 // the deposit panel's apricot line looks like a button: it picks the building it names (a locked one stays a note)
-$('o-pick').addEventListener('click', () => { sound.init(); const o = selOre && freeOre(selOre.cx, selOre.cz); if (o && !oreBuildLine(o).locked) pickFac(oreFac(o)); });
+$('o-pick').addEventListener('click', () => { sound.init(); const o = selOre && freeOre(selOre.cx, selOre.cz); if (o && !oreBuildLine(o).locked) { if (barTab !== 'factory') setTab('factory'); pickFac(oreFac(o)); } });
 click('btn-rings', () => { settings.rings = !settings.rings; save(); sound.play('click'); note(settings.rings ? 'Supply rings on: between waves a green ring marks everything that will be supplied.' : 'Supply rings off: they show while you place something.'); });
 click('btn-auto', () => { settings.auto = !settings.auto; save(); if (mode === 'solo' && !bot) sim.autoWaves = settings.auto; note(settings.auto ? 'Auto waves on: the next wave starts by itself after a pause.' : 'Auto waves off: waves start when you call them.'); });
 click('h-tutorial', () => { store.tips.tutorial = false; save(); show('help', false); if (helpFrom === 'pause') { togglePause(false); if (mode === 'solo' && !bot && !ended) startGuide(); else note('The tutorial starts with your next solo run.'); } else { show(helpFrom); note('The tutorial starts with your next solo run.'); } });
@@ -2095,6 +2199,8 @@ function quickSpecial(id: number) {
   note(`${sp.name} is not ready: ${t.stun > 0 ? `the ${d.name} is stunned` : t.jam > 0 ? `mites jam the ${d.name}` : t.down > 0 ? `rebooting, ${Math.ceil(t.down)}s` : t.spec > 0 ? 'it is running' : t.dry || towerOff(t) ? `the ${d.name} is out of supply` : `charged ${Math.floor(clamp(t.charge, 0, 1) * 100)}%`}.`);
 }
 const inBoard = (cx: number, cz: number) => cx >= 0 && cz >= 0 && cx < GW && cz < GH;
+/** The tile under a point of the screen (it may lie off the board). */
+function cellAtScreen(x: number, y: number): [number, number] { view.groundPoint(x, y, ga); return worldToCell(ga.x, ga.z); }
 const FAC_WHY_CREDITS = 'not enough credits';
 /** Place the chosen factory building on a tile. Says why not when it cannot go there. */
 function placeFac(cx: number, cz: number, quiet = false): Fac | null {
@@ -2185,7 +2291,7 @@ function boardTap(clientX: number, clientY: number, keep: boolean) {
 /** Any press skips the opening camera move, if the view has one running. */
 function skipIntro() { if (vx.introActive?.()) { vx.skipIntro?.(); return true; } return false; }
 /** Drop whatever is chosen for building. */
-function dropBuild() { buildType = null; buildFac = null; painting = false; view.setGhost(null); view.setFacGhost(null); }
+function dropBuild() { buildType = null; buildFac = null; painting = false; touchPend = false; view.setGhost(null); view.setFacGhost(null); }
 
 addEventListener('keydown', (e) => {
   if (cine) cine = null; // any key or click hands the camera back during the Titan's entrance
@@ -2232,6 +2338,7 @@ addEventListener('blur', () => { keys.clear(); dragging = false; rotating = fals
 
 // Mouse movement is read from the whole page, not only the canvas: a HUD element under the cursor must never stop a drag.
 document.addEventListener('mousemove', (e) => {
+  if (byTouch) return; // (a finger's emulated mouse events: the touch module has handled the finger already)
   lastMouse.x = e.clientX; lastMouse.y = e.clientY;
   overBoard = e.target === canvas;
   if (!playing()) return;
@@ -2242,6 +2349,7 @@ document.addEventListener('mousemove', (e) => {
   if (e.target === canvas || dragging || rotating || painting) hoverAt(e.clientX, e.clientY);
 });
 canvas.addEventListener('mousedown', (e) => {
+  if (byTouch) return; // (an emulated mouse press after a tap: building from it again would build twice)
   if (cine) cine = null; // any key or click hands the camera back during the Titan's entrance
   sound.init();
   if (!active() || skipIntro()) return;
@@ -2290,19 +2398,52 @@ const touchApi = {
   // a tap that lands on a tower waits a moment for a second tap (double tap fires its special without selecting it)
   onTower(x: number, y: number) { return active() && !buildType && !buildFac && !vx.introActive?.() && !!towerAtScreen(x, y, 1.5); },
   turn() { sound.init(); if (active()) turnSelected(); },
-  // a finger that held and dragged the ghost lays belts on the way, like a held mouse button
+  // a finger held on the ghost of a belt, pipe or arm and dragged lays a line, like a held mouse button
   hoverEnd() { painting = false; paintAt.cx = paintAt.cz = -1; },
-  tap(clientX: number, clientY: number) {
+  // two fingers: a line being laid stops; nothing is built
+  gesture() { painting = false; paintAt.cx = paintAt.cz = -1; },
+  // a finger down only moves the hover highlight; with a tool picked the ghost stays where the last tap put it
+  press(clientX: number, clientY: number) { if (active() && !buildType && !buildFac) hoverAt(clientX, clientY); },
+  hold(clientX: number, clientY: number) {
+    if (!active()) return false;
+    if (buildType || buildFac) {
+      const [cx, cz] = cellAtScreen(clientX, clientY), onGhost = touchPend && cx === hover.cx && cz === hover.cz;
+      hoverAt(clientX, clientY);
+      touchPend = true;
+      // held on its own ghost: a belt, pipe or arm line starts there and follows the finger
+      if (onGhost && (buildFac === 'belt' || buildFac === 'pipe' || buildFac === 'arm')) {
+        painting = true; paintAt.cx = hover.cx; paintAt.cz = hover.cz; placeFac(hover.cx, hover.cz, true);
+        try { navigator.vibrate?.(10); } catch { /* no vibration here */ }
+      }
+      return true;
+    }
+    hoverAt(clientX, clientY);
+    return true;
+  },
+  tap(clientX: number, clientY: number, held = false) {
     sound.init();
     if (!active() || skipIntro()) return;
+    if (buildType || buildFac) {
+      // the finger dragged the ghost (or a line): it stays where the finger lifted
+      if (held) { if (!painting) { hoverAt(clientX, clientY); touchPend = true; } return; }
+      const [cx, cz] = cellAtScreen(clientX, clientY);
+      // a tap off the board puts the tool away
+      if (!inBoard(cx, cz)) { dropBuild(); sound.play('click'); return; }
+      // the second tap on the ghost builds (the tool stays picked to place more); a tap elsewhere moves the ghost there
+      if (touchPend && cx === hover.cx && cz === hover.cz) { boardTap(clientX, clientY, true); return; }
+      hoverAt(clientX, clientY); touchPend = true; sound.play('hover');
+      return;
+    }
     preTap.sel = selected; preTap.fac = selFac; preTap.ore = selOre; preTap.t = performance.now();
     boardTap(clientX, clientY, false);
   },
   hoverAt(clientX: number, clientY: number) {
     if (!active()) return;
-    if (!painting && (buildFac === 'belt' || buildFac === 'pipe' || buildFac === 'arm')) { hoverAt(clientX, clientY); painting = true; paintAt.cx = hover.cx; paintAt.cz = hover.cz; placeFac(hover.cx, hover.cz, true); return; }
     hoverAt(clientX, clientY);
+    if (buildType || buildFac) touchPend = true;
   },
+  /** the cancel chip: put the picked tool away */
+  cancel() { if (buildType || buildFac) { dropBuild(); sound.play('click'); } },
   // a long press or a double tap on a tower fires its special (not while something is chosen for building: there a held
   // finger moves the ghost and lays belts and arms). True when the press was taken. The first tap of a double tap went
   // through as a tap and selected the tower: the selection goes back to what it was before it, so the tower is not selected.
@@ -2377,7 +2518,13 @@ function diagFrame(dt: number) {
 // Each step can point at tiles on the board. It runs on the first solo run and can be replayed from How to play.
 /** A tutorial marker: an arrow over a tile ('here'), or a chevron on a tile of a belt to lay or of an arm to place ('path', `i` along the line, heading toward the tile at nx, nz). */
 interface GuideMark { x: number; y: number; z: number; kind: 'here' | 'path'; i?: number; nx?: number; nz?: number }
-interface GuideStep { title: string; text: () => string; done: () => boolean; ready?: () => boolean; points?: () => GuideMark[]; ok?: boolean; tab?: 'towers' | 'factory'; /** what the step names, as labelled icons under its text */ ics?: IconName[] }
+interface GuideStep {
+  title: string;
+  /** the step as one short order (about 60 characters): what the card says; `text` (the why) waits behind its Why? toggle */
+  line: () => string;
+  /** its icons form a chain (an arrow between each): mine > arm > turret */
+  chain?: boolean;
+  text: () => string; done: () => boolean; ready?: () => boolean; points?: () => GuideMark[]; ok?: boolean; tab?: 'towers' | 'factory'; /** what the step names, as labelled icons under its text */ ics?: IconName[] }
 const guide = { on: false, i: 0, t: 0, acked: false };
 const guideOn = () => guide.on;
 const oreIdx = (o: OreType) => ORE_TYPES.indexOf(o) + 1;
@@ -2603,7 +2750,8 @@ const towerBar = () => (barTab === 'towers' ? '' : kb() ? 'press F for the Tower
 const GUIDE: GuideStep[] = [
   {
     title: 'Build a Pulse Turret beside a crate',
-    ics: ['tw_pulse', 'fac_crate', 'iron_ore'],
+    line: () => kb() ? 'Press 1, then click the marked hex beside a crate' : 'Pick the Pulse Turret, tap the marked hex twice',
+    ics: ['fac_crate', 'iron_ore', 'tw_pulse'], chain: true,
     text: () => `Time stands still until you call a wave, so build first. Towers start empty. The sand-coloured supply crates beside the road hold iron ore, the Pulse Turret's ammunition, and a crate feeds any tower right next to it. ${kb() ? 'Pick the Pulse Turret (key 1)' : 'Tap the Pulse Turret'} and build it on the marked hex beside a crate: a green ring closes round its base when it will be fed.`,
     done: () => sim.towers.some((t) => t.type === 'pulse' && (t.stock > 0 || t.ammo > 0 || !!sim.diag().get('t' + t.id)?.ok)),
     points: () => { const c = firstTurret(); return c ? [tileMark(c[0], c[1])] : sim.factory.facs.filter((f) => f.type === 'crate' && f.hold === 'iron_ore' && f.left > 0).map((f) => ({ x: f.x, y: 1.2, z: f.z, kind: 'here' as const })); },
@@ -2611,12 +2759,14 @@ const GUIDE: GuideStep[] = [
   },
   {
     title: 'Call the first wave',
+    line: () => kb() ? 'Call the first wave: press N' : 'Tap Call wave when you are ready',
     text: () => `Nothing moves until you call: no wave, no factory. When the wave runs, the crate hands its ore to the turret one piece at a time. ${kb() ? 'Press N or the Call first wave button.' : 'Tap Call first wave.'}`,
     done: () => sim.wave >= 1,
   },
   {
     title: 'Build a Mine',
-    ics: ['fac_mine', 'dep_iron_ore', 'iron_ore'],
+    line: () => `${barTab === 'factory' ? 'A' : kb() ? 'F, then a' : 'Factory tab, then a'} Mine on the marked iron deposit`,
+    ics: ['dep_iron_ore', 'fac_mine', 'iron_ore'], chain: true,
     text: () => `A crate runs out (click it to see what is left). Give the turret a supply of its own: ${facBar()}pick the Mine${kb() ? ' (key 5)' : ''} and build it on ${guideLines().length ? 'the marked iron deposit' : 'an iron deposit'}, the blue-grey tiles with ore chunks. A mine digs slowly, about one ore every 3 seconds: one mine keeps one turret firing.`,
     done: () => sim.factory.facs.some((f) => f.type === 'mine' && f.ore === 'iron_ore'),
     // (the mine end of a line that fits on the board as it stands: no line, nothing marked rather than a deposit that leads nowhere)
@@ -2625,7 +2775,14 @@ const GUIDE: GuideStep[] = [
   },
   {
     title: 'Place a Transfer Arm',
-    ics: ['fac_mine', 'fac_arm', 'tw_pulse'],
+    line: () => {
+      const l = guideLines().find((x) => !lineDone(x)) || guideLines()[0];
+      if (l && !ironMineAt(l.mine)) return 'First a Mine on the marked deposit';
+      if (l && l.arms.length > 1) return `${kb() ? 'Drag' : 'Hold and drag'} Transfer Arms over the two marked hexes`;
+      if (l && !pulseAt(l.tur) && fedTurrets() < 1 && sim.factory.facs.some((f) => f.type === 'arm')) return 'Now a Pulse Turret on the marked hex';
+      return 'A Transfer Arm on the marked hex, mine to turret';
+    },
+    ics: ['fac_mine', 'fac_arm', 'tw_pulse'], chain: true,
     text: () => {
       const l = guideLines().find((x) => !lineDone(x)) || guideLines()[0];
       const two = !!l && l.arms.length > 1, needTur = !!l && !pulseAt(l.tur), needMine = !!l && !ironMineAt(l.mine);
@@ -2638,20 +2795,23 @@ const GUIDE: GuideStep[] = [
   },
   {
     title: 'Two more lines',
-    ics: ['fac_mine', 'fac_arm', 'tw_pulse'],
+    line: () => { const n = Math.max(1, GUIDE_LINES - fedTurrets()); return `${n} more line${n > 1 ? 's' : ''} on the marks: mine, arm, turret`; },
+    ics: ['fac_mine', 'fac_arm', 'tw_pulse'], chain: true,
     text: () => `One turret will not hold the road for long. Build ${Math.max(1, GUIDE_LINES - fedTurrets())} more ${GUIDE_LINES - fedTurrets() > 1 ? 'lines' : 'line'} the same way on the marked hexes: a Mine on the deposit, a Transfer Arm on each chevron (they show which way it has to point), a Pulse Turret (${kb() ? 'F for the Towers bar, key 1' : 'Towers bar'}) on the hex at the end. Where a line has to take a mine that is in use, the two turrets share its ore. The crates help while they last.`,
     done: () => fedTurrets() >= GUIDE_LINES || guideLines().every(lineDone),
     points: () => guideLines().filter((l) => !lineDone(l)).flatMap((l) => lineMarks(l)),
   },
   {
     title: 'Take the Conveyor Belts card',
-    ics: ['fac_belt', 'fac_smelter', 'fac_generator'],
+    line: () => (sim.planning && !sim.queue.length ? 'Call waves; at level up take Conveyor Belts' : 'At level up, take Conveyor Belts'),
+    ics: ['fac_belt'],
     text: () => `Kills give experience${sim.queue.length || !sim.planning ? '' : `; call the next wave${kb() ? ' (N)' : ''}`}. Every level you choose one of three cards. Tower blueprints unlock towers; production cards unlock the buildings that make their supply, and a card only comes up once what it builds on is there. Take Conveyor Belts when it is offered: it always is, among the first. The level-up screen has a Paths view that shows what unlocks what.`,
     done: () => sim.facs.has('belt'),
   },
   {
     title: 'A belt between two arms',
-    ics: ['fac_arm', 'fac_belt', 'fac_arm'],
+    line: () => `Arm onto the belt, ${kb() ? 'drag' : 'hold-drag'} belt along the chevrons, arm off`,
+    ics: ['fac_arm', 'fac_belt', 'fac_arm', 'tw_pulse'], chain: true,
     text: () => {
       const b = beltPlan(), needMine = !!b && !ironMineAt(b.mine), needTur = !!b && !pulseAt(b.tur);
       const first = [needMine ? 'a Mine on the marked deposit' : '', needTur ? 'a Pulse Turret on the marked hex at the far end' : ''].filter(Boolean).join(' and ');
@@ -2664,13 +2824,16 @@ const GUIDE: GuideStep[] = [
   },
   {
     title: 'Upgrade for the Colossus',
+    line: () => `Upgrade the marked turrets and their Mine${kb() ? ' (U)' : ''}`,
+    ics: ['tw_pulse', 'fac_mine', 'credits'],
     text: () => `Every fifth wave brings a Colossus. Get ready early: click each turret and ${kb() ? 'press U (Upgrade)' : 'tap Upgrade'}, and its Mine too, so the ore keeps up with the faster guns. When the Colossus walks past, fire the turrets' specials at it: ${kb() ? 'right-click a charged turret, it does not have to be selected' : 'hold a charged turret, or double-tap it'}.`,
     done: () => !upgradeMarks().length,
     points: () => upgradeMarks(),
   },
   {
     title: 'Power',
-    ics: ['dep_coal', 'fac_mine', 'fac_arm', 'fac_generator', 'power'],
+    line: () => 'Mine on coal, arm, Generator: power for 2 tiles',
+    ics: ['dep_coal', 'fac_mine', 'fac_arm', 'fac_generator', 'power'], chain: true,
     text: () => `The Power Grid card unlocked the Generator. Build a Mine on coal (the dark tiles with black lumps), a Generator one hex away and a Transfer Arm between them, from the mine into the Generator. It powers everything within 2 tiles; Power Poles carry it further, also across a road. The Power gauge at the top shows what the grid will give against what it needs.`,
     ready: () => sim.facs.has('generator'),
     done: () => sim.factory.powerNets.some((n) => n.cap > 0) || sim.factory.facs.some((f) => f.type === 'generator' && !!sim.diag().get('f' + f.id)?.ok),
@@ -2678,6 +2841,7 @@ const GUIDE: GuideStep[] = [
   },
   {
     title: 'That is the pattern',
+    line: () => 'Every later tower adds one step, and each step is a card',
     ics: ['fac_pump', 'fac_pipe', 'fac_smelter', 'fac_press', 'aim_first'],
     text: () => `Every later tower adds one more step, and each step is a card: Smelting for plates, the Shell Press, the Oil Field with its pipes. A blueprint card says which production cards its tower still waits for. Between waves, a broken red ring round a tower or building says it will lack something, and the hologram over it shows what; click it for the hand-off that is missing. Arms, mines, plants and generators upgrade (${kb() ? 'U' : 'Upgrade'}) to work faster. A selected tower's panel also sets which enemy it targets${kb() ? ' (T)' : ''}.`,
     done: () => guide.acked,
@@ -2723,20 +2887,24 @@ function updateGuide() {
   const acting = !!buildType || !!buildFac || painting || !!selected || !!selFac || !!selOre;
   if (guideFold.step !== guide.i || (acting && !guideFold.acting)) guideFold.manual = '';
   guideFold.step = guide.i; guideFold.acting = acting;
-  const fold = smallUi() && (guideFold.manual === 'shut' || (guideFold.manual !== 'open' && (acting || (guide.i > 0 && guidePoints().length > 0))));
-  const key = guide.i + ':' + waiting + ':' + touchUi() + ':' + fold + ':' + st.text(); // (a step's text can follow the board: what is built of its chain)
+  // (on a phone the strip is the default: the short order fits it; a tap opens the icons and the Why?)
+  const fold = smallUi() && guideFold.manual !== 'open';
+  if (guideWhy.step !== guide.i) { guideWhy.step = guide.i; setWhy(false); }
+  const key = guide.i + ':' + waiting + ':' + touchUi() + ':' + fold + ':' + st.text() + ':' + st.line(); // (a step's text can follow the board: what is built of its chain)
   if (cache.guide === key) return;
   cache.guide = key;
   $('guide').classList.toggle('fold', fold);
   show('guide', !waiting);
-  setText('guide-step', `Tutorial ${guide.i + 1} / ${GUIDE.length}`);
-  setText('guide-title', st.title);
+  setText('guide-step', `${fold ? '' : 'Tutorial '}${guide.i + 1} / ${GUIDE.length}`); // (the folded strip keeps its room for the order)
+  setText('guide-title', st.line());
   setText('guide-text', st.text());
+  $('guide').title = st.title;
   const gk = guide.i + ':' + (st.ics || []).join();
   if (cache.guideic !== gk) {
     cache.guideic = gk;
     const box = $('guide-ic'); box.textContent = '';
-    for (const n of st.ics || []) box.append(rchip(n, n.startsWith('aim_') ? 'Targeting' : iconLabel(n)));
+    // icons only (each names itself on hover or a long press), an arrow between the links of a chain
+    (st.ics || []).forEach((n, i) => { if (i && st.chain) box.append(arrow()); box.append(rchip(n, '', { label: iconLabel(n) })); });
   }
   show('guide-next', !!st.ok);
 }
@@ -2752,6 +2920,14 @@ $('guide').addEventListener('click', (e) => {
   sound.init(); sound.play('click');
 });
 click('guide-next', () => { guide.acked = true; });
+/** The tutorial's explanation is folded away behind Why? (per step; the short order stays). */
+const guideWhy = { step: -1 };
+function setWhy(on: boolean) {
+  show('guide-text', on);
+  const b = $('guide-why');
+  b.classList.toggle('on', on); b.setAttribute('aria-expanded', String(on));
+}
+$('guide-why').addEventListener('click', (e) => { e.stopPropagation(); sound.init(); sound.play('click'); setWhy($('guide-text').classList.contains('hidden')); if (smallUi()) guideFold.manual = 'open'; delete cache.guide; });
 /**
  * A step whose markers sit under the tutorial card, the console or off the screen eases the camera once, so they come
  * into the clear part of the view (left of the card, above the console). A drag or turn by the player stops it.
@@ -2865,30 +3041,44 @@ function updateHud() {
   const pg = powerGauge(plan);
   setText('power', pg.text); setText('power-label', pg.label);
   if (cache.pshort !== String(pg.short)) { cache.pshort = String(pg.short); $('power').parentElement!.classList.toggle('short', pg.short); }
-  if (cache.plan !== String(plan)) { cache.plan = String(plan); document.body.classList.toggle('planning', plan); }
+  if (cache.plan !== String(plan)) { cache.plan = String(plan); document.body.classList.toggle('planning', plan); show('prep', false); }
   setText('level', String(sim.level));
   setW('xpbar', sim.xp / sim.xpNext);
   const waiting = isClient ? sim.nextWaveIn >= 0 : !sim.queue.length;
   const canCall = waiting && !sim.over && !(sim.wave >= sim.winWave && sim.campaign);
   // The slot of the button stays reserved (see #btn-wave.off), so the bar next to it never moves.
-  const first = sim.wave === 0, wb = $<HTMLButtonElement>('btn-wave'), wk = `${canCall}:${first}`;
-  if (cache.wavecls !== wk) { cache.wavecls = wk; wb.classList.toggle('off', !canCall); wb.classList.toggle('first', canCall && first); wb.disabled = !canCall; }
-  // the build phase banner: before wave 1 (unless the tutorial speaks), and between waves
-  const prep = canCall && plan && !(first && guideOn());
+  // The wave button carries what the old build phase banner said. Build phase: "Call wave N" (a clock: time stands still,
+  // or the countdown with Auto waves); during a wave: its progress, the enemies left; the rust ring beside it counts what
+  // will lack supply and steps the camera through them. (The slot stays reserved, so the bar next to it never moves.)
+  const first = sim.wave === 0, wb = $<HTMLButtonElement>('btn-wave');
+  const alive = sim.enemies.reduce((n, e) => n + (e.alive ? 1 : 0), 0), foes = alive + sim.queue.length;
+  const live = !canCall && !sim.over && !ended && sim.wave > 0 && foes > 0;
+  const wk = `${canCall}:${first}:${live}:${plan}`;
+  if (cache.wavecls !== wk) {
+    cache.wavecls = wk;
+    wb.classList.toggle('off', !canCall && !live); wb.classList.toggle('first', canCall && first); wb.classList.toggle('live', live); wb.classList.toggle('still', canCall && plan);
+    wb.disabled = !canCall;
+    if (live) cache.wavemax = '0';
+  }
   if (canCall) {
     const left = Math.max(0, Math.ceil(sim.nextWaveIn)), raw = sim.callBonus();
     const bonus = Number.isFinite(raw) ? Math.max(0, Math.round(raw)) : 0;
     // the wave waits for the call, unless Auto waves is on (then it also pays for calling early)
     const timed = sim.autoWaves && !(sim.holdFirst && first);
-    setText('wave-label', first ? 'Call first wave' : 'Call wave');
-    setText('wave-timer', !timed ? (touchUi() ? 'when you are ready' : 'when you are ready (N)') : bonus > 0 ? `${left}s, +${bonus} cr` : `starts in ${left}s`);
-    if (prep) {
-      setText('prep-kick', first ? 'Before wave 1 / build phase' : `Wave ${sim.wave} cleared / build phase`);
-      setText('prep-title', timed ? `The factory rests: the next wave comes in ${left}s.` : 'Time stands still until you call the wave.');
-      setText('prep-sub', prepLine(first));
-    }
+    setText('wave-label', `Call wave ${sim.wave + 1}`);
+    setText('wave-timer', !timed ? (plan ? (touchUi() ? 'time stands still' : 'time stands still · N') : touchUi() ? 'early' : 'early · N') : bonus > 0 ? `${left}s · +${bonus} cr` : `in ${left}s`);
+    setW('wave-prog', timed && Number.isFinite(sim.nextWaveIn) ? clamp(1 - sim.nextWaveIn / 30, 0, 1) : 0);
+  } else if (live) {
+    // (the bar fills as the wave is cleared: measured against the most enemies seen in this wave)
+    const mx = Math.max(foes, +(cache.wavemax || 0)); cache.wavemax = String(mx);
+    setText('wave-label', `Wave ${sim.wave}`);
+    setText('wave-timer', `${foes} left`);
+    setW('wave-prog', mx > 0 ? 1 - foes / mx : 0);
   }
-  if (cache.prep !== String(prep)) { cache.prep = String(prep); show('prep', prep); }
+  // what will lack supply when the wave starts (the old banner's line), as a rust ring and a count
+  const lack = canCall && plan ? lackList() : [];
+  const lk = String(lack.length);
+  if (cache.lack !== lk) { cache.lack = lk; show('wave-warn', lack.length > 0); setText('wave-warn-n', lk); $('wave-warn').setAttribute('aria-label', `${lk} will lack supply: show ${lack.length === 1 ? 'it' : 'the next'}`); }
   const ak = String(settings.auto);
   const rk = String(settings.rings);
   if (cache.rings !== rk) { cache.rings = rk; const rb = $('btn-rings'); rb.classList.toggle('on', settings.rings); rb.setAttribute('aria-pressed', rk); }
@@ -2933,6 +3123,17 @@ function updateHud() {
 
   const sf = selFac ? sim.factory.facById(selFac) : undefined, placing = (!!buildFac && turns(buildFac)) || !!(sf && turns(sf.type));
   if (cache.placing !== String(placing)) { cache.placing = String(placing); document.body.classList.toggle('placing', placing); }
+  // touch: the picked tool's render and an X (the cancel chip), shown while something is picked for building
+  const tool = buildType ? 'tower_' + buildType : buildFac ? 'fac_' + buildFac : '';
+  if (cache.tool !== tool) {
+    cache.tool = tool;
+    document.body.classList.toggle('tool', !!tool);
+    if (tool) {
+      $<HTMLImageElement>('t-cancel-img').src = `./media/sm/${tool}.jpg`;
+      $('t-cancel-ic').replaceChildren(ic(buildType ? `tw_${buildType}` : `fac_${buildFac!}`, { size: 14 }));
+      $('t-cancel').setAttribute('aria-label', `Stop building the ${buildType ? TOWERS[buildType].name : FACS[buildFac!].name}`);
+    }
+  }
   updateGuide();
   updateOre();
   updateFacPanel(); // (first: clearing the factory selection must not hide the ring the tower panel then puts up)
@@ -2943,17 +3144,25 @@ function updateHud() {
   if (mode === 'versus') setText('vs-status', `Core ${rival.l} / Wave ${rival.w} / ${rival.k} kills`);
 }
 
-/** The small line of the build phase banner: what will lack supply when the wave starts, and how to call it. */
-function prepLine(first: boolean): string {
-  const call = touchUi() ? `Tap Call ${first ? 'first ' : ''}wave when you are ready.` : 'Press N or the button when you are ready.';
-  if (!sim.towers.length) return `Towers start empty: put one next to a supply crate. ${call}`;
-  let tb = 0, fb = 0;
-  const dg = sim.diag();
-  for (const k of dg.keys()) { const d = diagOf(k, dg)!; if (diagBad(k, d) && !onlyTaker(d)) { if (k[0] === 't') tb++; else fb++; } }
-  const n = (v: number, one: string) => `${v} ${one}${v === 1 ? '' : 's'}`;
-  const bad = [tb ? n(tb, 'tower') : '', fb ? n(fb, 'building') : ''].filter(Boolean).join(' and ');
-  return `${bad ? `${bad} will lack supply (broken red rings).` : 'Every tower will be supplied.'} Nothing is made until the wave runs. ${call}`;
+/** What will lack supply when the wave starts (the broken rust rings): diagnosis keys, towers first. */
+function lackList(): string[] {
+  const dg = sim.diag(), out: string[] = [];
+  for (const k of dg.keys()) { const d = diagOf(k, dg)!; if (diagBad(k, d) && !onlyTaker(d)) out.push(k); }
+  return out.sort((a, b) => (a[0] === b[0] ? 0 : a[0] === 't' ? -1 : 1));
 }
+/** The rust ring beside the wave button: the camera steps to the next thing that will lack supply, and selects it (its panel says why). */
+let lackAt = -1;
+click('wave-warn', () => {
+  const l = lackList();
+  if (!l.length || !active()) return;
+  lackAt = (lackAt + 1) % l.length;
+  const k = l[lackAt], id = +k.slice(1), t = k[0] === 't' ? sim.towerById(id) : undefined, f = t ? undefined : sim.factory.facById(id);
+  const at = t || f;
+  if (!at) return;
+  dropBuild();
+  selected = t ? t.id : 0; selFac = f ? f.id : 0; selOre = null;
+  const c = bird(); c.x = at.x; c.z = at.z; clampCam();
+});
 
 /** The Titan's bar: its danger while it approaches, its hull once it walks. */
 function updateTitan() {
@@ -3222,15 +3431,13 @@ function updateTowerPanel() {
   const key = `${t.id}:${t.lvl}:${t.buff}:${sim.level}:${sim.towerDmg(t)}:${sim.towerRate(t)}:${sim.range(t)}:${t.spec > 0}:${t.down > 0}`;
   if (cache.tstats !== key) {
     cache.tstats = key;
+    // the render of the tower beside its numbers as chips (each word is the chip's tooltip)
     const st = $('t-stats'); st.textContent = '';
-    const line = (k: string, v: string) => { st.append(k + ' ', el('b', '', v), el('br')); };
-    if (t.type === 'beacon') line('Damage boost', `+${Math.round(sim.beaconBoost(t) * 100)}%`);
-    else {
-      if (d.dmg > 0) line('Damage', sim.towerDmg(t).toFixed(0));
-      line(d.dmg > 0 ? 'Fire rate' : 'Pulse rate', sim.towerRate(t).toFixed(2) + '/s');
-    }
-    if (d.range > 0) line('Range', sim.range(t).toFixed(1));
-    if (t.buff > 0) line('Beacon', 'boosted');
+    const row = t.type === 'beacon' ? el('div', 'stat-row') : statRow(d.dmg > 0 ? sim.towerDmg(t) : 0, sim.towerRate(t), 0, d.dmg <= 0);
+    if (t.type === 'beacon') row.append(statChip('boost', `+${Math.round(sim.beaconBoost(t) * 100)}%`));
+    if (d.range > 0) row.append(statChip('range', sim.range(t).toFixed(1)));
+    if (t.buff > 0) row.append(statChip('boost', 'Beacon', 'Boosted by a Signal Beacon'));
+    st.append(thumb('tower_' + t.type, 'thumb sm'), row);
   }
   // supply: what it runs on and how much it has (one item in hand plus the shots left of the one in use: an arm hands it the next)
   const n = needsOf(t), sup = $('t-sup');
@@ -3434,19 +3641,17 @@ function oreBuildLine(o: OreType): { text: string; locked: boolean; why: string 
   const why = unlockText(k);
   return { text: `The ${FACS[k].name} is locked: it ${why}.`, locked, why };
 }
-// The building that goes on the deposit under the pointer or in the panel is pointed out on the Factory bar: the bar
-// switches to the Factory tab and the button takes an animated apricot frame (a locked one shows, hatched; the panel and
-// the tooltip say why it is locked).
-// A tab the cue switched to goes back once the pointer has left the deposits for a moment, unless a panel was opened.
-function facCue(k: FacType | null, panel: boolean, dt: number) {
-  if (k && panel) cue.was = '';
+// The building that goes on the deposit under the pointer or in the panel is pointed out on the Factory bar: its button
+// takes an animated apricot frame (a locked one shows, hatched; the panel and the tooltip say why it is locked). The bar
+// never switches by itself: with the Towers tab open the Factory TAB pulses instead, and a press on it (or on the deposit
+// panel's pick line) opens it.
+function facCue(k: FacType | null, _panel: boolean, _dt: number) {
+  const tabCue = !!k && barTab !== 'factory';
+  if (cache.tabcue !== String(tabCue)) { cache.tabcue = String(tabCue); $('tab-factory').classList.toggle('cue', tabCue); }
   if (!k) {
     if (cue.k) { facBtns[cue.k].classList.remove('cue'); cue.k = ''; }
-    if (cue.was && (cue.off += dt) > 0.6) { if (barTab === 'factory' && !buildFac) setTab(cue.was); cue.was = ''; }
     return;
   }
-  cue.off = 0;
-  if (barTab !== 'factory') { const was = barTab; setTab('factory'); if (!panel) cue.was = was; }
   const b = facBtns[k];
   if (cue.k !== k) {
     if (cue.k) facBtns[cue.k].classList.remove('cue');
@@ -3507,6 +3712,7 @@ function updateOre() {
       const fresh = !cache.opanel;
       cache.opanel = key;
       const nm = $('o-name'); nm.textContent = ''; oreHead(nm, so, 'span');
+      $<HTMLImageElement>('o-thumb').src = `./media/sm/dep_${so.replace('_ore', '')}.jpg`;
       const use = $('o-use'); use.textContent = ''; use.append(...oreUseRow(so, true));
       const st = $('o-stats'); st.textContent = '';
       const rate = workRate({ type: k, ore: so } as Fac, 1);
@@ -3542,6 +3748,7 @@ function updateFacPanel() {
   dockPanel(String(f.id), 'fdock', f.x, 1, f.z);
   view.setSelectedCell(f.cx, f.cz, true); // (a pole's or generator's reach is the cues': the tiles it powers, outlined)
   const d = FACS[f.type], upg = FAC_UPGRADABLE.has(f.type), plan = sim.planning;
+  { const src = `./media/sm/fac_${f.type}.jpg`; if (cache.fthumb !== src) { cache.fthumb = src; $<HTMLImageElement>('f-thumb').src = src; } }
   setText('f-name', d.name + (upg ? ` / Mk ${f.lvl}` : '') + (f.ore && (f.type === 'mine' || f.type === 'pump') ? ` / ${ORES[f.ore].name}` : ''));
   // between waves nothing runs: the state is what the diagnosis expects, not what the last step left behind
   const dg = diagOf('f' + f.id), arm = f.type === 'arm', armWhy = arm ? sim.factory.armNote(f) : '';

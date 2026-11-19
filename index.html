@@ -184,7 +184,7 @@
         </ol>
 
         <section class="stage" id="f-deposits" aria-labelledby="h-deposits">
-          <header class="stage-head"><span class="stage-n" aria-hidden="true">01</span><h3 id="h-deposits">Four deposits on every map</h3><p>Point at a patch to see what it is. The game lays them out by rule around the roads: by every crate of iron ore an iron deposit with room for a mine, an arm and a turret in a straight line beside the road, coal close by, at least one patch of copper and of oil on every map, the oil far from the core.</p></header>
+          <header class="stage-head"><span class="stage-n" aria-hidden="true">01</span><h3 id="h-deposits">Four deposits on every map</h3><p>Laid out by rule around the roads: an iron deposit by every crate of iron ore, coal close by, copper and oil on every map.</p></header>
           <ul class="facs facs-4" data-deposits><li class="nojs">The deposit cards are built by the page's script.</li></ul>
         </section>
 
@@ -200,7 +200,7 @@
         </div>
 
         <section class="stage" id="f-move" aria-labelledby="h-move">
-          <header class="stage-head"><span class="stage-n" aria-hidden="true">04</span><h3 id="h-move">Move it</h3><p>Nothing hands anything on by itself. Every item that passes from a mine, a plant or a belt into a tower or a building, or onto a belt, is carried by a Transfer Arm: it takes from the hex behind it and delivers to the hex in front, and picks up only what its target will take. So a belt can run past anything without feeding it, and you decide what goes where. Pipes and power stay simple: a pipe feeds what it touches, a pole powers what stands near.</p></header>
+          <header class="stage-head"><span class="stage-n" aria-hidden="true">04</span><h3 id="h-move">Move it</h3><p>Nothing hands anything on by itself: a Transfer Arm takes from the hex behind it and delivers to the hex in front, only what its target will take. A pipe feeds what it touches; a pole powers what stands near.</p></header>
           <ul class="facs facs-3" data-facs="arm,belt,splitter,tunnel,pipe,ptunnel,crate"></ul>
         </section>
 
@@ -222,7 +222,7 @@
         <header class="head">
           <p class="kicker">Arsenal</p>
           <h2 id="h-towers">Tower roster</h2>
-          <p class="lede">Ten towers. Each upgrades to Mk3, has cards of its own and charges a special you fire when it counts. The chips say what each one draws from the factory. Every tower that picks a target can be told which: the first or last enemy on the road, the strongest or weakest, the fastest or slowest, one tower at a time or all of a kind at once. Hover a card, or press its play button, to see it fire.</p>
+          <p class="lede">Ten towers, each with its own cards, three marks and a special. Tell each whom to aim at: first, last, strongest, weakest, fastest or slowest. Hover a card, or press play, to see it fire.</p>
         </header>
         <ul class="roster" data-roster><li class="nojs">The tower cards are built by the page's script from the game's own data.</li></ul>
       </div>
@@ -331,35 +331,40 @@
           </header>
           <div class="keys">
             <h3>Build</h3>
-            <dl>
-              <div><dt><kbd>1</kbd>-<kbd>0</kbd></dt><dd>Pick a tower or factory building, then click a free hex to build. Hold <kbd>Shift</kbd> to keep building.</dd></div>
-              <div><dt><kbd>F</kbd></dt><dd>Switch the build bar between Towers and Factory.</dd></div>
-              <div><dt><kbd>R</kbd></dt><dd>Turn the Transfer Arm, belt or tunnel you are placing or have selected. Drag to lay a line of arms, belts or pipes.</dd></div>
-              <div><dt><kbd>U</kbd> <kbd>X</kbd></dt><dd>Upgrade or sell what you have selected: towers, and mines, pumpjacks, plants and generators too.</dd></div>
-              <div><dt><kbd>T</kbd></dt><dd>Step the selected tower through its targeting modes: first, last, strongest, weakest, fastest, slowest. <kbd>Shift</kbd>+<kbd>T</kbd> goes back; Set all in its panel gives the mode to every tower of that kind.</dd></div>
-              <div><dt><kbd>V</kbd></dt><dd>Hold to see the green supply rings between waves. The hexagon button beside Auto waves keeps them on.</dd></div>
-            </dl>
+            <ul class="kgrid">
+              <li><span class="kk"><kbd>1</kbd>-<kbd>0</kbd></span><span>Pick a tower or building</span></li>
+              <li><span class="kk"><kbd>F</kbd></span><span>Towers / Factory bar</span></li>
+              <li><span class="kk"><kbd>Shift</kbd></span><span>Keep building</span></li>
+              <li><span class="kk"><kbd>R</kbd></span><span>Turn an arm, belt or tunnel</span></li>
+              <li><span class="kk"><kbd>Drag</kbd></span><span>Lay a line of arms, belts, pipes</span></li>
+              <li><span class="kk"><kbd>U</kbd> <kbd>X</kbd></span><span>Upgrade / sell</span></li>
+              <li><span class="kk"><kbd>T</kbd></span><span>Next targeting mode</span></li>
+              <li><span class="kk"><kbd>V</kbd></span><span>Show supply rings</span></li>
+            </ul>
             <h3>Fight</h3>
-            <dl>
-              <div><dt><kbd>N</kbd></dt><dd>Call the next wave. Until then, time stands still.</dd></div>
-              <div><dt><kbd>Right-click</kbd></dt><dd>Drops what you hold for building. With nothing in hand, on a charged tower it fires the special (the tower does not have to be selected), anywhere else it drops the selection. A right-drag pans.</dd></div>
-              <div><dt><kbd>Space</kbd></dt><dd>Fire the special of the selected tower when it is charged.</dd></div>
-              <div><dt><kbd>G</kbd></dt><dd>Switch the game speed between 1x and 2x.</dd></div>
-              <div><dt><kbd>Esc</kbd> <kbd>P</kbd></dt><dd>Pause.</dd></div>
-            </dl>
+            <ul class="kgrid">
+              <li><span class="kk"><kbd>N</kbd></span><span>Call the next wave</span></li>
+              <li><span class="kk"><kbd>Right-click</kbd></span><span>Fire a charged special, or drop</span></li>
+              <li><span class="kk"><kbd>Space</kbd></span><span>Special of the selected tower</span></li>
+              <li><span class="kk"><kbd>G</kbd></span><span>1x / 2x speed</span></li>
+              <li><span class="kk"><kbd>Esc</kbd> <kbd>P</kbd></span><span>Pause</span></li>
+            </ul>
             <h3>Camera</h3>
-            <dl>
-              <div><dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>Pan, or drag with the right mouse button. The wheel zooms.</dd></div>
-              <div><dt><kbd>Q</kbd> <kbd>E</kbd></dt><dd>Turn the view, or drag with the middle mouse button. <kbd>Home</kbd> resets it.</dd></div>
-            </dl>
-            <h3>Touch and extras</h3>
-            <dl>
-              <div><dt><kbd>Tap</kbd></dt><dd>Tap a building in the bar, then a hex. Hold and drag to move the preview first; a belt or a line of arms follows your finger, and Turn changes its direction. Tap something on the board to upgrade or sell it.</dd></div>
-              <div><dt><kbd>Hold</kbd> <kbd>Double-tap</kbd></dt><dd>On a charged tower: fire its special.</dd></div>
-              <div><dt><kbd>Drag</kbd> <kbd>Pinch</kbd></dt><dd>One finger pans. Two fingers pinch to zoom or twist to turn the view.</dd></div>
-              <div><dt><kbd>Music</kbd></dt><dd>Seven built-in tracks play as a playlist. Add YouTube or Spotify links of your own and the score goes quiet while they play.</dd></div>
-              <div><dt><kbd>Effects</kbd></dt><dd>Impact and beat pulses can be switched off, dimmed, recoloured or limited to tile borders, environment or towers.</dd></div>
-            </dl>
+            <ul class="kgrid">
+              <li><span class="kk"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span><span>Pan (or right-drag)</span></li>
+              <li><span class="kk"><kbd>Wheel</kbd></span><span>Zoom</span></li>
+              <li><span class="kk"><kbd>Q</kbd> <kbd>E</kbd></span><span>Turn the view</span></li>
+              <li><span class="kk"><kbd>Home</kbd></span><span>Reset the view</span></li>
+            </ul>
+            <h3>Touch</h3>
+            <ul class="kgrid">
+              <li><span class="kk"><kbd>Tap</kbd></span><span>Pick, then place</span></li>
+              <li><span class="kk"><kbd>Hold</kbd></span><span>Move the preview first</span></li>
+              <li><span class="kk"><kbd>Double-tap</kbd></span><span>Fire a charged special</span></li>
+              <li><span class="kk"><kbd>Drag</kbd></span><span>Pan</span></li>
+              <li><span class="kk"><kbd>Pinch</kbd></span><span>Zoom, twist to turn</span></li>
+            </ul>
+            <p class="keys-more">Seven built-in tracks, or add your own YouTube and Spotify links. Impact and beat pulses can be dimmed, recoloured or switched off.</p>
           </div>
         </div>
         <aside class="safe" aria-labelledby="h-safe">

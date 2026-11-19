@@ -1,5 +1,6 @@
-// Touch controls. Tap, drag with one finger to pan, hold then drag to move the build ghost (a belt or a line of arms laid
-// that way follows the finger). A long press (about 450 ms without moving) or a double tap on a tower fires its special
+// Touch controls. Tap, drag with one finger to pan, hold then drag to move the build ghost. With something picked for
+// building a tap only puts its ghost on a tile and a second tap on that tile builds (play.ts decides: tap(), hold());
+// a belt, pipe or arm held on its own ghost lays a line that follows the finger. A second finger never builds. A long press (about 450 ms without moving) or a double tap on a tower fires its special
 // (a single tap on a tower waits a moment for the second one, so a double tap leaves the tower unselected). Two fingers
 // either pinch (zoom) or twist (turn): whichever passes its threshold first, and it stays that
 // until a finger lifts. A round button turns the belt that is about to be placed.
@@ -13,8 +14,20 @@ export interface TouchApi {
   turn(): void;
   /** the finger that moved the build ghost was lifted (a belt line ends there) */
   hoverEnd(): void;
-  /** bird view: a tap at client coordinates (build / select) */
-  tap(clientX: number, clientY: number): void;
+  /**
+   * bird view: a tap at client coordinates (build / select). `held`: the finger was held and moved the build ghost (or laid
+   * a line) before it lifted: with something picked for building that only leaves the ghost there, it never builds.
+   */
+  tap(clientX: number, clientY: number, held?: boolean): void;
+  /** a finger landed on the board (only the hover highlight follows it: nothing is built or moved) */
+  press?(clientX: number, clientY: number): void;
+  /**
+   * The finger was held still for HOLD_MS: from now on it drags the build ghost (true), or only the hover (false is the
+   * same, kept for a caller without a tool). A belt, pipe or arm held on its own ghost starts laying a line here.
+   */
+  hold?(clientX: number, clientY: number): boolean;
+  /** a second finger came down: whatever one finger started (a line being laid, a ghost being dragged) stops, nothing is built */
+  gesture?(): void;
   /** bird view: finger moved over the board without lifting (hover / ghost preview) */
   hoverAt(clientX: number, clientY: number): void;
   /** drag by (dx, dy) pixels; (x, y) is where the finger, or the middle of two fingers, is now */
@@ -25,6 +38,8 @@ export interface TouchApi {
   rotate(angle: number): void;
   pause(): void;
   speed(): void;
+  /** the cancel chip: put away what is picked for building */
+  cancel?(): void;
   /**
    * A long press or a double tap at client coordinates: fire the special of the tower there. True when the press was taken
    * (a tower is there and nothing is chosen for building); false leaves it to be the tap or the ghost drag it would have been.
@@ -138,7 +153,7 @@ export function initTouch(api: TouchApi): void {
     // (the long press keeps counting: the hold only hands the drag to the build ghost)
     if (!s || s.role !== BIRD || s.moved || count(BIRD) !== 1) return;
     s.hover = true;
-    api.hoverAt(s.x, s.y);
+    if (api.hold) api.hold(s.x, s.y); else api.hoverAt(s.x, s.y);
   }
   function release(s: Slot): void {
     if (holdSlot === s || longSlot === s) clearHold();
@@ -163,15 +178,20 @@ export function initTouch(api: TouchApi): void {
     if (!s) return;
     const n = count(BIRD);
     if (n === 1) {
-      api.hoverAt(s.x, s.y);
+      if (api.press) api.press(s.x, s.y); else api.hoverAt(s.x, s.y);
       clearHold();
       holdSlot = s;
       holdTimer = window.setTimeout(onHold, HOLD_MS);
       longSlot = s;
       longTimer = window.setTimeout(onLong, LONG_MS);
     } else {
-      // A second finger starts a pinch or a twist. Neither finger may end as a tap, and the pan stops.
-      clearHold();
+      // A second finger starts a pinch or a twist. Neither finger may end as a tap, and the pan stops. A line being laid
+      // or a ghost being dragged by the first finger stops where it is, and a tap still held back is dropped.
+      clearHold(); dropTap();
+      let wasHover = false;
+      for (let i = 0; i < slots.length; i++) if (slots[i].role === BIRD && slots[i].hover) wasHover = true;
+      if (wasHover) api.hoverEnd();
+      api.gesture?.();
       for (let i = 0; i < slots.length; i++) if (slots[i].role === BIRD) { slots[i].moved = true; slots[i].pan = false; slots[i].hover = false; }
       const o = other(s);
       pair = null;
@@ -251,7 +271,7 @@ export function initTouch(api: TouchApi): void {
         else if (!dbl && !held && api.special && api.onTower?.(x, y)) {
           deferred.x = x; deferred.y = y;
           deferTimer = window.setTimeout(() => { deferTimer = 0; api.tap(deferred.x, deferred.y); }, TAP_DEFER);
-        } else api.tap(x, y);
+        } else api.tap(x, y, held);
       }
     }
     // (a finger that was held, whether it then moved the ghost or not, ends the line it was laying: the next press starts a new one)
@@ -294,6 +314,7 @@ export function initTouch(api: TouchApi): void {
   document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAll(); });
 
   press(byId('t-turn'), () => api.turn());
+  press(byId('t-cancel'), () => api.cancel?.());
   // Pause and speed act on press as well, so a second finger reaches them while another finger is on the board.
   press(byId('btn-pause'), () => api.pause());
   press(byId('btn-speed'), () => api.speed());

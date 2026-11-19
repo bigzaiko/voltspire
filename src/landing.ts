@@ -13,7 +13,8 @@ import {
   POLE_REACH, SUPPLY, TUNNEL_REACH, ARM_TIME,
 } from './game/factory.ts';
 import { DIFFS } from './game/map.ts';
-import { icon } from './icons.ts';
+import { icon, iconLabel, chip as icChip, chainOf as icChain, recipes } from './icons.ts';
+import type { IconName, ChainNode as IcNode } from './icons.ts';
 
 const root = document.documentElement;
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
@@ -126,6 +127,20 @@ function perItem(t: TowerType, n: TowerNeeds): string {
   return `${shots} ${what} per ${ITEMS[n.item].short}`;
 }
 
+/** A price as icon chips: credits, and building materials when it takes some. */
+const priceChips = (cr: number, mat: number) => [icChip('credits', cr, { title: 'Credits', size: 14 }), mat ? icChip('mats', mat, { title: 'Building materials', size: 14 }) : null];
+/** The numbers of a tower as small chips: how long an item lasts it, its range, what Mk2 and Mk3 cost. */
+function statsOf(t: TowerType, n: TowerNeeds): HTMLElement {
+  const row = h('div', 'unit-stats');
+  const per = perItem(t, n);
+  if (n.item && per) row.append(icChip(n.item, per.split(' per ')[0], { title: cap(per), size: 14 }));
+  row.append(h('span', 'stat', h('i', 'stat-rng'), num(TOWERS[t].range / CELL) + ' tiles'));
+  for (const lv of [1, 2]) row.append(h('span', 'stat stat-mk', h('b', '', 'Mk' + (lv + 1)), ...priceChips(upgradeCost(t, lv), upgradeMat(t, lv))));
+  row.setAttribute('aria-label', cap([per, `range ${num(TOWERS[t].range / CELL)} tiles`, `Mk2 ${price(upgradeCost(t, 1), upgradeMat(t, 1))}`, `Mk3 ${price(upgradeCost(t, 2), upgradeMat(t, 2))}`].filter(Boolean).join(', ')));
+  row.setAttribute('role', 'group');
+  return row;
+}
+
 function buildRoster(host: HTMLElement) {
   host.textContent = '';
   for (const t of TOWER_TYPES) {
@@ -134,14 +149,13 @@ function buildRoster(host: HTMLElement) {
     const frame = h('div', 'unit-img', img);
     const txt = h('div', 'unit-txt');
     txt.append(
-      h('p', 'unit-tag', h('span', '', tierLabel(t)), h('span', '', price(d.cost, d.mat))),
+      h('p', 'unit-tag', h('span', '', tierLabel(t)), h('span', 'unit-price', ...priceChips(d.cost, d.mat))),
       h('h3', '', d.name),
       h('p', 'unit-desc', copy.text),
     );
     const needs = h('ul', 'chips', ...needChips(d.needs));
     needs.setAttribute('aria-label', 'What it needs from the factory');
-    const facts = [perItem(t, d.needs), `range ${num(d.range / CELL)} tiles`, `Mk2 ${price(upgradeCost(t, 1), upgradeMat(t, 1))}`, `Mk3 ${price(upgradeCost(t, 2), upgradeMat(t, 2))}`].filter(Boolean);
-    txt.append(h('div', 'unit-row', h('span', 'unit-k', 'Needs'), needs), h('p', 'unit-facts', cap(facts.join(' / '))));
+    txt.append(h('div', 'unit-row', h('span', 'unit-k', 'Needs'), needs), statsOf(t, d.needs));
     const l3 = TOWER_NEEDS_L3[t];
     if (l3) {
       const c3 = h('ul', 'chips', ...needChips(l3));
@@ -196,11 +210,22 @@ const DEPOSITS: { ore: OreType; img: string; gives: string; on: string }[] = [
   { ore: 'coal', img: 'dep_coal', gives: 'Coal: fuel for Generators and Smelters, and half of every plasma shell.', on: FACS.mine.name },
   { ore: 'oil', img: 'dep_oil', gives: 'Crude oil: burnt by Firewall Pylons, charged into cells, cracked into petrol.', on: FACS.pump.name },
 ];
+/** An icon in a row of them, named for the reader. */
+const ico = (n: IconName, size = 22) => icon(n, { size, title: iconLabel(n) });
+const arrow = () => h('i', 'fl-arr');
 function buildDeposits(host: HTMLElement) {
   host.textContent = '';
   for (const d of DEPOSITS) {
+    const res: ItemType | FluidType = d.ore === 'oil' ? 'crude' : d.ore;
+    const fac: FacType = d.ore === 'oil' ? 'pump' : 'mine';
+    const plate: ItemType | null = d.ore === 'iron_ore' ? 'iron' : d.ore === 'copper_ore' ? 'copper' : null;
+    // what it becomes: deposit, what stands on it, what comes out (and the plate a Smelter makes of it)
+    const flow = h('p', 'fl', ico(`dep_${d.ore}`), arrow(), ico(`fac_${fac}`), arrow(), ico(res), ...(plate ? [arrow(), ico('fac_smelter'), arrow(), ico(plate)] : []));
+    // which towers live on it, somewhere down their chain
+    const feeds = TOWER_TYPES.filter((t) => chainOf(t, false).res.has(res) || (!!TOWER_NEEDS_L3[t] && chainOf(t, true).res.has(res)));
+    const fed = h('p', 'fl fl-feeds', h('span', 'unit-k', 'Feeds'), ...feeds.map((t) => ico(`tw_${t}`, 20)));
     const li = h('li', 'fac dep', still(d.img, 640, `A patch of ${ORES[d.ore].name.toLowerCase()} tiles on the deck.`, '(max-width: 640px) 104px, 280px'),
-      h('div', '', h('p', 'fac-tag', h('span', '', 'Build a ' + d.on + ' on it')), h('h4', '', ORES[d.ore].name), h('p', 'fac-text', d.gives)));
+      h('div', '', h('h4', '', ORES[d.ore].name), flow, fed, h('p', 'sr', d.gives)));
     li.style.setProperty('--c', inkOf(d.ore === 'oil' ? 'crude' : d.ore));
     host.append(li);
   }
@@ -246,19 +271,43 @@ const FAC_ALT: Partial<Record<FacType, string>> = {
   arm: 'A Transfer Arm between a Mine and a Pulse Turret.', mine: 'A Mine on an iron deposit.', pump: 'A Pumpjack on an oil field.', pipe: 'A bent run of pipe.', belt: 'A curved conveyor belt carrying ore.',
   splitter: 'A Belt Splitter with belts in and out, carrying ore.', tunnel: 'A pair of Belt Tunnels under the road.', ptunnel: 'A pair of Pipe Tunnels under the road.',
 };
+/** What a building takes and makes, as icons: deposits and inputs (with their counts), an arrow, the products, the time. */
+function recipeRow(f: FacType): HTMLElement | null {
+  const steps = recipes().filter((st) => st.fac === f);
+  if (!steps.length) return null;
+  const ins = new Map<IconName, number>(), outs = new Map<IconName, number>(), fuel = new Set<IconName>();
+  for (const st of steps) {
+    if (st.on) ins.set(`dep_${st.on}`, 0);
+    for (const i of st.inp) ins.set(i.res, i.n);
+    if (st.fuel) fuel.add(st.fuel.res);
+    outs.set(st.out, st.n);
+  }
+  const q = (n: IconName, c: number) => h('span', 'rq', ico(n, 24), c > 1 ? h('b', '', String(+c.toFixed(1))) : null);
+  const st = steps[0];
+  // (several recipes: their inputs are alternatives; one recipe: it takes them all)
+  const sep = (a: HTMLElement[]) => a.flatMap((e, i) => (i ? [h('i', 'rq-or', steps.length > 1 ? '/' : '+'), e] : [e]));
+  return h('p', 'fl fac-rec',
+    ...sep([...ins].map(([n, c]) => q(n, c))),
+    ...[...fuel].map((n) => h('span', 'rq rq-fuel', h('i', 'rq-plus', '+'), ico(n, 18))),
+    arrow(),
+    ...sep([...outs].map(([n, c]) => q(n, c))),
+    h('span', 'stat', icon('time', { size: 13 }), st.rate ? 'per s' : st.time + ' s'));
+}
 function buildFacs(host: HTMLElement) {
   const types = (host.dataset.facs || '').split(',').filter((t): t is FacType => t in FACS);
   host.textContent = '';
   for (const f of types) {
     const d = FACS[f], r = recipe(f);
-    const tags = [d.cost ? d.cost + ' cr' : 'Free', d.power ? d.power + ' power' : 'No power', FAC_UPGRADABLE.has(f) ? 'Mk1-3' : ''].filter(Boolean);
-    const dl = h('dl', 'fac-dl',
-      h('div', '', h('dt', '', MAKES[f] || ['mine', 'pump', 'generator', 'smelter', 'refinery'].includes(f) ? 'Makes' : 'Does'), h('dd', '', r.makes)),
-      h('div', '', h('dt', '', 'Needs'), h('dd', '', r.needs + (d.power ? '. Power' : ''))),
-      h('div', '', h('dt', '', 'Unlock'), h('dd', '', unlock(f))),
-    );
+    const tags = h('p', 'fac-tag',
+      d.cost ? icChip('credits', d.cost, { title: 'Credits', size: 14 }) : h('span', 'stat', 'Free'),
+      d.power ? icChip('power', d.power, { title: 'Power it draws', size: 14 }) : null,
+      FAC_UPGRADABLE.has(f) ? h('span', 'stat', 'Mk1-3') : null);
+    // a plant shows what goes in and what comes out as icons; a piece of logistics says in a line what it does
+    const rec = recipeRow(f);
+    const body = rec ? [rec, h('p', 'sr', `${r.makes}. Needs ${r.needs.toLowerCase()}${d.power ? ', and power' : ''}.`)]
+      : [h('p', 'fac-text', r.makes + '.'), h('p', 'fac-need', r.needs + (d.power ? '. Power' : '') + '.')];
     const li = h('li', 'fac', still('fac_' + f, 640, FAC_ALT[f] || `A ${d.name} on its tile.`, '(max-width: 640px) 104px, (max-width: 1080px) 46vw, 380px'),
-      h('div', '', h('p', 'fac-tag', ...tags.map((t) => h('span', '', t))), h('h4', '', d.name), dl));
+      h('div', '', h('h4', '', d.name), tags, ...body, h('p', 'fac-unlock', icon('st_locked', { size: 14 }), h('span', '', unlock(f)))));
     li.style.setProperty('--c', hex(d.color));
     host.append(li);
   }
@@ -266,27 +315,21 @@ function buildFacs(host: HTMLElement) {
 
 // ---------- the supply chain, tower by tower ----------
 // One fixed map of the factory: deposits, what stands on them, what works the ore, the plants, and the tower. Picking a
-// tower lights the part of it that tower lives on. The chains themselves are worked out from the game's data.
+// tower lights the part of it that tower lives on. The chains themselves are worked out from the game's data. Every node
+// is a tile with the game's own render of it and its icon; the wires under them carry the items' icons.
 type NodeId = 'd_iron' | 'd_copper' | 'd_coal' | 'd_oil' | 'm_iron' | 'm_copper' | 'm_coal' | 'pump' | 's_iron' | 's_copper' | 'generator' | 'refinery' | 'works' | 'press' | 'cells' | 'missiles' | 'tower';
-interface ChainNode { l: number; s: number; label: string; fac?: FacType; ink?: string }
+interface ChainNode { l: number; s: number; label: string; short: string; img: string; ic: IconName; fac?: FacType; ore?: OreType; ink?: string }
+const depNode = (ore: OreType, s: number, img: string, short: string, ink: string): ChainNode => ({ l: 0, s, label: ORES[ore].name, short, img, ic: `dep_${ore}`, ore, ink });
+const facNode = (fac: FacType, l: number, s: number, short = FACS[fac].name): ChainNode => ({ l, s, label: FACS[fac].name, short, img: 'fac_' + fac, ic: `fac_${fac}`, fac });
 const NODES: Record<NodeId, ChainNode> = {
-  d_iron: { l: 0, s: 0, label: ORES.iron_ore.name, ink: inkOf('iron_ore') },
-  d_copper: { l: 0, s: 1, label: ORES.copper_ore.name, ink: inkOf('copper_ore') },
-  d_coal: { l: 0, s: 2, label: ORES.coal.name, ink: inkOf('coal') },
-  d_oil: { l: 0, s: 3, label: ORES.oil.name, ink: inkOf('crude') },
-  m_iron: { l: 1, s: 0, label: FACS.mine.name, fac: 'mine' },
-  m_copper: { l: 1, s: 1, label: FACS.mine.name, fac: 'mine' },
-  m_coal: { l: 1, s: 2, label: FACS.mine.name, fac: 'mine' },
-  pump: { l: 1, s: 3, label: FACS.pump.name, fac: 'pump' },
-  s_iron: { l: 2, s: 0, label: FACS.smelter.name, fac: 'smelter' },
-  s_copper: { l: 2, s: 1, label: FACS.smelter.name, fac: 'smelter' },
-  generator: { l: 2, s: 2, label: FACS.generator.name, fac: 'generator' },
-  refinery: { l: 2, s: 3, label: FACS.refinery.name, fac: 'refinery' },
-  works: { l: 3, s: 0, label: FACS.works.name, fac: 'works' },
-  press: { l: 3, s: 1, label: FACS.press.name, fac: 'press' },
-  cells: { l: 3, s: 2, label: FACS.cells.name, fac: 'cells' },
-  missiles: { l: 3, s: 3, label: FACS.missiles.name, fac: 'missiles' },
-  tower: { l: 4, s: 1.5, label: '' },
+  d_iron: depNode('iron_ore', 0, 'dep_iron', 'Iron', inkOf('iron_ore')),
+  d_copper: depNode('copper_ore', 1, 'dep_copper', 'Copper', inkOf('copper_ore')),
+  d_coal: depNode('coal', 2, 'dep_coal', 'Coal', inkOf('coal')),
+  d_oil: depNode('oil', 3, 'dep_oil', 'Oil', inkOf('crude')),
+  m_iron: facNode('mine', 1, 0), m_copper: facNode('mine', 1, 1), m_coal: facNode('mine', 1, 2), pump: facNode('pump', 1, 3),
+  s_iron: facNode('smelter', 2, 0), s_copper: facNode('smelter', 2, 1), generator: facNode('generator', 2, 2), refinery: facNode('refinery', 2, 3),
+  works: facNode('works', 3, 0), press: facNode('press', 3, 1), cells: facNode('cells', 3, 2), missiles: facNode('missiles', 3, 3),
+  tower: { l: 4, s: 1.5, label: '', short: '', img: '', ic: 'tw_pulse' },
 };
 /** The building a thing comes out of. */
 const SRC: Record<Res, NodeId> = {
@@ -294,6 +337,8 @@ const SRC: Record<Res, NodeId> = {
   missile: 'missiles', crude: 'pump', petrol: 'refinery', power: 'generator', mats: 'works',
 };
 const DEPOSIT_OF: Partial<Record<NodeId, NodeId>> = { m_iron: 'd_iron', m_copper: 'd_copper', m_coal: 'd_coal', pump: 'd_oil' };
+/** What comes out of a deposit (the icon its wire carries). */
+const DUG: Partial<Record<NodeId, Res>> = { d_iron: 'iron_ore', d_copper: 'copper_ore', d_coal: 'coal', d_oil: 'crude' };
 /** What a node takes in (a tower: from its needs at that level). */
 function inputs(n: NodeId, t: TowerType, mk3: boolean): Res[] {
   if (n === 'tower') {
@@ -335,6 +380,50 @@ const VIA: Record<string, number[]> = {
   'm_iron>tower': [-1, -1], 'm_coal>press': [1.5], 'pump>cells': [2.5], 'pump>tower': [4, 4], 's_copper>tower': [1.5], 'refinery>tower': [4],
 };
 
+/** The way a tower is fed, as a few icon steps: deposit, what works it (with what else it takes), the hand-off, the tower. */
+interface StepV { ic: IconName; by?: IconName; plus: IconName[]; label: string }
+function chainSteps(t: TowerType, mk3: boolean): StepV[] {
+  const c = icChain({ tower: t }, mk3 ? 3 : 1, mk3);
+  const root = c?.roots[0], main = root?.kids[0], out: StepV[] = [];
+  if (!main) return out;
+  const walk = (n: IcNode) => {
+    if (n.kind === 'ore') { out.push({ ic: n.icon, plus: [], label: n.name }); return; }
+    // (the line to follow is the main ingredient: not the coal a plant also takes)
+    const first = n.kids.find((k) => k.id !== 'coal') || n.kids[0], rest = n.kids.filter((k) => k !== first);
+    if (first) walk(first);
+    const fac = n.by?.fac;
+    if (!fac) { out.push({ ic: n.icon, plus: [], label: n.name }); return; }
+    const plus: IconName[] = rest.map((k) => k.icon);
+    if (n.by?.fuel) plus.push(n.by.fuel.res);
+    out.push({ ic: n.icon, by: `fac_${fac}`, plus, label: `${n.name} from a ${FACS[fac].name}` + (plus.length ? ', with ' + list(plus.map(iconLabel)).toLowerCase() : '') });
+  };
+  walk(main);
+  const via: FacType = main.id === 'power' ? 'pole' : main.id in FLUIDS ? 'pipe' : 'arm';
+  out.push({ ic: `fac_${via}`, plus: [], label: 'carried by ' + (via === 'arm' ? 'a ' : '') + FACS[via].name + (via === 'pole' ? 's' : via === 'pipe' ? 's' : '') });
+  out.push({ ic: `tw_${t}`, plus: [], label: 'into the ' + TOWERS[t].name + (mk3 ? ' Mk3' : '') });
+  return out;
+}
+function stepsEl(steps: StepV[]): HTMLOListElement {
+  const ol = h('ol', 'cp-steps');
+  ol.setAttribute('aria-label', 'How it is fed');
+  for (const st of steps) {
+    const li = h('li', 'cp-step');
+    li.setAttribute('aria-label', cap(st.label));
+    li.title = cap(st.label);
+    if (st.plus.length) li.append(h('span', 'cp-plus', ...st.plus.map((p) => icon(p, { size: 14 }))));
+    li.append(h('span', 'cp-ic', icon(st.ic, { size: 28 }), st.by ? h('span', 'cp-by', icon(st.by, { size: 15 })) : null));
+    ol.append(li);
+  }
+  return ol;
+}
+/** A small square render (media/sm, 320 px), shown much smaller. */
+function thumb(name: string, alt = ''): HTMLImageElement {
+  const img = h('img');
+  img.width = 320; img.height = 320; img.loading = 'lazy'; img.decoding = 'async'; img.alt = alt;
+  img.src = `${MEDIA}sm/${name}.jpg`;
+  return img;
+}
+
 function buildChain(host: HTMLElement) {
   host.textContent = '';
   const narrow = matchMedia('(max-width: 720px)');
@@ -349,7 +438,7 @@ function buildChain(host: HTMLElement) {
   picker.setAttribute('aria-label', 'Show the supply chain of a tower');
   const buttons = new Map<TowerType, HTMLButtonElement>();
   for (const t of TOWER_TYPES) {
-    const b = h('button', 'chain-btn', TOWERS[t].name);
+    const b = h('button', 'chain-btn', h('span', 'chain-btn-img', thumb('tower_' + t)), h('span', 'chain-btn-name', TOWERS[t].name));
     b.type = 'button';
     b.style.setProperty('--c', hex(TOWERS[t].color));
     b.addEventListener('click', () => { cur = t; mk3 = false; update(); });
@@ -363,111 +452,172 @@ function buildChain(host: HTMLElement) {
   legend.setAttribute('aria-label', 'What flows in this chain');
   host.append(picker, h('div', 'chain-body', h('div', 'chain-draw', figure, legend), panel));
 
-  let nodeEls = new Map<NodeId, SVGElement>(), edgeEls = new Map<string, SVGElement>(), towerText: SVGElement | null = null, title: SVGElement | null = null;
+  let nodeEls = new Map<NodeId, HTMLLIElement>(), edgeEls = new Map<string, SVGElement>(), title: SVGElement | null = null;
+  let carriers: SVGElement | null = null;
+  let towerImg: HTMLImageElement | null = null, towerBadge: HTMLElement | null = null, towerCap: HTMLElement | null = null;
+  const flowPath = new Map<string, SVGPathElement>();
+  let G = { W: 1000, H: 500, ic: 18 };
 
   function draw() {
     const v = narrow.matches;
-    // geometry: layers run left to right on a wide screen, top to bottom on a narrow one
-    const G = v ? { W: 400, H: 560, l0: 34, lp: 123, s0: 56, sp: 96, nw: 86, nh: 34, tw: 176, lo: -0.53, hi: 3.53, fs: 13 }
-      : { W: 1000, H: 452, l0: 70, lp: 196, s0: 92, sp: 88, nw: 132, nh: 42, tw: 190, lo: -0.8, hi: 3.8, fs: 17 };
-    const slot = (x: number) => G.s0 + Math.max(G.lo, Math.min(G.hi, x)) * G.sp;
-    const at = (l: number, sl: number): [number, number] => (v ? [slot(sl), G.l0 + l * G.lp] : [G.l0 + l * G.lp, slot(sl)]);
-    const half = (n: NodeId) => (v ? G.nh : n === 'tower' ? G.tw : G.nw) / 2;
-    const svg = s('svg', { class: 'chain-svg', viewBox: `0 0 ${G.W} ${G.H}`, role: 'img', 'aria-labelledby': 'chain-title' });
+    // geometry: layers run left to right on a wide screen, top to bottom on a narrow one (nd: a tile, td: the tower, cap: room for a caption under a tile)
+    const g = v ? { W: 400, H: 662, l0: 44, lp: 132, s0: 56, sp: 96, nd: 58, td: 118, cap: 17, lo: -0.53, hi: 3.53, ic: 15 }
+      : { W: 1000, H: 500, l0: 66, lp: 188, s0: 70, sp: 112, nd: 74, td: 150, cap: 0, lo: -0.56, hi: 3.56, ic: 18 };
+    G = g;
+    const slot = (x: number) => g.s0 + Math.max(g.lo, Math.min(g.hi, x)) * g.sp;
+    const at = (l: number, sl: number): [number, number] => (v ? [slot(sl), g.l0 + l * g.lp] : [g.l0 + l * g.lp, slot(sl)]);
+    const half = (n: NodeId) => (n === 'tower' ? g.td : g.nd) / 2;
+    const svg = s('svg', { class: 'chain-svg', viewBox: `0 0 ${g.W} ${g.H}`, role: 'img', 'aria-labelledby': 'chain-title' });
     title = s('title', { id: 'chain-title' });
     svg.append(title);
-    const wires = s('g', { class: 'wires' }), boxes = s('g', { class: 'boxes' });
-    edgeEls = new Map(); nodeEls = new Map();
+    const wires = s('g', { class: 'wires' });
+    carriers = s('g', { class: 'carriers', 'aria-hidden': 'true' });
+    edgeEls = new Map(); nodeEls = new Map(); flowPath.clear();
+    let i = 0;
     for (const [key, e] of all) {
       const a = NODES[e.from], b = NODES[e.to];
       const pts: [number, number][] = [at(a.l, a.s)];
-      (VIA[edgeKey(e)] || []).forEach((g, i) => pts.push(at(a.l + 1 + i, g)));
+      (VIA[edgeKey(e)] || []).forEach((gap, k) => pts.push(at(a.l + 1 + k, gap)));
       pts.push(at(b.l, b.s));
-      // leave the first box on its far side, enter the last on its near side
+      // leave the first tile on its far side (below its caption on a narrow screen), enter the last on its near side
       const ax = v ? 1 : 0;
-      pts[0][ax] += half(e.from); pts[pts.length - 1][ax] -= half(e.to);
+      pts[0][ax] += half(e.from) + 2 + g.cap; pts[pts.length - 1][ax] -= half(e.to) + 2;
       let dpath = `M${pts[0][0]} ${pts[0][1]}`;
-      for (let i = 1; i < pts.length; i++) {
-        const [x0, y0] = pts[i - 1], [x1, y1] = pts[i];
+      for (let k = 1; k < pts.length; k++) {
+        const [x0, y0] = pts[k - 1], [x1, y1] = pts[k];
         dpath += v ? ` C${x0} ${(y0 + y1) / 2} ${x1} ${(y0 + y1) / 2} ${x1} ${y1}` : ` C${(x0 + x1) / 2} ${y0} ${(x0 + x1) / 2} ${y1} ${x1} ${y1}`;
       }
       const ink = e.res === 'deposit' ? NODES[e.from].ink! : inkOf(e.res);
-      const g = s('g', { class: 'wire' + (e.res === 'mats' ? ' wire-mats' : ''), color: ink },
-        s('path', { class: 'wire-line', d: dpath }),
-        s('path', { class: 'wire-flow', d: dpath }));
-      edgeEls.set(key, g);
-      wires.append(g);
+      const flow = s('path', { class: 'wire-flow', d: dpath, id: 'cw' + i++ }) as SVGPathElement;
+      const wg = s('g', { class: 'wire' + (e.res === 'mats' ? ' wire-mats' : ''), color: ink }, s('path', { class: 'wire-line', d: dpath }), flow);
+      edgeEls.set(key, wg);
+      flowPath.set(key, flow);
+      wires.append(wg);
     }
+    svg.append(wires, carriers);
+
+    // the tiles, over the drawing: placed in percent of it, so they scale with it
+    const tiles = h('ul', 'chain-nodes' + (v ? ' chain-v' : ''));
+    tiles.setAttribute('aria-label', 'Deposits and buildings');
     for (const id of Object.keys(NODES) as NodeId[]) {
-      const n = NODES[id], [x, y] = at(n.l, n.s), w = id === 'tower' ? G.tw : G.nw, hgt = id === 'tower' ? G.nh + 8 : G.nh;
-      const g = s('g', { class: 'node' + (id === 'tower' ? ' node-tower' : n.l === 0 ? ' node-dep' : ''), transform: `translate(${x - w / 2} ${y - hgt / 2})` });
-      g.append(s('rect', { width: w, height: hgt, rx: 2 }));
-      if (n.ink) g.append(s('rect', { class: 'node-ink', x: 0, y: 0, width: 5, height: hgt, fill: n.ink }));
-      const text = s('text', { x: w / 2 + (n.ink ? 2 : 0), y: hgt / 2, 'font-size': id === 'tower' ? G.fs + 1 : G.fs }, n.label);
-      g.append(text);
-      if (id === 'tower') towerText = text;
-      // the bolt of everything that needs power
-      if (id === 'tower' || (n.fac && FACS[n.fac].power)) g.append(s('path', { class: 'bolt', d: 'M6 0 0 9h5l-2 7 8-10H6z', transform: `translate(${w - 15} ${-9}) scale(1.25)` }));
-      nodeEls.set(id, g);
-      boxes.append(g);
+      const n = NODES[id], [x, y] = at(n.l, n.s), d = id === 'tower' ? g.td : g.nd;
+      const li = h('li', 'cn' + (id === 'tower' ? ' cn-tower' : n.ore ? ' cn-dep' : ''));
+      li.tabIndex = 0;
+      li.style.setProperty('--x', String((x / g.W) * 100));
+      li.style.setProperty('--y', String((y / g.H) * 100));
+      li.style.setProperty('--d', String((d / g.W) * 100));
+      if (n.ink) li.style.setProperty('--k', n.ink);
+      const img = id === 'tower' ? thumb('tower_' + cur) : thumb(n.img);
+      const badge = h('span', 'cn-badge', icon(n.ic, { size: 18 }));
+      const capEl = h('span', 'cn-cap', n.short);
+      li.append(h('span', 'cn-img', img), badge, capEl);
+      if (id === 'tower') { towerImg = img; towerBadge = badge; towerCap = capEl; }
+      if (id === 'tower' || (n.fac && FACS[n.fac].power)) li.append(h('span', 'cn-pw', icon('power', { size: 14 })));
+      nodeEls.set(id, li);
+      tiles.append(li);
     }
-    svg.append(wires, boxes);
     figure.textContent = '';
-    figure.append(svg);
+    figure.append(svg, tiles);
+  }
+
+  /** The items' icons along the lit wires: two on each, moving (or one, still, in the middle when motion is reduced). */
+  function carry(lit: Edge[]) {
+    if (!carriers) return;
+    carriers.textContent = '';
+    const sz = G.ic;
+    for (const e of lit) {
+      const r = e.res === 'deposit' ? DUG[e.from] : e.res;
+      const path = flowPath.get(edgeKey(e) + ':' + e.res);
+      if (!r || r === 'power' || !path) continue;
+      const len = path.getTotalLength();
+      const dur = Math.max(1.6, len / 55);
+      const n = reduced.matches ? 1 : 2;
+      for (let k = 0; k < n; k++) {
+        const ic = icon(r, { size: sz });
+        ic.setAttribute('x', String(-sz / 2)); ic.setAttribute('y', String(-sz / 2));
+        const grp = s('g', { class: 'carrier' }, s('circle', { r: sz / 2 + 2, class: 'carrier-bg' }), ic);
+        if (reduced.matches) {
+          const p = path.getPointAtLength(len / 2);
+          grp.setAttribute('transform', `translate(${p.x} ${p.y})`);
+        } else {
+          grp.append(s('animateMotion', { dur: dur.toFixed(2) + 's', begin: (-(dur * k) / n).toFixed(2) + 's', repeatCount: 'indefinite' }, s('mpath', { href: '#' + path.id })));
+        }
+        carriers.append(grp);
+      }
+    }
   }
 
   function update() {
-    const d = TOWERS[cur], l3 = TOWER_NEEDS_L3[cur];
+    const d = TOWERS[cur], l3 = TOWER_NEEDS_L3[cur], col = hex(d.color);
     if (!l3) mk3 = false;
     const c = chainOf(cur, mk3);
     for (const [t, b] of buttons) b.setAttribute('aria-pressed', String(t === cur));
     const lit = new Set(c.edges.map((e) => edgeKey(e) + ':' + e.res));
     for (const [k, g] of edgeEls) g.classList.toggle('on', lit.has(k));
-    for (const [id, g] of nodeEls) {
-      g.classList.toggle('on', c.nodes.has(id));
-      g.classList.toggle('pw', c.powered.has(id));
+    for (const [id, li] of nodeEls) {
+      const on = c.nodes.has(id), pw = c.powered.has(id), n = NODES[id];
+      li.classList.toggle('on', on);
+      li.classList.toggle('pw', pw);
+      if (id !== 'tower') li.setAttribute('aria-label', `${n.label}: ${on ? 'part of this chain' : 'not used'}${on && pw ? ', needs power' : ''}`);
     }
     const tn = nodeEls.get('tower');
-    if (tn) tn.setAttribute('color', hex(d.color));
-    if (towerText) towerText.textContent = d.name + (mk3 ? ' Mk3' : '');
+    if (tn) {
+      tn.style.setProperty('--c', col);
+      tn.setAttribute('aria-label', `${d.name}${mk3 ? ' Mk3' : ''}, the tower this chain feeds${c.powered.has('tower') ? ', needs power' : ''}`);
+    }
+    if (towerImg) { towerImg.src = `${MEDIA}sm/tower_${cur}.jpg`; towerImg.alt = ''; }
+    if (towerBadge) towerBadge.replaceChildren(icon(`tw_${cur}`, { size: 22 }));
+    if (towerCap) towerCap.textContent = d.name + (mk3 ? ' Mk3' : '');
     const supply = (mk3 && TOWER_SUPPLY_L3[cur]) || TOWER_SUPPLY[cur];
     if (title) title.textContent = `Supply chain of the ${d.name}${mk3 ? ' Mk3 on its second ammunition' : ''}. ${supply}`;
+    carry(c.edges);
 
-    // legend: what runs along the lit lines
+    // legend: what runs along the lit lines, as the icons that move on them
     legend.textContent = '';
     const last = (r: Res) => (r === 'power' ? 1 : r === 'mats' ? 2 : 0);
-    for (const r of [...c.res].sort((a, b) => last(a) - last(b))) legend.append(chip(r, r === 'power' ? 'Power: the bolt marks what has to stand within ' + SUPPLY + ' tiles of a Generator or Power Pole' : r === 'mats' ? 'Building materials (its price, not its ammunition)' : undefined));
+    for (const r of [...c.res].sort((a, b) => last(a) - last(b))) legend.append(chip(r, r === 'mats' ? 'Materials' : undefined));
 
-    // the panel beside the diagram
+    // the card beside the diagram
     panel.textContent = '';
     const need = (mk3 && l3) || d.needs;
-    const chips = h('ul', 'chips', ...needChips({ ...need, power: d.needs.power || need.power }));
-    chips.setAttribute('aria-label', 'What it needs');
     const facs = [...new Set([...TOWER_CHAIN[cur], ...(mk3 ? TOWER_CHAIN_L3[cur] || [] : [])])], chainFacs = facs.map((f) => FACS[f].name);
     // the production cards those buildings come with (the Mine and the Transfer Arm are there from the start), and the ammo card of a second ammunition
     const cards = [...new Set(facs.map((f) => FAC_CARD[f]).filter((id): id is string => !!id))].map((id) => CARD_BY_ID[id].name);
     const ammoCard = mk3 && AMMO2_CARD[cur] ? CARD_BY_ID[AMMO2_CARD[cur]!]?.name : '';
-    const thumb = still('tower_' + cur, 640, TOWER_COPY[cur].alt, '120px');
-    thumb.loading = 'eager';
-    panel.append(
-      thumb,
-      h('p', 'unit-tag', h('span', '', tierLabel(cur)), h('span', '', price(d.cost, d.mat))),
-      h('h4', '', d.name + (mk3 ? ' Mk3' : '')),
-      chips,
-      h('p', 'chain-text', supply),
-      h('p', 'chain-unlock', h('b', '', 'Its supply needs '), list(chainFacs) + '.'),
-      h('p', 'chain-unlock', h('b', '', 'Cards '), cards.length ? `${TOWER_TIER[cur] === 0 ? '' : 'Its blueprint unlocks the tower alone. '}The buildings come with ${list(cards)}${ammoCard ? `, and ${ammoCard} opens the switch on each Mk3` : ''}.` : 'None: the Mine and the Transfer Arm are there from the start.'),
-      h('p', 'chain-unlock', h('b', '', 'Hand-offs '), 'Every line of items in the picture is carried by Transfer Arms, with belts between them over a distance. Fluids run in pipes; power reaches what stands near.'),
+    const hero = still('tower_' + cur, 640, TOWER_COPY[cur].alt, '(max-width: 640px) 112px, (max-width: 1080px) 200px, 280px');
+    hero.loading = 'eager';
+    const tier = TOWER_TIER[cur];
+    const meta = h('div', 'cp-meta',
+      icChip('credits', d.cost, { title: 'Price in credits', size: 16 }),
+      d.mat ? icChip('mats', d.mat, { title: 'Building materials', size: 16 }) : null,
+      ...[need.item, need.fluid].filter((r): r is ItemType | FluidType => !!r).map((r) => icChip(r, '', { title: 'Fires ' + iconLabel(r), size: 16 })),
+      (d.needs.power || need.power) ? icChip('power', d.needs.power || need.power || 0, { title: 'Power it draws', size: 16 }) : null,
     );
-    if (d.mat) panel.append(h('p', 'chain-unlock', h('b', '', 'Price '), `${d.mat} building materials on top of ${d.cost} credits. A Frame Works makes them from iron plates; a run starts with a few in stock.`));
+    const head = h('div', 'cp-head',
+      h('p', 'cp-tier', tier === 0 ? 'Starter' : 'Tier ' + tier),
+      h('h4', '', d.name + (mk3 ? ' Mk3' : '')),
+      meta);
+    panel.append(h('div', 'cp-hero', hero), head, stepsEl(chainSteps(cur, mk3)));
     if (l3) {
-      const b = h('button', 'chain-mk3', mk3 ? 'Back to its first ammunition' : 'Show its second ammunition (a Mk3 switch)');
+      const alt = mk3 ? d.needs : l3;
+      const b = h('button', 'chain-mk3', ...[alt.item, alt.fluid].filter((r): r is ItemType | FluidType => !!r).map((r) => icon(r, { size: 18 })), h('span', '', mk3 ? 'First ammo' : 'Mk3 ammo'));
       b.type = 'button';
       b.setAttribute('aria-pressed', String(mk3));
+      b.setAttribute('aria-label', mk3 ? 'Back to its first ammunition' : 'Show its second ammunition (a Mk3 switch)');
       b.addEventListener('click', () => { mk3 = !mk3; update(); panel.querySelector<HTMLButtonElement>('.chain-mk3')?.focus(); });
       panel.append(b);
     }
-    panel.style.setProperty('--c', hex(d.color));
+    const more = h('details', 'cp-more');
+    more.append(...[h('summary', '', 'Details'),
+      h('p', 'chain-text', supply),
+      h('p', 'chain-unlock', h('b', '', 'Its supply needs '), list(chainFacs) + '.'),
+      h('p', 'chain-unlock', h('b', '', 'Cards '), cards.length ? `${tier === 0 ? '' : 'Its blueprint unlocks the tower alone. '}The buildings come with ${list(cards)}${ammoCard ? `, and ${ammoCard} opens the switch on each Mk3` : ''}.` : 'None: the Mine and the Transfer Arm are there from the start.'),
+      h('p', 'chain-unlock', h('b', '', 'Hand-offs '), 'Every line of items in the picture is carried by Transfer Arms, with belts between them over a distance. Fluids run in pipes; power reaches what stands near.'),
+      c.res.has('power') ? h('p', 'chain-unlock', h('b', '', 'Power '), `The bolt marks what has to stand within ${SUPPLY} tiles of a Generator or Power Pole.`) : null,
+      d.mat ? h('p', 'chain-unlock', h('b', '', 'Price '), `${d.mat} building materials on top of ${d.cost} credits. A Frame Works makes them from iron plates; a run starts with a few in stock.`) : null,
+    ].filter((e): e is HTMLElement => !!e));
+    panel.append(more);
+    panel.style.setProperty('--c', col);
   }
   draw(); update();
   narrow.addEventListener('change', () => { draw(); update(); });
